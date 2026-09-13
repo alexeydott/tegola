@@ -276,14 +276,14 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 
-	// names of custom-SQL layers that were registered despite currently
-	// matching 0 rows (see the sql.ErrNoRows handling below). A handful of
-	// empty layers alongside otherwise-populated ones is fine - the data may
-	// simply not exist yet - but if EVERY configured layer comes back empty
-	// that's a strong signal of a real misconfiguration (wrong file, wrong
-	// bounds, wrong table/SQL, etc.), so we still want a hard error in that
-	// case rather than silently starting a provider that can never render
-	// anything.
+	// names of custom-SQL layers that currently match 0 rows and were
+	// therefore skipped (not registered) - see the sql.ErrNoRows handling
+	// below. A handful of empty layers alongside otherwise-populated ones is
+	// fine - the data may simply not exist yet - but if EVERY configured
+	// layer comes back empty that's a strong signal of a real
+	// misconfiguration (wrong file, wrong bounds, wrong table/SQL, etc.), so
+	// we still want a hard error in that case rather than silently starting
+	// a provider that has no layers at all.
 	var emptyLayerNames []string
 
 	lyrsSeen := make(map[string]int)
@@ -418,23 +418,15 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// table is empty, or every row happens to be filtered out once the
 				// !BBOX!/!ZOOM! tokens are replaced with permissive placeholders for
 				// this inspection query). We have no sample geometry to infer a type
-				// or SRID from, but an empty layer is not a fatal misconfiguration -
-				// it just means this layer currently has nothing to render. Warn and
-				// register it with an unknown geometry type instead of refusing to
-				// start the entire server over one empty layer.
-				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; registering it with an unknown geometry type until matching data exists: %v", layerName, customSQL)
+				// or SRID from. An empty layer is not by itself a fatal
+				// misconfiguration - warn and simply skip registering it (it
+				// contributes nothing to the map) instead of refusing to start the
+				// entire server over one empty layer. If it turns out that literally
+				// every configured layer is empty, that is treated as a hard error
+				// below, since that's much more likely a real misconfiguration.
+				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; skipping registration of this layer until matching data exists: %v", layerName, customSQL)
 				emptyLayerNames = append(emptyLayerNames, layerName)
-
-				layerSRID := p.srid
-				var lsrid int = int(layerSRID)
-				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
-					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
-				}
-
-				layer.geomType = nil
-				layer.srid = uint64(lsrid)
-				layer.geomFieldname = DefaultGeomFieldName
-				layer.idFieldname = DefaultIDFieldName
+				continue
 
 			case err != nil:
 				return nil, fmt.Errorf("layer '%v' problem executing custom SQL: %v", layerName, err)
