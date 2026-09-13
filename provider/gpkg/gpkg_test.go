@@ -245,6 +245,21 @@ func TestNewTileProvider(t *testing.T) {
 			},
 			expectedLayerCount: 2,
 		},
+		"all layers with 0 rows is still a hard error": {
+			// If literally every configured layer currently returns 0 rows,
+			// that's very unlikely to be legitimate - it's much more likely a
+			// real misconfiguration (wrong file, wrong table/SQL, overly
+			// restrictive filters) - so the provider must still fail to
+			// register rather than silently starting a provider that can
+			// never render anything.
+			config: map[string]interface{}{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{"name": "empty_layer", "sql": "SELECT fid, geom FROM amenities_points WHERE fid = -1"},
+				},
+			},
+			expectedErr: errors.New("gpkg provider (testdata/athens-osm-20170921.gpkg): all 1 configured layer(s) currently return 0 rows: empty_layer; check the filepath, table names, custom SQL and any bbox/zoom filters"),
+		},
 	}
 
 	for name, tc := range tests {

@@ -276,6 +276,16 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 
+	// names of custom-SQL layers that were registered despite currently
+	// matching 0 rows (see the sql.ErrNoRows handling below). A handful of
+	// empty layers alongside otherwise-populated ones is fine - the data may
+	// simply not exist yet - but if EVERY configured layer comes back empty
+	// that's a strong signal of a real misconfiguration (wrong file, wrong
+	// bounds, wrong table/SQL, etc.), so we still want a hard error in that
+	// case rather than silently starting a provider that can never render
+	// anything.
+	var emptyLayerNames []string
+
 	lyrsSeen := make(map[string]int)
 	for i, layerConf := range layers {
 
@@ -413,6 +423,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// register it with an unknown geometry type instead of refusing to
 				// start the entire server over one empty layer.
 				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; registering it with an unknown geometry type until matching data exists: %v", layerName, customSQL)
+				emptyLayerNames = append(emptyLayerNames, layerName)
 
 				layerSRID := p.srid
 				var lsrid int = int(layerSRID)
@@ -455,6 +466,16 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 
 		p.layers[layer.name] = layer
+	}
+
+	// if every single configured layer came back empty, that's very unlikely
+	// to be legitimate "no data yet" - it's much more likely a real
+	// misconfiguration (wrong gpkg file, wrong table/SQL, overly restrictive
+	// filters, etc.), so fail loudly instead of starting a provider that has
+	// no chance of ever rendering anything.
+	if len(layers) > 0 && len(emptyLayerNames) == len(layers) {
+		return nil, fmt.Errorf("gpkg provider (%v): all %v configured layer(s) currently return 0 rows: %v; check the filepath, table names, custom SQL and any bbox/zoom filters",
+			filepath, len(layers), strings.Join(emptyLayerNames, ", "))
 	}
 
 	// track the provider so we can clean it up later
