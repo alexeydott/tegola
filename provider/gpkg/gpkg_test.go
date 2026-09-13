@@ -230,6 +230,21 @@ func TestNewTileProvider(t *testing.T) {
 			},
 			expectedLayerCount: 3,
 		},
+		"custom sql layer with 0 rows registers instead of failing": {
+			// A custom-SQL layer whose query currently matches no rows (e.g. an
+			// empty table, or filter criteria that exclude everything) must not
+			// prevent the provider - and therefore the whole server - from
+			// starting. It should register with an unknown geometry type and
+			// simply produce empty tiles until matching data exists.
+			config: map[string]interface{}{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{"name": "a_points", "tablename": "amenities_points"},
+					{"name": "empty_layer", "sql": "SELECT fid, geom FROM amenities_points WHERE fid = -1"},
+				},
+			},
+			expectedLayerCount: 2,
+		},
 	}
 
 	for name, tc := range tests {

@@ -402,34 +402,56 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 			var geomData []byte
 			err = db.QueryRow(qtext).Scan(&geomData)
-			if err == sql.ErrNoRows {
-				return nil, fmt.Errorf("layer '%v' with custom SQL has 0 rows: %v", layerName, customSQL)
-			} else if err != nil {
+			switch {
+			case err == sql.ErrNoRows:
+				// The layer's custom SQL currently returns no rows (e.g. the source
+				// table is empty, or every row happens to be filtered out once the
+				// !BBOX!/!ZOOM! tokens are replaced with permissive placeholders for
+				// this inspection query). We have no sample geometry to infer a type
+				// or SRID from, but an empty layer is not a fatal misconfiguration -
+				// it just means this layer currently has nothing to render. Warn and
+				// register it with an unknown geometry type instead of refusing to
+				// start the entire server over one empty layer.
+				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; registering it with an unknown geometry type until matching data exists: %v", layerName, customSQL)
+
+				layerSRID := p.srid
+				var lsrid int = int(layerSRID)
+				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
+					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
+				}
+
+				layer.geomType = nil
+				layer.srid = uint64(lsrid)
+				layer.geomFieldname = DefaultGeomFieldName
+				layer.idFieldname = DefaultIDFieldName
+
+			case err != nil:
 				return nil, fmt.Errorf("layer '%v' problem executing custom SQL: %v", layerName, err)
-			}
 
-			h, geo, err := decodeGeometry(geomData)
-			if err != nil {
-				return nil, err
-			}
+			default:
+				h, geo, err := decodeGeometry(geomData)
+				if err != nil {
+					return nil, err
+				}
 
-			// as above: an explicit provider-level srid always wins over the value
-			// decoded from the sampled row's WKB header, which is frequently 0 or
-			// otherwise unreliable for GPKGs produced by third-party tooling.
-			layerSRID := p.srid
-			if !providerSRIDExplicit && h.SRSId() > 0 {
-				layerSRID = uint64(h.SRSId())
-			}
+				// as above: an explicit provider-level srid always wins over the value
+				// decoded from the sampled row's WKB header, which is frequently 0 or
+				// otherwise unreliable for GPKGs produced by third-party tooling.
+				layerSRID := p.srid
+				if !providerSRIDExplicit && h.SRSId() > 0 {
+					layerSRID = uint64(h.SRSId())
+				}
 
-			var lsrid int = int(layerSRID)
-			if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
-				return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
-			}
+				var lsrid int = int(layerSRID)
+				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
+					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
+				}
 
-			layer.geomType = geo
-			layer.srid = uint64(lsrid)
-			layer.geomFieldname = DefaultGeomFieldName
-			layer.idFieldname = DefaultIDFieldName
+				layer.geomType = geo
+				layer.srid = uint64(lsrid)
+				layer.geomFieldname = DefaultGeomFieldName
+				layer.idFieldname = DefaultIDFieldName
+			}
 		}
 
 		p.layers[layer.name] = layer
