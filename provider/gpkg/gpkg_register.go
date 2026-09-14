@@ -334,7 +334,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 		// layer container. will be added to the provider after it's configured
 		layer := Layer{
-			name: layerName,
+			name:          layerName,
+			idFieldname:   idFieldname,
+			geomFieldname: DefaultGeomFieldName,
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
@@ -404,6 +406,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			)
 
 			inspectionSQL := tokenReplacer.Replace(customSQL)
+			inspectionTile := provider.NewTile(0, 0, 0, 0, uint(p.srid))
+			inspectionExtent, _ := inspectionTile.BufferedExtent()
+			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
 
 			// Get geometry type & srid from geometry of first row.
 			qtext := fmt.Sprintf("SELECT geom FROM (%v) LIMIT 1;", inspectionSQL)

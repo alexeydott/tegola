@@ -37,7 +37,16 @@ id_fieldname = "fid"
     - You must join your feature table to the spatial index table: i.e. `JOIN feature_table ft rtree_feature_table_geom si ON ft.fid = rt.si`
 	- Include the following fields in your SELECT clause: si.minx, si.miny, si.maxx, si.maxy
 	- Note that the id field for your feature table may be something other than `fid`
-  - !ZOOM! - [Optional] Currently allowed, but does nothing.
+  - `!ZOOM!` - [Optional] will be replaced with the "Z" (zoom) value of the requested tile.
+  - `!X!` - [Optional] will be replaced with the "X" value of the requested tile.
+  - `!Y!` - [Optional] will be replaced with the "Y" value of the requested tile.
+  - `!Z!` - [Optional] will be replaced with the "Z" value of the requested tile.
+  - `!SCALE_DENOMINATOR!` - [Optional] scale denominator, assuming 90.7 DPI (i.e. 0.28mm pixel size).
+  - `!PIXEL_WIDTH!` - [Optional] the pixel width in meters, assuming 256x256 tiles.
+  - `!PIXEL_HEIGHT!` - [Optional] the pixel height in meters, assuming 256x256 tiles.
+  - `!ID_FIELD!` - [Optional] the ID field name.
+  - `!GEOM_FIELD!` - [Optional] the geometry field name.
+  - `!GEOM_TYPE!` - [Optional] the geometry type if known, otherwise an empty string.
 
 
 `*Required`: either the `tablename` or `sql` must be defined, but not both.

@@ -230,6 +230,24 @@ func TestNewTileProvider(t *testing.T) {
 			},
 			expectedLayerCount: 3,
 		},
+		"custom sql with tile and layer metadata tokens": {
+			config: map[string]interface{}{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name": "tokenized_points",
+						"sql": `SELECT fid, geom,
+							!X! AS tile_x, !Y! AS tile_y, !Z! AS tile_z, !ZOOM! AS tile_zoom,
+							!PIXEL_WIDTH! AS pixel_width, !PIXEL_HEIGHT! AS pixel_height,
+							!SCALE_DENOMINATOR! AS scale_denominator,
+							'!ID_FIELD!' AS id_field, '!GEOM_FIELD!' AS geom_field,
+							'!GEOM_TYPE!' AS geom_type
+							FROM amenities_points WHERE fid = 515`,
+					},
+				},
+			},
+			expectedLayerCount: 1,
+		},
 		"custom sql layer with 0 rows is skipped, not registered": {
 			// A custom-SQL layer whose query currently matches no rows (e.g. an
 			// empty table, or filter criteria that exclude everything) must not

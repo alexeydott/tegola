@@ -119,12 +119,10 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		// l - layer table, si - spatial index
 		qtext = fmt.Sprintf("%v FROM `%v` l JOIN `%v` si ON l.`%v` = si.id WHERE l.`%v` IS NOT NULL AND !BBOX! ORDER BY l.`%v`", selectClause, pLayer.tablename, rtreeTablename, pLayer.idFieldname, pLayer.geomFieldname, pLayer.idFieldname)
 
-		z, _, _ := tile.ZXY()
-		qtext = replaceTokens(qtext, uint(z), tileBBox)
+		qtext = replaceTokens(qtext, &pLayer, tile, tileBBox)
 	} else {
 		// If layer was specified via "sql" in config, collect it
-		z, _, _ := tile.ZXY()
-		qtext = replaceTokens(pLayer.sql, uint(z), tileBBox)
+		qtext = replaceTokens(pLayer.sql, &pLayer, tile, tileBBox)
 		qtext = queryParams.ReplaceParams(qtext, &args)
 	}
 
