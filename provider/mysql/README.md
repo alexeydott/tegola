@@ -50,11 +50,21 @@ The `geometry_format` config option controls decoding:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect MapplBase MOS blobs (the proprietary binary geometry format written by `TMapObjectBase.PutToBufInternal`, typically a `LONGBLOB LINE` column). Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry (e.g. `2` for centimetre resolution in metre units). MOS carries no CRS — the configured layer/provider SRID applies. Because the blob is opaque, the `!BBOX!` filter degrades to `1=1` and rows are spatially filtered in Go after decoding; individual undecodable rows are logged and skipped.
+- `mos` — expect MapplBase MOS blobs (the proprietary binary geometry format written by `TMapObjectBase.PutToBufInternal`, typically a `LONGBLOB LINE` column). Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry (e.g. `2` for centimetre resolution in metre units). MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the `!BBOX!` filter degrades to `1=1` and rows are spatially filtered in Go after decoding; individual undecodable rows are logged and skipped.
 
 ## MOS geometry format
 
 The MOS blob layout (little-endian): a 12-byte header (object type, subobject count, total point count, flags), then one `uint32` point count per subobject, then all points as contiguous `(int32 x, int32 y)` pairs. Real coordinates are `int / 10^mos_precision`. Object types map to MVT geometries as: polygon → `Polygon`/`MultiPolygon` (rings are classified into exteriors and holes by containment, so an island inside a lake hole becomes a second polygon), polyline → `LineString`/`MultiLineString`, point → `Point`/`MultiPoint`, text/image → anchor `Point`.
+
+### Layer system info blob (auto-configuration)
+
+MapplBase stores a `TLayerSystemInfoRec` version wrapper blob as the **first row** of every MOS geometry table. It carries the layer's self-description, and the provider parses it automatically at registration (both for `tablename` and `sql` layers):
+
+- `Precision` — the quantization precision (`kPrecision = 10^Precision`). Applied as the layer's `mos_precision` when neither the provider- nor layer-level `mos_precision` key is set.
+- `Projection` — the layer's full PROJ.4 definition. Registered as a synthetic SRID (≥ 340000001, same mechanism as `crs_defn`) and used as the layer SRID when no `srid`/`crs_defn` is configured at provider or layer level. Explicit config values always win.
+- `MapUnits` / `flMapUnitsDefined` — parsed and logged for information only. MOS coordinates in MapplBase tables are stored already dequantized into CRS units (the `10^Precision` quantization absorbs the unit scaling), so this value is deliberately **not** applied as a coordinate scale.
+
+In practice this means a MOS table exported by MapplBase needs no `mos_precision`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides.
 
 ## SRID handling
 
