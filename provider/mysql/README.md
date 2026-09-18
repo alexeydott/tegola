@@ -24,6 +24,9 @@ tablename = "buildings"
 # id_fieldname = "fid"      # optional, default "fid"
 # geometry_fieldname = "geom" # optional, default "geom"
 # fields = ["height", "name"]
+# srid = 4326               # optional, layer-level override (see "SRID handling")
+# crs_defn = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs" # optional, wins over srid
+# mos_precision = 2         # optional, layer-level override, MOS format only
 
 [[providers.layers]]
 name = "landmarks"
