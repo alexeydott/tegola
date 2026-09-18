@@ -145,6 +145,31 @@ func (req HandleMapStyle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// A single provider layer can serve mixed geometry types (e.g. MOS
+		// tables hold polygons and polylines in the same column). MapLibre
+		// silently closes any LineString rendered by a fill layer, flooding
+		// lines as polygons, so fill layers are restricted to polygons.
+		if layer.Type == style.LayerTypeFill {
+			layer.Filter = []interface{}{"==", "$type", "Polygon"}
+
+			// sibling line layer renders polylines from the same source layer
+			// so they are not swallowed (and filled) by the fill layer.
+			lineLayer := style.Layer{
+				ID:          l.MVTName() + "-line",
+				Source:      req.mapName,
+				SourceLayer: l.MVTName(),
+				Type:        style.LayerTypeLine,
+				Filter:      []interface{}{"==", "$type", "LineString"},
+				Layout: &style.LayerLayout{
+					Visibility: style.LayoutVisible,
+				},
+				Paint: &style.LayerPaint{
+					LineColor: stringToColorHex(l.MVTName()),
+				},
+			}
+			mapboxStyle.Layers = append(mapboxStyle.Layers, lineLayer)
+		}
+
 		// add our layer to our tile layer response
 		mapboxStyle.Layers = append(mapboxStyle.Layers, layer)
 	}

@@ -33,14 +33,26 @@ export default {
     }
   },
   methods: {
-    // toggleLayerVisibility will toggle a layers visibility between on and off
+    // toggleLayerVisibility will toggle a layers visibility between on and
+    // off. A layer entry can be backed by multiple style layers (e.g. a
+    // fill layer with a sibling "-line" layer rendering polylines from the
+    // same source layer), so all of them are switched together.
     toggleLayerVisibility(layerName) {
+      var styleLayerNames = [layerName, layerName + "-line"];
       var visibility = map.getLayoutProperty(layerName, "visibility");
       if (visibility === "visible") {
-        map.setLayoutProperty(layerName, "visibility", "none");
+        styleLayerNames.forEach(function(name) {
+          if (map.getLayer(name)) {
+            map.setLayoutProperty(name, "visibility", "none");
+          }
+        });
         this.visibility = "hidden";
       } else {
-        map.setLayoutProperty(layerName, "visibility", "visible");
+        styleLayerNames.forEach(function(name) {
+          if (map.getLayer(name)) {
+            map.setLayoutProperty(name, "visibility", "visible");
+          }
+        });
         this.visibility = "visible";
       }
     },

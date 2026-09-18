@@ -16,6 +16,7 @@ import (
 	"github.com/go-spatial/geom"
 
 	"github.com/go-spatial/tegola/atlas"
+	"github.com/go-spatial/tegola/mapbox/style"
 	"github.com/go-spatial/tegola/provider/test"
 	"github.com/go-spatial/tegola/server"
 )
@@ -69,6 +70,16 @@ var testLayer3 = atlas.Layer{
 	DefaultTags:       map[string]any{},
 }
 
+var testLayer4 = atlas.Layer{
+	Name:              "test-layer-polygon",
+	ProviderLayerName: "test-layer-4",
+	MinZoom:           0,
+	MaxZoom:           22,
+	Provider:          &test.TileProvider{},
+	GeomType:          geom.Polygon{},
+	DefaultTags:       map[string]any{},
+}
+
 func newTestMapWithLayers(layers ...atlas.Layer) *atlas.Atlas {
 
 	testMap := atlas.NewWebMercatorMap(testMapName)
@@ -80,6 +91,41 @@ func newTestMapWithLayers(layers ...atlas.Layer) *atlas.Atlas {
 	a.AddMap(testMap)
 
 	return a
+}
+
+// polygonLayerStyleLayers returns the expected style layers for a polygon
+// geometry layer: a fill layer restricted to polygons plus a sibling line
+// layer for polylines served by the same source layer.
+func polygonLayerStyleLayers(name, mapName string) []style.Layer {
+	return []style.Layer{
+		{
+			ID:          name + "-line",
+			Source:      mapName,
+			SourceLayer: name,
+			Type:        style.LayerTypeLine,
+			Filter:      []interface{}{"==", "$type", "LineString"},
+			Layout: &style.LayerLayout{
+				Visibility: "visible",
+			},
+			Paint: &style.LayerPaint{
+				LineColor: "#c37a13",
+			},
+		},
+		{
+			ID:          name,
+			Source:      mapName,
+			SourceLayer: name,
+			Type:        style.LayerTypeFill,
+			Filter:      []interface{}{"==", "$type", "Polygon"},
+			Layout: &style.LayerLayout{
+				Visibility: "visible",
+			},
+			Paint: &style.LayerPaint{
+				FillColor:        "rgba(195,122,19,0.1)",
+				FillOutlineColor: "#c37a13",
+			},
+		},
+	}
 }
 
 func newTestMapWithBounds(minx, miny, maxx, maxy float64) *atlas.Atlas {
