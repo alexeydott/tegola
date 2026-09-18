@@ -15,9 +15,16 @@ type Layer struct {
 	srid          uint64
 	sql           string
 	// geometryFormat mirrors the provider-level geometry_format ("auto",
-	// "mysql", "mariadb", "wkb", "wkt"); used to build !BBOX! for text
+	// "mysql", "mariadb", "wkb", "wkt", "mos"); used to build !BBOX! for text
 	// geometry columns.
 	geometryFormat string
+	// mosPrecision is the number of decimal digits MOS blob coordinates
+	// carry (mos_precision config or TLayerSystemInfoRec.Precision); 0
+	// means integer units.
+	mosPrecision float64
+	// mosUnitsFactor scales decoded MOS coordinates from the layer's map
+	// units (TLayerSystemInfoRec.MapUnits) to metres; defaults to 1.
+	mosUnitsFactor float64
 }
 
 func (l Layer) Name() string            { return l.name }

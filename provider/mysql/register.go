@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
+	"github.com/go-spatial/tegola/mos"
 	conf "github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
@@ -47,21 +49,70 @@ func detectServerFlavor(db *sql.DB) (string, error) {
 	return serverFlavorFromVersion(version), nil
 }
 
-// geomTypeFromColumn scans the first row of the given query for a geometry
-// value and decodes it to a tegola geometry type plus the SRID decoded from
-// the geometry header (0 for plain WKB/WKT). It returns sql.ErrNoRows when
-// the query yields no rows.
-func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string) (geom.Geometry, uint64, error) {
-	var geomVal interface{}
-	if err := db.QueryRow(qtext).Scan(&geomVal); err != nil {
-		return nil, 0, err
-	}
+// geomTypeSampleRows is the number of geometry values the table inspection
+// will try before giving up. Some datasets (e.g. MapplBase exports) store a
+// small fraction of rows in wrapper formats that the active geometry_format
+// cannot decode, so a single-row sample would poison provider registration.
+const geomTypeSampleRows = 16
 
-	srid, geo, err := decodeGeometry(geomVal, geometryFormat, serverFlavor)
-	if err != nil {
-		return nil, 0, fmt.Errorf("error decoding sampled geometry: %v", err)
+// limitClauseRe matches a trailing LIMIT [offset,] n clause.
+var limitClauseRe = regexp.MustCompile(`\s+limit\s+(\d+\s*,\s*\d+|\d+)\s*$`)
+
+// geomTypeFromColumn samples up to geomTypeSampleRows geometry values from
+// the given query and decodes the first one that succeeds. A
+// TLayerSystemInfoRec version wrapper blob (the layer self-description
+// MapplBase stores as the first row of a MOS table) is parsed and returned
+// via sysInfo without terminating the sampling. It returns sql.ErrNoRows
+// when the query yields no rows at all, and the decode error only when
+// every sampled row failed to decode.
+func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosPrecision float64) (geo geom.Geometry, headerSRID uint64, sysInfo *mos.SystemInfo, err error) {
+	// strip any trailing LIMIT clause the caller added; we manage row
+	// limiting ourselves via geomTypeSampleRows.
+	base := strings.TrimSpace(qtext)
+	for {
+		m := limitClauseRe.FindStringIndex(strings.ToLower(base))
+		if m == nil || m[0] == 0 {
+			break
+		}
+		base = strings.TrimSpace(base[:m[0]])
 	}
-	return geo, srid, nil
+	rows, err := db.Query(fmt.Sprintf("%v LIMIT %v", base, geomTypeSampleRows))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	defer rows.Close()
+
+	var lastErr error
+	for rows.Next() {
+		var geomVal interface{}
+		if err := rows.Scan(&geomVal); err != nil {
+			return nil, 0, nil, err
+		}
+		// a layer system info blob describes the layer rather than being a
+		// geometry; parse it and keep sampling for a real feature.
+		if blob, ok := geomVal.([]byte); ok && mos.IsSystemInfoBlob(blob) {
+			si, perr := mos.ParseSystemInfo(blob)
+			if perr != nil {
+				log.Warnf("mysql provider: unable to parse layer system info blob: %v", perr)
+				continue
+			}
+			sysInfo = &si
+			continue
+		}
+		srid, geo, err := decodeGeometry(geomVal, geometryFormat, serverFlavor, mos.Options{Precision: mosPrecision})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return geo, srid, sysInfo, nil
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, nil, err
+	}
+	if lastErr != nil {
+		return nil, 0, nil, fmt.Errorf("error decoding sampled geometry: %v", lastErr)
+	}
+	return nil, 0, nil, sql.ErrNoRows
 }
 
 func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, error) {
@@ -130,10 +181,26 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 	switch geometryFormat {
-	case GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, GeometryFormatWKT, "":
+	case GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, GeometryFormatWKT, GeometryFormatMOS, "":
 	default:
-		return nil, fmt.Errorf("invalid %v: %v (expected one of: %v, %v, %v, %v, %v)",
-			ConfigKeyGeometryFormat, geometryFormat, GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, GeometryFormatWKT)
+		return nil, fmt.Errorf("invalid %v: %v (expected one of: %v, %v, %v, %v, %v, %v)",
+			ConfigKeyGeometryFormat, geometryFormat, GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, GeometryFormatWKT, GeometryFormatMOS)
+	}
+
+	// mos_precision: number of decimal digits quantized MOS blob coordinates
+	// carry (e.g. 3 = metre units with millimetre precision). Only used with
+	// geometry_format = "mos". The MOS format itself carries no CRS
+	// information, so the coordinate units come from the layer/provider
+	// srid (or crs_defn).
+	mosPrecision := mosPrecisionDefault
+	if mosPrecision, err = config.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
+		return nil, err
+	}
+	if geometryFormat != GeometryFormatMOS {
+		if mosPrecision != mosPrecisionDefault {
+			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSPrecision, ConfigKeyGeometryFormat, GeometryFormatMOS)
+			mosPrecision = mosPrecisionDefault
+		}
 	}
 
 	// register the built-in table of common projected SRIDs (UTM zones,
@@ -262,6 +329,13 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			idFieldname:    idFieldname,
 			geomFieldname:  geomFieldname,
 			geometryFormat: geometryFormat,
+			mosPrecision:   mosPrecision,
+			mosUnitsFactor: 1, // sysinfo MapUnits is informational; factor stays 1
+		}
+
+		// layer-level mos_precision overrides the provider-level value
+		if layer.mosPrecision, err = layerConf.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
+			return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSPrecision, err)
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
@@ -275,7 +349,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			inspectionSQL := fmt.Sprintf("SELECT %v FROM %v WHERE %v IS NOT NULL LIMIT 1",
 				quoteIdentifier(geomFieldname), quoteIdentifier(tablename), quoteIdentifier(geomFieldname))
 
-			geo, headerSRID, err := geomTypeFromColumn(db, inspectionSQL, geometryFormat, serverFlavor)
+			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, inspectionSQL, geometryFormat, serverFlavor, layer.mosPrecision)
 			switch {
 			case err == sql.ErrNoRows:
 				log.Warnf("layer '%v' (table %v) currently returns 0 rows; skipping registration of this layer until matching data exists", layerName, tablename)
@@ -305,6 +379,13 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.tagFieldnames = tagFieldnames
 				layer.geomType = geo
 				layer.srid = uint64(lsrid)
+
+				// apply layer self-description from a TLayerSystemInfoRec blob:
+					// precision and PROJ.4 projection. Explicit config values
+					// (mos_precision / srid / crs_defn) always win.
+				if err := applySystemInfo(&layer, layerConf, sysInfo, sridExplicit); err != nil {
+					return nil, fmt.Errorf("layer '%v' (table %v): %v", layerName, tablename, err)
+				}
 			}
 
 		} else { // layerConf[ConfigKeySQL] exists
@@ -352,7 +433,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 			log.Debugf("qtext: %v", qtext)
 
-			geo, headerSRID, err := geomTypeFromColumn(db, qtext, geometryFormat, serverFlavor)
+			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, qtext, geometryFormat, serverFlavor, layer.mosPrecision)
 			switch {
 			case err == sql.ErrNoRows:
 				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; skipping registration of this layer until matching data exists: %v", layerName, customSQL)
@@ -381,6 +462,13 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.geomType = geo
 				layer.srid = uint64(lsrid)
 				layer.idFieldname = idFieldname
+
+				// apply layer self-description from a TLayerSystemInfoRec blob:
+				// precision and PROJ.4 projection. Explicit config values
+				// (mos_precision / srid / crs_defn) always win.
+				if err := applySystemInfo(&layer, layerConf, sysInfo, sridExplicit); err != nil {
+					return nil, fmt.Errorf("layer '%v' (custom SQL): %v", layerName, err)
+				}
 			}
 		}
 
@@ -400,6 +488,55 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	providers = append(providers, p)
 
 	return &p, nil
+}
+
+// applySystemInfo applies a layer self-description parsed from a
+// TLayerSystemInfoRec blob to the layer being registered. Only values not
+// explicitly configured take effect:
+//   - precision: used when neither provider- nor layer-level mos_precision
+//     is set;
+//   - projection: registered as a synthetic SRID when no srid/crs_defn is
+//     set at provider or layer level (sridExplicit covers both).
+//
+// The blob's MapUnits (TLayerSystemInfoRec.MapUnits/flMapUnitsDefined) is
+// parsed and logged but deliberately NOT applied as a coordinate scale:
+// MapplBase DBA exporters store MOS coordinates already dequantized into
+// the CRS units (the 10^Precision quantization absorbs the unit scaling),
+// so scaling by the declared unit factor would corrupt geometries.
+//
+// layerConf is checked with Interface to detect explicit layer-level keys;
+// nil sysInfo (no system info blob in the table) is a no-op.
+func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInfo, sridExplicit bool) error {
+	if sysInfo == nil {
+		return nil
+	}
+
+	// precision: only when mos_precision is absent on both provider and
+	// layer level. layer.mosPrecision currently holds the (possibly
+	// defaulted) provider value; a layer-level key overrides it.
+	if _, explicit := layerConf.Interface(ConfigKeyMOSPrecision); !explicit {
+		layer.mosPrecision = float64(sysInfo.Precision)
+	}
+
+	// projection: register the blob's PROJ.4 definition as the layer SRID
+	// when the user did not pick one explicitly.
+	if sysInfo.Projection != "" && !sridExplicit {
+		code, err := basic.RegisterProj4Defn(sysInfo.Projection)
+		if err != nil {
+			return fmt.Errorf("unable to register layer projection %q: %v", sysInfo.Projection, err)
+		}
+		layer.srid = code
+		log.Infof("registered layer projection %q as synthetic srid %v", sysInfo.Projection, code)
+	}
+
+	if sysInfo.MapUnitsDefined {
+		log.Debugf("layer %v system info: precision=%v map units=%v (informational, not applied as coordinate scale) projection=%q",
+			layer.name, sysInfo.Precision, sysInfo.MapUnits, sysInfo.Projection)
+	} else {
+		log.Debugf("layer %v system info: precision=%v projection=%q",
+			layer.name, sysInfo.Precision, sysInfo.Projection)
+	}
+	return nil
 }
 
 // applyLayerCRSDefn resolves a layer-level crs_defn (full PROJ.4 definition)

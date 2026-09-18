@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
+	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -329,4 +331,87 @@ func TestConfigValidation(t *testing.T) {
 			t.Errorf("%v: expected error, got nil", tc.name)
 		}
 	}
+}
+
+// TestApplySystemInfo verifies the sysinfo-driven auto-configuration
+// contract: precision and projection are applied when not explicitly
+// configured; the blob's MapUnits is informational only and must never
+// change the coordinate unit factor (MapplBase stores MOS coordinates
+// already dequantized into CRS units).
+func TestApplySystemInfo(t *testing.T) {
+	projDefn := "+proj=merc +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+	sysInfo := &mos.SystemInfo{
+		Precision:       2,
+		MapUnits:        mos.UnitsMillimetres,
+		MapUnitsDefined: true,
+		Projection:      projDefn,
+	}
+
+	t.Run("units factor never applied", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1}
+		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.mosUnitsFactor != 1 {
+			t.Errorf("mosUnitsFactor = %v, want 1 (sysinfo units are informational)", layer.mosUnitsFactor)
+		}
+	})
+
+	t.Run("precision applied when not explicit", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1}
+		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.mosPrecision != 2 {
+			t.Errorf("mosPrecision = %v, want 2", layer.mosPrecision)
+		}
+	})
+
+	t.Run("explicit precision wins", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 4, mosUnitsFactor: 1}
+		conf := dict.Dict{"mos_precision": 4.0}
+		if err := applySystemInfo(&layer, conf, sysInfo, true); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.mosPrecision != 4 {
+			t.Errorf("mosPrecision = %v, want 4 (explicit config wins)", layer.mosPrecision)
+		}
+	})
+
+	t.Run("projection applied when srid not explicit", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1}
+		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.srid == 0 {
+			t.Fatal("expected a synthetic srid to be registered")
+		}
+		defn, ok := basic.Proj4DefnSRID(projDefn)
+		if !ok {
+			t.Fatalf("registered srid %v not found by defn lookup", layer.srid)
+		}
+		if defn != layer.srid {
+			t.Errorf("Proj4DefnSRID = %v, want %v", defn, layer.srid)
+		}
+	})
+
+	t.Run("projection not applied when srid explicit", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1, srid: 3857}
+		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.srid != 3857 {
+			t.Errorf("srid = %v, want 3857 (explicit srid wins)", layer.srid)
+		}
+	})
+
+	t.Run("nil sysinfo is a no-op", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 3, mosUnitsFactor: 1, srid: 3395}
+		if err := applySystemInfo(&layer, dict.Dict{}, nil, false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.mosPrecision != 3 || layer.srid != 3395 {
+			t.Errorf("layer modified by nil sysinfo: precision=%v srid=%v", layer.mosPrecision, layer.srid)
+		}
+	})
 }

@@ -203,6 +203,15 @@ func ParseFloat(v interface{}) (*float64, error) {
 	case float32:
 		f := float64(val)
 		return &f, nil
+	case int:
+		f := float64(val)
+		return &f, nil
+	case int64:
+		f := float64(val)
+		return &f, nil
+	case uint64:
+		f := float64(val)
+		return &f, nil
 	case string:
 		val, err := replaceEnvVar(val)
 		if err != nil {

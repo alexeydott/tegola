@@ -15,6 +15,7 @@ import (
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -38,6 +39,7 @@ const (
 	GeometryFormatMariaDB = "mariadb"
 	GeometryFormatWKB     = "wkb"
 	GeometryFormatWKT     = "wkt"
+	GeometryFormatMOS     = "mos"
 )
 
 // config keys
@@ -51,6 +53,7 @@ const (
 	ConfigKeyCRSDefn        = "crs_defn"
 	ConfigKeyMaxConn        = "max_connections"
 	ConfigKeyGeometryFormat = "geometry_format"
+	ConfigKeyMOSPrecision   = "mos_precision"
 	ConfigKeyProj4          = "proj4"
 	ConfigKeyLayers         = "layers"
 	ConfigKeyLayerName      = "name"
@@ -118,14 +121,22 @@ func decodeMariaDBFormat(b []byte) (srid uint64, g geom.Geometry, err error) {
 }
 
 // decodeGeometry decodes a geometry value read from the database according
-// to the configured format: "mysql", "mariadb", "wkb", "wkt" or "auto".
-// With "auto" the server flavor detected at startup (serverFlavor) selects
-// the native layout. Plain WKB is accepted as a last resort, which covers
-// values already converted with ST_AsBinary() in custom SQL.
-func decodeGeometry(v interface{}, format string, serverFlavor string) (srid uint64, g geom.Geometry, err error) {
+// to the configured format: "mysql", "mariadb", "wkb", "wkt", "mos" or
+// "auto". With "auto" the server flavor detected at startup (serverFlavor)
+// selects the native layout. Plain WKB is accepted as a last resort, which
+// covers values already converted with ST_AsBinary() in custom SQL.
+// For the "mos" format an optional Options value overrides the default
+// quantization precision/offset (layer-level mos_precision).
+func decodeGeometry(v interface{}, format string, serverFlavor string, mosOpts ...mos.Options) (srid uint64, g geom.Geometry, err error) {
 	switch format {
 	case GeometryFormatWKT:
 		return decodeWKT(v)
+	case GeometryFormatMOS:
+		var opts = mos.Options{Precision: mosPrecisionDefault, OffsetX: mosOffsetDefault, OffsetY: mosOffsetDefault}
+		if len(mosOpts) > 0 {
+			opts = mosOpts[0]
+		}
+		return decodeMOS(v, opts)
 	}
 
 	// all remaining formats operate on binary blobs
@@ -177,6 +188,54 @@ func decodeGeometry(v interface{}, format string, serverFlavor string) (srid uin
 	default:
 		return 0, nil, fmt.Errorf("unknown geometry_format: %v", format)
 	}
+}
+
+// default MOS quantization: integer units with no offset. Configured per
+// provider/layer via mos_precision (decimal digits) and overridden by
+// layer-level settings when present.
+const (
+	mosPrecisionDefault = 0.0
+	mosOffsetDefault    = 0.0
+)
+
+// decodeMOS decodes a MapplBase MOS blob (the proprietary binary geometry
+// format written by TMapObjectStructureBase) using the mos package. The
+// quantized integer coordinates are dequantized with the configured
+// precision (decimal digits). MOS carries no SRID, so 0 is returned and
+// the configured provider/layer SRID applies.
+func decodeMOS(v interface{}, opts mos.Options) (uint64, geom.Geometry, error) {
+	var b []byte
+	switch val := v.(type) {
+	case []byte:
+		b = val
+	case string:
+		b = []byte(val)
+	default:
+		return 0, nil, fmt.Errorf("unexpected MOS geometry column type %T, expected blob", v)
+	}
+	g, err := mos.Decode(b, opts)
+	if err != nil {
+		return 0, nil, fmt.Errorf("error decoding MOS geometry: %v", err)
+	}
+	return 0, g, nil
+}
+
+// geometryIntersectsExtent reports whether a geometry's bounding box
+// intersects the given extent. It is used for the MOS geometry format,
+// where the spatial filter cannot be pushed into SQL. If a bbox cannot be
+// computed the geometry is kept (conservative).
+func geometryIntersectsExtent(g geom.Geometry, e *geom.Extent) bool {
+	if g == nil || e == nil {
+		return true
+	}
+	gb, err := geom.NewExtentFromGeometry(g)
+	if err != nil || gb == nil {
+		return true
+	}
+	if _, ok := e.Intersect(gb); ok {
+		return true
+	}
+	return false
 }
 
 // decodeWKT parses a WKT string (e.g. "LINESTRING(1 2, 3 4)") into a
@@ -325,6 +384,8 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		return err
 	}
 
+	var geomErr error
+	feats := 0
 	for rows.Next() {
 		// check if the context cancelled or timed out
 		if ctx.Err() != nil {
@@ -346,6 +407,12 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			Tags: map[string]interface{}{},
 		}
 
+		// set when the row's geometry is undecodable or outside the tile:
+		// the row is then skipped entirely (no feature emitted) rather than
+		// being emitted with a nil geometry and SRID 0, which would fail
+		// downstream reprojection and kill the whole tile.
+		skipRow := false
+
 		for i := range cols {
 			// check if the context cancelled or timed out
 			if ctx.Err() != nil {
@@ -363,9 +430,30 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				}
 
 			case pLayer.geomFieldname:
-				srid, geo, err := decodeGeometry(vals[i], p.geometryFormat, p.serverFlavor)
+				// a layer system info blob (MapplBase layer self-description)
+				// is metadata, not geometry; skip it silently.
+				if blob, ok := vals[i].([]byte); ok && mos.IsSystemInfoBlob(blob) {
+					skipRow = true
+					break
+				}
+				srid, geo, err := decodeGeometry(vals[i], pLayer.geometryFormat, p.serverFlavor, mos.Options{Precision: pLayer.mosPrecision, UnitFactor: pLayer.mosUnitsFactor})
 				if err != nil {
-					return err
+					// a single undecodable row (e.g. a version-prefixed or
+					// otherwise non-MOS blob) must not kill the whole tile;
+					// log it and skip
+					log.Warnf("mysql provider: skipping undecodable geometry in layer %v (id %v): %v", pLayer.Name(), feature.ID, err)
+					geomErr = err
+					skipRow = true
+					break
+				}
+
+				// MOS blobs are opaque binaries, so the spatial filter cannot
+				// be pushed into SQL (!BBOX! degrades to 1=1). Drop rows whose
+				// decoded geometry cannot intersect the tile's buffered extent
+				// (already transformed into the layer's source SRID).
+				if pLayer.geometryFormat == GeometryFormatMOS && !geometryIntersectsExtent(geo, tileBBox) {
+					skipRow = true
+					break
 				}
 
 				// an explicitly configured layer/provider SRID wins over the value
@@ -409,13 +497,28 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			}
 		}
 
+		// drop rows whose geometry was undecodable or outside the tile
+		if skipRow {
+			continue
+		}
+
 		// pass the feature to the provided call back
 		if err = fn(&feature); err != nil {
 			return err
 		}
+		feats++
 	}
 
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// if every row in this tile had an undecodable geometry the layer is
+	// effectively broken (misconfigured mos_precision or foreign blob
+	// format) — surface it instead of silently rendering an empty tile
+	if geomErr != nil && feats == 0 {
+		return fmt.Errorf("no decodable MOS geometries in layer %v: %v", pLayer.Name(), geomErr)
+	}
+	return nil
 }
 
 // Close will close the Provider's database connection

@@ -31,6 +31,14 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		wktPolygon(bboxExtent),
 	)
 
+	// MOS blobs are opaque proprietary binaries: the server has no geometry
+	// functions over them, so the spatial filter cannot be pushed into SQL.
+	// Disable it here; rows are spatially filtered in Go after decoding
+	// (see TileFeatures).
+	if layer.geometryFormat == GeometryFormatMOS {
+		bboxSQL = "1=1"
+	}
+
 	extent, _ := tile.Extent()
 	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
 	pixelHeight := (extent.MaxY() - extent.MinY()) / 256

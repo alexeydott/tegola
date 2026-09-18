@@ -14,7 +14,8 @@ database = "gis"
 user = "user"
 password = "password"
 srid = 3857                 # optional, default 3857
-geometry_format = "auto"    # optional: auto (default) | mysql | mariadb | wkb
+geometry_format = "auto"    # optional: auto (default) | mysql | mariadb | wkb | wkt | mos
+mos_precision = 2           # optional, MOS format only: decimal digits of quantized int coords, default 0
 max_connections = 100       # optional, default 100
 
 [[providers.layers]]
@@ -45,6 +46,12 @@ The `geometry_format` config option controls decoding:
 - `mysql` — force the MySQL native layout.
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
+- `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
+- `mos` — expect MapplBase MOS blobs (the proprietary binary geometry format written by `TMapObjectBase.PutToBufInternal`, typically a `LONGBLOB LINE` column). Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry (e.g. `2` for centimetre resolution in metre units). MOS carries no CRS — the configured layer/provider SRID applies. Because the blob is opaque, the `!BBOX!` filter degrades to `1=1` and rows are spatially filtered in Go after decoding; individual undecodable rows are logged and skipped.
+
+## MOS geometry format
+
+The MOS blob layout (little-endian): a 12-byte header (object type, subobject count, total point count, flags), then one `uint32` point count per subobject, then all points as contiguous `(int32 x, int32 y)` pairs. Real coordinates are `int / 10^mos_precision`. Object types map to MVT geometries as: polygon → `Polygon`/`MultiPolygon` (rings are classified into exteriors and holes by containment, so an island inside a lake hole becomes a second polygon), polyline → `LineString`/`MultiLineString`, point → `Point`/`MultiPoint`, text/image → anchor `Point`.
 
 ## SRID handling
 
