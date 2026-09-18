@@ -317,6 +317,13 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		return err
 	}
 
+	// declared column types let us distinguish numeric columns the driver
+	// returns as []byte (textual form) from genuine text/blob columns
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return err
+	}
+
 	for rows.Next() {
 		// check if the context cancelled or timed out
 		if ctx.Err() != nil {
@@ -375,15 +382,18 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				feature.Geometry = geo
 
 			default:
-				// Grab any non-nil, non-id, non-geometry column as a tag
+				// Grab any non-nil, non-id, non-geometry column as a tag,
+				// converting numeric columns the driver returns as []byte
 				switch v := vals[i].(type) {
 				case []uint8:
-					asBytes := make([]byte, len(v))
-					for j := 0; j < len(v); j++ {
-						asBytes[j] = v[j]
+					tagVal, cerr := tagValueFromColumn(colTypes[i], v)
+					if cerr != nil {
+						log.Errorf("unable to convert mysql column data: %v: %v", cols[i], cerr)
+						continue
 					}
-
-					feature.Tags[cols[i]] = string(asBytes)
+					if tagVal != nil {
+						feature.Tags[cols[i]] = tagVal
+					}
 				case int64:
 					feature.Tags[cols[i]] = v
 				case string:

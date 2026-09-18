@@ -17,9 +17,17 @@ import (
 // calculated from the tile's unbuffered Web Mercator extent, matching the
 // PostGIS and GPKG providers.
 func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) string {
+	// WKT geometry columns hold text, so ST_Intersects(col, ...) fails; wrap
+	// the column in ST_GeomFromText so MariaDB/MySQL can intersect it with
+	// the tile bbox polygon.
+	geomRef := quoteIdentifier(layer.geomFieldname)
+	if layer.geometryFormat == GeometryFormatWKT {
+		geomRef = fmt.Sprintf("ST_GeomFromText(%v)", geomRef)
+	}
+
 	bboxSQL := fmt.Sprintf(
 		"ST_Intersects(%v, ST_GeomFromText('%v'))",
-		quoteIdentifier(layer.geomFieldname),
+		geomRef,
 		wktPolygon(bboxExtent),
 	)
 
