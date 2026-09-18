@@ -27,3 +27,16 @@ yarn-error.log*
 *.sln
 *.sw?
 cmd/tegola_lambda/tegola_lambda
+
+# local build/test artifacts
+tegola.exe
+tmp_probe/
+tt*.pbf
+*.pbf
+server*.log
+server.err.log
+server.out.log
+test-mysql.toml
+tegola.config.toml
+cache/
+cache/file/testfiles/tegola-cache/
