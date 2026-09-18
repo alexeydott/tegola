@@ -57,6 +57,40 @@ SRID resolution order (highest priority first):
 
 When the layer SRID differs from Web Mercator, tile bounding boxes are reprojected into the layer SRID before the `!BBOX!` filter is applied, and geometries are delivered to the MVT encoder with their true SRID.
 
+### Reprojection
+
+Reprojection between the layer SRID and Web Mercator uses the vendored `go-spatial/proj` library. Any SRID can be made available in two ways:
+
+1. **Built-in table** — registered automatically at startup (`basic.RegisterBuiltinProj4SRIDs`), covering ~220 widely used systems:
+
+   | Codes | System |
+   |---|---|
+   | 32601–32660 | WGS 84 / UTM northern zones |
+   | 32701–32760 | WGS 84 / UTM southern zones |
+   | 28401–28432 | Pulkovo 1942 / Gauss-Kruger zones (8-digit eastings) |
+   | 2463–2491 | Pulkovo 1995 / Gauss-Kruger zones |
+   | 2492–2522 | Pulkovo 1942 / Gauss-Kruger zones (500000 false easting) |
+   | 3785, 900913 | Web Mercator aliases |
+   | 53004 | Sphere Mercator (ESRI) |
+
+2. **`proj4` config option** — register any additional EPSG code with an explicit PROJ.4 definition at provider level:
+
+   ```toml
+   [[providers]]
+   name = "mysql_provider"
+   type = "mysql"
+   # ...
+   # either a string of "EPSG_CODE=proj4 def" entries (newline or ; separated):
+   proj4 = "2180=+proj=sterea +lat_0=52 +lon_0=19 +k=0.9993 +x_0=500000 +y_0=-5300000 +ellps=bessel +units=m +no_defs"
+   # or a TOML table:
+   [providers.proj4]
+   2180 = "+proj=sterea +lat_0=52 +lon_0=19 +k=0.9993 +x_0=500000 +y_0=-5300000 +ellps=bessel +units=m +no_defs"
+   ```
+
+   Keys may be written as plain integers or with an `EPSG:` / `epsg:` prefix (e.g. `"EPSG:2180"`). Definitions are validated at startup with a forward+inverse round trip; unsupported ones are rejected with a clear error.
+
+Geographic systems stored in degrees (e.g. EPSG:4326, EPSG:4258) do not require registration — they are converted natively. Note that only a subset of PROJ.4 operations is implemented by the vendored proj library (`merc`, `utm`, `etmerc`, `aea`, `leac`, `eqc`); transverse Mercator-based systems use `+proj=etmerc`, not `+proj=tmerc`.
+
 ## SQL tokens
 
 The following tokens are supported in custom `sql` (case-insensitive) and behave identically to the postgis provider:

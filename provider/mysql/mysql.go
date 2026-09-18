@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/geom/encoding/wkb"
+	"github.com/go-spatial/geom/encoding/wkt"
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/log"
@@ -29,12 +29,15 @@ const (
 // geometry column encoding formats. "auto" detects the server flavor
 // (MySQL vs MariaDB) at provider startup via SELECT VERSION() and uses the
 // matching native layout. "wkb" expects plain WKB (e.g. selected via
-// ST_AsBinary(geom)) with no internal header.
+// ST_AsBinary(geom)) with no internal header. "wkt" expects WKT text
+// (e.g. CHAR/VARCHAR/TEXT columns holding LINESTRING(...), or a
+// ST_AsText(...) expression selected in custom SQL).
 const (
 	GeometryFormatAuto    = "auto"
 	GeometryFormatMySQL   = "mysql"
 	GeometryFormatMariaDB = "mariadb"
 	GeometryFormatWKB     = "wkb"
+	GeometryFormatWKT     = "wkt"
 )
 
 // config keys
@@ -47,6 +50,7 @@ const (
 	ConfigKeySRID           = "srid"
 	ConfigKeyMaxConn        = "max_connections"
 	ConfigKeyGeometryFormat = "geometry_format"
+	ConfigKeyProj4          = "proj4"
 	ConfigKeyLayers         = "layers"
 	ConfigKeyLayerName      = "name"
 	ConfigKeyTableName      = "tablename"
@@ -113,11 +117,28 @@ func decodeMariaDBFormat(b []byte) (srid uint64, g geom.Geometry, err error) {
 }
 
 // decodeGeometry decodes a geometry value read from the database according
-// to the configured format: "mysql", "mariadb", "wkb" or "auto".
+// to the configured format: "mysql", "mariadb", "wkb", "wkt" or "auto".
 // With "auto" the server flavor detected at startup (serverFlavor) selects
 // the native layout. Plain WKB is accepted as a last resort, which covers
 // values already converted with ST_AsBinary() in custom SQL.
-func decodeGeometry(b []byte, format string, serverFlavor string) (srid uint64, g geom.Geometry, err error) {
+func decodeGeometry(v interface{}, format string, serverFlavor string) (srid uint64, g geom.Geometry, err error) {
+	switch format {
+	case GeometryFormatWKT:
+		return decodeWKT(v)
+	}
+
+	// all remaining formats operate on binary blobs
+	b, ok := v.([]byte)
+	if !ok {
+		// a string may still arrive for binary formats depending on driver
+		// column typing; convert before rejecting.
+		if s, isStr := v.(string); isStr {
+			b = []byte(s)
+		} else {
+			return 0, nil, fmt.Errorf("unexpected geometry column type %T, expected blob", v)
+		}
+	}
+
 	switch format {
 	case GeometryFormatMySQL:
 		return decodeMySQLFormat(b)
@@ -135,6 +156,11 @@ func decodeGeometry(b []byte, format string, serverFlavor string) (srid uint64, 
 			if g, wkbErr := wkb.DecodeBytes(b); wkbErr == nil {
 				return 0, g, nil
 			}
+			// last resort: the blob may actually be WKT text (e.g. a
+			// CHAR/TEXT geometry column stored without a native type)
+			if g, wktErr := wkt.DecodeBytes(b); wktErr == nil {
+				return 0, g, nil
+			}
 			return 0, nil, err
 		}
 		if srid, g, err = decodeMySQLFormat(b); err == nil {
@@ -143,9 +169,34 @@ func decodeGeometry(b []byte, format string, serverFlavor string) (srid uint64, 
 		if g, wkbErr := wkb.DecodeBytes(b); wkbErr == nil {
 			return 0, g, nil
 		}
+		if g, wktErr := wkt.DecodeBytes(b); wktErr == nil {
+			return 0, g, nil
+		}
 		return 0, nil, err
 	default:
 		return 0, nil, fmt.Errorf("unknown geometry_format: %v", format)
+	}
+}
+
+// decodeWKT parses a WKT string (e.g. "LINESTRING(1 2, 3 4)") into a
+// geometry. WKT carries no SRID, so 0 is returned and the configured
+// provider/layer SRID applies.
+func decodeWKT(v interface{}) (uint64, geom.Geometry, error) {
+	switch s := v.(type) {
+	case string:
+		g, err := wkt.DecodeString(s)
+		if err != nil {
+			return 0, nil, fmt.Errorf("error decoding WKT geometry: %v", err)
+		}
+		return 0, g, nil
+	case []byte:
+		g, err := wkt.DecodeBytes(s)
+		if err != nil {
+			return 0, nil, fmt.Errorf("error decoding WKT geometry: %v", err)
+		}
+		return 0, g, nil
+	default:
+		return 0, nil, fmt.Errorf("unexpected WKT geometry column type %T, expected text", v)
 	}
 }
 
@@ -304,13 +355,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				}
 
 			case pLayer.geomFieldname:
-				geomData, ok := vals[i].([]byte)
-				if !ok {
-					log.Errorf("unexpected column type for geom field. got %t", vals[i])
-					return errors.New("unexpected column type for geom field. expected blob")
-				}
-
-				hSrid, geo, err := decodeGeometry(geomData, p.geometryFormat, p.serverFlavor)
+				srid, geo, err := decodeGeometry(vals[i], p.geometryFormat, p.serverFlavor)
 				if err != nil {
 					return err
 				}
@@ -320,8 +365,8 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				// MariaDB axis-order flags.
 				if pLayer.srid != 0 {
 					feature.SRID = pLayer.srid
-				} else if hSrid > 0 {
-					feature.SRID = hSrid
+				} else if srid > 0 {
+					feature.SRID = srid
 				} else if p.srid != 0 {
 					feature.SRID = p.srid
 				} else {

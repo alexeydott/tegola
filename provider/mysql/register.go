@@ -4,11 +4,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/basic"
 	conf "github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
@@ -47,15 +49,15 @@ func detectServerFlavor(db *sql.DB) (string, error) {
 
 // geomTypeFromColumn scans the first row of the given query for a geometry
 // value and decodes it to a tegola geometry type plus the SRID decoded from
-// the geometry header (0 for plain WKB). It returns sql.ErrNoRows when the
-// query yields no rows.
+// the geometry header (0 for plain WKB/WKT). It returns sql.ErrNoRows when
+// the query yields no rows.
 func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string) (geom.Geometry, uint64, error) {
-	var geomData []byte
-	if err := db.QueryRow(qtext).Scan(&geomData); err != nil {
+	var geomVal interface{}
+	if err := db.QueryRow(qtext).Scan(&geomVal); err != nil {
 		return nil, 0, err
 	}
 
-	srid, geo, err := decodeGeometry(geomData, geometryFormat, serverFlavor)
+	srid, geo, err := decodeGeometry(geomVal, geometryFormat, serverFlavor)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error decoding sampled geometry: %v", err)
 	}
@@ -110,10 +112,32 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 	switch geometryFormat {
-	case GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, "":
+	case GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, GeometryFormatWKT, "":
 	default:
-		return nil, fmt.Errorf("invalid %v: %v (expected one of: %v, %v, %v, %v)",
-			ConfigKeyGeometryFormat, geometryFormat, GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB)
+		return nil, fmt.Errorf("invalid %v: %v (expected one of: %v, %v, %v, %v, %v)",
+			ConfigKeyGeometryFormat, geometryFormat, GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, GeometryFormatWKT)
+	}
+
+	// register the built-in table of common projected SRIDs (UTM zones,
+	// Pulkovo Gauss-Kruger) so any of them can be used as a layer srid
+	// without extra configuration.
+	basic.RegisterBuiltinProj4SRIDs()
+
+	// proj4 config option: extra SRID -> PROJ.4 definitions for systems not
+	// in the built-in table. Accepts either a single string with entries
+	// separated by newlines or ';' ("2180=+proj=sterea ...; 2177=+proj=tmerc
+	// ..."), or a TOML table ({2180 = "+proj=sterea ..."}).
+	if raw, ok := config.Interface(ConfigKeyProj4); ok && raw != nil {
+		defs, err := parseProj4ConfigValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyProj4, err)
+		}
+		for srid, def := range defs {
+			if err := basic.RegisterProj4SRID(srid, def); err != nil {
+				return nil, fmt.Errorf("invalid %v: %v", ConfigKeyProj4, err)
+			}
+			log.Infof("registered proj4 definition for srid %v", srid)
+		}
 	}
 
 	dsn := fmt.Sprintf("%v:%v@tcp(%v:%v)/%v?parseTime=true&multiStatements=true",
@@ -216,9 +240,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 		// layer container. will be added to the provider after it's configured
 		layer := Layer{
-			name:          layerName,
-			idFieldname:   idFieldname,
-			geomFieldname: geomFieldname,
+			name:           layerName,
+			idFieldname:    idFieldname,
+			geomFieldname:  geomFieldname,
+			geometryFormat: geometryFormat,
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
@@ -351,4 +376,55 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	providers = append(providers, p)
 
 	return &p, nil
+}
+
+// parseProj4ConfigValue parses the raw value of the proj4 config option.
+// Accepted shapes:
+//   - string: entries separated by newlines or ';', each "SRID=+proj=..."
+//   - []map[string]interface{} / map[string]interface{} (TOML table via env.Dict):
+//     keys are SRIDs, values are PROJ.4 strings
+func parseProj4ConfigValue(raw interface{}) (map[uint64]string, error) {
+	switch v := raw.(type) {
+	case string:
+		entries := strings.FieldsFunc(v, func(r rune) bool { return r == '\n' || r == ';' })
+		return basic.ParseProj4Config(entries)
+	case map[string]interface{}:
+		out := make(map[uint64]string, len(v))
+		for k, defStr := range v {
+			srid, err := parseSRIDKey(k)
+			if err != nil {
+				return nil, err
+			}
+			def, ok := defStr.(string)
+			if !ok {
+				return nil, fmt.Errorf("proj4 value for srid %v must be a string, got %T", k, defStr)
+			}
+			out[srid] = def
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("expected string or table, got %T", raw)
+	}
+}
+
+// parseSRIDKey parses a proj4 table key into an EPSG code. Accepts bare
+// numbers ("2180") and "EPSG:2180" / "epsg:2180" for convenience.
+func parseSRIDKey(key string) (uint64, error) {
+	k := strings.TrimSpace(key)
+	if len(k) >= 5 && strings.EqualFold(k[:5], "epsg:") {
+		k = strings.TrimSpace(k[5:])
+	}
+	if k == "" {
+		return 0, fmt.Errorf("proj4 table has an empty srid key")
+	}
+	for _, r := range k {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("proj4 table key %q is not a valid srid", key)
+		}
+	}
+	srid, err := strconv.ParseUint(k, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("proj4 table key %q is not a valid srid", key)
+	}
+	return srid, nil
 }

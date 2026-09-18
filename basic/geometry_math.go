@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/proj"
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/maths/webmercator"
 )
@@ -225,11 +226,30 @@ func CloneGeometry(geometry geom.Geometry) (geom.Geometry, error) {
 	}
 }
 
+// projToWebMercator converts points encoded in an arbitrary projected SRID
+// known to github.com/go-spatial/proj (e.g. EPSG:3395 World Mercator,
+// EPSG:4087, or any SRID registered via RegisterProj4SRID) to Web Mercator
+// (3857) by routing through WGS84 lon/lat. SRIDs handled by dedicated
+// switches in ToWebMercator / FromWebMercator (3857, 4326) never reach here,
+// so there is no routing cycle.
+func projToWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
+	if !proj.IsKnownConversionSRID(proj.EPSGCode(SRID)) {
+		return nil, fmt.Errorf("don't know how to convert from %v to %v (unknown or unregistered SRID; use the provider's proj4 config option to register one).", tegola.WebMercator, SRID)
+	}
+	return ApplyToPoints(geometry, func(coords ...float64) ([]float64, error) {
+		xy, err := proj.Inverse(proj.EPSGCode(SRID), []float64{coords[0], coords[1]})
+		if err != nil {
+			return nil, err
+		}
+		return webmercator.PToXY(xy[0], xy[1])
+	})
+}
+
 // ToWebMercator takes a SRID and a geometry encode using that srid, and returns a geometry encoded as a WebMercator.
 func ToWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
 	switch SRID {
 	default:
-		return nil, fmt.Errorf("don't know how to convert from %v to %v.", tegola.WebMercator, SRID)
+		return projToWebMercator(SRID, geometry)
 	case tegola.WebMercator:
 		// Instead of just returning the geometry, we are cloning it so that the user of the API can rely
 		// on the result to alway be a copy. Instead of being a reference in the on instance that it's already
@@ -242,11 +262,27 @@ func ToWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
 	}
 }
 
+// projFromWebMercator converts points encoded in Web Mercator (3857) to an
+// arbitrary projected SRID known to github.com/go-spatial/proj by routing
+// through WGS84 lon/lat. See projToWebMercator for details.
+func projFromWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
+	if !proj.IsKnownConversionSRID(proj.EPSGCode(SRID)) {
+		return nil, fmt.Errorf("don't know how to convert from %v to %v (unknown or unregistered SRID; use the provider's proj4 config option to register one).", SRID, tegola.WebMercator)
+	}
+	return ApplyToPoints(geometry, func(coords ...float64) ([]float64, error) {
+		ll, err := webmercator.PToLonLat(coords[0], coords[1])
+		if err != nil {
+			return nil, err
+		}
+		return proj.Convert(proj.EPSGCode(SRID), []float64{ll[0], ll[1]})
+	})
+}
+
 // FromWebMercator takes a geometry encoded with WebMercator, and returns a Geometry encodes to the given srid.
 func FromWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
 	switch SRID {
 	default:
-		return nil, fmt.Errorf("don't know how to convert from %v to %v.", SRID, tegola.WebMercator)
+		return projFromWebMercator(SRID, geometry)
 	case tegola.WebMercator:
 		// Instead of just returning the geometry, we are cloning it so that the user of the API can rely
 		// on the result to alway be a copy. Instead of being a reference in the on instance that it's already

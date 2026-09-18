@@ -168,6 +168,53 @@ func TestDecodeGeometryAutoFallback(t *testing.T) {
 	}
 }
 
+// TestDecodeGeometryWKT verifies WKT text geometry decoding, used for
+// geometry stored as text (e.g. a LINESTRING(...) TEXT column).
+func TestDecodeGeometryWKT(t *testing.T) {
+	const line = "LINESTRING(6832560.11 7372555.90, 6832518.72 7372428.95)"
+
+	// string value
+	srid, geo, err := decodeGeometry(line, GeometryFormatWKT, GeometryFormatMariaDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srid != 0 {
+		t.Errorf("expected srid 0 for WKT, got %v", srid)
+	}
+	if _, ok := geo.(geom.LineString); !ok {
+		t.Errorf("expected geom.LineString, got %T", geo)
+	}
+
+	// []byte value (TEXT columns may arrive as []byte depending on driver)
+	_, geo, err = decodeGeometry([]byte(line), GeometryFormatWKT, GeometryFormatMariaDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geo == nil {
+		t.Error("expected geometry, got nil")
+	}
+
+	// invalid WKT is an error
+	if _, _, err := decodeGeometry("NOT WKT", GeometryFormatWKT, GeometryFormatMariaDB); err == nil {
+		t.Error("expected error for invalid WKT, got nil")
+	}
+
+	// wrong type is an error
+	if _, _, err := decodeGeometry(42, GeometryFormatWKT, GeometryFormatMariaDB); err == nil {
+		t.Error("expected error for int geometry value, got nil")
+	}
+
+	// auto + MariaDB flavor: WKT text in a blob column falls back through
+	// mariadb -> wkb -> wkt and decodes successfully
+	_, geo, err = decodeGeometry([]byte(line), GeometryFormatAuto, GeometryFormatMariaDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := geo.(geom.LineString); !ok {
+		t.Errorf("expected geom.LineString, got %T", geo)
+	}
+}
+
 // TestServerFlavorFromVersion checks the VERSION() string parsing.
 func TestServerFlavorFromVersion(t *testing.T) {
 	cases := []struct {
