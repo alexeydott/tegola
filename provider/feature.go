@@ -36,6 +36,9 @@ func ConvertFeatureID(v interface{}) (uint64, error) {
 		return uint64(aval), nil
 	case string:
 		return strconv.ParseUint(aval, 10, 64)
+	case []byte:
+		// MySQL drivers return TEXT/CHAR id columns as []byte
+		return strconv.ParseUint(string(aval), 10, 64)
 	default:
 		return 0, ErrUnableToConvertFeatureID{val: v}
 	}

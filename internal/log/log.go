@@ -108,7 +108,13 @@ func Errorf(format string, args ...any) {
 }
 
 func Error(args ...any) {
-	slog.Error(args[0].(string), args...)
+	if len(args) > 0 {
+		if msg, ok := args[0].(string); ok {
+			slog.Error(msg, args...)
+			return
+		}
+	}
+	slog.Error(fmt.Sprint(args...))
 }
 
 func Warnf(format string, args ...any) {
