@@ -17,12 +17,32 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/provider"
 )
 
 var colFinder *regexp.Regexp
+
+// applyLayerCRSDefn resolves a layer-level crs_defn (full PROJ.4 definition)
+// into the layer SRID, overriding a numeric srid when present.
+func applyLayerCRSDefn(layerConf dict.Dicter, lsrid *int) error {
+	defnDefault := ""
+	defn, err := layerConf.String(ConfigKeyCRSDefn, &defnDefault)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(defn) == "" {
+		return nil
+	}
+	code, err := basic.RegisterProj4Defn(defn)
+	if err != nil {
+		return err
+	}
+	*lsrid = int(code)
+	return nil
+}
 
 func init() {
 	provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
@@ -264,6 +284,24 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 
+	// crs_defn: a full PROJ.4 definition used instead of a numeric SRID. When
+	// present it wins over srid and is registered under a synthetic SRID that
+	// flows through the regular reprojection path.
+	crsDefnDefault := ""
+	var crsDefn string
+	if crsDefn, err = config.String(ConfigKeyCRSDefn, &crsDefnDefault); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(crsDefn) != "" {
+		defnSRID, rerr := basic.RegisterProj4Defn(crsDefn)
+		if rerr != nil {
+			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyCRSDefn, rerr)
+		}
+		srid = int(defnSRID)
+		providerSRIDExplicit = true
+		log.Infof("registered %v as synthetic srid %v", ConfigKeyCRSDefn, defnSRID)
+	}
+
 	p := Provider{
 		Filepath: filepath,
 		layers:   make(map[string]Layer),
@@ -362,6 +400,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
 				return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 			}
+			if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
+				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, err)
+			}
 
 			layer.tablename = tablename
 			layer.tagFieldnames = tagFieldnames
@@ -453,6 +494,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				var lsrid int = int(layerSRID)
 				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
 					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
+				}
+				if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, err)
 				}
 
 				layer.geomType = geo

@@ -50,10 +50,12 @@ The `geometry_format` config option controls decoding:
 
 SRID resolution order (highest priority first):
 
-1. Layer-level `srid` config value.
-2. Provider-level `srid` config value (if explicitly configured).
-3. SRID decoded from the sampled geometry header at registration (native formats only).
-4. Default `3857` (Web Mercator).
+1. Layer-level `crs_defn` config value (full PROJ.4 definition, see below).
+2. Layer-level `srid` config value.
+3. Provider-level `crs_defn` config value.
+4. Provider-level `srid` config value (if explicitly configured).
+5. SRID decoded from the sampled geometry header at registration (native formats only).
+6. Default `3857` (Web Mercator).
 
 When the layer SRID differs from Web Mercator, tile bounding boxes are reprojected into the layer SRID before the `!BBOX!` filter is applied, and geometries are delivered to the MVT encoder with their true SRID.
 
@@ -90,6 +92,33 @@ Reprojection between the layer SRID and Web Mercator uses the vendored `go-spati
    Keys may be written as plain integers or with an `EPSG:` / `epsg:` prefix (e.g. `"EPSG:2180"`). Definitions are validated at startup with a forward+inverse round trip; unsupported ones are rejected with a clear error.
 
 Geographic systems stored in degrees (e.g. EPSG:4326, EPSG:4258) do not require registration — they are converted natively. Note that only a subset of PROJ.4 operations is implemented by the vendored proj library (`merc`, `utm`, `etmerc`, `aea`, `leac`, `eqc`); transverse Mercator-based systems use `+proj=etmerc`, not `+proj=tmerc`.
+
+### `crs_defn` — textual CRS definition instead of SRID
+
+When a system has no EPSG code (or you don't want to use one), a full PROJ.4
+definition can be given as `crs_defn` instead of a numeric `srid`, at either
+provider or layer level. The definition is passed to proj directly and
+validated with a forward+inverse round trip at startup; it is registered under
+a synthetic internal SRID (≥ 340000001) that flows through the regular
+reprojection path. A `crs_defn` always wins over a numeric `srid` configured at
+the same level; layer-level settings win over provider-level ones.
+
+```toml
+[[providers]]
+name = "mysql_provider"
+type = "mysql"
+# ...
+# provider-level default for all layers:
+crs_defn = "+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+
+  [[providers.layers]]
+  name = "tram_sections"
+  # layer-level override wins over the provider-level crs_defn:
+  crs_defn = "+proj=etmerc +lat_0=0 +lon_0=61 +k_0=1 +x_0=500000 +y_0=0 +ellps=krass +units=m +no_defs"
+```
+
+Use `+proj=etmerc` instead of `+proj=tmerc` for transverse Mercator
+definitions (vendored proj limitation).
 
 ## SQL tokens
 

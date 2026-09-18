@@ -107,6 +107,24 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 
+	// crs_defn: a full PROJ.4 definition used instead of a numeric SRID. When
+	// present it wins over srid and is registered under a synthetic SRID that
+	// flows through the regular reprojection path.
+	crsDefnDefault := ""
+	var crsDefn string
+	if crsDefn, err = config.String(ConfigKeyCRSDefn, &crsDefnDefault); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(crsDefn) != "" {
+		defnSRID, rerr := basic.RegisterProj4Defn(crsDefn)
+		if rerr != nil {
+			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyCRSDefn, rerr)
+		}
+		srid = int(defnSRID)
+		sridExplicit = true
+		log.Infof("registered %v as synthetic srid %v", ConfigKeyCRSDefn, defnSRID)
+	}
+
 	geometryFormat := GeometryFormatAuto
 	if geometryFormat, err = config.String(ConfigKeyGeometryFormat, &geometryFormat); err != nil {
 		return nil, err
@@ -279,6 +297,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
 					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 				}
+				if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, err)
+				}
 
 				layer.tablename = tablename
 				layer.tagFieldnames = tagFieldnames
@@ -353,6 +374,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
 					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 				}
+				if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, err)
+				}
 
 				layer.geomType = geo
 				layer.srid = uint64(lsrid)
@@ -376,6 +400,25 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	providers = append(providers, p)
 
 	return &p, nil
+}
+
+// applyLayerCRSDefn resolves a layer-level crs_defn (full PROJ.4 definition)
+// into the layer SRID, overriding a numeric srid when present.
+func applyLayerCRSDefn(layerConf dict.Dicter, lsrid *int) error {
+	defnDefault := ""
+	defn, err := layerConf.String(ConfigKeyCRSDefn, &defnDefault)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(defn) == "" {
+		return nil
+	}
+	code, err := basic.RegisterProj4Defn(defn)
+	if err != nil {
+		return err
+	}
+	*lsrid = int(code)
+	return nil
 }
 
 // parseProj4ConfigValue parses the raw value of the proj4 config option.

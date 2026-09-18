@@ -15,6 +15,8 @@ filepath = "/path/to/my/sample_gpkg.gpkg"
 - `name` (string): [Required] provider name is referenced from map layers.
 - `type` (string): [Required] the type of data provider. must be "gpkg" to use this data provider.
 - `filepath` (string): [Required] The system file path to the GeoPackage file you wish to connect to.
+- `srid` (int): [Optional] the SRID of the geometries in the GeoPackage. When set explicitly it wins over the value inferred from `gpkg_contents.srs_id` or the geometry headers. Defaults to Web Mercator (3857) when nothing can be inferred.
+- `crs_defn` (string): [Optional] a full PROJ.4 coordinate system definition used instead of a numeric `srid` (see below). Wins over `srid` at the same level.
 
 ## Provider Layers
 In addition to the connection configuration above, Provider Layers need to be configured. A Provider Layer tells tegola how to query a GeoPackage for a certain layer. An example minimum config:
@@ -32,6 +34,8 @@ id_fieldname = "fid"
 - `tablename` (string): [*Required] the name of the database table to query against. Required if `sql` is not defined.
 - `id_fieldname` (string): [Optional] the name of the feature id field. defaults to `fid`
 - `fields` ([]string): [Optional] a list of fields (column names) to include as feature tags. Can be used if `sql` is not defined.
+- `srid` (int): [Optional] layer-level SRID override. Wins over the provider-level value and over the SRID inferred from the GeoPackage.
+- `crs_defn` (string): [Optional] layer-level full PROJ.4 definition used instead of a numeric `srid`. Wins over `srid` at the same level.
 - `sql` (string): [*Required] custom SQL to use use. Required if `tablename` is not defined. Supports the following WHERE-clause tokens:
   - !BBOX! - [Required] will be replaced with the bounding box of the tile before the query is sent to the database.  To support this token, your custom SQL must do a couple of things. 
     - You must join your feature table to the spatial index table: i.e. `JOIN feature_table ft rtree_feature_table_geom si ON ft.fid = rt.si`
@@ -58,3 +62,27 @@ id_fieldname = "fid"
 name = "a_points"
 sql = "SELECT fid, geom, amenity, religion, tourism, shop, si.minx, si.miny, si.maxx, si.maxy FROM land_polygons lp JOIN rtree_land_polygons_geom si ON lp.fid = si.id WHERE !BBOX!"
 ```
+
+### Custom coordinate systems (`crs_defn`)
+
+When the GeoPackage stores geometries in a system that has no EPSG code (or
+you prefer not to rely on one), a full PROJ.4 definition can be provided as
+`crs_defn` instead of a numeric `srid`, at provider or layer level. The
+definition is passed to proj directly and validated at startup; it is
+registered under a synthetic internal SRID (≥ 340000001) and used for both
+`!BBOX!` reprojection and geometry conversion to Web Mercator. A `crs_defn`
+always wins over a numeric `srid` configured at the same level.
+
+```toml
+[[providers]]
+name = "sample_gpkg"
+type = "gpkg"
+filepath = "/path/to/my/sample_gpkg.gpkg"
+# provider-level default for all layers:
+crs_defn = "+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+```
+
+Use `+proj=etmerc` instead of `+proj=tmerc` for transverse Mercator
+definitions (vendored proj limitation). Note the RTree spatial index bounds
+must be stored in the same CRS as the geometries for `!BBOX!` filtering to
+work correctly.

@@ -120,6 +120,54 @@ func RegisterProj4SRID(srid uint64, proj4 string) error {
 	return nil
 }
 
+// defnCodeBase sits above the probe code space (320000000+) and marks SRIDs
+// synthesized from raw PROJ.4 definitions (crs_defn config options) rather
+// than assigned a real EPSG code. Synthetic codes are >= 340000001.
+var defnCodeBase int64 = 340000000
+
+// proj4DefnCodes maps PROJ.4 definitions registered through RegisterProj4Defn
+// to their synthetic SRIDs so repeated registrations of the same definition
+// are stable within a process.
+var proj4DefnCodes = map[string]uint64{}
+
+// RegisterProj4Defn registers an arbitrary PROJ.4 coordinate system definition
+// and returns a synthetic SRID standing in for it. Configs that carry a full
+// textual CRS description (crs_defn) instead of a numeric EPSG code pass the
+// definition here and use the returned SRID everywhere a numeric SRID is
+// expected: layer config, !BBOX! reprojection and feature SRIDs. Registering
+// the same definition twice returns the same synthetic SRID.
+func RegisterProj4Defn(proj4 string) (uint64, error) {
+	proj4 = strings.TrimSpace(proj4)
+	if proj4 == "" {
+		return 0, fmt.Errorf("RegisterProj4Defn: empty proj4 definition")
+	}
+	if !isSupportedProj4(proj4) {
+		return 0, fmt.Errorf("RegisterProj4Defn: proj4 definition is not a supported projection: %v", proj4)
+	}
+
+	proj4RegisteredMu.Lock()
+	defer proj4RegisteredMu.Unlock()
+	if code, ok := proj4DefnCodes[proj4]; ok {
+		return code, nil
+	}
+	code := uint64(atomic.AddInt64(&defnCodeBase, 1))
+	proj4DefnCodes[proj4] = code
+	proj4Registered[code] = proj4
+
+	proj4RegisterOnce.Do(func() {})
+	proj.CustomProjection(proj.EPSGCode(code), proj4)
+	return code, nil
+}
+
+// Proj4DefnSRID returns the synthetic SRID previously assigned to a PROJ.4
+// definition by RegisterProj4Defn, if any.
+func Proj4DefnSRID(proj4 string) (uint64, bool) {
+	proj4RegisteredMu.Lock()
+	defer proj4RegisteredMu.Unlock()
+	code, ok := proj4DefnCodes[strings.TrimSpace(proj4)]
+	return code, ok
+}
+
 // isSupportedProj4 validates a PROJ.4 string by asking proj to build and
 // round-trip a conversion for it via a temporary EPSG code outside the
 // standard range. Each validation uses a fresh probe code because proj caches

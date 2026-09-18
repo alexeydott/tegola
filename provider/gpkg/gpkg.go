@@ -28,6 +28,7 @@ const (
 const (
 	ConfigKeyFilePath    = "filepath"
 	ConfigKeySRID        = "srid"
+	ConfigKeyCRSDefn     = "crs_defn"
 	ConfigKeyLayers      = "layers"
 	ConfigKeyLayerName   = "name"
 	ConfigKeyTableName   = "tablename"

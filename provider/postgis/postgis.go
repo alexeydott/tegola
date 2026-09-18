@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/go-spatial/tegola"
+	"github.com/go-spatial/tegola/basic"
 	conf "github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
@@ -52,6 +53,7 @@ const (
 	ConfigKeySSLCert                    = "ssl_cert"
 	ConfigKeySSLRootCert                = "ssl_root_cert"
 	ConfigKeySRID                       = "srid"
+	ConfigKeyCRSDefn                    = "crs_defn"
 	ConfigKeyLayers                     = "layers"
 	ConfigKeyLayerName                  = "name"
 	ConfigKeyTablename                  = "tablename"
@@ -705,6 +707,23 @@ func CreateProvider(
 	if srid, err = config.Int(ConfigKeySRID, &srid); err != nil {
 		return nil, err
 	}
+
+	// crs_defn: a full PROJ.4 definition used instead of a numeric SRID. When
+	// present it wins over srid and is registered under a synthetic SRID that
+	// flows through the regular reprojection path.
+	crsDefnDefault := ""
+	var crsDefn string
+	if crsDefn, err = config.String(ConfigKeyCRSDefn, &crsDefnDefault); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(crsDefn) != "" {
+		defnSRID, rerr := basic.RegisterProj4Defn(crsDefn)
+		if rerr != nil {
+			return nil, fmt.Errorf("invalid %v: %w", ConfigKeyCRSDefn, rerr)
+		}
+		srid = int(defnSRID)
+	}
+
 	name, err := config.String(ConfigKeyName, nil)
 	if err != nil {
 		return nil, err
@@ -828,6 +847,19 @@ func CreateProvider(
 		lsrid := srid
 		if lsrid, err = layer.Int(ConfigKeySRID, &lsrid); err != nil {
 			return nil, err
+		}
+		// a layer-level crs_defn wins over any numeric srid
+		crsDefnDefault := ""
+		var lcrsDefn string
+		if lcrsDefn, err = layer.String(ConfigKeyCRSDefn, &crsDefnDefault); err != nil {
+			return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, err)
+		}
+		if strings.TrimSpace(lcrsDefn) != "" {
+			defnSRID, rerr := basic.RegisterProj4Defn(lcrsDefn)
+			if rerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %w", i, lName, ConfigKeyCRSDefn, rerr)
+			}
+			lsrid = int(defnSRID)
 		}
 
 		l := Layer{

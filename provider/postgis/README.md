@@ -36,6 +36,7 @@ default_transaction_read_only = "off"
 -   `name` (string): [Required] provider name is referenced from map layers
 -   `type` (string): [Required] the type of data provider. enum: postgis, mvt_postgis. 
 -   `srid` (int): [Optional] The default SRID for the provider. Defaults to WebMercator (3857) but also supports WGS84 (4326)
+-   `crs_defn` (string): [Optional] a full PROJ.4 coordinate system definition used instead of a numeric `srid` (e.g. `"crs_defn" = "+proj=etmerc +lat_0=0 +lon_0=61 +k_0=1 +x_0=500000 +y_0=0 +ellps=krass +units=m +no_defs"`). Validated at startup; wins over `srid` at the same level. Layer-level `crs_defn` overrides the provider-level one.
 
 ### env mode vs uri mode
 
@@ -97,7 +98,8 @@ tablename = "gis.zoning_base_3857"
 -   `geometry_fieldname` (string): [Optional] the name of the filed which contains the geometry for the feature. defaults to `geom`.
 -   `id_fieldname` (string): [Optional] the name of the feature id field. defaults to `gid`.
 -   `fields` ([]string): [Optional] a list of fields to include alongside the feature. Can be used if `sql` is not defined.
--   `srid` (int): [Optional] the SRID of the layer. Supports `3857` (WebMercator) or `4326` (WGS84).
+-   `srid` (int): [Optional] the SRID of the layer. Supports `3857` (WebMercator) or `4326` (WGS84), or any SRID registered via the provider's `proj4` config option.
+-   `crs_defn` (string): [Optional] a full PROJ.4 coordinate system definition used instead of a numeric `srid`. Validated at startup; wins over `srid` at the same level and over the provider-level `crs_defn`/`srid`.
 -   `geometry_type` (string): [Optional] the layer geometry type. If not set, the table will be inspected at startup to try and infer the gemetry type. Valid values are: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`.
 -   `sql` (string): [*Required] custom SQL to use use. Required if `tablename` is not defined. Supports the following tokens:
     -   `!BBOX!` - [Required] will be replaced with the bounding box of the tile before the query is sent to the database. `!bbox!` and`!BOX!` are supported as well for compatibilitiy with queries from Mapnik and MapServer styles.

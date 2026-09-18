@@ -48,6 +48,7 @@ const (
 	ConfigKeyUser           = "user"
 	ConfigKeyPassword       = "password"
 	ConfigKeySRID           = "srid"
+	ConfigKeyCRSDefn        = "crs_defn"
 	ConfigKeyMaxConn        = "max_connections"
 	ConfigKeyGeometryFormat = "geometry_format"
 	ConfigKeyProj4          = "proj4"
