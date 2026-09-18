@@ -197,7 +197,10 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 	pts := allPointsForSegments(flines)
 	xs := sortUniqueF64(allCoordForPts(0, pts...))
 
-	// Add lines at each x going from the miny to maxy.
+	// Add lines at each x going from the miny to maxy. Keep track of how
+	// many segments pre-existed so clipbox edge rows can be identified
+	// after the split (the cut lines are appended below).
+	numSegs := len(flines)
 	for i := range xs {
 		flines = append(flines, [2][2]float64{{xs[i], clipbox.MinY()}, {xs[i], clipbox.MaxY()}})
 	}
@@ -211,8 +214,31 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 	// The split points should now include the columns. We need to associate
 	// each point with the value of their x, and the max y value to the next
 	// x.
-
-	colptmap := _NewColPtMap(splitPts, clipbox.MaxY())
+	//
+	// The clipbox's own edge rows are not polygon boundary: they would give
+	// every column fake boundary points at (x, miny)/(x, maxy) and corrupt
+	// the triangulation. Identify them by matching the surviving split
+	// segments against the four clipbox edges, so polygon edges that happen
+	// to lie on the clipbox border are kept. The vertical cut lines are kept
+	// whole: their endpoints sit on the clipbox border and are capped by
+	// Pt2MaxY, and their intersections with polygon edges are essential
+	// column points.
+	edgeRows := make(map[int]bool)
+	for i := 0; i < numSegs; i++ {
+		if isClipboxEdgeSegment(flines[i], clipbox) {
+			edgeRows[i] = true
+		}
+	}
+	colPts := make([][]maths.Pt, 0, len(splitPts))
+	for i, row := range splitPts {
+		if i < numSegs && edgeRows[i] {
+			continue
+		}
+		if len(row) > 0 {
+			colPts = append(colPts, row)
+		}
+	}
+	colptmap := _NewColPtMap(colPts, clipbox.MaxY())
 
 	x2pts := colptmap.X2Pt
 	pt2MaxY := colptmap.Pt2MaxY
@@ -691,3 +717,17 @@ func fixup(pts [][]maths.Pt) {
 	}
 
 }
+
+// isClipboxEdgeSegment reports whether the segment lies exactly on one of
+// the clipbox's boundary edges (horizontal top/bottom or vertical
+// left/right). These segments are clip artifacts, not polygon boundary.
+func isClipboxEdgeSegment(ln [2][2]float64, clipbox *geom.Extent) bool {
+	if ln[0][1] == ln[1][1] && (ln[0][1] == clipbox.MinY() || ln[0][1] == clipbox.MaxY()) {
+		return true
+	}
+	if ln[0][0] == ln[1][0] && (ln[0][0] == clipbox.MinX() || ln[0][0] == clipbox.MaxX()) {
+		return true
+	}
+	return false
+}
+

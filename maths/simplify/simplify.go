@@ -109,7 +109,7 @@ func simplifyPolygon(g tegola.Polygon, tolerance float64) basic.Polygon {
 			continue
 		}
 
-		pts = DouglasPeucker(pts, sqTolerance)
+		pts = DouglasPeucker(pts, tolerance)
 		if len(pts) <= 2 {
 			if i == 0 {
 				return nil

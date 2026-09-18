@@ -68,7 +68,14 @@ func splitPoints(ctx context.Context, segments []maths.Line) (pts [][]maths.Pt, 
 
 		pt := ptfn().Round() // left most point.
 		if !sline.InBetween(pt) || !dline.InBetween(pt) {
-			return true
+			// Rounding to the integer grid can push the point outside a
+			// zero-width segment (a vertical or horizontal line), which
+			// would silently drop a real intersection. Retry with the
+			// unrounded point before giving up.
+			pt = ptfn()
+			if !sline.InBetween(pt) || !dline.InBetween(pt) {
+				return true
+			}
 		}
 		pts[src] = append(pts[src], pt)
 		pts[dest] = append(pts[dest], pt)
