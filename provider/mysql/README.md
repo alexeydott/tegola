@@ -50,11 +50,16 @@ The `geometry_format` config option controls decoding:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect MapplBase MOS blobs (the proprietary binary geometry format written by `TMapObjectBase.PutToBufInternal`, typically a `LONGBLOB LINE` column). Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry (e.g. `2` for centimetre resolution in metre units). MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the `!BBOX!` filter degrades to `1=1` and rows are spatially filtered in Go after decoding; individual undecodable rows are logged and skipped.
+- `mos` — expect the packed binary geometry format written by Mappl GIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry (e.g. `2` for centimetre resolution in metre units). MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the `!BBOX!` filter degrades to `1=1` and rows are spatially filtered in Go after decoding; individual undecodable rows are logged and skipped.
 
 ## MOS geometry format
 
-The MOS blob layout (little-endian): a 12-byte header (object type, subobject count, total point count, flags), then one `uint32` point count per subobject, then all points as contiguous `(int32 x, int32 y)` pairs. Real coordinates are `int / 10^mos_precision`. Object types map to MVT geometries as: polygon → `Polygon`/`MultiPolygon` (rings are classified into exteriors and holes by containment, so an island inside a lake hole becomes a second polygon), polyline → `LineString`/`MultiLineString`, point → `Point`/`MultiPoint`, text/image → anchor `Point`.
+The MOS blob layout (little-endian): a 12-byte header (object type, subobject count, total point count, flags), then one `uint32` point count per subobject, then all points as contiguous `(int32 x, int32 y)` pairs. Real coordinates are `int / 10^mos_precision`. Object types map to MVT geometries as:
+
+- polygon → `Polygon`/`MultiPolygon` (rings are classified into exteriors and holes by containment, so an island inside a lake hole becomes a second polygon)
+- polyline → `LineString`/`MultiLineString`
+- point → `Point`/`MultiPoint`
+- text/image → anchor `Point`
 
 ### Layer system info blob (auto-configuration)
 
