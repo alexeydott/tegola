@@ -197,6 +197,33 @@ func TestMapFilterLayersByName(t *testing.T) {
 				},
 			},
 		},
+		{
+			grid: atlas.Map{
+				Layers: []atlas.Layer{
+					{
+						Name:              "buildings",
+						ProviderLayerName: "buildings",
+					},
+					{
+						Name:              "overground_buildings",
+						ProviderLayerName: "overground_buildings",
+					},
+					{
+						Name:              "underground_buildings",
+						ProviderLayerName: "underground_buildings",
+					},
+				},
+			},
+			name: "overground_buildings",
+			expected: atlas.Map{
+				Layers: []atlas.Layer{
+					{
+						Name:              "overground_buildings",
+						ProviderLayerName: "overground_buildings",
+					},
+				},
+			},
+		},
 	}
 
 	for i, tc := range testcases {

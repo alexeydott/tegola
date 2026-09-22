@@ -162,15 +162,13 @@ func (m Map) FilterLayersByZoom(zoom slippy.Zoom) Map {
 func (m Map) FilterLayersByName(names ...string) Map {
 	var layers []Layer
 
-	nameStr := strings.Join(names, ",")
 	for i := range m.Layers {
-		// if we have a name set, use it for the lookup
-		if m.Layers[i].Name != "" && nameStr == m.Layers[i].Name {
-			layers = append(layers, m.Layers[i])
-			continue
-		} else if m.Layers[i].ProviderLayerName != "" && strings.Contains(nameStr, m.Layers[i].ProviderLayerName) { // default to using the ProviderLayerName for the lookup
-			layers = append(layers, m.Layers[i])
-			continue
+		for _, name := range names {
+			if (m.Layers[i].Name != "" && name == m.Layers[i].Name) ||
+				(m.Layers[i].ProviderLayerName != "" && name == m.Layers[i].ProviderLayerName) {
+				layers = append(layers, m.Layers[i])
+				break
+			}
 		}
 	}
 
