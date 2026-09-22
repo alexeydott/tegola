@@ -4,6 +4,13 @@ The `mysql` provider serves MVT tiles from spatial tables in MySQL (5.7+/8.0+) a
 
 ## Config
 
+The provider keeps at most `max_connections` open connections, reuses the same
+number of idle connections, and retires idle connections after five minutes or
+any connection after thirty minutes. Tile queries use `QueryContext` and are
+retried up to two times when the driver reports a broken connection. Features
+are held until the complete result set has been read, so a retry after a
+mid-stream connection failure cannot emit duplicates.
+
 ```toml
 [[providers]]
 name = "mysql_provider"

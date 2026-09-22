@@ -1,11 +1,19 @@
 package mysql
 
 import (
+	"context"
+	"database/sql"
 	"encoding/binary"
+	"errors"
+	"io"
 	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+
+	"database/sql/driver"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
@@ -13,7 +21,147 @@ import (
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
+	mysqlDriver "github.com/go-sql-driver/mysql"
 )
+
+type retryTestDriver struct {
+	mu          sync.Mutex
+	queryCount  int
+	failInitial bool
+	failRead    bool
+}
+
+var retryTestDriverID atomic.Uint64
+
+func (d *retryTestDriver) Open(string) (driver.Conn, error) {
+	return &retryTestConn{driver: d}, nil
+}
+
+type retryTestConn struct {
+	driver *retryTestDriver
+}
+
+func (c *retryTestConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("not supported") }
+func (c *retryTestConn) Close() error                        { return nil }
+func (c *retryTestConn) Begin() (driver.Tx, error)           { return nil, errors.New("not supported") }
+
+func (c *retryTestConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	c.driver.mu.Lock()
+	defer c.driver.mu.Unlock()
+	c.driver.queryCount++
+	if c.driver.failInitial && c.driver.queryCount == 1 {
+		return nil, driver.ErrBadConn
+	}
+	return &retryTestRows{failRead: c.driver.failRead && c.driver.queryCount == 1}, nil
+}
+
+type retryTestRows struct {
+	sent     bool
+	failRead bool
+}
+
+func (r *retryTestRows) Columns() []string { return []string{"id", "geom"} }
+func (r *retryTestRows) Close() error      { return nil }
+
+func (r *retryTestRows) Next(dest []driver.Value) error {
+	if !r.sent {
+		r.sent = true
+		dest[0] = int64(7)
+		dest[1] = "POINT(1 2)"
+		return nil
+	}
+	if r.failRead {
+		return mysqlDriver.ErrInvalidConn
+	}
+	return io.EOF
+}
+
+func (r *retryTestRows) ColumnTypeDatabaseTypeName(index int) string {
+	if index == 0 {
+		return "BIGINT"
+	}
+	return "TEXT"
+}
+
+func newRetryTestProvider(t *testing.T, d *retryTestDriver) (*Provider, *sql.DB) {
+	t.Helper()
+	driverName := "tegola_mysql_retry_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+	sql.Register(driverName, d)
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Provider{
+		db: db,
+		layers: map[string]Layer{
+			"test": {
+				name:           "test",
+				sql:            "SELECT id, geom FROM test",
+				idFieldname:    "id",
+				geomFieldname:  "geom",
+				geometryFormat: GeometryFormatWKT,
+				srid:           4326,
+			},
+		},
+	}
+	return p, db
+}
+
+func TestTileFeaturesRetriesBeforeEmittingFeatures(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failInitial bool
+		failRead    bool
+	}{
+		{name: "initial query", failInitial: true},
+		{name: "mid stream", failRead: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &retryTestDriver{failInitial: tc.failInitial, failRead: tc.failRead}
+			p, db := newRetryTestProvider(t, d)
+			defer db.Close()
+
+			var got []provider.Feature
+			err := p.TileFeatures(context.Background(), "test", provider.NewTile(0, 0, 0, 0, 4326), nil,
+				func(f *provider.Feature) error {
+					got = append(got, *f)
+					return nil
+				})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("expected one feature after retry, got %d", len(got))
+			}
+			d.mu.Lock()
+			queries := d.queryCount
+			d.mu.Unlock()
+			if queries != 2 {
+				t.Fatalf("expected two queries, got %d", queries)
+			}
+		})
+	}
+}
+
+func TestMySQLConnectionRetryClassification(t *testing.T) {
+	for _, err := range []error{driver.ErrBadConn, mysqlDriver.ErrInvalidConn} {
+		if !isRetryableConnectionError(err) {
+			t.Errorf("expected %T to be retryable", err)
+		}
+		if !isRetryableConnectionError(errors.Join(errors.New("wrapped"), err)) {
+			t.Errorf("expected wrapped %T to be retryable", err)
+		}
+	}
+	if isRetryableConnectionError(errors.New("query failed")) {
+		t.Error("ordinary query errors must not be retried")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitForMySQLRetry(ctx, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancelled retry wait, got %v", err)
+	}
+}
 
 // wkbPoint takes an x/y pair and returns the full WKB encoding of a 2D Point
 // in little-endian byte order.

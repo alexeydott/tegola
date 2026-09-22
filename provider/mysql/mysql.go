@@ -3,7 +3,9 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
+	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -25,6 +28,13 @@ const (
 	DefaultPort          = 3306
 	DefaultIDFieldName   = "fid"
 	DefaultGeomFieldName = "geom"
+)
+
+const (
+	mysqlQueryMaxAttempts = 3
+	mysqlRetryBaseDelay   = 100 * time.Millisecond
+	mysqlConnMaxIdleTime  = 5 * time.Minute
+	mysqlConnMaxLifetime  = 30 * time.Minute
 )
 
 // geometry column encoding formats. "auto" detects the server flavor
@@ -240,6 +250,23 @@ func geometryIntersectsExtent(g geom.Geometry, e *geom.Extent) bool {
 	return false
 }
 
+func isRetryableConnectionError(err error) bool {
+	return errors.Is(err, driver.ErrBadConn) || errors.Is(err, mysqlDriver.ErrInvalidConn)
+}
+
+func waitForMySQLRetry(ctx context.Context, attempt int) error {
+	delay := mysqlRetryBaseDelay * time.Duration(1<<attempt)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // decodeWKT parses a WKT string (e.g. "LINESTRING(1 2, 3 4)") into a
 // geometry. WKT carries no SRID, so 0 is returned and the configured
 // provider/layer SRID applies.
@@ -320,6 +347,23 @@ func (p *Provider) Layers() ([]provider.LayerInfo, error) {
 }
 
 func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider.Tile, queryParams provider.Params, fn func(f *provider.Feature) error) error {
+	var err error
+	for attempt := 0; attempt < mysqlQueryMaxAttempts; attempt++ {
+		err = p.tileFeaturesAttempt(ctx, layer, tile, queryParams, fn)
+		if err == nil || !isRetryableConnectionError(err) || attempt == mysqlQueryMaxAttempts-1 {
+			return err
+		}
+
+		log.Warnf("mysql provider: retrying tile query after broken connection (attempt %d/%d): %v",
+			attempt+1, mysqlQueryMaxAttempts, err)
+		if err := waitForMySQLRetry(ctx, attempt); err != nil {
+			return err
+		}
+	}
+	return err
+}
+
+func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile provider.Tile, queryParams provider.Params, fn func(f *provider.Feature) error) error {
 	log.Debugf("fetching layer %v", layer)
 
 	pLayer, ok := p.layers[layer]
@@ -367,7 +411,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 
 	log.Debugf("qtext: %v", qtext)
 
-	rows, err := p.db.Query(qtext, args...)
+	rows, err := p.db.QueryContext(ctx, qtext, args...)
 	if err != nil {
 		log.Errorf("err during query: %v - %v", qtext, err)
 		return err
@@ -387,7 +431,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 	}
 
 	var geomErr error
-	feats := 0
+	features := make([]provider.Feature, 0)
 	for rows.Next() {
 		// check if the context cancelled or timed out
 		if ctx.Err() != nil {
@@ -504,11 +548,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			continue
 		}
 
-		// pass the feature to the provided call back
-		if err = fn(&feature); err != nil {
-			return err
-		}
-		feats++
+		features = append(features, feature)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -517,8 +557,17 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 	// if every row in this tile had an undecodable geometry the layer is
 	// effectively broken (misconfigured mos_precision or foreign blob
 	// format) — surface it instead of silently rendering an empty tile
-	if geomErr != nil && feats == 0 {
+	if geomErr != nil && len(features) == 0 {
 		return fmt.Errorf("no decodable MOS geometries in layer %v: %v", pLayer.Name(), geomErr)
+	}
+
+	// Do not emit features until the complete result set has been consumed.
+	// If the server drops the connection while rows are being read, the caller
+	// can safely retry the read without duplicating partially emitted features.
+	for i := range features {
+		if err := fn(&features[i]); err != nil {
+			return err
+		}
 	}
 	return nil
 }

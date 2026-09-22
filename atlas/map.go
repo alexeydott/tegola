@@ -301,6 +301,7 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 
 	// layer stack
 	mvtLayers := make([]*mvt.Layer, len(m.Layers))
+	layerErrors := make([]error, len(m.Layers))
 
 	// set our WaitGroup count
 	wg.Add(len(m.Layers))
@@ -325,7 +326,8 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 			// single bad feature only fails its own layer/tile.
 			defer func() {
 				if r := recover(); r != nil {
-					log.Errorf("recovered from panic while fetching layer %v for tile (%v): %v", l.MVTName(), tile, r)
+					layerErrors[i] = fmt.Errorf("panic while fetching layer %v for tile (%v): %v", l.MVTName(), tile, r)
+					log.Errorf("%v", layerErrors[i])
 				}
 			}()
 
@@ -389,8 +391,7 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 					// Do nothing, context was canceled
 
 				default:
-					// TODO (arolek): should we return an error to the response or just log the error?
-					// we can't just write to the response as the WaitGroup is going to write to the response as well
+					layerErrors[i] = err
 					log.Errorf("err fetching tile (%v) features: %v", tile, err)
 				}
 				return
@@ -409,6 +410,15 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 	// as the WaitGroup was not notified of the cancel
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+	var layerErr error
+	for _, err := range layerErrors {
+		if err != nil {
+			layerErr = errors.Join(layerErr, err)
+		}
+	}
+	if layerErr != nil {
+		return nil, layerErr
 	}
 
 	// add layers to our tile

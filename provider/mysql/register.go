@@ -259,6 +259,13 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, fmt.Errorf("unable to open mysql connection to %v:%v/%v: %v", host, port, database, err)
 	}
 	db.SetMaxOpenConns(maxConn)
+	maxIdle := maxConn
+	if maxIdle <= 0 {
+		maxIdle = 2
+	}
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxIdleTime(mysqlConnMaxIdleTime)
+	db.SetConnMaxLifetime(mysqlConnMaxLifetime)
 
 	// detect whether the server is MySQL or MariaDB. This drives the "auto"
 	// geometry format: the two servers store geometry columns in different
