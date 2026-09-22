@@ -99,10 +99,9 @@ type SystemInfo struct {
 	Precision int
 	// MapUnits is the linear unit of the dequantized coordinates.
 	MapUnits MapUnits
-// MapUnitsDefined reports whether the blob explicitly declares the map
-// unit. Note: this is layer metadata; MOS coordinates in MapplBase tables
-// are stored already dequantized into CRS units, so this value must NOT be
-// used to rescale geometries.
+	// MapUnitsDefined reports whether the blob explicitly declares the map
+	// unit. When no mos_units override is configured, the provider uses it to
+	// convert decoded coordinates to metres.
 	MapUnitsDefined bool
 	// Projection is the raw PROJ.4 definition of the layer CRS, empty
 	// when the layer carries none.
@@ -141,14 +140,31 @@ func ParseSystemInfo(buf []byte) (SystemInfo, error) {
 	return si, nil
 }
 
-// ScaleToMetres returns the unit-to-metres factor for these system info
-// settings: 1 when the units are undefined, otherwise the factor from the
-// declared unit to metres. It is a helper for explicit unit conversions
-// only — the provider does not apply it to coordinates, because MapplBase
-// stores MOS coordinates already in CRS units.
+// ScaleToMetres returns the factor converting the declared units to metres.
+// It returns 1 when the units are undefined.
 func (si SystemInfo) ScaleToMetres() (float64, error) {
 	if !si.MapUnitsDefined {
 		return 1, nil
 	}
 	return si.MapUnits.ToMetres()
+}
+
+// ParseMapUnits parses the textual form accepted by the mysql provider's
+// mos_units option. Short forms are intended for configuration files; the
+// Mappl enum names and full English names are accepted as well.
+func ParseMapUnits(value string) (MapUnits, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "mm", "millimetre", "millimetres", "millimeter", "millimeters", "mumm":
+		return UnitsMillimetres, nil
+	case "cm", "centimetre", "centimetres", "centimeter", "centimeters", "musm":
+		return UnitsCentimetres, nil
+	case "dm", "decimetre", "decimetres", "decimeter", "decimeters", "mudm":
+		return UnitsDecimetres, nil
+	case "m", "metre", "metres", "meter", "meters", "mum":
+		return UnitsMetres, nil
+	case "km", "kilometre", "kilometres", "kilometer", "kilometers", "mukm":
+		return UnitsKilometres, nil
+	default:
+		return 0, fmt.Errorf("unsupported MOS units %q (expected mm, cm, dm, m, km)", value)
+	}
 }

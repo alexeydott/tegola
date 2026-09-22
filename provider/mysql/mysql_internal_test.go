@@ -334,10 +334,8 @@ func TestConfigValidation(t *testing.T) {
 }
 
 // TestApplySystemInfo verifies the sysinfo-driven auto-configuration
-// contract: precision and projection are applied when not explicitly
-// configured; the blob's MapUnits is informational only and must never
-// change the coordinate unit factor (MapplBase stores MOS coordinates
-// already dequantized into CRS units).
+// contract: precision, units and projection are applied when not explicitly
+// configured.
 func TestApplySystemInfo(t *testing.T) {
 	projDefn := "+proj=merc +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
 	sysInfo := &mos.SystemInfo{
@@ -347,13 +345,13 @@ func TestApplySystemInfo(t *testing.T) {
 		Projection:      projDefn,
 	}
 
-	t.Run("units factor never applied", func(t *testing.T) {
+	t.Run("units factor applied", func(t *testing.T) {
 		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1}
 		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if layer.mosUnitsFactor != 1 {
-			t.Errorf("mosUnitsFactor = %v, want 1 (sysinfo units are informational)", layer.mosUnitsFactor)
+		if layer.mosUnitsFactor != 0.001 {
+			t.Errorf("mosUnitsFactor = %v, want 0.001", layer.mosUnitsFactor)
 		}
 	})
 
@@ -375,6 +373,16 @@ func TestApplySystemInfo(t *testing.T) {
 		}
 		if layer.mosPrecision != 4 {
 			t.Errorf("mosPrecision = %v, want 4 (explicit config wins)", layer.mosPrecision)
+		}
+	})
+
+	t.Run("explicit units wins", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1000, mosUnitsExplicit: true}
+		if err := applySystemInfo(&layer, dict.Dict{"mos_units": "km"}, sysInfo, true); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.mosUnitsFactor != 1000 {
+			t.Errorf("mosUnitsFactor = %v, want 1000 (explicit config wins)", layer.mosUnitsFactor)
 		}
 	})
 

@@ -54,6 +54,7 @@ const (
 	ConfigKeyMaxConn        = "max_connections"
 	ConfigKeyGeometryFormat = "geometry_format"
 	ConfigKeyMOSPrecision   = "mos_precision"
+	ConfigKeyMOSUnits       = "mos_units"
 	ConfigKeyProj4          = "proj4"
 	ConfigKeyLayers         = "layers"
 	ConfigKeyLayerName      = "name"
@@ -191,11 +192,12 @@ func decodeGeometry(v interface{}, format string, serverFlavor string, mosOpts .
 }
 
 // default MOS quantization: integer units with no offset. Configured per
-// provider/layer via mos_precision (decimal digits) and overridden by
-// layer-level settings when present.
+// provider/layer via mos_precision (decimal digits) and mos_units, overridden
+// by layer-level settings when present.
 const (
-	mosPrecisionDefault = 0.0
-	mosOffsetDefault    = 0.0
+	mosPrecisionDefault   = 0.0
+	mosOffsetDefault      = 0.0
+	mosUnitsFactorDefault = 1.0
 )
 
 // decodeMOS decodes a MapplBase MOS blob (the proprietary binary geometry

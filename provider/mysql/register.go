@@ -12,10 +12,10 @@ import (
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/mos"
 	conf "github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -203,6 +203,31 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 	}
 
+	// mos_units identifies the linear units used by quantized MOS
+	// coordinates. Decoded coordinates are converted to metres before they
+	// enter the SRID reprojection path.
+	mosUnitsFactor := mosUnitsFactorDefault
+	mosUnitsExplicit := false
+	mosUnitsName := ""
+	if mosUnitsName, err = config.String(ConfigKeyMOSUnits, &mosUnitsName); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(mosUnitsName) != "" {
+		units, uerr := mos.ParseMapUnits(mosUnitsName)
+		if uerr != nil {
+			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyMOSUnits, uerr)
+		}
+		mosUnitsFactor, uerr = units.ToMetres()
+		if uerr != nil {
+			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyMOSUnits, uerr)
+		}
+		mosUnitsExplicit = true
+	}
+	if geometryFormat != GeometryFormatMOS && mosUnitsExplicit {
+		log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSUnits, ConfigKeyGeometryFormat, GeometryFormatMOS)
+		mosUnitsFactor = mosUnitsFactorDefault
+	}
+
 	// register the built-in table of common projected SRIDs (UTM zones,
 	// Pulkovo Gauss-Kruger) so any of them can be used as a layer srid
 	// without extra configuration.
@@ -325,17 +350,35 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 		// layer container. will be added to the provider after it's configured
 		layer := Layer{
-			name:           layerName,
-			idFieldname:    idFieldname,
-			geomFieldname:  geomFieldname,
-			geometryFormat: geometryFormat,
-			mosPrecision:   mosPrecision,
-			mosUnitsFactor: 1, // sysinfo MapUnits is informational; factor stays 1
+			name:             layerName,
+			idFieldname:      idFieldname,
+			geomFieldname:    geomFieldname,
+			geometryFormat:   geometryFormat,
+			mosPrecision:     mosPrecision,
+			mosUnitsFactor:   mosUnitsFactor,
+			mosUnitsExplicit: mosUnitsExplicit,
 		}
 
 		// layer-level mos_precision overrides the provider-level value
 		if layer.mosPrecision, err = layerConf.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSPrecision, err)
+		}
+
+		// layer-level mos_units overrides the provider-level value.
+		if _, explicit := layerConf.Interface(ConfigKeyMOSUnits); explicit {
+			layerMosUnits, uerr := layerConf.String(ConfigKeyMOSUnits, nil)
+			if uerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSUnits, uerr)
+			}
+			units, uerr := mos.ParseMapUnits(layerMosUnits)
+			if uerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSUnits, uerr)
+			}
+			layer.mosUnitsFactor, uerr = units.ToMetres()
+			if uerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSUnits, uerr)
+			}
+			layer.mosUnitsExplicit = true
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
@@ -381,8 +424,8 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.srid = uint64(lsrid)
 
 				// apply layer self-description from a TLayerSystemInfoRec blob:
-					// precision and PROJ.4 projection. Explicit config values
-					// (mos_precision / srid / crs_defn) always win.
+				// precision and PROJ.4 projection. Explicit config values
+				// (mos_precision / mos_units / srid / crs_defn) always win.
 				if err := applySystemInfo(&layer, layerConf, sysInfo, sridExplicit); err != nil {
 					return nil, fmt.Errorf("layer '%v' (table %v): %v", layerName, tablename, err)
 				}
@@ -465,7 +508,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 				// apply layer self-description from a TLayerSystemInfoRec blob:
 				// precision and PROJ.4 projection. Explicit config values
-				// (mos_precision / srid / crs_defn) always win.
+				// (mos_precision / mos_units / srid / crs_defn) always win.
 				if err := applySystemInfo(&layer, layerConf, sysInfo, sridExplicit); err != nil {
 					return nil, fmt.Errorf("layer '%v' (custom SQL): %v", layerName, err)
 				}
@@ -495,14 +538,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 // explicitly configured take effect:
 //   - precision: used when neither provider- nor layer-level mos_precision
 //     is set;
+//   - units: used when neither provider- nor layer-level mos_units is set;
 //   - projection: registered as a synthetic SRID when no srid/crs_defn is
 //     set at provider or layer level (sridExplicit covers both).
-//
-// The blob's MapUnits (TLayerSystemInfoRec.MapUnits/flMapUnitsDefined) is
-// parsed and logged but deliberately NOT applied as a coordinate scale:
-// MapplBase DBA exporters store MOS coordinates already dequantized into
-// the CRS units (the 10^Precision quantization absorbs the unit scaling),
-// so scaling by the declared unit factor would corrupt geometries.
 //
 // layerConf is checked with Interface to detect explicit layer-level keys;
 // nil sysInfo (no system info blob in the table) is a no-op.
@@ -518,6 +556,14 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 		layer.mosPrecision = float64(sysInfo.Precision)
 	}
 
+	if !layer.mosUnitsExplicit && sysInfo.MapUnitsDefined {
+		factor, err := sysInfo.ScaleToMetres()
+		if err != nil {
+			return fmt.Errorf("unable to convert MOS map units %v to metres: %v", sysInfo.MapUnits, err)
+		}
+		layer.mosUnitsFactor = factor
+	}
+
 	// projection: register the blob's PROJ.4 definition as the layer SRID
 	// when the user did not pick one explicitly.
 	if sysInfo.Projection != "" && !sridExplicit {
@@ -530,8 +576,8 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 	}
 
 	if sysInfo.MapUnitsDefined {
-		log.Debugf("layer %v system info: precision=%v map units=%v (informational, not applied as coordinate scale) projection=%q",
-			layer.name, sysInfo.Precision, sysInfo.MapUnits, sysInfo.Projection)
+		log.Debugf("layer %v system info: precision=%v map units=%v factor=%v projection=%q",
+			layer.name, sysInfo.Precision, sysInfo.MapUnits, layer.mosUnitsFactor, sysInfo.Projection)
 	} else {
 		log.Debugf("layer %v system info: precision=%v projection=%q",
 			layer.name, sysInfo.Precision, sysInfo.Projection)

@@ -166,12 +166,43 @@ func TestUnitsToMetres(t *testing.T) {
 	}
 }
 
+func TestParseMapUnits(t *testing.T) {
+	cases := []struct {
+		value string
+		want  MapUnits
+	}{
+		{"mm", UnitsMillimetres},
+		{"muMm", UnitsMillimetres},
+		{"centimeters", UnitsCentimetres},
+		{"muSm", UnitsCentimetres},
+		{"dm", UnitsDecimetres},
+		{"muDm", UnitsDecimetres},
+		{"m", UnitsMetres},
+		{"muM", UnitsMetres},
+		{"km", UnitsKilometres},
+		{"muKm", UnitsKilometres},
+	}
+	for _, c := range cases {
+		got, err := ParseMapUnits(c.value)
+		if err != nil {
+			t.Errorf("ParseMapUnits(%q): unexpected error: %v", c.value, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseMapUnits(%q) = %v, want %v", c.value, got, c.want)
+		}
+	}
+	if _, err := ParseMapUnits("degrees"); err == nil {
+		t.Error(`ParseMapUnits("degrees") succeeded, want error`)
+	}
+}
+
 func TestScaleToMetres(t *testing.T) {
 	cases := []struct {
-		units       byte
-		unitsDef    bool
-		want        float64
-		wantErr     bool
+		units    byte
+		unitsDef bool
+		want     float64
+		wantErr  bool
 	}{
 		{byte(UnitsMetres), true, 1, false},
 		{byte(UnitsMillimetres), true, 0.001, false},

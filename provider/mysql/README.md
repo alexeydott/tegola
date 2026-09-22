@@ -16,6 +16,7 @@ password = "password"
 srid = 3857                 # optional, default 3857
 geometry_format = "auto"    # optional: auto (default) | mysql | mariadb | wkb | wkt | mos
 mos_precision = 2           # optional, MOS format only: decimal digits of quantized int coords, default 0
+mos_units = "m"             # optional, MOS format only: mm | cm | dm | m | km, default m
 max_connections = 100       # optional, default 100
 
 [[providers.layers]]
@@ -27,6 +28,7 @@ tablename = "buildings"
 # srid = 4326               # optional, layer-level override (see "SRID handling")
 # crs_defn = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs" # optional, wins over srid
 # mos_precision = 2         # optional, layer-level override, MOS format only
+# mos_units = "mm"          # optional, layer-level override: mm | cm | dm | m | km
 
 [[providers.layers]]
 name = "landmarks"
@@ -50,7 +52,7 @@ The `geometry_format` config option controls decoding:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect the packed binary geometry format written by Mappl GIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry (e.g. `2` for centimetre resolution in metre units). MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the `!BBOX!` filter degrades to `1=1` and rows are spatially filtered in Go after decoding; individual undecodable rows are logged and skipped.
+- `mos` — expect the packed binary geometry format written by Mappl GIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the `!BBOX!` filter degrades to `1=1` and rows are spatially filtered in Go after decoding; individual undecodable rows are logged and skipped.
 
 ## MOS geometry format
 
@@ -67,9 +69,9 @@ MapplBase stores a `TLayerSystemInfoRec` version wrapper blob as the **first row
 
 - `Precision` — the quantization precision (`kPrecision = 10^Precision`). Applied as the layer's `mos_precision` when neither the provider- nor layer-level `mos_precision` key is set.
 - `Projection` — the layer's full PROJ.4 definition. Registered as a synthetic SRID (≥ 340000001, same mechanism as `crs_defn`) and used as the layer SRID when no `srid`/`crs_defn` is configured at provider or layer level. Explicit config values always win.
-- `MapUnits` / `flMapUnitsDefined` — parsed and logged for information only. MOS coordinates in MapplBase tables are stored already dequantized into CRS units (the `10^Precision` quantization absorbs the unit scaling), so this value is deliberately **not** applied as a coordinate scale.
+- `MapUnits` / `flMapUnitsDefined` — when `mos_units` is not configured, the declared unit is converted to a metres factor and applied after dequantization. Supported units are millimetres (`muMm`), centimetres (`muSm`), decimetres (`muDm`), metres (`muM`) and kilometres (`muKm`). Unsupported angular/undefined units are rejected.
 
-In practice this means a MOS table exported by MapplBase needs no `mos_precision`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides.
+In practice this means a MOS table exported by MapplBase needs no `mos_precision`/`mos_units`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides.
 
 ## SRID handling
 
