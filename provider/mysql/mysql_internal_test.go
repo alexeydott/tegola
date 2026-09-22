@@ -267,6 +267,18 @@ func TestReplaceTokens(t *testing.T) {
 		t.Errorf("expected WKT polygon, got: %v", got)
 	}
 
+	mosLayer := &Layer{
+		tablename:      "",
+		geometryFormat: GeometryFormatMOS,
+		mosPrecision:   0,
+		mosUnitsFactor: 0.001,
+	}
+	mosExtent := geom.NewExtent(geom.Point{1.25, -2.5}, geom.Point{3.75, 4.5})
+	got = replaceTokens("SELECT * FROM buildings WHERE !BBOX!", mosLayer, tile, mosExtent)
+	if want := "MINX <= 3750 AND MAXX >= 1250 AND MINY <= 4500 AND MAXY >= -2500"; !strings.Contains(got, want) {
+		t.Errorf("expected indexed MOS bounds %q, got: %v", want, got)
+	}
+
 	got = replaceTokens("!ZOOM!-!Z!-!X!-!Y!", layer, tile, ext)
 	if got != "6-6-13-22" {
 		t.Errorf("expected 6-6-13-22, got: %v", got)
@@ -366,13 +378,23 @@ func TestApplySystemInfo(t *testing.T) {
 	})
 
 	t.Run("explicit precision wins", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 4, mosUnitsFactor: 1}
+		layer := Layer{name: "l", mosPrecision: 4, mosPrecisionExplicit: true, mosUnitsFactor: 1}
 		conf := dict.Dict{"mos_precision": 4.0}
 		if err := applySystemInfo(&layer, conf, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.mosPrecision != 4 {
 			t.Errorf("mosPrecision = %v, want 4 (explicit config wins)", layer.mosPrecision)
+		}
+	})
+
+	t.Run("explicit zero precision wins", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 0, mosPrecisionExplicit: true, mosUnitsFactor: 1}
+		if err := applySystemInfo(&layer, dict.Dict{"mos_precision": 0.0}, sysInfo, true); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.mosPrecision != 0 {
+			t.Errorf("mosPrecision = %v, want 0 (explicit config wins)", layer.mosPrecision)
 		}
 	})
 

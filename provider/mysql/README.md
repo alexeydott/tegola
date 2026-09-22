@@ -52,7 +52,7 @@ The `geometry_format` config option controls decoding:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect the packed binary geometry format written by Mappl GIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the `!BBOX!` filter degrades to `1=1` and rows are spatially filtered in Go after decoding; individual undecodable rows are logged and skipped.
+- `mos` — expect the packed binary geometry format written by Mappl GIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse `!BBOX!` filter in the raw MOS units, then applies an exact intersection check in Go after decoding; individual undecodable rows are logged and skipped.
 
 ## MOS geometry format
 
@@ -151,7 +151,7 @@ definitions (vendored proj limitation).
 
 The following tokens are supported in custom `sql` (case-insensitive) and behave identically to the postgis provider:
 
-- `!BBOX!` — replaced with `ST_Intersects(<geom_field>, ST_GeomFromText('POLYGON(...)'))` using the tile's buffered extent in the layer's SRID.
+- `!BBOX!` — for native spatial geometries, replaced with `ST_Intersects(<geom_field>, ST_GeomFromText('POLYGON(...)'))` using the tile's buffered extent in the layer's SRID. For MOS, replaced with an indexed `MINX`/`MAXX`/`MINY`/`MAXY` overlap predicate in the raw packed coordinate units.
 - `!ZOOM!`, `!Z!` — the tile's zoom (Z) value.
 - `!X!`, `!Y!` — the tile's X/Y values.
 - `!SCALE_DENOMINATOR!` — scale denominator assuming 90.7 DPI.

@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -32,11 +33,11 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	)
 
 	// MOS blobs are opaque proprietary binaries: the server has no geometry
-	// functions over them, so the spatial filter cannot be pushed into SQL.
-	// Disable it here; rows are spatially filtered in Go after decoding
-	// (see TileFeatures).
+	// functions over them. EGKO MOS tables nevertheless expose indexed raw
+	// bounds (MINX/MAXX/MINY/MAXY), so use those as a coarse SQL filter and
+	// keep the exact decoded-geometry check in TileFeatures.
 	if layer.geometryFormat == GeometryFormatMOS {
-		bboxSQL = "1=1"
+		bboxSQL = mosBoundsSQL(layer, bboxExtent)
 	}
 
 	extent, _ := tile.Extent()
@@ -66,6 +67,47 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	)
 
 	return tokenReplacer.Replace(uppercaseTokens(qtext))
+}
+
+// mosBoundsSQL builds a coarse indexed filter for the raw bounds stored
+// alongside MOS blobs. The bounds use the quantized MOS coordinate units,
+// while bboxExtent is expressed in the layer CRS metres after applying
+// mosUnitsFactor.
+func mosBoundsSQL(layer *Layer, bboxExtent *geom.Extent) string {
+	if bboxExtent == nil {
+		return "1=1"
+	}
+
+	precisionScale := math.Pow(10, layer.mosPrecision)
+	unitFactor := layer.mosUnitsFactor
+	if math.IsNaN(precisionScale) || math.IsInf(precisionScale, 0) || precisionScale <= 0 ||
+		math.IsNaN(unitFactor) || math.IsInf(unitFactor, 0) || unitFactor <= 0 {
+		return "1=1"
+	}
+
+	rawScale := precisionScale / unitFactor
+	if math.IsNaN(rawScale) || math.IsInf(rawScale, 0) || rawScale <= 0 {
+		return "1=1"
+	}
+
+	minX := math.Floor(bboxExtent.MinX() * rawScale)
+	maxX := math.Ceil(bboxExtent.MaxX() * rawScale)
+	minY := math.Floor(bboxExtent.MinY() * rawScale)
+	maxY := math.Ceil(bboxExtent.MaxY() * rawScale)
+	for _, value := range []float64{minX, maxX, minY, maxY} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return "1=1"
+		}
+	}
+
+	format := func(value float64) string {
+		return strconv.FormatFloat(value, 'f', 0, 64)
+	}
+	return fmt.Sprintf(
+		"%sMINX <= %s AND %sMAXX >= %s AND %sMINY <= %s AND %sMAXY >= %s",
+		"", format(maxX), "", format(minX),
+		"", format(maxY), "", format(minY),
+	)
 }
 
 // uppercaseTokens makes SQL tokens case-insensitive, matching PostGIS and GPKG.

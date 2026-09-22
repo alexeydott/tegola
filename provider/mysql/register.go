@@ -192,6 +192,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	// geometry_format = "mos". The MOS format itself carries no CRS
 	// information, so the coordinate units come from the layer/provider
 	// srid (or crs_defn).
+	_, mosPrecisionExplicit := config.Interface(ConfigKeyMOSPrecision)
 	mosPrecision := mosPrecisionDefault
 	if mosPrecision, err = config.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
 		return nil, err
@@ -350,18 +351,22 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 		// layer container. will be added to the provider after it's configured
 		layer := Layer{
-			name:             layerName,
-			idFieldname:      idFieldname,
-			geomFieldname:    geomFieldname,
-			geometryFormat:   geometryFormat,
-			mosPrecision:     mosPrecision,
-			mosUnitsFactor:   mosUnitsFactor,
-			mosUnitsExplicit: mosUnitsExplicit,
+			name:                 layerName,
+			idFieldname:          idFieldname,
+			geomFieldname:        geomFieldname,
+			geometryFormat:       geometryFormat,
+			mosPrecision:         mosPrecision,
+			mosPrecisionExplicit: mosPrecisionExplicit,
+			mosUnitsFactor:       mosUnitsFactor,
+			mosUnitsExplicit:     mosUnitsExplicit,
 		}
 
 		// layer-level mos_precision overrides the provider-level value
 		if layer.mosPrecision, err = layerConf.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSPrecision, err)
+		}
+		if _, explicit := layerConf.Interface(ConfigKeyMOSPrecision); explicit {
+			layer.mosPrecisionExplicit = true
 		}
 
 		// layer-level mos_units overrides the provider-level value.
@@ -552,7 +557,7 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 	// precision: only when mos_precision is absent on both provider and
 	// layer level. layer.mosPrecision currently holds the (possibly
 	// defaulted) provider value; a layer-level key overrides it.
-	if _, explicit := layerConf.Interface(ConfigKeyMOSPrecision); !explicit {
+	if !layer.mosPrecisionExplicit {
 		layer.mosPrecision = float64(sysInfo.Precision)
 	}
 

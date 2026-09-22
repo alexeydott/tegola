@@ -22,6 +22,9 @@ type Layer struct {
 	// carry (mos_precision config or TLayerSystemInfoRec.Precision); 0
 	// means integer units.
 	mosPrecision float64
+	// mosPrecisionExplicit prevents the layer system-info blob from overriding
+	// an explicit provider- or layer-level mos_precision setting, including 0.
+	mosPrecisionExplicit bool
 	// mosUnitsFactor scales decoded MOS coordinates from mos_units (or
 	// TLayerSystemInfoRec.MapUnits) to metres; defaults to 1.
 	mosUnitsFactor float64
