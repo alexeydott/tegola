@@ -192,6 +192,7 @@ func (conv *conversion) convert(input []float64) ([]float64, error) {
 	for i := 0; i < len(input); i += 2 {
 		lp.Lam = support.DDToR(input[i])
 		lp.Phi = support.DDToR(input[i+1])
+		datumFromWGS84(conv.system, lp)
 
 		xy, err := conv.converter.Forward(lp)
 		if err != nil {
@@ -227,6 +228,7 @@ func (conv *conversion) inverse(input []float64) ([]float64, error) {
 		if err != nil {
 			return nil, err
 		}
+		datumToWGS84(conv.system, lp)
 
 		l, p := lp.Lam, lp.Phi
 

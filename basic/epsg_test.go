@@ -19,6 +19,7 @@ func TestRegisterProj4Defn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterProj4Defn returned error: %v", err)
 	}
+
 	if code < 340000001 {
 		t.Fatalf("expected a synthetic SRID >= 340000001, got %v", code)
 	}
@@ -80,5 +81,34 @@ func TestRegisterProj4Defn(t *testing.T) {
 		if _, err := basic.RegisterProj4Defn(bad); err == nil {
 			t.Fatalf("RegisterProj4Defn(%q) expected an error, got none", bad)
 		}
+	}
+
+}
+
+func TestRegisterProj4DefnAppliesTowgs84(t *testing.T) {
+	defn := "+proj=etmerc +ellps=bessel +towgs84=41,-107.6,-93,0,0,0,0 +x_0=0 +y_0=0 +lon_0=37.5 +k_0=1 +lat_0=55.6666666667 +units=m +no_defs"
+	code, err := basic.RegisterProj4Defn(defn)
+	if err != nil {
+		t.Fatalf("RegisterProj4Defn returned error: %v", err)
+	}
+
+	wm, err := basic.ToWebMercator(code, geom.Point{769.792, 19300.763})
+	if err != nil {
+		t.Fatalf("ToWebMercator returned error: %v", err)
+	}
+	got := wm.(geom.Point)
+	// Independent PROJ result for the same Bessel/towgs84 coordinate.
+	want := geom.Point{4175652.829, 7526703.655}
+	if math.Abs(got[0]-want[0]) > 0.1 || math.Abs(got[1]-want[1]) > 0.1 {
+		t.Fatalf("datum shift mismatch: got (%v, %v), want (%v, %v)", got[0], got[1], want[0], want[1])
+	}
+
+	back, err := basic.FromWebMercator(code, got)
+	if err != nil {
+		t.Fatalf("FromWebMercator returned error: %v", err)
+	}
+	backPoint := back.(geom.Point)
+	if math.Abs(backPoint[0]-769.792) > 0.1 || math.Abs(backPoint[1]-19300.763) > 0.1 {
+		t.Fatalf("datum round trip mismatch: got (%v, %v), want (769.792, 19300.763)", backPoint[0], backPoint[1])
 	}
 }
