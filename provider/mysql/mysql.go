@@ -272,6 +272,13 @@ func waitForMySQLRetry(ctx context.Context, attempt int) error {
 	}
 }
 
+func preferContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
+}
+
 // decodeWKT parses a WKT string (e.g. "LINESTRING(1 2, 3 4)") into a
 // geometry. WKT carries no SRID, so 0 is returned and the configured
 // provider/layer SRID applies.
@@ -414,7 +421,10 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 
 	rows, err := p.db.QueryContext(ctx, qtext, args...)
 	if err != nil {
-		log.Errorf("err during query: %v - %v", qtext, err)
+		err = preferContextError(ctx, err)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Errorf("err during query: %v - %v", qtext, err)
+		}
 		return err
 	}
 	defer rows.Close()
@@ -581,7 +591,10 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 		}
 
 		if err = rows.Scan(valPtrs...); err != nil {
-			log.Errorf("err reading row values: %v", err)
+			err = preferContextError(ctx, err)
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				log.Errorf("err reading row values: %v", err)
+			}
 			return err
 		}
 

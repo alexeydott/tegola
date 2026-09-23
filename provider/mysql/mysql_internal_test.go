@@ -411,6 +411,25 @@ func TestMySQLConnectionRetryClassification(t *testing.T) {
 	}
 }
 
+func TestPreferContextError(t *testing.T) {
+	driverErr := errors.New("driver query failed")
+
+	t.Run("returns cancellation from context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		if got := preferContextError(ctx, driverErr); !errors.Is(got, context.Canceled) {
+			t.Fatalf("preferContextError() = %v, want context.Canceled", got)
+		}
+	})
+
+	t.Run("preserves driver error when context is active", func(t *testing.T) {
+		if got := preferContextError(context.Background(), driverErr); !errors.Is(got, driverErr) {
+			t.Fatalf("preferContextError() = %v, want %v", got, driverErr)
+		}
+	})
+}
+
 // wkbPoint takes an x/y pair and returns the full WKB encoding of a 2D Point
 // in little-endian byte order.
 func wkbPoint(t *testing.T, x, y float64) []byte {
