@@ -75,30 +75,40 @@ type Cache struct {
 	file   cache.Interface
 }
 
-// Get checks memory first. A file hit is promoted to memory. Promotion is
+// Get checks memory first and falls back to file on a memory miss or a
+// recoverable memory error. A file hit is promoted to memory. Promotion is
 // best-effort: the file hit remains a valid cache response if L1 promotion
 // fails, but the failure is logged.
 func (c *Cache) Get(ctx context.Context, key *cache.Key) ([]byte, bool, error) {
 	value, hit, err := c.memory.Get(ctx, key)
 	if err != nil {
-		return nil, false, fmt.Errorf("multilevel cache: memory get: %w", err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, false, fmt.Errorf("multilevel cache: memory get: %w", err)
+		}
+		log.Warnf("multilevel cache: memory get failed, falling back to file: %v", err)
 	}
-	if hit {
+	if err == nil && hit {
 		return value, true, nil
 	}
 
-	value, hit, err = c.file.Get(ctx, key)
-	if err != nil {
-		return nil, false, fmt.Errorf("multilevel cache: file get: %w", err)
+	fileValue, fileHit, fileErr := c.file.Get(ctx, key)
+	if fileErr != nil {
+		if err != nil {
+			return nil, false, errors.Join(
+				fmt.Errorf("multilevel cache: memory get: %w", err),
+				fmt.Errorf("multilevel cache: file get: %w", fileErr),
+			)
+		}
+		return nil, false, fmt.Errorf("multilevel cache: file get: %w", fileErr)
 	}
-	if !hit {
+	if !fileHit {
 		return nil, false, nil
 	}
 
-	if err := c.memory.Set(ctx, key, value); err != nil {
+	if err := c.memory.Set(ctx, key, fileValue); err != nil {
 		log.Warnf("multilevel cache: promoting %s from file to memory failed: %v", key.String(), err)
 	}
-	return value, true, nil
+	return fileValue, true, nil
 }
 
 // Set writes to both levels. Both writes are attempted so a transient failure

@@ -1,6 +1,8 @@
 package file_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -412,5 +414,52 @@ func TestExpiration(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+func TestExpirationPurgeErrorIsReturned(t *testing.T) {
+	basepath := t.TempDir()
+	fc, err := file.New(dict.Dict{
+		file.ConfigKeyBasepath: basepath,
+		file.ConfigKeyTTL:      1,
+	})
+	if err != nil {
+		t.Fatalf("file.New() error = %v", err)
+	}
+
+	key := cache.Key{Z: 0, X: 1, Y: 2}
+	if err := fc.Set(context.Background(), &key, []byte("tile")); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	path := filepath.Join(basepath, key.String())
+	expiredAt := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, expiredAt, expiredAt); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, hit, err := fc.Get(ctx, &key)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Get() error = %v, want context.Canceled", err)
+	}
+	if hit {
+		t.Fatal("Get() reported a hit for an expired tile")
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expired file should remain when purge was canceled: %v", err)
+	}
+
+	_, hit, err = fc.Get(context.Background(), &key)
+	if err != nil {
+		t.Fatalf("Get() cleanup error = %v", err)
+	}
+	if hit {
+		t.Fatal("Get() reported a hit after expired file cleanup")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired file still exists after cleanup, stat error = %v", err)
 	}
 }

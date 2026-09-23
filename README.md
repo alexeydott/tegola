@@ -177,8 +177,9 @@ ttl = 86400
 
 Reads check memory first and then file; a file hit is promoted to memory.
 Writes and purges are sent to both levels. A failed promotion is logged while
-the successful file hit is still returned; errors from reads, writes, and
-purges are otherwise returned to the caller.
+the successful file hit is still returned. A non-cancellation memory read
+error is logged and falls back to file; if both reads fail, both errors are
+returned. Write and purge errors from either level are returned to the caller.
 
 The tegola config file uses the [TOML](https://github.com/toml-lang/toml) format. The following example shows how to configure a `mvt_postgis` data provider. The `mvt_postgis` provider will leverage PostGIS's `ST_AsMVT()` function for the encoding of the vector tile.
 

@@ -109,8 +109,12 @@ func (fc *Cache) Get(ctx context.Context, key *cache.Key) ([]byte, bool, error) 
 		}
 
 		if isExpired(s.ModTime(), fc.Expiration) {
-			pErr := fc.Purge(ctx, key)
-			if pErr != nil {
+			// Close before removing the expired file so purge also works on
+			// platforms that do not allow deleting an open file.
+			if err := f.Close(); err != nil {
+				return nil, false, err
+			}
+			if err := fc.Purge(ctx, key); err != nil {
 				return nil, false, err
 			}
 			return nil, false, nil
