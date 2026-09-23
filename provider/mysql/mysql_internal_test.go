@@ -120,6 +120,51 @@ func TestMySQLDeferredAutoBBoxUsesInMemoryFiltering(t *testing.T) {
 	}
 }
 
+func TestGeometryIntersectsExtent(t *testing.T) {
+	extent := geom.NewExtent(geom.Point{0, 0}, geom.Point{10, 10})
+
+	tests := []struct {
+		name string
+		g    geom.Geometry
+		want bool
+	}{
+		{name: "inside point", g: geom.Point{5, 5}, want: true},
+		{name: "boundary point", g: geom.Point{10, 10}, want: true},
+		{name: "outside point", g: geom.Point{11, 5}, want: false},
+		{name: "inside multipoint", g: geom.MultiPoint{{1, 1}, {9, 9}}, want: true},
+		{name: "outside multipoint", g: geom.MultiPoint{{11, 1}, {12, 9}}, want: false},
+		{name: "line crossing boundary", g: geom.LineString{{-1, 5}, {1, 5}}, want: true},
+		{name: "inside line", g: geom.LineString{{1, 1}, {9, 9}}, want: true},
+		{name: "outside line", g: geom.LineString{{11, 1}, {12, 9}}, want: false},
+		{name: "inside multiline", g: geom.MultiLineString{{{1, 1}, {2, 2}}, {{8, 8}, {9, 9}}}, want: true},
+		{name: "outside multiline", g: geom.MultiLineString{{{11, 1}, {12, 2}}}, want: false},
+		{name: "inside polygon", g: geom.Polygon{{{1, 1}, {9, 1}, {9, 9}, {1, 9}, {1, 1}}}, want: true},
+		{name: "outside polygon", g: geom.Polygon{{{11, 1}, {12, 1}, {12, 2}, {11, 2}, {11, 1}}}, want: false},
+		{name: "inside multipolygon", g: geom.MultiPolygon{
+			{{{1, 1}, {2, 1}, {2, 2}, {1, 2}, {1, 1}}},
+			{{{8, 8}, {9, 8}, {9, 9}, {8, 9}, {8, 8}}},
+		}, want: true},
+		{name: "outside multipolygon", g: geom.MultiPolygon{
+			{{{11, 1}, {12, 1}, {12, 2}, {11, 2}, {11, 1}}},
+		}, want: false},
+		{name: "inside collection", g: geom.Collection{
+			geom.Point{5, 5},
+			geom.LineString{{20, 20}, {21, 21}},
+		}, want: true},
+		{name: "outside collection", g: geom.Collection{
+			geom.Point{20, 20},
+			geom.LineString{{30, 30}, {31, 31}},
+		}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := geometryIntersectsExtent(tc.g, extent); got != tc.want {
+				t.Fatalf("geometryIntersectsExtent(%v) = %v, want %v", tc.g, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTrimTrailingSemicolon(t *testing.T) {
 	if got := trimTrailingSemicolon(" SELECT * FROM features ;  "); got != "SELECT * FROM features" {
 		t.Fatalf("trimTrailingSemicolon() = %q", got)

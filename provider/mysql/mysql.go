@@ -245,10 +245,14 @@ func geometryIntersectsExtent(g geom.Geometry, e *geom.Extent) bool {
 	if err != nil || gb == nil {
 		return true
 	}
-	if _, ok := e.Intersect(gb); ok {
-		return true
-	}
-	return false
+	// geom.Extent.Intersect rejects zero-width/height extents. That is
+	// correct for area intersections but drops valid Point and degenerate
+	// geometry features before they reach MVT encoding. Bounds overlap is
+	// inclusive here because touching the tile boundary still intersects it.
+	return gb.MinX() <= e.MaxX() &&
+		gb.MaxX() >= e.MinX() &&
+		gb.MinY() <= e.MaxY() &&
+		gb.MaxY() >= e.MinY()
 }
 
 func isRetryableConnectionError(err error) bool {

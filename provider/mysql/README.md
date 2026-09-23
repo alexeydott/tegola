@@ -63,7 +63,12 @@ The `geometry_format` config option controls decoding:
 
 ## MOS geometry format
 
-The MOS blob layout (little-endian): a 12-byte header (object type, subobject count, total point count, flags), then one `uint32` point count per subobject, then all points as contiguous `(int32 x, int32 y)` pairs. Real coordinates are `int / 10^mos_precision`. Object types map to MVT geometries as:
+The native MOS blob layout (little-endian) starts with a 10-byte geometry
+prefix (object type, subobject count and total point count), then one `uint32`
+point count per subobject, followed by all points as contiguous `(int32 x,
+int32 y)` pairs. Tegola also accepts the older 12-byte fixture form with an
+optional `uint16` flags word before the subobject counts. Real coordinates are
+`int / 10^mos_precision`. Object types map to MVT geometries as:
 
 - polygon → `Polygon`/`MultiPolygon` (rings are classified into exteriors and holes by containment, so an island inside a lake hole becomes a second polygon)
 - polyline → `LineString`/`MultiLineString`

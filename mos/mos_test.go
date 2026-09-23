@@ -14,13 +14,14 @@ import (
 // PutToBufInternal does: header, per-subobject counts, quantized points,
 // then optional non-geometric tail blocks.
 type blobBuilder struct {
-	oType   byte
-	typeMod byte
-	addFlag uint16
-	ofl     uint16
-	counts  []uint32
-	points  [][2]int32
-	tail    []byte
+	oType         byte
+	typeMod       byte
+	addFlag       uint16
+	ofl           uint16
+	counts        []uint32
+	points        [][2]int32
+	tail          []byte
+	tenByteHeader bool
 }
 
 func (bb *blobBuilder) build() []byte {
@@ -30,7 +31,9 @@ func (bb *blobBuilder) build() []byte {
 	binary.Write(&buf, binary.LittleEndian, bb.addFlag)
 	binary.Write(&buf, binary.LittleEndian, uint16(len(bb.counts)))
 	binary.Write(&buf, binary.LittleEndian, int32(len(bb.points)))
-	binary.Write(&buf, binary.LittleEndian, bb.ofl)
+	if !bb.tenByteHeader {
+		binary.Write(&buf, binary.LittleEndian, bb.ofl)
+	}
 	for _, c := range bb.counts {
 		binary.Write(&buf, binary.LittleEndian, c)
 	}
@@ -268,6 +271,59 @@ func TestDecodePointSingleIsPointMultiIsMultiPoint(t *testing.T) {
 	want := geom.MultiPoint{{1, 2}, {3, 4}, {5, 6}}
 	if !reflect.DeepEqual(g, want) {
 		t.Errorf("multi: got %v, want %v", g, want)
+	}
+}
+
+func TestDecodeNativeTenBytePointAndCarrier(t *testing.T) {
+	// Native Mappl blobs use the 10-byte geometry prefix. A previous reader
+	// consumed the first two bytes of the first coordinate as a flags field,
+	// shifted the point counts, and dropped otherwise valid point blobs.
+	point := &blobBuilder{
+		oType:         TypePoint,
+		counts:        []uint32{1},
+		points:        [][2]int32{{1234, 2345}},
+		tenByteHeader: true,
+	}
+	g, err := Decode(point.build(), Options{Precision: 0, UnitFactor: 0.001})
+	if err != nil {
+		t.Fatalf("decode native point: %v", err)
+	}
+	if want := (geom.Point{1.234, 2.345}); !reflect.DeepEqual(g, want) {
+		t.Fatalf("native point: got %v, want %v", g, want)
+	}
+
+	// The EGKO query uses a two-point, 1 mm carrier so a source ObjectType=2
+	// row can travel through the line-oriented path. The ObjectType column
+	// remains a separate feature attribute and is normalized by the client.
+	carrier := &blobBuilder{
+		oType:         TypePolyline,
+		counts:        []uint32{2},
+		points:        [][2]int32{{1000, 2000}, {1001, 2001}},
+		tenByteHeader: true,
+	}
+	g, err = Decode(carrier.build(), Options{Precision: 0, UnitFactor: 0.001})
+	if err != nil {
+		t.Fatalf("decode native carrier: %v", err)
+	}
+	want := geom.LineString{{1, 2}, {1.001, 2.001}}
+	gotLine, ok := g.(geom.LineString)
+	if !ok || len(gotLine) != len(want) {
+		t.Fatalf("native carrier: got %T %v, want %v", g, g, want)
+	}
+	for i := range want {
+		for axis := 0; axis < 2; axis++ {
+			if math.Abs(gotLine[i][axis]-want[i][axis]) > 1e-12 {
+				t.Fatalf("native carrier: got %v, want %v", g, want)
+			}
+		}
+	}
+
+	h, err := DecodeHeader(point.build())
+	if err != nil {
+		t.Fatalf("decode native point header: %v", err)
+	}
+	if h.ObjectType != TypePoint || h.SubObjectsCount != 1 || h.PointsCount != 1 {
+		t.Fatalf("unexpected native point header: %+v", h)
 	}
 }
 

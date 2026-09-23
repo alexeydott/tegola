@@ -4,17 +4,20 @@
 //
 // Format (all values little-endian, coordinates are quantized int32 pairs):
 //
-//	Header (12 bytes, mirrors packed THeaderObject):
+//	Header (10 bytes, mirrors the packed geometry prefix of THeaderObject):
 //	  0: oType             byte   (0=polygon, 1=polyline, 2=point, 3=text, 4=image)
 //	  1: oTypeModification byte
 //	  2: AddFlag           uint16
 //	  4: subObjectsCount   uint16
 //	  6: pointsCount       int32  (total across all subobjects)
-//	 10: ofl               uint16 (flag bits, see Flag* constants)
 //
 //	Then subObjectsCount x uint32 point counts (one per subobject).
 //	Then pointsCount x (int32 x, int32 y) — all subobjects' points
 //	contiguously, in subobject order.
+//
+//	Some older Tegola fixtures used a 12-byte extension with a uint16 ofl
+//	field at offset 10. The decoder accepts that form too, but native Mappl
+//	geometry blobs use the 10-byte prefix above.
 //
 //	Everything after the points block (point icon params, labels, markers,
 //	multi-label texts, bezier control points) is non-geometric or optional
@@ -58,11 +61,17 @@ const (
 	FlagBezier     uint16 = 1 << 4
 )
 
-// headerSize is the packed size of THeaderObject:
-// 1 + 1 + 2 + 2 + 4 + 2.
-const headerSize = 12
+const (
+	// headerSize is the native packed geometry prefix:
+	// 1 + 1 + 2 + 2 + 4.
+	headerSize = 10
+	// extendedHeaderSize is the legacy Tegola fixture form that appends the
+	// optional uint16 flags field before the subobject counts.
+	extendedHeaderSize = 12
+)
 
-// Header mirrors the packed THeaderObject record.
+// Header mirrors the packed THeaderObject geometry prefix. Flags is populated
+// when the optional 12-byte extension is present.
 type Header struct {
 	ObjectType       byte
 	TypeModification byte
@@ -111,26 +120,20 @@ func (o Options) kPrecision() (float64, error) {
 	return k, nil
 }
 
-// DecodeHeader parses the 12-byte MOS blob header.
+// DecodeHeader parses the native MOS blob header. Both the native 10-byte
+// prefix and the legacy 12-byte flags extension are accepted.
 func DecodeHeader(buf []byte) (Header, error) {
 	if len(buf) < headerSize {
 		return Header{}, fmt.Errorf("mos: buffer too short (%v bytes) for MOS header", len(buf))
 	}
-	h := Header{
-		ObjectType:       buf[0],
-		TypeModification: buf[1],
-		AddFlag:          binary.LittleEndian.Uint16(buf[2:4]),
-		SubObjectsCount:  int(binary.LittleEndian.Uint16(buf[4:6])),
-		PointsCount:      int(int32(binary.LittleEndian.Uint32(buf[6:10]))),
-		Flags:            binary.LittleEndian.Uint16(buf[10:12]),
+	if len(buf) == headerSize {
+		return parseHeader(buf, headerSize)
 	}
-	if h.ObjectType > TypeImage {
-		return Header{}, fmt.Errorf("mos: unsupported object type %v", h.ObjectType)
+	if len(buf) == extendedHeaderSize {
+		return parseHeader(buf, extendedHeaderSize)
 	}
-	if h.PointsCount < 0 {
-		return Header{}, fmt.Errorf("mos: negative points count %v", h.PointsCount)
-	}
-	return h, nil
+	h, _, err := decodeHeaderAndOffset(buf)
+	return h, err
 }
 
 // Decode decodes the geometry prefix of a MOS blob into a tegola geometry.
@@ -142,7 +145,7 @@ func DecodeHeader(buf []byte) (Header, error) {
 //   - point: one point -> geom.Point, several -> geom.MultiPoint.
 //   - text / image: anchor point of the first subobject -> geom.Point.
 func Decode(buf []byte, opts Options) (geom.Geometry, error) {
-	h, err := DecodeHeader(buf)
+	h, geometryOffset, err := decodeHeaderAndOffset(buf)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +154,7 @@ func Decode(buf []byte, opts Options) (geom.Geometry, error) {
 		return nil, err
 	}
 
-	c := &cursor{b: buf, pos: headerSize}
+	c := &cursor{b: buf, pos: geometryOffset}
 
 	// per-subobject point counts
 	counts := make([]int, h.SubObjectsCount)
@@ -208,6 +211,102 @@ func Decode(buf []byte, opts Options) (geom.Geometry, error) {
 	}
 
 	return h.buildGeometry(subObjects)
+}
+
+// decodeHeaderAndOffset parses the common header fields and selects the
+// layout whose subobject/point prefix is internally consistent. Native Mappl
+// blobs use a 10-byte header; a 12-byte flags extension is retained for
+// compatibility with older Tegola-generated fixtures.
+func decodeHeaderAndOffset(buf []byte) (Header, int, error) {
+	if len(buf) < headerSize {
+		return Header{}, 0, fmt.Errorf("mos: buffer too short (%v bytes) for MOS header", len(buf))
+	}
+
+	base, err := parseHeader(buf, headerSize)
+	if err != nil {
+		return Header{}, 0, err
+	}
+
+	// Prefer the native form when both layouts happen to validate. For a
+	// native 10-byte blob, the bytes at offset 10 are the first subobject
+	// count; treating them as flags can otherwise misclassify small
+	// coordinates when the blob has a long attribute tail.
+	baseErr := validateGeometryPrefix(buf, base, headerSize)
+	if baseErr == nil {
+		return base, headerSize, nil
+	}
+
+	// Older Tegola fixtures used the optional flags extension. For those
+	// blobs the native candidate above fails because it interprets the flags
+	// word as the first subobject count.
+	var extendedErr error
+	if len(buf) >= extendedHeaderSize {
+		extended, parseErr := parseHeader(buf, extendedHeaderSize)
+		if parseErr == nil {
+			extendedErr = validateGeometryPrefix(buf, extended, extendedHeaderSize)
+			if extendedErr == nil {
+				return extended, extendedHeaderSize, nil
+			}
+		} else {
+			extendedErr = parseErr
+		}
+	}
+
+	if extendedErr != nil {
+		return Header{}, 0, fmt.Errorf("mos: invalid geometry prefix: native: %v; extended: %v", baseErr, extendedErr)
+	}
+	return Header{}, 0, fmt.Errorf("mos: invalid geometry prefix: %v", baseErr)
+}
+
+func parseHeader(buf []byte, size int) (Header, error) {
+	if len(buf) < size {
+		return Header{}, fmt.Errorf("mos: buffer too short (%v bytes) for %v-byte MOS header", len(buf), size)
+	}
+	h := Header{
+		ObjectType:       buf[0],
+		TypeModification: buf[1],
+		AddFlag:          binary.LittleEndian.Uint16(buf[2:4]),
+		SubObjectsCount:  int(binary.LittleEndian.Uint16(buf[4:6])),
+		PointsCount:      int(int32(binary.LittleEndian.Uint32(buf[6:10]))),
+	}
+	if size == extendedHeaderSize {
+		h.Flags = binary.LittleEndian.Uint16(buf[10:12])
+	}
+	if h.ObjectType > TypeImage {
+		return Header{}, fmt.Errorf("mos: unsupported object type %v", h.ObjectType)
+	}
+	if h.PointsCount < 0 {
+		return Header{}, fmt.Errorf("mos: negative points count %v", h.PointsCount)
+	}
+	return h, nil
+}
+
+// validateGeometryPrefix verifies the counts and point block at offset. It
+// deliberately ignores the optional tail because MOS stores labels, icons
+// and other attributes after the geometry prefix.
+func validateGeometryPrefix(buf []byte, h Header, offset int) error {
+	if h.SubObjectsCount > (len(buf)-offset)/4 {
+		return fmt.Errorf("subobject count %v exceeds remaining buffer", h.SubObjectsCount)
+	}
+	c := &cursor{b: buf, pos: offset}
+	total := 0
+	for i := 0; i < h.SubObjectsCount; i++ {
+		v, err := c.u32()
+		if err != nil {
+			return fmt.Errorf("reading point count of subobject %v: %v", i, err)
+		}
+		if v > math.MaxInt32-uint32(total) {
+			return fmt.Errorf("subobject %v point count %v overflows", i, v)
+		}
+		total += int(v)
+	}
+	if total != h.PointsCount {
+		return fmt.Errorf("subobject point counts sum to %v but header declares %v", total, h.PointsCount)
+	}
+	if h.PointsCount > c.remaining()/8 {
+		return fmt.Errorf("buffer holds %v points but header declares %v", c.remaining()/8, h.PointsCount)
+	}
+	return nil
 }
 
 // polygonGeometry classifies closed rings into exteriors and holes and
