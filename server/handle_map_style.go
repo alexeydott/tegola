@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path"
@@ -82,18 +83,17 @@ func (req HandleMapStyle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		Layers: []style.Layer{},
 	}
+	usedLayerIDs := make(map[string]bool, len(m.Layers))
+	for _, l := range m.Layers {
+		usedLayerIDs[l.MVTName()] = true
+	}
+	emittedLayerNames := make(map[string]bool, len(m.Layers))
 
 	// determining the min and max zoom for this map
 	for _, l := range m.Layers {
 		// check if the layer already exists in our slice. this can happen if the config
 		// is using the "name" param for a layer to override the providerLayerName
-		var skip bool
-		for i := range mapboxStyle.Layers {
-			if mapboxStyle.Layers[i].ID == l.MVTName() {
-				skip = true
-				break
-			}
-		}
+		skip := emittedLayerNames[l.MVTName()]
 		// entry for layer already exists. move on
 		if skip {
 			continue
@@ -124,22 +124,15 @@ func (req HandleMapStyle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		case geom.Polygon, geom.MultiPolygon:
 			layer.Type = style.LayerTypeFill
-			hexColor := stringToColorHex(l.MVTName())
-
-			hex, err := colors.ParseHEX(hexColor)
-			if err != nil {
-				log.Errorf("error parsing hex color (%v)", hexColor)
-				hex, _ = colors.ParseHEX("#fff") // default to white on error
+			layer.Paint = polygonPaint(l.MVTName())
+		case geom.Collection:
+			for _, collectionLayer := range collectionStyleLayers(req.mapName, l.MVTName()) {
+				collectionLayer.ID = uniqueStyleLayerID(collectionLayer.ID, usedLayerIDs)
+				usedLayerIDs[collectionLayer.ID] = true
+				mapboxStyle.Layers = append(mapboxStyle.Layers, collectionLayer)
 			}
-
-			rgba := hex.ToRGBA()
-			// set the opacity to 10%
-			rgba.A = 0.10
-
-			layer.Paint = &style.LayerPaint{
-				FillColor:        rgba.String(),
-				FillOutlineColor: hexColor,
-			}
+			emittedLayerNames[l.MVTName()] = true
+			continue
 		default:
 			log.Infof("unable to infer geometry type for providerLayerName: %v. style definition not generated", l.ProviderLayerName)
 			continue
@@ -158,7 +151,7 @@ func (req HandleMapStyle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// source layer. Keep the established ordering (line before fill)
 			// so the generated style remains backwards-compatible.
 			lineLayer := style.Layer{
-				ID:          l.MVTName() + "-line",
+				ID:          uniqueStyleLayerID(l.MVTName()+"-line", usedLayerIDs),
 				Source:      req.mapName,
 				SourceLayer: l.MVTName(),
 				Type:        style.LayerTypeLine,
@@ -170,11 +163,13 @@ func (req HandleMapStyle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					LineColor: stringToColorHex(l.MVTName()),
 				},
 			}
+			usedLayerIDs[lineLayer.ID] = true
 			mapboxStyle.Layers = append(mapboxStyle.Layers, lineLayer)
 		}
 
 		// add our layer to our tile layer response
 		mapboxStyle.Layers = append(mapboxStyle.Layers, layer)
+		emittedLayerNames[l.MVTName()] = true
 	}
 
 	// mimetype for protocol buffers
@@ -188,6 +183,73 @@ func (req HandleMapStyle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err = json.NewEncoder(w).Encode(mapboxStyle); err != nil {
 		log.Errorf("error encoding tileJSON for map (%v)", req.mapName)
 	}
+}
+
+func polygonPaint(name string) *style.LayerPaint {
+	hexColor := stringToColorHex(name)
+	hex, err := colors.ParseHEX(hexColor)
+	if err != nil {
+		log.Errorf("error parsing hex color (%v)", hexColor)
+		hex, _ = colors.ParseHEX("#fff")
+	}
+
+	rgba := hex.ToRGBA()
+	rgba.A = 0.10
+
+	return &style.LayerPaint{
+		FillColor:        rgba.String(),
+		FillOutlineColor: hexColor,
+	}
+}
+
+func visibleStyleLayout() *style.LayerLayout {
+	return &style.LayerLayout{Visibility: style.LayoutVisible}
+}
+
+func collectionStyleLayers(mapName, sourceLayer string) []style.Layer {
+	color := stringToColorHex(sourceLayer)
+	return []style.Layer{
+		{
+			ID:          sourceLayer + "-point",
+			Source:      mapName,
+			SourceLayer: sourceLayer,
+			Type:        style.LayerTypeCircle,
+			Filter:      []interface{}{"==", "$type", "Point"},
+			Layout:      visibleStyleLayout(),
+			Paint: &style.LayerPaint{
+				CircleRadius: 3,
+				CircleColor:  color,
+			},
+		},
+		{
+			ID:          sourceLayer + "-line",
+			Source:      mapName,
+			SourceLayer: sourceLayer,
+			Type:        style.LayerTypeLine,
+			Filter:      []interface{}{"==", "$type", "LineString"},
+			Layout:      visibleStyleLayout(),
+			Paint: &style.LayerPaint{
+				LineColor: color,
+			},
+		},
+		{
+			ID:          sourceLayer + "-fill",
+			Source:      mapName,
+			SourceLayer: sourceLayer,
+			Type:        style.LayerTypeFill,
+			Filter:      []interface{}{"==", "$type", "Polygon"},
+			Layout:      visibleStyleLayout(),
+			Paint:       polygonPaint(sourceLayer),
+		},
+	}
+}
+
+func uniqueStyleLayerID(base string, used map[string]bool) string {
+	id := base
+	for suffix := 2; used[id]; suffix++ {
+		id = fmt.Sprintf("%s-%d", base, suffix)
+	}
+	return id
 }
 
 // port of https://stackoverflow.com/questions/3426404/create-a-hexadecimal-colour-based-on-a-string-with-javascript

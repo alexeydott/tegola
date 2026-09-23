@@ -159,6 +159,9 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 	if len(plygs) == 0 {
 		return nil, nil
 	}
+	if cpbx == nil {
+		cpbx = plygsToBoundingBox(plygs)
+	}
 	plygsbb := plygsToBoundingBox(plygs)
 	clipbox, intersect := cpbx.Intersect(plygsbb)
 	if !intersect {

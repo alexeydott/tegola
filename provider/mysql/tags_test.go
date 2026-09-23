@@ -30,6 +30,7 @@ func TestCategoryFromDatabaseTypeName(t *testing.T) {
 		{"DOUBLE PRECISION", typeCategoryFloat},
 		{"REAL", typeCategoryFloat},
 		{"NEWDECIMAL", typeCategoryFloat},
+		{"POINT", typeCategoryString},
 		{"DATE", typeCategoryTime},
 		{"DATETIME", typeCategoryTime},
 		{"TIMESTAMP", typeCategoryTime},
@@ -72,7 +73,7 @@ func TestConvertTagValue(t *testing.T) {
 		{"bytes as negative int", []byte("-7"), typeCategoryInt, int64(-7), false},
 		{"bytes as huge uint", []byte("18446744073709551615"), typeCategoryInt, uint64(18446744073709551615), false},
 		{"bytes as float", []byte("2.5"), typeCategoryFloat, 2.5, false},
-		{"bytes as time string", []byte("2024-01-02 15:04:05"), typeCategoryTime, "2024-01-02 15:04:05", false},
+		{"bytes as time string", []byte("2024-01-02 15:04:05"), typeCategoryTime, "2024-01-02T15:04:05Z", false},
 		{"bad int bytes", []byte("notanint"), typeCategoryInt, nil, true},
 		{"bad float bytes", []byte("notafloat"), typeCategoryFloat, nil, true},
 	}

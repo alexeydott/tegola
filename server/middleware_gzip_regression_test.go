@@ -60,6 +60,9 @@ func TestGZipHandlerDecompressesImplicitSuccessfulWrite(t *testing.T) {
 	if got := recorder.Header().Get("Content-Encoding"); got != "" {
 		t.Fatalf("Content-Encoding = %q, want empty", got)
 	}
+	if got := recorder.Header().Get("Vary"); got != "Accept-Encoding" {
+		t.Fatalf("Vary = %q, want Accept-Encoding", got)
+	}
 	if got := recorder.Body.Bytes(); !bytes.Equal(got, body) {
 		t.Fatalf("body = %q, want %q", got, body)
 	}

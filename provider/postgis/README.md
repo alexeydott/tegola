@@ -116,6 +116,14 @@ tablename = "gis.zoning_base_3857"
 
 `*Required`: either the `tablename` or `sql` must be defined, but not both.
 
+When `crs_defn` creates a synthetic Tegola-only SRID (≥ 340000001), generated
+table SQL uses SRID 0 for the database-side envelope and geometry comparison;
+the source coordinates are still interpreted with the configured PROJ.4
+definition before MVT encoding. Custom SQL must likewise compare geometries and
+`!BBOX!` in a common database SRID (typically by using SRID 0 for both sides,
+or by applying `ST_SetSRID` explicitly). Synthetic IDs must not be passed to
+PostGIS functions as registered EPSG codes.
+
 #### Example minimum custom SQL config
 
 ```toml

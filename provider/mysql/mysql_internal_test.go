@@ -16,6 +16,7 @@ import (
 	"database/sql/driver"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
@@ -88,6 +89,34 @@ func TestMySQLBBoxUsesConfiguredSRID(t *testing.T) {
 	query = replaceTokens("WHERE !BBOX!", layer, tile, extent)
 	if strings.Contains(query, ", 4326)") {
 		t.Fatalf("SRID leaked into zero-SRID query: %q", query)
+	}
+}
+
+func TestMySQLBBoxSyntheticSRIDDisablesDatabaseSpatialPredicate(t *testing.T) {
+	srid, err := basic.RegisterProj4Defn("+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+	if err != nil {
+		t.Fatalf("registering synthetic CRS: %v", err)
+	}
+
+	layer := &Layer{geomFieldname: "geom", srid: srid}
+	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
+	extent, _ := tile.BufferedExtent()
+	if got := replaceTokens("WHERE !BBOX!", layer, tile, extent); got != "WHERE 1=1" {
+		t.Fatalf("synthetic CRS bbox = %q, want database-safe 1=1", got)
+	}
+}
+
+func TestMySQLDeferredAutoBBoxUsesInMemoryFiltering(t *testing.T) {
+	layer := &Layer{
+		geomFieldname:      "geom",
+		geometryFormat:     GeometryFormatAuto,
+		deferredInspection: true,
+		srid:               3857,
+	}
+	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
+	extent, _ := tile.BufferedExtent()
+	if got := replaceTokens("WHERE !BBOX!", layer, tile, extent); got != "WHERE 1=1" {
+		t.Fatalf("deferred auto bbox = %q, want in-memory filtering", got)
 	}
 }
 
@@ -175,6 +204,26 @@ func TestGeomTypeFromColumnKeepsSamplingAfterGeometry(t *testing.T) {
 	}
 	if sysInfo == nil || sysInfo.Precision != 4 {
 		t.Fatalf("expected system info precision 4, got %#v", sysInfo)
+	}
+}
+
+func TestGeomTypeFromColumnSkipsNullGeometryRows(t *testing.T) {
+	driverName := "tegola_mysql_null_sampling_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+	sql.Register(driverName, &samplingTestDriver{
+		values: [][]driver.Value{{nil}, {"POINT(1 2)"}},
+	})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	geo, _, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := geo.(geom.Point); !ok {
+		t.Fatalf("expected geom.Point, got %T", geo)
 	}
 }
 
@@ -660,12 +709,15 @@ func TestApplySystemInfo(t *testing.T) {
 	}
 
 	t.Run("units factor applied", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1}
+		layer := Layer{name: "l", geometryFormat: GeometryFormatAuto, mosPrecision: 0, mosUnitsFactor: 1}
 		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.mosUnitsFactor != 0.001 {
 			t.Errorf("mosUnitsFactor = %v, want 0.001", layer.mosUnitsFactor)
+		}
+		if layer.geometryFormat != GeometryFormatMOS {
+			t.Errorf("geometryFormat = %q, want %q", layer.geometryFormat, GeometryFormatMOS)
 		}
 	})
 
@@ -770,4 +822,43 @@ func TestApplySystemInfo(t *testing.T) {
 			t.Errorf("layer modified by nil sysinfo: precision=%v srid=%v", layer.mosPrecision, layer.srid)
 		}
 	})
+}
+
+func TestApplyRuntimeSystemInfo(t *testing.T) {
+	const projection = "+proj=merc +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+	blob := make([]byte, 64+len(projection))
+	copy(blob, []byte{5, 'V', 'e', 'r', ' ', '1'})
+	binary.LittleEndian.PutUint32(blob[11:15], 3)
+	blob[15] = 1
+	blob[52] = byte(mos.UnitsCentimetres)
+	blob[53] = 1
+	binary.LittleEndian.PutUint32(blob[60:64], uint32(len(projection)))
+	copy(blob[64:], projection)
+
+	layer := Layer{name: "deferred", geometryFormat: GeometryFormatAuto}
+	format := layer.geometryFormat
+	precision := 0.0
+	unitsFactor := 1.0
+	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
+	tileBBox, tileSRID := tile.BufferedExtent()
+	webMercatorBBox := tileBBox
+
+	if err := applyRuntimeSystemInfo(&layer, &format, &precision, &unitsFactor, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
+		t.Fatalf("applyRuntimeSystemInfo: %v", err)
+	}
+	if format != GeometryFormatMOS {
+		t.Fatalf("geometry format = %q, want %q", format, GeometryFormatMOS)
+	}
+	if precision != 3 {
+		t.Fatalf("precision = %v, want 3", precision)
+	}
+	if unitsFactor != 0.01 {
+		t.Fatalf("units factor = %v, want 0.01", unitsFactor)
+	}
+	if layer.srid == 0 || !basic.IsSyntheticSRID(layer.srid) {
+		t.Fatalf("expected synthetic runtime SRID, got %v", layer.srid)
+	}
+	if tileBBox == webMercatorBBox {
+		t.Fatal("expected tile extent to be converted for runtime projection")
+	}
 }

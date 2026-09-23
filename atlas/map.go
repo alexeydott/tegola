@@ -352,6 +352,10 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 					geo = g
 				}
 
+				if f.Tags == nil {
+					f.Tags = make(map[string]interface{})
+				}
+
 				// add default tags, but don't overwrite a tag that already exists
 				for k, v := range l.DefaultTags {
 					if _, ok := f.Tags[k]; !ok {

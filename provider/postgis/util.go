@@ -121,6 +121,11 @@ func genSQL(
 
 	if isMVT(providerType) {
 		sqlTmpl = mvtSQL
+	} else if basic.IsSyntheticSRID(l.srid) {
+		// A textual crs_defn is registered only in Tegola. Keep generated
+		// database comparisons in the unknown-SRS-safe SRID 0 domain; Atlas
+		// still interprets returned feature coordinates with l.srid.
+		sqlTmpl = `SELECT %[1]v FROM %[2]v WHERE ST_SetSRID("%[3]v",0) && ` + config.BboxToken
 	}
 
 	return fmt.Sprintf(sqlTmpl, selectClause, tblname, l.geomField), nil
@@ -163,13 +168,20 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 		return "", fmt.Errorf("error converting tile extent: %w", err)
 	}
 
+	bboxSRID := srid
+	if basic.IsSyntheticSRID(srid) {
+		// Synthetic SRIDs are process-local Tegola identifiers and are not
+		// present in PostGIS spatial_ref_sys. Use SRID 0 for the coordinate
+		// comparison so PostgreSQL never receives an unknown SRS identifier.
+		bboxSRID = 0
+	}
 	bbox := fmt.Sprintf(
 		"ST_MakeEnvelope(%.8f,%.8f,%.8f,%.8f,%d)",
 		sourceExtent.MinX(),
 		sourceExtent.MinY(),
 		sourceExtent.MaxX(),
 		sourceExtent.MaxY(),
-		srid,
+		bboxSRID,
 	)
 
 	extent, _ = tile.Extent()

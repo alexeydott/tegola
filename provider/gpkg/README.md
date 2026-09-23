@@ -52,8 +52,13 @@ id_fieldname = "fid"
   - `!GEOM_FIELD!` - [Optional] the geometry field name.
   - `!GEOM_TYPE!` - [Optional] the geometry type if known, otherwise an empty string.
 
+  Custom SQL containing tile-dependent tokens (`!X!`, `!Y!`, `!Z!`,
+  `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, or `!PIXEL_HEIGHT!`) is not executed
+  during provider startup for geometry-type inspection. The layer is registered
+  with its configured CRS and geometry type remains unknown until the query is
+  served. This avoids inspecting a different tile from the one requested.
 
-`*Required`: either the `tablename` or `sql` must be defined, but not both.
+  `*Required`: either the `tablename` or `sql` must be defined, but not both.
 
 **Example minimum custom SQL config**
 
@@ -86,3 +91,10 @@ Use `+proj=etmerc` instead of `+proj=tmerc` for transverse Mercator
 definitions (vendored proj limitation). Note the RTree spatial index bounds
 must be stored in the same CRS as the geometries for `!BBOX!` filtering to
 work correctly.
+
+### Empty layers
+
+If a configured custom-SQL layer currently returns no rows, Tegola logs a
+warning and keeps the layer registered without an inferred geometry type. This
+allows data to appear later without requiring a restart. A tile request still
+executes the configured SQL normally.

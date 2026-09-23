@@ -248,14 +248,12 @@ func TestNewTileProvider(t *testing.T) {
 			},
 			expectedLayerCount: 1,
 		},
-		"custom sql layer with 0 rows is skipped, not registered": {
+		"custom sql layer with 0 rows is registered": {
 			// A custom-SQL layer whose query currently matches no rows (e.g. an
 			// empty table, or filter criteria that exclude everything) must not
 			// prevent the provider - and therefore the whole server - from
-			// starting, as long as at least one other configured layer has
-			// data. The empty layer itself is simply skipped (not registered)
-			// until matching data exists, so only the non-empty layer ends up
-			// in the provider's layer list.
+			// starting. Keep the layer registered without an inferred geometry
+			// type so it can begin serving if the query later returns data.
 			config: map[string]interface{}{
 				"filepath": GPKGAthensFilePath,
 				"layers": []map[string]interface{}{
@@ -263,22 +261,18 @@ func TestNewTileProvider(t *testing.T) {
 					{"name": "empty_layer", "sql": "SELECT fid, geom FROM amenities_points WHERE fid = -1"},
 				},
 			},
-			expectedLayerCount: 1,
+			expectedLayerCount: 2,
 		},
-		"all layers with 0 rows is still a hard error": {
-			// If literally every configured layer currently returns 0 rows,
-			// that's very unlikely to be legitimate - it's much more likely a
-			// real misconfiguration (wrong file, wrong table/SQL, overly
-			// restrictive filters) - so the provider must still fail to
-			// register rather than silently starting a provider that can
-			// never render anything.
+		"all custom sql layers with 0 rows are registered": {
+			// No rows means geometry type inference is unavailable, but it is
+			// not itself a registration error for custom SQL.
 			config: map[string]interface{}{
 				"filepath": GPKGAthensFilePath,
 				"layers": []map[string]interface{}{
 					{"name": "empty_layer", "sql": "SELECT fid, geom FROM amenities_points WHERE fid = -1"},
 				},
 			},
-			expectedErr: errors.New("gpkg provider (testdata/athens-osm-20170921.gpkg): all 1 configured layer(s) currently return 0 rows: empty_layer; check the filepath, table names, custom SQL and any bbox/zoom filters"),
+			expectedLayerCount: 1,
 		},
 	}
 

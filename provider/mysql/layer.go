@@ -18,6 +18,12 @@ type Layer struct {
 	// "mysql", "mariadb", "wkb", "wkt", "mos"); used to build !BBOX! for text
 	// geometry columns.
 	geometryFormat string
+	// deferredInspection is set for tile-dependent custom SQL whose geometry
+	// type cannot be inferred safely during provider startup.
+	deferredInspection bool
+	// crsExplicit records whether the provider or layer explicitly selected a
+	// CRS. It prevents a runtime MOS system-info row from replacing that CRS.
+	crsExplicit bool
 	// mosPrecision is the number of decimal digits MOS blob coordinates
 	// carry (mos_precision config or TLayerSystemInfoRec.Precision); 0
 	// means integer units.

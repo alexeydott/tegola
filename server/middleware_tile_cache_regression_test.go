@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestTileCacheResponseWriterCachesImplicitSuccessfulWrite(t *testing.T) {
@@ -26,5 +27,33 @@ func TestTileCacheResponseWriterCachesImplicitSuccessfulWrite(t *testing.T) {
 	}
 	if !bytes.Equal(recorder.Body.Bytes(), body) {
 		t.Fatalf("response body = %q, want %q", recorder.Body.Bytes(), body)
+	}
+}
+
+func TestTileUpdateCoordinatorSerializesMetatileWork(t *testing.T) {
+	coordinator := newTileUpdateCoordinator()
+	unlock := coordinator.acquire("map/layer/4/8/8")
+
+	acquired := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		otherUnlock := coordinator.acquire("map/layer/4/8/8")
+		close(acquired)
+		otherUnlock()
+		close(done)
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("same-metatile work acquired the lock concurrently")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	unlock()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("same-metatile work did not acquire the lock after release")
 	}
 }

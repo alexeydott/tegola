@@ -167,6 +167,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		feature := provider.Feature{
 			Tags: map[string]interface{}{},
 		}
+		skipRow := false
 
 		for i := range cols {
 			// check if the context cancelled or timed out
@@ -174,6 +175,9 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				return ctx.Err()
 			}
 			if vals[i] == nil {
+				if cols[i] == pLayer.geomFieldname {
+					skipRow = true
+				}
 				continue
 			}
 
@@ -235,6 +239,10 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 					log.Errorf("unexpected type for sqlite column data: %v: %T", cols[i], v)
 				}
 			}
+		}
+
+		if skipRow || feature.Geometry == nil {
+			continue
 		}
 
 		// pass the feature to the provided call back

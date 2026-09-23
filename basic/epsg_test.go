@@ -2,6 +2,7 @@ package basic_test
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/go-spatial/geom"
@@ -115,6 +116,31 @@ func TestRegisterProj4DefnAppliesTowgs84(t *testing.T) {
 	backPoint := back.(geom.Point)
 	if math.Abs(backPoint[0]-769.792) > 0.1 || math.Abs(backPoint[1]-19300.763) > 0.1 {
 		t.Fatalf("datum round trip mismatch: got (%v, %v), want (769.792, 19300.763)", backPoint[0], backPoint[1])
+	}
+}
+
+func TestBuiltinPulkovoGaussKrugerDefinitions(t *testing.T) {
+	tests := []struct {
+		srid       uint64
+		centralMer string
+		towgs84    string
+	}{
+		{28404, "+lon_0=21", "+towgs84=25,-141,-78.5,0,-0.35,-0.736,0"},
+		{2463, "+lon_0=21", "+towgs84=24.47,-130.89,-81.56,0,0,-0.13,-0.22"},
+		{2492, "+lon_0=9", "+towgs84=25,-141,-78.5,0,-0.35,-0.736,0"},
+	}
+
+	for _, tc := range tests {
+		defn, ok := basic.BuiltinProj4Def(tc.srid)
+		if !ok {
+			t.Fatalf("EPSG:%d is not in the built-in CRS table", tc.srid)
+		}
+		if !strings.Contains(defn, tc.centralMer) {
+			t.Errorf("EPSG:%d definition %q does not contain %q", tc.srid, defn, tc.centralMer)
+		}
+		if !strings.Contains(defn, tc.towgs84) {
+			t.Errorf("EPSG:%d definition %q does not contain %q", tc.srid, defn, tc.towgs84)
+		}
 	}
 }
 

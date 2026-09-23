@@ -21,6 +21,7 @@ import (
 // client.
 func GZipHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Vary", "Accept-Encoding")
 
 		acceptEncoding := r.Header.Get("Accept-Encoding")
 		if acceptsGzip(acceptEncoding) {

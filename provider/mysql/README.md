@@ -154,6 +154,13 @@ crs_defn = "+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +
 Use `+proj=etmerc` instead of `+proj=tmerc` for transverse Mercator
 definitions (vendored proj limitation).
 
+Synthetic SRIDs (the IDs assigned to `crs_defn`) exist only inside Tegola and
+are not registered in MySQL or MariaDB. For native geometry columns, Tegola
+therefore disables the server-side `!BBOX!` spatial predicate for a synthetic
+SRID and performs reprojection and tile filtering in Tegola. This is correct
+but can be slower; use a real database SRID when the database has a matching
+registered SRS. MOS layers continue to use their indexed raw-bounds filter.
+
 ## SQL tokens
 
 The following tokens are supported in custom `sql` (case-insensitive) and behave identically to the postgis provider:
@@ -167,9 +174,27 @@ The following tokens are supported in custom `sql` (case-insensitive) and behave
 - `!GEOM_FIELD!` — the layer's geometry field name.
 - `!GEOM_TYPE!` — the layer's geometry type name (POINT, LINESTRING, ...).
 
+Custom SQL containing tile-dependent tokens (`!X!`, `!Y!`, `!Z!`,
+`!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, or `!PIXEL_HEIGHT!`) is not executed
+during provider startup for geometry-type inspection. The layer is registered
+with its configured CRS and inspected when a tile is requested. For such a
+layer, `!BBOX!` is deliberately replaced with `1=1` when the geometry format
+is `auto`; Tegola decodes the returned geometries and applies the tile
+intersection check in memory. This avoids applying MySQL spatial functions to
+an unknown format (including MOS). If the first returned row is a MOS
+system-info record, its precision, units, and projection are applied to the
+request unless the corresponding CRS or MOS settings were explicitly
+configured.
+
 ## Empty layers
 
-Layers (table or custom SQL) that currently return 0 rows produce a warning and are skipped rather than preventing the server from starting. If *every* configured layer is empty, the provider fails to start, since that almost always indicates a misconfiguration.
+Layers (table or custom SQL) that currently return 0 rows produce a warning
+and remain registered without an inferred geometry type. They are queried
+normally when a later request returns data; an empty layer does not prevent the
+provider from starting. Until the first decodable geometry is seen, the layer
+uses the same safe in-memory filtering path as deferred custom SQL so a later
+geometry header can establish the source CRS without an incorrect startup
+assumption.
 
 ## Known limitations
 

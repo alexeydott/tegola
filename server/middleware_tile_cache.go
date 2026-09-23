@@ -47,6 +47,8 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 		// parameter. Caching a response that depends on map query parameters
 		// under the ordinary tile key would serve the wrong data later.
 		if forceRegenerate && len(query) == 1 {
+			unlock := tileUpdateLocks.acquire(metatileLockKeyForCacheKey(key))
+			defer unlock()
 			serveAndCacheTile(w, r, next, cacher, key)
 			return
 		}
@@ -56,6 +58,13 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		// Ordinary cache misses and dirty regenerations must share the same
+		// metatile lock as explicit tile updates. Otherwise a render that
+		// started before an update can finish afterwards and overwrite the
+		// freshly regenerated cache entry with stale bytes.
+		unlock := tileUpdateLocks.acquire(metatileLockKeyForCacheKey(key))
+		defer unlock()
 
 		// use the URL path as the key
 		cachedTile, hit, err := cacher.Get(r.Context(), key)

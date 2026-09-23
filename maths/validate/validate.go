@@ -106,6 +106,15 @@ func CleanGeometry(ctx context.Context, g tegola.Geometry, extent *geom.Extent) 
 	}
 	switch gg := g.(type) {
 	case tegola.Polygon:
+		if extent == nil {
+			extent, err = geom.NewExtentFromGeometry(gg)
+			if err != nil {
+				return nil, err
+			}
+			if extent == nil {
+				return g, nil
+			}
+		}
 		expp := scalePolygon(gg, 10.0)
 		ext := extent.ScaleBy(10.0)
 		hm := hitmap.NewFromGeometry(expp)
@@ -114,8 +123,16 @@ func CleanGeometry(ctx context.Context, g tegola.Geometry, extent *geom.Extent) 
 			return nil, err
 		}
 		return scaleMultiPolygon(mp, 0.10), nil
-
 	case tegola.MultiPolygon:
+		if extent == nil {
+			extent, err = geom.NewExtentFromGeometry(gg)
+			if err != nil {
+				return nil, err
+			}
+			if extent == nil {
+				return g, nil
+			}
+		}
 		expp := scaleMultiPolygon(gg, 10.0)
 		ext := extent.ScaleBy(10.0)
 		hm := hitmap.NewFromGeometry(expp)
@@ -124,8 +141,10 @@ func CleanGeometry(ctx context.Context, g tegola.Geometry, extent *geom.Extent) 
 			return nil, err
 		}
 		return scaleMultiPolygon(mp, 0.10), nil
-
 	case tegola.MultiLine:
+		if extent == nil {
+			return g, nil
+		}
 		var ml basic.MultiLine
 		lns := gg.Lines()
 		for i := range lns {
@@ -138,6 +157,9 @@ func CleanGeometry(ctx context.Context, g tegola.Geometry, extent *geom.Extent) 
 		}
 		return ml, nil
 	case tegola.LineString:
+		if extent == nil {
+			return g, nil
+		}
 		// 	log.Println("Clip LineString Buff", buff)
 		nls, err := clip.LineString(gg, extent)
 		return basic.MultiLine(nls), err

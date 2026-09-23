@@ -467,9 +467,19 @@ func (req HandleMapLayerZXY) tileCacheKey(tile slippy.Tile) cache.Key {
 }
 
 func (req HandleMapLayerZXY) metatileLockKey(tile slippy.Tile) string {
-	baseX := (tile.X / metatileSize) * metatileSize
-	baseY := (tile.Y / metatileSize) * metatileSize
-	return fmt.Sprintf("%s/%s/%d/%d/%d", req.mapName, req.layerName, tile.Z, baseX, baseY)
+	return metatileLockKeyForCacheKey(&cache.Key{
+		MapName:   req.mapName,
+		LayerName: req.layerName,
+		Z:         uint(tile.Z),
+		X:         tile.X,
+		Y:         tile.Y,
+	})
+}
+
+func metatileLockKeyForCacheKey(key *cache.Key) string {
+	baseX := (key.X / metatileSize) * metatileSize
+	baseY := (key.Y / metatileSize) * metatileSize
+	return fmt.Sprintf("%s/%s/%d/%d/%d", key.MapName, key.LayerName, key.Z, baseX, baseY)
 }
 
 func minUint(a, b uint) uint {

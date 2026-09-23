@@ -32,7 +32,7 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 
 	var geomType string
 	if layer.geomType != nil {
-		geomType = fmt.Sprintf("%v", layer.geomType)
+		geomType = geomTypeName(layer.geomType)
 	}
 
 	z, x, y := tile.ZXY()
@@ -52,6 +52,27 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	)
 
 	return tokenReplacer.Replace(uppercaseTokens(qtext))
+}
+
+// geomTypeName returns the OGC geometry type name used by !GEOM_TYPE!.
+func geomTypeName(g geom.Geometry) string {
+	switch g.(type) {
+	case geom.Point:
+		return "POINT"
+	case geom.MultiPoint:
+		return "MULTIPOINT"
+	case geom.LineString:
+		return "LINESTRING"
+	case geom.MultiLineString:
+		return "MULTILINESTRING"
+	case geom.Polygon:
+		return "POLYGON"
+	case geom.MultiPolygon:
+		return "MULTIPOLYGON"
+	case geom.Collection:
+		return "GEOMETRYCOLLECTION"
+	}
+	return ""
 }
 
 // uppercaseTokens makes SQL tokens case-insensitive, matching PostGIS.

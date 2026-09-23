@@ -2,9 +2,11 @@ package postgis
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/go-spatial/tegola"
+	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/ttools"
 	"github.com/go-spatial/tegola/provider"
@@ -68,6 +70,48 @@ func TestReplaceTokens(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+func TestReplaceTokensSyntheticSRIDUsesDatabaseSRIDZero(t *testing.T) {
+	srid, err := basic.RegisterProj4Defn("+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+	if err != nil {
+		t.Fatalf("registering synthetic CRS: %v", err)
+	}
+
+	sql, err := replaceTokens(
+		"SELECT * FROM foo WHERE geom && !BBOX!",
+		&Layer{srid: srid},
+		provider.NewTile(2, 1, 1, 64, tegola.WebMercator),
+		true,
+	)
+	if err != nil {
+		t.Fatalf("replaceTokens returned error: %v", err)
+	}
+	if !strings.Contains(sql, ",0)") {
+		t.Fatalf("synthetic CRS envelope must use database SRID 0, got %q", sql)
+	}
+}
+
+func TestGenSQLSyntheticSRIDUsesDatabaseSRIDZero(t *testing.T) {
+	srid, err := basic.RegisterProj4Defn("+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+	if err != nil {
+		t.Fatalf("registering synthetic CRS: %v", err)
+	}
+
+	got, err := genSQL(
+		&Layer{geomField: "geom", idField: "gid", srid: srid},
+		nil,
+		"roads",
+		[]string{"gid", "geom"},
+		true,
+		ProviderType,
+	)
+	if err != nil {
+		t.Fatalf("genSQL returned error: %v", err)
+	}
+	if !strings.Contains(got, `ST_SetSRID("geom",0) && !BBOX!`) {
+		t.Fatalf("generated SQL does not isolate synthetic SRID: %q", got)
 	}
 }
 

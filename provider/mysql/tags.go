@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // mysqlTypeCategory classifies a column's declared MySQL/MariaDB type into one
@@ -25,31 +26,26 @@ const (
 // "UNSIGNED BIGINT", "TINYINT", "DECIMAL", "DATETIME") to a category.
 // Types are matched on prefixes so size/scale suffixes need no special casing.
 func categoryFromDatabaseTypeName(dbTypeName string) mysqlTypeCategory {
-	t := strings.ToUpper(dbTypeName)
+	t := strings.ToUpper(strings.TrimSpace(dbTypeName))
+	if i := strings.IndexByte(t, '('); i >= 0 {
+		t = t[:i]
+	}
+	fields := strings.Fields(t)
+	if len(fields) == 0 {
+		return typeCategoryString
+	}
+	base := fields[0]
+	if base == "UNSIGNED" && len(fields) > 1 {
+		base = fields[1]
+	}
 
-	// integers, including unsigned variants
-	switch {
-	case strings.Contains(t, "INT"): // TINYINT, SMALLINT, MEDIUMINT, INT, INTEGER, BIGINT (incl. UNSIGNED)
+	switch base {
+	case "TINYINT", "SMALLINT", "MEDIUMINT", "INT", "INTEGER", "BIGINT",
+		"BOOL", "BOOLEAN", "BIT", "SERIAL":
 		return typeCategoryInt
-	case strings.Contains(t, "BOOL"): // BOOL / BOOLEAN alias of TINYINT(1)
-		return typeCategoryInt
-	case strings.Contains(t, "BIT"):
-		return typeCategoryInt
-	case strings.Contains(t, "SERIAL"): // alias for BIGINT UNSIGNED
-		return typeCategoryInt
-	case strings.Contains(t, "FIXED"): // DECIMAL alias
+	case "FIXED", "DECIMAL", "NUMERIC", "NEWDECIMAL", "REAL", "FLOAT", "DOUBLE":
 		return typeCategoryFloat
-	case strings.Contains(t, "DEC"): // DECIMAL
-		return typeCategoryFloat
-	case strings.Contains(t, "NUMERIC"):
-		return typeCategoryFloat
-	case strings.Contains(t, "REAL"),
-		strings.Contains(t, "FLOAT"),
-		strings.Contains(t, "DOUBLE"):
-		return typeCategoryFloat
-	case strings.Contains(t, "YEAR"),
-		strings.Contains(t, "DATE"),
-		strings.Contains(t, "TIME"):
+	case "YEAR", "DATE", "DATETIME", "TIMESTAMP", "TIME":
 		return typeCategoryTime
 	default:
 		return typeCategoryString
@@ -88,7 +84,19 @@ func convertTagValue(v interface{}, cat mysqlTypeCategory) (interface{}, error) 
 	case typeCategoryFloat:
 		return strconv.ParseFloat(s, 64)
 	case typeCategoryTime:
-		// normalize to the same string form the direct scan path produces
+		// Normalize common textual date/time values to the same RFC3339 form
+		// used by the typed time.Time path. Keep unknown representations as
+		// strings rather than dropping an otherwise valid tag.
+		for _, layout := range []string{
+			time.RFC3339Nano,
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05",
+			"2006-01-02",
+		} {
+			if parsed, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+				return parsed.Format(time.RFC3339Nano), nil
+			}
+		}
 		return s, nil
 	default:
 		return s, nil

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/provider"
 )
@@ -26,11 +27,14 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		geomRef = geomFromTextSQL(geomRef, layer.srid)
 	}
 
-	bboxSQL := fmt.Sprintf(
-		"ST_Intersects(%v, %v)",
-		geomRef,
-		geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid),
-	)
+	bboxSQL := "1=1"
+	if !layer.deferredInspection && !basic.IsSyntheticSRID(layer.srid) {
+		bboxSQL = fmt.Sprintf(
+			"ST_Intersects(%v, %v)",
+			geomRef,
+			geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid),
+		)
+	}
 
 	// MOS blobs are opaque proprietary binaries: the server has no geometry
 	// functions over them. EGKO MOS tables nevertheless expose indexed raw

@@ -26,6 +26,35 @@ import (
 
 var colFinder *regexp.Regexp
 
+func customSQLNeedsDeferredInspection(sqlText string) bool {
+	upper := strings.ToUpper(sqlText)
+	for _, token := range []string{
+		conf.XToken,
+		conf.YToken,
+		conf.ZToken,
+		conf.ScaleDenominatorToken,
+		conf.PixelWidthToken,
+		conf.PixelHeightToken,
+	} {
+		if strings.Contains(upper, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func configuredLayerSRID(layerConf dict.Dicter, fallback uint64) (uint64, error) {
+	lsrid := int(fallback)
+	var err error
+	if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
+		return 0, err
+	}
+	if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
+		return 0, err
+	}
+	return uint64(lsrid), nil
+}
+
 // applyLayerCRSDefn resolves a layer-level crs_defn (full PROJ.4 definition)
 // into the layer SRID, overriding a numeric srid when present.
 func applyLayerCRSDefn(layerConf dict.Dicter, lsrid *int) error {
@@ -331,16 +360,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 
-	// names of custom-SQL layers that currently match 0 rows and were
-	// therefore skipped (not registered) - see the sql.ErrNoRows handling
-	// below. A handful of empty layers alongside otherwise-populated ones is
-	// fine - the data may simply not exist yet - but if EVERY configured
-	// layer comes back empty that's a strong signal of a real
-	// misconfiguration (wrong file, wrong bounds, wrong table/SQL, etc.), so
-	// we still want a hard error in that case rather than silently starting
-	// a provider that has no layers at all.
-	var emptyLayerNames []string
-
 	lyrsSeen := make(map[string]int)
 	for i, layerConf := range layers {
 
@@ -437,6 +456,17 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 			layer.sql = customSQL
 
+			if customSQLNeedsDeferredInspection(customSQL) {
+				lsrid, rerr := configuredLayerSRID(layerConf, p.srid)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
+				}
+				layer.srid = lsrid
+				log.Warnf("layer '%v' uses tile-dependent custom SQL; deferring startup geometry inspection", layerName)
+				p.layers[layer.name] = layer
+				continue
+			}
+
 			// if a !ZOOM! token exists, all features could be filtered out so we don't have a geometry to inspect it's type.
 			// TODO(arolek): implement an SQL parser or figure out a different approach. this is brittle but I can't figure out a better
 			// solution without using an SQL parser on custom SQL statements
@@ -463,13 +493,13 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				"!bbox!", "1=1",
 			)
 
-			inspectionSQL := tokenReplacer.Replace(trimTrailingSemicolon(customSQL))
+			inspectionSQL := tokenReplacer.Replace(trimTrailingSemicolon(uppercaseTokens(customSQL)))
 			inspectionTile := provider.NewTile(0, 0, 0, 0, uint(p.srid))
 			inspectionExtent, _ := inspectionTile.BufferedExtent()
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
 
 			// Get geometry type & srid from geometry of first row.
-			qtext := fmt.Sprintf("SELECT geom FROM (%v) LIMIT 1;", inspectionSQL)
+			qtext := fmt.Sprintf("SELECT geom FROM (%v) WHERE geom IS NOT NULL LIMIT 1;", inspectionSQL)
 
 			log.Debugf("qtext: %v", qtext)
 
@@ -477,18 +507,16 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			err = db.QueryRow(qtext).Scan(&geomData)
 			switch {
 			case err == sql.ErrNoRows:
-				// The layer's custom SQL currently returns no rows (e.g. the source
-				// table is empty, or every row happens to be filtered out once the
-				// !BBOX!/!ZOOM! tokens are replaced with permissive placeholders for
-				// this inspection query). We have no sample geometry to infer a type
-				// or SRID from. An empty layer is not by itself a fatal
-				// misconfiguration - warn and simply skip registering it (it
-				// contributes nothing to the map) instead of refusing to start the
-				// entire server over one empty layer. If it turns out that literally
-				// every configured layer is empty, that is treated as a hard error
-				// below, since that's much more likely a real misconfiguration.
-				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; skipping registration of this layer until matching data exists: %v", layerName, customSQL)
-				emptyLayerNames = append(emptyLayerNames, layerName)
+				// The layer's custom SQL currently returns no rows. Keep a
+				// placeholder layer so map registration can succeed; a later
+				// tile request can still execute the SQL when data appears.
+				lsrid, rerr := configuredLayerSRID(layerConf, p.srid)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
+				}
+				layer.srid = lsrid
+				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; registering it without an inferred geometry type: %v", layerName, customSQL)
+				p.layers[layer.name] = layer
 				continue
 
 			case err != nil:
@@ -524,16 +552,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 
 		p.layers[layer.name] = layer
-	}
-
-	// if every single configured layer came back empty, that's very unlikely
-	// to be legitimate "no data yet" - it's much more likely a real
-	// misconfiguration (wrong gpkg file, wrong table/SQL, overly restrictive
-	// filters, etc.), so fail loudly instead of starting a provider that has
-	// no chance of ever rendering anything.
-	if len(layers) > 0 && len(emptyLayerNames) == len(layers) {
-		return nil, fmt.Errorf("gpkg provider (%v): all %v configured layer(s) currently return 0 rows: %v; check the filepath, table names, custom SQL and any bbox/zoom filters",
-			filepath, len(layers), strings.Join(emptyLayerNames, ", "))
 	}
 
 	// track the provider so we can clean it up later

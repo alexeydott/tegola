@@ -374,6 +374,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 
 	// read the tile extent
 	tileBBox, tileSRID := tile.BufferedExtent()
+	webMercatorBBox := tileBBox
 
 	// tileSRID is assumed to always be WebMercator. Build a conservative
 	// source-CRS extent before applying the provider's spatial filter.
@@ -427,24 +428,14 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 	}
 
 	var geomErr error
+	geometryFormat := pLayer.geometryFormat
+	mosPrecision := pLayer.mosPrecision
+	mosUnitsFactor := pLayer.mosUnitsFactor
+	inMemoryTileFilter := pLayer.deferredInspection || basic.IsSyntheticSRID(pLayer.srid)
 	features := make([]provider.Feature, 0)
-	for rows.Next() {
-		// check if the context cancelled or timed out
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	var deferredRows [][]interface{}
 
-		vals := make([]interface{}, len(cols))
-		valPtrs := make([]interface{}, len(cols))
-		for i := 0; i < len(cols); i++ {
-			valPtrs[i] = &vals[i]
-		}
-
-		if err = rows.Scan(valPtrs...); err != nil {
-			log.Errorf("err reading row values: %v", err)
-			return err
-		}
-
+	processRow := func(vals []interface{}) error {
 		feature := provider.Feature{
 			Tags: map[string]interface{}{},
 		}
@@ -461,6 +452,9 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 				return ctx.Err()
 			}
 			if vals[i] == nil {
+				if cols[i] == pLayer.geomFieldname {
+					skipRow = true
+				}
 				continue
 			}
 
@@ -475,10 +469,13 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 				// a layer system info blob (MapplBase layer self-description)
 				// is metadata, not geometry; skip it silently.
 				if blob, ok := vals[i].([]byte); ok && mos.IsSystemInfoBlob(blob) {
+					if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosPrecision, &mosUnitsFactor, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
+						return err
+					}
 					skipRow = true
 					break
 				}
-				srid, geo, err := decodeGeometry(vals[i], pLayer.geometryFormat, p.serverFlavor, mos.Options{Precision: pLayer.mosPrecision, UnitFactor: pLayer.mosUnitsFactor})
+				srid, geo, err := decodeGeometry(vals[i], geometryFormat, p.serverFlavor, mos.Options{Precision: mosPrecision, UnitFactor: mosUnitsFactor})
 				if err != nil {
 					// a single undecodable row (e.g. a version-prefixed or
 					// otherwise non-MOS blob) must not kill the whole tile;
@@ -489,11 +486,27 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 					break
 				}
 
+				// Match startup inspection for deferred custom SQL: when no
+				// CRS was configured, a native geometry header is the only
+				// available source-CRS declaration.
+				if pLayer.deferredInspection && !pLayer.crsExplicit && srid > 0 && pLayer.srid != srid {
+					pLayer.srid = srid
+					if pLayer.srid != tileSRID {
+						sourceBBox, err := basic.FromWebMercatorExtent(pLayer.srid, webMercatorBBox)
+						if err != nil {
+							return fmt.Errorf("convert tile extent for geometry header SRID %d: %w", srid, err)
+						}
+						tileBBox = sourceBBox
+					} else {
+						tileBBox = webMercatorBBox
+					}
+				}
+
 				// MOS blobs are opaque binaries, so the spatial filter cannot
 				// be pushed into SQL (!BBOX! degrades to 1=1). Drop rows whose
 				// decoded geometry cannot intersect the tile's buffered extent
 				// (already transformed into the layer's source SRID).
-				if pLayer.geometryFormat == GeometryFormatMOS && !geometryIntersectsExtent(geo, tileBBox) {
+				if (geometryFormat == GeometryFormatMOS || inMemoryTileFilter) && !geometryIntersectsExtent(geo, tileBBox) {
 					skipRow = true
 					break
 				}
@@ -541,10 +554,67 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 
 		// drop rows whose geometry was undecodable or outside the tile
 		if skipRow {
-			continue
+			return nil
+		}
+		if feature.Geometry == nil {
+			return fmt.Errorf("mysql layer %q query did not return a non-null geometry column %q", pLayer.Name(), pLayer.geomFieldname)
 		}
 
 		features = append(features, feature)
+		return nil
+	}
+
+	for rows.Next() {
+		// check if the context cancelled or timed out
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		vals := make([]interface{}, len(cols))
+		valPtrs := make([]interface{}, len(cols))
+		for i := 0; i < len(cols); i++ {
+			valPtrs[i] = &vals[i]
+		}
+
+		if err = rows.Scan(valPtrs...); err != nil {
+			log.Errorf("err reading row values: %v", err)
+			return err
+		}
+
+		if pLayer.deferredInspection {
+			deferredRows = append(deferredRows, vals)
+			continue
+		}
+
+		if err := processRow(vals); err != nil {
+			return err
+		}
+	}
+
+	if pLayer.deferredInspection {
+		// A system-info row is not guaranteed to precede the geometry rows in
+		// a custom query. Parse every marker before decoding any feature so
+		// precision, units, projection, and the source-CRS tile extent apply
+		// consistently to the complete result set.
+		for _, vals := range deferredRows {
+			for i := range cols {
+				if cols[i] != pLayer.geomFieldname {
+					continue
+				}
+				blob, ok := vals[i].([]byte)
+				if !ok || !mos.IsSystemInfoBlob(blob) {
+					continue
+				}
+				if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosPrecision, &mosUnitsFactor, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
+					return err
+				}
+			}
+		}
+		for _, vals := range deferredRows {
+			if err := processRow(vals); err != nil {
+				return err
+			}
+		}
 	}
 
 	if err := rows.Err(); err != nil {
@@ -554,7 +624,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 	// effectively broken (misconfigured mos_precision or foreign blob
 	// format) — surface it instead of silently rendering an empty tile
 	if geomErr != nil && len(features) == 0 {
-		return fmt.Errorf("no decodable MOS geometries in layer %v: %v", pLayer.Name(), geomErr)
+		return fmt.Errorf("no decodable geometries in layer %v: %v", pLayer.Name(), geomErr)
 	}
 
 	// Do not emit features until the complete result set has been consumed.
@@ -563,6 +633,66 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 	for i := range features {
 		if err := fn(&features[i]); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// applyRuntimeSystemInfo applies a MOS layer's self-description when startup
+// inspection was deferred for tile-dependent custom SQL. The layer is a local
+// copy in TileFeatures, so updating its CRS and decode settings is safe for
+// concurrent requests.
+func applyRuntimeSystemInfo(
+	layer *Layer,
+	geometryFormat *string,
+	mosPrecision *float64,
+	mosUnitsFactor *float64,
+	tileBBox **geom.Extent,
+	webMercatorBBox *geom.Extent,
+	tileSRID uint64,
+	blob []byte,
+) error {
+	sysInfo, err := mos.ParseSystemInfo(blob)
+	if err != nil {
+		return fmt.Errorf("parse layer system info: %w", err)
+	}
+
+	if *geometryFormat == GeometryFormatAuto {
+		*geometryFormat = GeometryFormatMOS
+	}
+	if err := validateMOSPrecision(float64(sysInfo.Precision)); err != nil {
+		return fmt.Errorf("validate layer system-info MOS precision: %w", err)
+	}
+	if !layer.mosPrecisionExplicit {
+		*mosPrecision = float64(sysInfo.Precision)
+	}
+	if !layer.mosUnitsExplicit && sysInfo.MapUnitsDefined {
+		factor, err := sysInfo.ScaleToMetres()
+		if err != nil {
+			return fmt.Errorf("convert layer system-info units: %w", err)
+		}
+		*mosUnitsFactor = factor
+	}
+
+	if !layer.crsExplicit && sysInfo.Projection != "" {
+		srid, err := basic.RegisterProj4Defn(sysInfo.Projection)
+		if err != nil {
+			return fmt.Errorf("register layer system-info projection: %w", err)
+		}
+		layer.srid = srid
+		// Treat the runtime self-description as the resolved CRS for this
+		// request. A native geometry header may contain a placeholder or
+		// database SRID and must not override the projection declared by the
+		// layer metadata.
+		layer.crsExplicit = true
+		if layer.srid != tileSRID {
+			sourceBBox, err := basic.FromWebMercatorExtent(layer.srid, webMercatorBBox)
+			if err != nil {
+				return fmt.Errorf("convert tile extent for layer system-info projection: %w", err)
+			}
+			*tileBBox = sourceBBox
+		} else {
+			*tileBBox = webMercatorBBox
 		}
 	}
 	return nil

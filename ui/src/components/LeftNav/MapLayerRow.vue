@@ -38,9 +38,21 @@ export default {
     // fill layer with a sibling "-line" layer rendering polylines from the
     // same source layer), so all of them are switched together.
     toggleLayerVisibility(layerName) {
-      var styleLayerNames = [layerName, layerName + "-line"];
-      var visibility = map.getLayoutProperty(layerName, "visibility");
-      if (visibility === "visible") {
+      var styleLayerNames = map
+        .getStyle()
+        .layers.filter(function(layer) {
+          return layer["source-layer"] === layerName;
+        })
+        .map(function(layer) {
+          return layer.id;
+        });
+      if (styleLayerNames.length === 0 && map.getLayer(layerName)) {
+        styleLayerNames = [layerName];
+      }
+      var visibility = styleLayerNames.some(function(name) {
+        return map.getLayoutProperty(name, "visibility") === "visible";
+      });
+      if (visibility) {
         styleLayerNames.forEach(function(name) {
           if (map.getLayer(name)) {
             map.setLayoutProperty(name, "visibility", "none");
@@ -64,6 +76,19 @@ export default {
       let paintPropName;
 
       let layer = map.getLayer(layerName);
+      let styleLayerName = layerName;
+      if (!layer) {
+        let styleLayers = map.getStyle().layers.filter(function(styleLayer) {
+          return styleLayer["source-layer"] === layerName;
+        });
+        layer = styleLayers[0];
+        if (layer) {
+          styleLayerName = layer.id;
+        }
+      }
+      if (!layer) {
+        return "#000";
+      }
       switch (layer.type) {
         case "fill":
           paintPropName = "fill-outline-color";
@@ -82,7 +107,7 @@ export default {
         return "#000";
       }
 
-      return map.getPaintProperty(layerName, paintPropName);
+      return map.getPaintProperty(styleLayerName, paintPropName);
     }
   }
 };

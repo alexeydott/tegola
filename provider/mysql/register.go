@@ -60,6 +60,39 @@ const geomTypeSampleRows = 16
 // clause.
 var limitClauseRe = regexp.MustCompile(`\s+limit\s+(\d+\s*,\s*\d+|\d+(?:\s+offset\s+\d+)?)\s*$`)
 
+// customSQLNeedsDeferredInspection reports tokens whose value depends on the
+// requested tile. A single 0/0/0 sample cannot establish a geometry type for
+// predicates such as "tile_x = !X!", so those layers are registered with
+// their configured CRS and inspected only when they are actually queried.
+func customSQLNeedsDeferredInspection(sqlText string) bool {
+	upper := strings.ToUpper(sqlText)
+	for _, token := range []string{
+		conf.XToken,
+		conf.YToken,
+		conf.ZToken,
+		conf.ScaleDenominatorToken,
+		conf.PixelWidthToken,
+		conf.PixelHeightToken,
+	} {
+		if strings.Contains(upper, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func configuredLayerSRID(layerConf dict.Dicter, fallback int) (int, error) {
+	lsrid := fallback
+	var err error
+	if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
+		return 0, err
+	}
+	if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
+		return 0, err
+	}
+	return lsrid, nil
+}
+
 func sampleGeometryQuery(qtext string) string {
 	base := strings.TrimSpace(qtext)
 	// A caller may provide a complete SQL statement with a trailing
@@ -91,12 +124,14 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 	defer rows.Close()
 
 	var lastErr error
-	var firstGeo geom.Geometry
-	var firstHeaderSRID uint64
+	var values []interface{}
 	for rows.Next() {
 		var geomVal interface{}
 		if err := rows.Scan(&geomVal); err != nil {
 			return nil, 0, nil, err
+		}
+		if geomVal == nil {
+			continue
 		}
 		// a layer system info blob describes the layer rather than being a
 		// geometry; parse it and keep sampling for a real feature.
@@ -109,21 +144,27 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 			sysInfo = &si
 			continue
 		}
-		if firstGeo == nil {
-			srid, decoded, decodeErr := decodeGeometry(geomVal, geometryFormat, serverFlavor, mos.Options{Precision: mosPrecision})
-			if decodeErr != nil {
-				lastErr = decodeErr
-				continue
-			}
-			firstGeo = decoded
-			firstHeaderSRID = srid
-		}
+		values = append(values, geomVal)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, nil, err
 	}
-	if firstGeo != nil {
-		return firstGeo, firstHeaderSRID, sysInfo, nil
+
+	sampleFormat := geometryFormat
+	if sampleFormat == GeometryFormatAuto && sysInfo != nil {
+		// MapplBase MOS tables identify themselves with a system-info row.
+		// Decode the sampled values only after scanning all rows so the marker
+		// is honored even when the driver does not return it first.
+		sampleFormat = GeometryFormatMOS
+	}
+
+	for _, geomVal := range values {
+		srid, decoded, decodeErr := decodeGeometry(geomVal, sampleFormat, serverFlavor, mos.Options{Precision: mosPrecision})
+		if decodeErr != nil {
+			lastErr = decodeErr
+			continue
+		}
+		return decoded, srid, sysInfo, nil
 	}
 	if lastErr != nil {
 		return nil, 0, nil, fmt.Errorf("error decoding sampled geometry: %v", lastErr)
@@ -324,13 +365,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 
-	// names of custom-SQL layers that currently match 0 rows and were
-	// therefore skipped (not registered). A handful of empty layers alongside
-	// otherwise-populated ones is fine, but if EVERY configured layer comes
-	// back empty that's a strong signal of a real misconfiguration, so we
-	// still want a hard error in that case. Mirrors the gpkg provider.
-	var emptyLayerNames []string
-
 	lyrsSeen := make(map[string]int)
 	for i, layerConf := range layers {
 
@@ -387,10 +421,21 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			idFieldname:          idFieldname,
 			geomFieldname:        geomFieldname,
 			geometryFormat:       geometryFormat,
+			crsExplicit:          sridExplicit,
 			mosPrecision:         mosPrecision,
 			mosPrecisionExplicit: mosPrecisionExplicit,
 			mosUnitsFactor:       mosUnitsFactor,
 			mosUnitsExplicit:     mosUnitsExplicit,
+		}
+		if _, explicit := layerConf.Interface(ConfigKeySRID); explicit {
+			layer.crsExplicit = true
+		}
+		if raw, ok := layerConf.Interface(ConfigKeyCRSDefn); ok && raw != nil {
+			defn, derr := layerConf.String(ConfigKeyCRSDefn, nil)
+			if derr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, derr)
+			}
+			layer.crsExplicit = layer.crsExplicit || strings.TrimSpace(defn) != ""
 		}
 
 		// layer-level mos_precision overrides the provider-level value
@@ -435,8 +480,16 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, inspectionSQL, geometryFormat, serverFlavor, layer.mosPrecision)
 			switch {
 			case err == sql.ErrNoRows:
-				log.Warnf("layer '%v' (table %v) currently returns 0 rows; skipping registration of this layer until matching data exists", layerName, tablename)
-				emptyLayerNames = append(emptyLayerNames, layerName)
+				lsrid, rerr := configuredLayerSRID(layerConf, srid)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
+				}
+				layer.srid = uint64(lsrid)
+				layer.deferredInspection = true
+				log.Warnf("layer '%v' (table %v) currently returns 0 rows; registering it without an inferred geometry type", layerName, tablename)
+				layer.tablename = tablename
+				layer.tagFieldnames = tagFieldnames
+				p.layers[layer.name] = layer
 				continue
 
 			case err != nil:
@@ -482,6 +535,18 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			// don't have a geometry to inspect its type. Replace comparisons
 			// against !ZOOM! with a permissive IN list and !BBOX! with 1=1 for
 			// the inspection query, mirroring the gpkg provider.
+			if customSQLNeedsDeferredInspection(customSQL) {
+				lsrid, rerr := configuredLayerSRID(layerConf, srid)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
+				}
+				layer.srid = uint64(lsrid)
+				layer.deferredInspection = true
+				log.Warnf("layer '%v' uses tile-dependent custom SQL; deferring startup geometry inspection", layerName)
+				p.layers[layer.name] = layer
+				continue
+			}
+
 			allZoomsSQL := "IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24)"
 			tokenReplacer := strings.NewReplacer(
 				">= "+conf.ZoomToken, allZoomsSQL,
@@ -505,7 +570,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				"!bbox!", "1=1",
 			)
 
-			inspectionSQL := tokenReplacer.Replace(trimTrailingSemicolon(customSQL))
+			inspectionSQL := tokenReplacer.Replace(trimTrailingSemicolon(uppercaseTokens(customSQL)))
 			inspectionTile := provider.NewTile(0, 0, 0, 0, uint(srid))
 			inspectionExtent, _ := inspectionTile.BufferedExtent()
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
@@ -519,8 +584,14 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, qtext, geometryFormat, serverFlavor, layer.mosPrecision)
 			switch {
 			case err == sql.ErrNoRows:
-				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; skipping registration of this layer until matching data exists: %v", layerName, customSQL)
-				emptyLayerNames = append(emptyLayerNames, layerName)
+				lsrid, rerr := configuredLayerSRID(layerConf, srid)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
+				}
+				layer.srid = uint64(lsrid)
+				layer.deferredInspection = true
+				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; registering it without an inferred geometry type: %v", layerName, customSQL)
+				p.layers[layer.name] = layer
 				continue
 
 			case err != nil:
@@ -558,15 +629,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		p.layers[layer.name] = layer
 	}
 
-	// if every single configured layer came back empty, that's very unlikely
-	// to be legitimate "no data yet" - it's much more likely a real
-	// misconfiguration, so fail loudly instead of starting a provider that has
-	// no chance of ever rendering anything. Mirrors the gpkg provider.
-	if len(layers) > 0 && len(emptyLayerNames) == len(layers) {
-		return nil, fmt.Errorf("mysql provider (%v:%v/%v): all %v configured layer(s) currently return 0 rows: %v; check the host, database, table names, custom SQL and any bbox/zoom filters",
-			host, port, database, len(layers), strings.Join(emptyLayerNames, ", "))
-	}
-
 	// track the provider so we can clean it up later
 	providersMu.Lock()
 	providers = append(providers, p)
@@ -590,6 +652,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInfo, sridExplicit bool) error {
 	if sysInfo == nil {
 		return nil
+	}
+	if layer.geometryFormat == GeometryFormatAuto {
+		layer.geometryFormat = GeometryFormatMOS
 	}
 
 	if err := validateMOSPrecision(float64(sysInfo.Precision)); err != nil {
@@ -619,6 +684,7 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 		if _, ok := layerConf.Interface(ConfigKeySRID); ok {
 			crsExplicit = true
 		}
+		layer.crsExplicit = crsExplicit
 		if raw, ok := layerConf.Interface(ConfigKeyCRSDefn); ok && raw != nil {
 			defn, err := layerConf.String(ConfigKeyCRSDefn, nil)
 			if err != nil {

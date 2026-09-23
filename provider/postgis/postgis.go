@@ -702,6 +702,9 @@ func CreateProvider(
 	if err != nil {
 		return nil, err
 	}
+	// Built-in projected CRS definitions must be registered before layer SQL
+	// generation converts WebMercator extents into source-CRS bounds.
+	basic.RegisterBuiltinProj4SRIDs()
 
 	srid := DefaultSRID
 	if srid, err = config.Int(ConfigKeySRID, &srid); err != nil {

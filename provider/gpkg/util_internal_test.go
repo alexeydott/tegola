@@ -103,7 +103,7 @@ func TestReplaceTokens(t *testing.T) {
 				geomType:      geom.Point{},
 			},
 			tile: provider.NewTile(11, 1070, 676, 64, tegola.WebMercator),
-			expected: `SELECT feature_id, shape, '[0 0]',
+			expected: `SELECT feature_id, shape, 'POINT',
 				11, 1070, 676, 11,
 				76.43702829, 76.43702829, 272989.38673277`,
 		},

@@ -24,6 +24,10 @@ var (
 	// proj4RegisterOnce guards proj.CustomProjection calls, which mutate a
 	// global map inside the vendored library.
 	proj4RegisterOnce sync.Once
+	// proj4ProjectionMu serializes all accesses that mutate or inspect the
+	// vendored projection registry. Provider initialization can register
+	// several CRS definitions concurrently.
+	proj4ProjectionMu sync.Mutex
 	// proj4Registered tracks EPSG codes registered through RegisterProj4SRID
 	// so the same code can be registered twice safely.
 	proj4RegisteredMu sync.Mutex
@@ -49,9 +53,22 @@ var builtinProj4SRIDs = map[uint64]string{}
 // gkZoneDef builds the PROJ.4 definition of a Gauss-Kruger zone on the
 // Krassowsky ellipsoid. etmerc (extended transverse mercator) is the
 // accurate tmerc implementation available in the vendored proj library.
-func gkZoneDef(lon0, x0 float64) string {
-	return fmt.Sprintf("+proj=etmerc +lat_0=0 +lon_0=%v +k_0=1 +x_0=%v +y_0=0 +ellps=krass +units=m +no_defs", lon0, x0)
+//
+// The datum transformation is part of the EPSG coordinate-system definition,
+// not an optional rendering detail: without it, Pulkovo coordinates are
+// incorrectly treated as WGS84 coordinates when they are converted to
+// WebMercator.
+func gkZoneDef(lon0, x0 float64, towgs84 string) string {
+	return fmt.Sprintf("+proj=etmerc +lat_0=0 +lon_0=%v +k_0=1 +x_0=%v +y_0=0 +ellps=krass %s +units=m +no_defs", lon0, x0, towgs84)
 }
+
+const (
+	// EPSG's area-specific transformation used by the Pulkovo 1942
+	// Gauss-Kruger systems represented by 284xx and 2492..2522.
+	pulkovo1942ToWGS84 = "+towgs84=25,-141,-78.5,0,-0.35,-0.736,0"
+	// EPSG's transformation used by the Pulkovo 1995 Gauss-Kruger family.
+	pulkovo1995ToWGS84 = "+towgs84=24.47,-130.89,-81.56,0,0,-0.13,-0.22"
+)
 
 func init() {
 	// WGS 84 / UTM zones 1N..60N and 1S..60S
@@ -62,7 +79,7 @@ func init() {
 	// Pulkovo 1942 / Gauss-Kruger zones 1..32 (eastings prefixed with the
 	// zone number via x_0 = zone*1e6 + 500000)
 	for zone := 1; zone <= 32; zone++ {
-		builtinProj4SRIDs[uint64(28400+zone)] = gkZoneDef(float64(zone*6-183), float64(zone*1000000+500000))
+		builtinProj4SRIDs[uint64(28400+zone)] = gkZoneDef(float64(zone*6-3), float64(zone*1000000+500000), pulkovo1942ToWGS84)
 	}
 	// Pulkovo 1995 / Gauss-Kruger zones: EPSG 2463..2491, central meridians
 	// 21+E, step 6, wrapping at 180; false easting 500000 (no zone prefix).
@@ -71,7 +88,7 @@ func init() {
 		if lon > 180 {
 			lon -= 360
 		}
-		builtinProj4SRIDs[uint64(2463+i)] = gkZoneDef(float64(lon), 500000)
+		builtinProj4SRIDs[uint64(2463+i)] = gkZoneDef(float64(lon), 500000, pulkovo1995ToWGS84)
 	}
 	// Pulkovo 1942 / Gauss-Kruger zones: EPSG 2492..2522, central meridians
 	// 9+E, step 6, wrapping at 180; false easting 500000 (no zone prefix).
@@ -80,7 +97,7 @@ func init() {
 		if lon > 180 {
 			lon -= 360
 		}
-		builtinProj4SRIDs[uint64(2492+i)] = gkZoneDef(float64(lon), 500000)
+		builtinProj4SRIDs[uint64(2492+i)] = gkZoneDef(float64(lon), 500000, pulkovo1942ToWGS84)
 	}
 	// Popular Visualisation Pseudo Mercator (legacy GDAL alias of 3857).
 	builtinProj4SRIDs[3785] = "+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +a=6378137 +b=6378137 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"
@@ -116,14 +133,27 @@ func RegisterProj4SRID(srid uint64, proj4 string) error {
 	proj4Registered[srid] = proj4
 
 	proj4RegisterOnce.Do(func() {})
+	proj4ProjectionMu.Lock()
 	proj.CustomProjection(proj.EPSGCode(srid), proj4)
+	proj4ProjectionMu.Unlock()
 	return nil
+}
+
+// SyntheticSRIDMin is the first SRID assigned to a raw PROJ.4 definition.
+// These identifiers exist only in the Tegola process and must not be sent to
+// a database spatial-function API as if they were registered database SRSs.
+const SyntheticSRIDMin uint64 = 340000001
+
+// IsSyntheticSRID reports whether srid is a Tegola-only identifier allocated
+// for a textual PROJ.4 definition rather than a database/EPSG SRS.
+func IsSyntheticSRID(srid uint64) bool {
+	return srid >= SyntheticSRIDMin
 }
 
 // defnCodeBase sits above the probe code space (320000000+) and marks SRIDs
 // synthesized from raw PROJ.4 definitions (crs_defn config options) rather
-// than assigned a real EPSG code. Synthetic codes are >= 340000001.
-var defnCodeBase int64 = 340000000
+// than assigned a real EPSG code.
+var defnCodeBase int64 = int64(SyntheticSRIDMin - 1)
 
 // proj4DefnCodes maps PROJ.4 definitions registered through RegisterProj4Defn
 // to their synthetic SRIDs so repeated registrations of the same definition
@@ -155,7 +185,9 @@ func RegisterProj4Defn(proj4 string) (uint64, error) {
 	proj4Registered[code] = proj4
 
 	proj4RegisterOnce.Do(func() {})
+	proj4ProjectionMu.Lock()
 	proj.CustomProjection(proj.EPSGCode(code), proj4)
+	proj4ProjectionMu.Unlock()
 	return code, nil
 }
 
@@ -177,6 +209,8 @@ func Proj4DefnSRID(proj4 string) (uint64, bool) {
 // error.
 func isSupportedProj4(proj4 string) (ok bool) {
 	probe := nextProbeCode()
+	proj4ProjectionMu.Lock()
+	defer proj4ProjectionMu.Unlock()
 	proj.CustomProjection(probe, proj4)
 	defer proj.RemoveCustomProjection(probe)
 	defer func() {
