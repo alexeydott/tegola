@@ -26,6 +26,9 @@ const (
 	// QueryKeyDirty forces regeneration of a tile even when its cache entry
 	// already exists. The regenerated response replaces the cache entry.
 	QueryKeyDirty = "dirty"
+
+	// QueryKeyTile selects an explicit tile cache operation.
+	QueryKeyTile = "tile"
 )
 
 var (

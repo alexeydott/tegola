@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
-	"log/slog"
+	"sync"
 
 	"github.com/dimfeld/httptreemux"
 	"github.com/go-spatial/geom"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/atlas"
+	"github.com/go-spatial/tegola/cache"
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/maths"
 	"github.com/go-spatial/tegola/observability"
@@ -25,6 +28,7 @@ import (
 
 var (
 	webmercatorGrid = slippy.NewGrid(3857, 0)
+	tileUpdateLocks = newTileUpdateCoordinator()
 )
 
 type HandleMapLayerZXY struct {
@@ -45,6 +49,58 @@ type HandleMapLayerZXY struct {
 	debug bool
 	// the Atlas to use, nil (default) is the default atlas
 	Atlas *atlas.Atlas
+}
+
+const (
+	tileOperationStatus     = "status"
+	tileOperationUpdate     = "update"
+	tileOperationGetUpdated = "getupdated"
+	metatileSize            = uint(8)
+)
+
+type tileUpdateCoordinator struct {
+	mu    sync.Mutex
+	locks map[string]*tileUpdateLock
+}
+
+type tileUpdateLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func newTileUpdateCoordinator() *tileUpdateCoordinator {
+	return &tileUpdateCoordinator{locks: make(map[string]*tileUpdateLock)}
+}
+
+func (l *tileUpdateCoordinator) acquire(key string) func() {
+	l.mu.Lock()
+	lock := l.locks[key]
+	if lock == nil {
+		lock = &tileUpdateLock{}
+		l.locks[key] = lock
+	}
+	lock.refs++
+	l.mu.Unlock()
+
+	lock.mu.Lock()
+
+	return func() {
+		lock.mu.Unlock()
+		l.mu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(l.locks, key)
+		}
+		l.mu.Unlock()
+	}
+}
+
+func (l *tileUpdateCoordinator) locked(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	lock := l.locks[key]
+	return lock != nil && lock.refs > 0
 }
 
 // parseURI reads the request URI and extracts the various values for the request
@@ -186,6 +242,29 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m = m.AddDebugLayers()
 	}
 
+	operation, hasOperation := r.URL.Query()[QueryKeyTile]
+	if hasOperation {
+		if err := validateTileOperationQuery(r); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.debug {
+			http.Error(w, "tile operations cannot be combined with debug", http.StatusBadRequest)
+			return
+		}
+
+		if err := req.serveTileOperation(w, r, m, tile, operation[0]); err != nil {
+			switch {
+			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+				return
+			default:
+				log.Error(err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+		return
+	}
+
 	// check for query parameters and populate param map with their values
 	params, err := extractParameters(m, r)
 	if err != nil {
@@ -227,7 +306,7 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// check for tile size warnings
 	if len(pbyte) > MaxTileSize {
-		slog.Default().Info("tile is rather large", 
+		slog.Default().Info("tile is rather large",
 			slog.String("map", req.mapName),
 			slog.String("layer", req.layerName),
 			slog.Uint64("z", uint64(req.z)),
@@ -236,6 +315,147 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Int("size_kb", len(pbyte)/1024),
 		)
 	}
+}
+
+func validateTileOperationQuery(r *http.Request) error {
+	query := r.URL.Query()
+	operations, ok := query[QueryKeyTile]
+	if len(query) != 1 || !ok || len(operations) != 1 {
+		return fmt.Errorf("%s cannot be combined with other query parameters", QueryKeyTile)
+	}
+
+	switch operations[0] {
+	case tileOperationStatus, tileOperationUpdate, tileOperationGetUpdated:
+		return nil
+	default:
+		return fmt.Errorf("invalid %s operation %q", QueryKeyTile, operations[0])
+	}
+}
+
+type tileStatusResponse struct {
+	Map      string  `json:"map"`
+	Layer    string  `json:"layer,omitempty"`
+	Z        uint    `json:"z"`
+	X        uint    `json:"x"`
+	Y        uint    `json:"y"`
+	Cached   bool    `json:"cached"`
+	Updating bool    `json:"updating"`
+	Metatile [4]uint `json:"metatile"`
+}
+
+func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.Request, m atlas.Map, tile slippy.Tile, operation string) error {
+	cacher := req.Atlas.GetCache()
+	w.Header().Set("Cache-Control", "no-store")
+	key := req.tileCacheKey(tile)
+	metatileKey := req.metatileLockKey(tile)
+
+	if operation == tileOperationStatus {
+		cached := false
+		if cacher != nil {
+			var err error
+			_, cached, err = cacher.Get(r.Context(), &key)
+			if err != nil {
+				return fmt.Errorf("read tile status from cache: %w", err)
+			}
+		}
+
+		baseX := (tile.X / metatileSize) * metatileSize
+		baseY := (tile.Y / metatileSize) * metatileSize
+		maxXY := uint(maths.Exp2(uint64(tile.Z)) - 1)
+		endX := minUint(baseX+metatileSize-1, maxXY)
+		endY := minUint(baseY+metatileSize-1, maxXY)
+		status := tileStatusResponse{
+			Map:      req.mapName,
+			Layer:    req.layerName,
+			Z:        uint(tile.Z),
+			X:        tile.X,
+			Y:        tile.Y,
+			Cached:   cached,
+			Updating: tileUpdateLocks.locked(metatileKey),
+			Metatile: [4]uint{baseX, baseY, endX - baseX + 1, endY - baseY + 1},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		return json.NewEncoder(w).Encode(status)
+	}
+
+	if cacher == nil {
+		return fmt.Errorf("tile operation %q requires a configured cache", operation)
+	}
+
+	params, err := extractParameters(m, r)
+	if err != nil {
+		return fmt.Errorf("parse tile parameters: %w", err)
+	}
+
+	unlock := tileUpdateLocks.acquire(metatileKey)
+	defer unlock()
+
+	ctx := context.WithValue(r.Context(), observability.ObserveVarMapName, m.Name)
+	maxXY := uint(maths.Exp2(uint64(tile.Z)) - 1)
+	baseX := (tile.X / metatileSize) * metatileSize
+	baseY := (tile.Y / metatileSize) * metatileSize
+	endX := minUint(baseX+metatileSize-1, maxXY)
+	endY := minUint(baseY+metatileSize-1, maxXY)
+
+	var updated []byte
+	for y := baseY; y <= endY; y++ {
+		for x := baseX; x <= endX; x++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
+			current := slippy.Tile{Z: tile.Z, X: x, Y: y}
+			encoded, err := m.Encode(ctx, current, params)
+			if err != nil {
+				return fmt.Errorf("encode tile %d/%d/%d: %w", current.Z, current.X, current.Y, err)
+			}
+
+			currentKey := req.tileCacheKey(current)
+			if err := cacher.Set(ctx, &currentKey, encoded); err != nil {
+				return fmt.Errorf("cache tile %d/%d/%d: %w", current.Z, current.X, current.Y, err)
+			}
+
+			if current == tile {
+				updated = encoded
+			}
+		}
+	}
+
+	if operation == tileOperationUpdate {
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+
+	w.Header().Set("Content-Type", mvt.MimeType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(updated)))
+	w.Header().Set("Tegola-Cache", "MISS")
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write(updated)
+	return err
+}
+
+func (req HandleMapLayerZXY) tileCacheKey(tile slippy.Tile) cache.Key {
+	return cache.Key{
+		MapName:   req.mapName,
+		LayerName: req.layerName,
+		Z:         uint(tile.Z),
+		X:         tile.X,
+		Y:         tile.Y,
+	}
+}
+
+func (req HandleMapLayerZXY) metatileLockKey(tile slippy.Tile) string {
+	baseX := (tile.X / metatileSize) * metatileSize
+	baseY := (tile.Y / metatileSize) * metatileSize
+	return fmt.Sprintf("%s/%s/%d/%d/%d", req.mapName, req.layerName, tile.Z, baseX, baseY)
+}
+
+func minUint(a, b uint) uint {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func extractParameters(m atlas.Map, r *http.Request) (provider.Params, error) {

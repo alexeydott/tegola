@@ -1,10 +1,13 @@
 package server_test
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-spatial/tegola/cache"
 	"github.com/go-spatial/tegola/cache/memory"
 	"github.com/go-spatial/tegola/server"
 )
@@ -169,5 +172,86 @@ func TestMiddlewareTileCacheHandlerDirtyRegenerates(t *testing.T) {
 	}
 	if w := request(uri); w.Header().Get("Tegola-Cache") != "HIT" {
 		t.Fatalf("request after dirty regeneration should hit cache, got %q", w.Header().Get("Tegola-Cache"))
+	}
+}
+
+func TestTileOperationsRegenerateMetatile(t *testing.T) {
+	server.URIPrefix = "/"
+	a := newTestMapWithLayers(testLayer1)
+	cacher, _ := memory.New(nil)
+	a.SetCache(cacher)
+	router := server.NewRouter(a)
+
+	request := func(uri string) *httptest.ResponseRecorder {
+		t.Helper()
+		r, err := http.NewRequest(http.MethodGet, uri, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w
+	}
+
+	const uri = "/maps/test-map/test-layer/4/2/3.pbf"
+
+	status := request(uri + "?tile=status")
+	if status.Code != http.StatusOK {
+		t.Fatalf("status operation returned %d: %s", status.Code, status.Body.String())
+	}
+	var before struct {
+		Cached bool `json:"cached"`
+	}
+	if err := json.Unmarshal(status.Body.Bytes(), &before); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if before.Cached {
+		t.Fatal("tile should not be cached before metatile update")
+	}
+
+	update := request(uri + "?tile=update")
+	if update.Code != http.StatusNoContent {
+		t.Fatalf("update operation returned %d: %s", update.Code, update.Body.String())
+	}
+	if update.Body.Len() != 0 {
+		t.Fatalf("update operation returned tile data: %d bytes", update.Body.Len())
+	}
+
+	for y := uint(0); y < 8; y++ {
+		for x := uint(0); x < 8; x++ {
+			key := &cache.Key{MapName: "test-map", LayerName: "test-layer", Z: 4, X: x, Y: y}
+			if _, hit, err := cacher.Get(context.Background(), key); err != nil || !hit {
+				t.Fatalf("metatile tile %v/%v not cached: hit=%v err=%v", x, y, hit, err)
+			}
+		}
+	}
+
+	status = request(uri + "?tile=status")
+	if status.Code != http.StatusOK {
+		t.Fatalf("status operation after update returned %d", status.Code)
+	}
+	if err := json.Unmarshal(status.Body.Bytes(), &before); err != nil {
+		t.Fatalf("decode status response after update: %v", err)
+	}
+	if !before.Cached {
+		t.Fatal("tile should be cached after metatile update")
+	}
+
+	updated := request(uri + "?tile=getupdated")
+	if updated.Code != http.StatusOK {
+		t.Fatalf("getupdated operation returned %d: %s", updated.Code, updated.Body.String())
+	}
+	if updated.Body.Len() == 0 {
+		t.Fatal("getupdated operation returned an empty tile")
+	}
+
+	normal := request(uri)
+	if normal.Code != http.StatusOK || normal.Header().Get("Tegola-Cache") != "HIT" {
+		t.Fatalf("ordinary request after getupdated should be a cache HIT, got code=%d cache=%q", normal.Code, normal.Header().Get("Tegola-Cache"))
+	}
+
+	invalid := request(uri + "?tile=status&param=value")
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("tile operation with an extra parameter should be rejected, got %d", invalid.Code)
 	}
 }
