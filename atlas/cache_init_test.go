@@ -10,7 +10,7 @@ import (
 
 func TestCheckCacheTypes(t *testing.T) {
 	c := cache.Registered()
-	exp := []string{"azblob", "file", "redis", "s3", "gcs"}
+	exp := []string{"azblob", "file", "gcs", "memory", "redis", "s3"}
 	sort.Strings(exp)
 	if !reflect.DeepEqual(c, exp) {
 		t.Errorf("registered cachés, expected %v got %v", exp, c)
