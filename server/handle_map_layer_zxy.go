@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -375,8 +377,25 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 			Metatile: [4]uint{baseX, baseY, endX - baseX + 1, endY - baseY + 1},
 		}
 
+		var jsonBuffer bytes.Buffer
+		if err := json.NewEncoder(&jsonBuffer).Encode(status); err != nil {
+			return fmt.Errorf("encode tile status: %w", err)
+		}
+
+		var gzipBuffer bytes.Buffer
+		gzipWriter := gzip.NewWriter(&gzipBuffer)
+		if _, err := gzipWriter.Write(jsonBuffer.Bytes()); err != nil {
+			return fmt.Errorf("compress tile status: %w", err)
+		}
+		if err := gzipWriter.Close(); err != nil {
+			return fmt.Errorf("finish compressed tile status: %w", err)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		return json.NewEncoder(w).Encode(status)
+		w.Header().Set("Content-Length", strconv.Itoa(gzipBuffer.Len()))
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write(gzipBuffer.Bytes())
+		return err
 	}
 
 	if cacher == nil {
@@ -423,6 +442,8 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 	}
 
 	if operation == tileOperationUpdate {
+		w.Header().Del("Content-Encoding")
+		w.Header().Del("Content-Length")
 		w.WriteHeader(http.StatusNoContent)
 		return nil
 	}

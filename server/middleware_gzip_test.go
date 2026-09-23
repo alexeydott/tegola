@@ -134,3 +134,70 @@ func TestMiddlewareGzipHandler(t *testing.T) {
 		t.Run(name, fn(tc))
 	}
 }
+
+func TestMiddlewareGzipHandlerTileStatusRemainsCompatible(t *testing.T) {
+	handler := server.GZipHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"cached":true}`))
+	}))
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/maps/test-map/water/12/1/2?tile=status",
+		nil,
+	)
+	request.Header.Set("Accept-Encoding", "gzip")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if got := recorder.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("expected gzip Content-Encoding, got %q", got)
+	}
+}
+
+func TestMiddlewareGzipHandlerDoesNotEncodeErrorsOrEmptyResponses(t *testing.T) {
+	tests := []struct {
+		name       string
+		handler    http.Handler
+		statusCode int
+		body       string
+	}{
+		{
+			name: "bad request",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "bad request", http.StatusBadRequest)
+			}),
+			statusCode: http.StatusBadRequest,
+			body:       "bad request\n",
+		},
+		{
+			name: "no content",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", "0")
+				w.WriteHeader(http.StatusNoContent)
+			}),
+			statusCode: http.StatusNoContent,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/test", nil)
+			request.Header.Set("Accept-Encoding", "gzip")
+			recorder := httptest.NewRecorder()
+
+			server.GZipHandler(tc.handler).ServeHTTP(recorder, request)
+
+			if recorder.Code != tc.statusCode {
+				t.Fatalf("expected status %d, got %d", tc.statusCode, recorder.Code)
+			}
+			if got := recorder.Header().Get("Content-Encoding"); got != "" {
+				t.Fatalf("expected no Content-Encoding, got %q", got)
+			}
+			if got := recorder.Body.String(); got != tc.body {
+				t.Fatalf("expected body %q, got %q", tc.body, got)
+			}
+		})
+	}
+}

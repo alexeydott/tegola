@@ -1,8 +1,11 @@
 package server_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -209,12 +212,36 @@ func TestTileOperationsRegenerateMetatile(t *testing.T) {
 		t.Fatal("tile should not be cached before metatile update")
 	}
 
+	compressedStatusRequest, err := http.NewRequest(http.MethodGet, uri+"?tile=status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressedStatusRequest.Header.Set("Accept-Encoding", "gzip")
+	compressedStatusRecorder := httptest.NewRecorder()
+	router.ServeHTTP(compressedStatusRecorder, compressedStatusRequest)
+	if compressedStatusRecorder.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("gzip status response should advertise gzip encoding, got %q", compressedStatusRecorder.Header().Get("Content-Encoding"))
+	}
+	gzipReader, err := gzip.NewReader(bytes.NewReader(compressedStatusRecorder.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("open compressed status response: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, gzipReader); err != nil {
+		t.Fatalf("read compressed status response: %v", err)
+	}
+	if err := gzipReader.Close(); err != nil {
+		t.Fatalf("close compressed status response: %v", err)
+	}
+
 	update := request(uri + "?tile=update")
 	if update.Code != http.StatusNoContent {
 		t.Fatalf("update operation returned %d: %s", update.Code, update.Body.String())
 	}
 	if update.Body.Len() != 0 {
 		t.Fatalf("update operation returned tile data: %d bytes", update.Body.Len())
+	}
+	if update.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("update operation must not advertise content encoding: %q", update.Header().Get("Content-Encoding"))
 	}
 
 	for y := uint(0); y < 8; y++ {

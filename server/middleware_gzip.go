@@ -12,8 +12,9 @@ import (
 // GZipHandler is responsible for determining if the incoming request should be served gzipped data.
 // All response data is assumed to be compressed prior to being passed to this handler.
 //
-// If the incoming request has the "Accept-Encoding" header set with the values of "gzip" or "*"
-// the response header "Content-Encoding: gzip" is set and the compressed data is returned.
+// If the incoming request has the "Accept-Encoding" header set with the values of "gzip" or "*",
+// successful responses with a body are returned with the "Content-Encoding: gzip" header.
+// Error and no-content responses are returned without a content encoding.
 //
 // If no "Accept-Encoding" header is present or "Accept-Encoding" has a value of "gzip;q=0" or
 // "*;q=0" the response is decompressed prior to being sent to the client.
@@ -39,12 +40,44 @@ func GZipHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		// set appropriate header
-		w.Header().Set("Content-Encoding", "gzip")
-
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(&gzipResponseWriter{resp: w}, r)
 		return
 	})
+}
+
+// gzipResponseWriter delays setting Content-Encoding until the downstream
+// handler has selected a successful response that can contain a body.
+type gzipResponseWriter struct {
+	status int
+	resp   http.ResponseWriter
+}
+
+func (w *gzipResponseWriter) Header() http.Header {
+	return w.resp.Header()
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.resp.Write(b)
+}
+
+func (w *gzipResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+
+	w.status = status
+	if status >= http.StatusOK && status < http.StatusMultipleChoices && status != http.StatusNoContent {
+		w.resp.Header().Set("Content-Encoding", "gzip")
+	} else {
+		w.resp.Header().Del("Content-Encoding")
+		if status == http.StatusNoContent {
+			w.resp.Header().Del("Content-Length")
+		}
+	}
+	w.resp.WriteHeader(status)
 }
 
 // gzipDecompressResponseWriter is responsible for decompressing responses
