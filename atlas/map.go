@@ -277,7 +277,7 @@ func (m Map) encodeMVTFeature(ctx context.Context, l Layer, tile slippy.Tile, pt
 
 	geo, err = convert.ToGeom(tegolaGeo)
 	if err != nil {
-		return nil
+		return fmt.Errorf("error converting cleaned geometry for MVT: %w", err)
 	}
 
 	mvtLayer.AddFeatures(mvt.Feature{

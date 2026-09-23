@@ -83,6 +83,11 @@ func TestRegisterProj4Defn(t *testing.T) {
 		}
 	}
 
+	for _, srid := range basic.KnownProj4SRIDs() {
+		if srid >= 320000001 && srid < 340000000 {
+			t.Fatalf("temporary PROJ validation SRID %v leaked into the conversion registry", srid)
+		}
+	}
 }
 
 func TestRegisterProj4DefnAppliesTowgs84(t *testing.T) {
@@ -110,5 +115,34 @@ func TestRegisterProj4DefnAppliesTowgs84(t *testing.T) {
 	backPoint := back.(geom.Point)
 	if math.Abs(backPoint[0]-769.792) > 0.1 || math.Abs(backPoint[1]-19300.763) > 0.1 {
 		t.Fatalf("datum round trip mismatch: got (%v, %v), want (769.792, 19300.763)", backPoint[0], backPoint[1])
+	}
+}
+
+func TestRegisterProj4SRIDReplacesCachedProjection(t *testing.T) {
+	const srid = uint64(399000001)
+	defnA := "+proj=utm +zone=37 +datum=WGS84 +units=m +no_defs"
+	defnB := "+proj=utm +zone=38 +datum=WGS84 +units=m +no_defs"
+	source := geom.Point{500000, 4649776.22482}
+
+	if err := basic.RegisterProj4SRID(srid, defnA); err != nil {
+		t.Fatalf("registering first projection: %v", err)
+	}
+	first, err := basic.ToWebMercator(srid, source)
+	if err != nil {
+		t.Fatalf("converting with first projection: %v", err)
+	}
+
+	if err := basic.RegisterProj4SRID(srid, defnB); err != nil {
+		t.Fatalf("replacing projection: %v", err)
+	}
+	second, err := basic.ToWebMercator(srid, source)
+	if err != nil {
+		t.Fatalf("converting with replacement projection: %v", err)
+	}
+
+	firstPoint := first.(geom.Point)
+	secondPoint := second.(geom.Point)
+	if firstPoint == secondPoint {
+		t.Fatalf("projection replacement reused cached result: both conversions returned %v", firstPoint)
 	}
 }

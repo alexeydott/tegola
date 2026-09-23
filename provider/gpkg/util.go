@@ -58,3 +58,8 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 func uppercaseTokens(str string) string {
 	return provider.ParameterTokenRegexp.ReplaceAllStringFunc(str, strings.ToUpper)
 }
+
+func trimTrailingSemicolon(sqlText string) string {
+	sqlText = strings.TrimSpace(sqlText)
+	return strings.TrimSpace(strings.TrimSuffix(sqlText, ";"))
+}

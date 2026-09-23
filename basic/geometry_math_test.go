@@ -73,6 +73,30 @@ func TestWebMercator3395(t *testing.T) {
 	}
 }
 
+func TestFromWebMercatorExtentUsesAllCorners(t *testing.T) {
+	webExtent := geom.NewExtent(
+		[2]float64{-1000000, 4000000},
+		[2]float64{2000000, 8000000},
+	)
+
+	got, err := basic.FromWebMercatorExtent(tegola.WGS84, webExtent)
+	if err != nil {
+		t.Fatalf("FromWebMercatorExtent(4326): %v", err)
+	}
+
+	corners := webExtent.Vertices()
+	for _, corner := range corners {
+		source, err := basic.FromWebMercator(tegola.WGS84, geom.Point{corner[0], corner[1]})
+		if err != nil {
+			t.Fatalf("FromWebMercator(4326): %v", err)
+		}
+		point := source.(geom.Point)
+		if point[0] < got.MinX() || point[0] > got.MaxX() || point[1] < got.MinY() || point[1] > got.MaxY() {
+			t.Fatalf("converted corner %v is outside extent %v", point, got)
+		}
+	}
+}
+
 // TestWebMercatorBuiltinEPSG verifies that SRIDs from the built-in table
 // (UTM, Gauss-Kruger, mercator aliases) convert to and from Web Mercator
 // without any explicit registration beyond RegisterBuiltinProj4SRIDs, and

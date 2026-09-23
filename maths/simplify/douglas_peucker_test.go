@@ -2,6 +2,7 @@ package simplify
 
 import (
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/go-spatial/tegola/maths"
@@ -80,5 +81,16 @@ func TestDouglasPeuckerCollapsesFlat(t *testing.T) {
 	got := DouglasPeucker(pts, 2.0)
 	if len(got) != 2 {
 		t.Fatalf("expected flat middle point removed, got %v", got)
+	}
+}
+
+func TestDouglasPeuckerSplitsAtTheFarthestPoint(t *testing.T) {
+	pts := []maths.Pt{
+		{0, 0}, {1, 1}, {2, 2}, {3, 0},
+	}
+	got := DouglasPeucker(pts, 0.5)
+	want := []maths.Pt{{0, 0}, {2, 2}, {3, 0}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }

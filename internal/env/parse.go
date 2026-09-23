@@ -206,10 +206,34 @@ func ParseFloat(v interface{}) (*float64, error) {
 	case int:
 		f := float64(val)
 		return &f, nil
+	case int8:
+		f := float64(val)
+		return &f, nil
+	case int16:
+		f := float64(val)
+		return &f, nil
+	case int32:
+		f := float64(val)
+		return &f, nil
 	case int64:
 		f := float64(val)
 		return &f, nil
+	case uint:
+		f := float64(val)
+		return &f, nil
+	case uint8:
+		f := float64(val)
+		return &f, nil
+	case uint16:
+		f := float64(val)
+		return &f, nil
+	case uint32:
+		f := float64(val)
+		return &f, nil
 	case uint64:
+		f := float64(val)
+		return &f, nil
+	case uintptr:
 		f := float64(val)
 		return &f, nil
 	case string:

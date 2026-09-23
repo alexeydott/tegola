@@ -14,13 +14,13 @@ import (
 // PutToBufInternal does: header, per-subobject counts, quantized points,
 // then optional non-geometric tail blocks.
 type blobBuilder struct {
-	oType       byte
-	typeMod     byte
-	addFlag     uint16
-	ofl         uint16
-	counts      []uint32
-	points      [][2]int32
-	tail        []byte
+	oType   byte
+	typeMod byte
+	addFlag uint16
+	ofl     uint16
+	counts  []uint32
+	points  [][2]int32
+	tail    []byte
 }
 
 func (bb *blobBuilder) build() []byte {
@@ -45,7 +45,7 @@ func (bb *blobBuilder) build() []byte {
 func TestDecodePolyline(t *testing.T) {
 	// two subobjects: quantized with precision 3 (millimetres)
 	bb := &blobBuilder{
-		oType: TypePolyline,
+		oType:  TypePolyline,
 		counts: []uint32{3, 2},
 		points: [][2]int32{
 			{1000, 2000}, {3000, 4000}, {3000, 4000}, // dup point dropped
@@ -156,9 +156,9 @@ func TestDecodeMultiPolygonIslandInHole(t *testing.T) {
 		oType:  TypePolygon,
 		counts: []uint32{5, 4, 4},
 		points: [][2]int32{
-			{0, 0}, {100, 0}, {100, 100}, {0, 100}, {0, 0},    // outer (closed)
-			{30, 30}, {70, 30}, {70, 70}, {30, 30},            // hole (closed)
-			{45, 45}, {55, 45}, {55, 55}, {45, 45},            // island in hole
+			{0, 0}, {100, 0}, {100, 100}, {0, 100}, {0, 0}, // outer (closed)
+			{30, 30}, {70, 30}, {70, 70}, {30, 30}, // hole (closed)
+			{45, 45}, {55, 45}, {55, 55}, {45, 45}, // island in hole
 		},
 	}
 	g, err := Decode(bb.build(), Options{Precision: 0})
@@ -321,9 +321,9 @@ func TestDecodePointAndText(t *testing.T) {
 		0, 0, 0, 0, // angle
 		0, 0, 0, 0, // icon offset x
 		0, 0, 0, 0, // icon offset y
-		0,        // flMirrorIcon
-		1,        // DataVer=1 -> TBlobPointParamExt (58 bytes)
-		0, 0,     // wFree
+		0,    // flMirrorIcon
+		1,    // DataVer=1 -> TBlobPointParamExt (58 bytes)
+		0, 0, // wFree
 	}
 	pointTail = append(pointTail, bytes.Repeat([]byte{0}, 58-16)...)
 
@@ -392,7 +392,9 @@ func TestDecodeErrors(t *testing.T) {
 			buf := (&blobBuilder{oType: TypePolyline, counts: []uint32{3}, points: [][2]int32{{1, 1}, {2, 2}, {3, 3}}}).build()
 			return buf[:len(buf)-4] // cut the last y
 		}(), Options{}},
-		{"negative precision", (&blobBuilder{oType: TypePoint, counts: []uint32{1}, points: [][2]int32{{1, 1}}}).build(), Options{Precision: math.Inf(1)}},
+		{"negative precision", (&blobBuilder{oType: TypePoint, counts: []uint32{1}, points: [][2]int32{{1, 1}}}).build(), Options{Precision: -1}},
+		{"fractional precision", (&blobBuilder{oType: TypePoint, counts: []uint32{1}, points: [][2]int32{{1, 1}}}).build(), Options{Precision: 1.5}},
+		{"infinite precision", (&blobBuilder{oType: TypePoint, counts: []uint32{1}, points: [][2]int32{{1, 1}}}).build(), Options{Precision: math.Inf(1)}},
 	}
 	for _, tc := range cases {
 		if _, err := Decode(tc.buf, tc.opts); err == nil {

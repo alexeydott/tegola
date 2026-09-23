@@ -23,13 +23,13 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	// the tile bbox polygon.
 	geomRef := quoteIdentifier(layer.geomFieldname)
 	if layer.geometryFormat == GeometryFormatWKT {
-		geomRef = fmt.Sprintf("ST_GeomFromText(%v)", geomRef)
+		geomRef = geomFromTextSQL(geomRef, layer.srid)
 	}
 
 	bboxSQL := fmt.Sprintf(
-		"ST_Intersects(%v, ST_GeomFromText('%v'))",
+		"ST_Intersects(%v, %v)",
 		geomRef,
-		wktPolygon(bboxExtent),
+		geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid),
 	)
 
 	// MOS blobs are opaque proprietary binaries: the server has no geometry
@@ -67,6 +67,17 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	)
 
 	return tokenReplacer.Replace(uppercaseTokens(qtext))
+}
+
+// geomFromTextSQL creates a geometry expression with the layer SRID when one
+// is configured. MySQL and MariaDB otherwise assign SRID 0 to WKT values;
+// comparing that value with a geometry column that has a non-zero SRID can
+// fail with a different-SRID error instead of applying the spatial filter.
+func geomFromTextSQL(value string, srid uint64) string {
+	if srid == 0 {
+		return fmt.Sprintf("ST_GeomFromText(%v)", value)
+	}
+	return fmt.Sprintf("ST_GeomFromText(%v, %d)", value, srid)
 }
 
 // mosBoundsSQL builds a coarse indexed filter for the raw bounds stored
@@ -113,4 +124,9 @@ func mosBoundsSQL(layer *Layer, bboxExtent *geom.Extent) string {
 // uppercaseTokens makes SQL tokens case-insensitive, matching PostGIS and GPKG.
 func uppercaseTokens(str string) string {
 	return provider.ParameterTokenRegexp.ReplaceAllStringFunc(str, strings.ToUpper)
+}
+
+func trimTrailingSemicolon(sqlText string) string {
+	sqlText = strings.TrimSpace(sqlText)
+	return strings.TrimSpace(strings.TrimSuffix(sqlText, ";"))
 }

@@ -155,26 +155,20 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 		extent, _ = tile.Extent()
 	}
 
-	// TODO: leverage helper functions for minx / miny to make this easier to follow
-	// TODO: it's currently assumed the tile will always be in WebMercator. Need to support different projections
-	minGeo, err := basic.FromWebMercator(srid, geom.Point{extent.MinX(), extent.MinY()})
+	// Convert the complete tile perimeter into the source CRS. Sampling the
+	// perimeter is conservative for nonlinear or rotated projections, unlike
+	// converting only the two opposite corners.
+	sourceExtent, err := basic.FromWebMercatorExtent(srid, extent)
 	if err != nil {
-		return "", fmt.Errorf("Error trying to convert tile point: %w ", err)
+		return "", fmt.Errorf("error converting tile extent: %w", err)
 	}
-
-	maxGeo, err := basic.FromWebMercator(srid, geom.Point{extent.MaxX(), extent.MaxY()})
-	if err != nil {
-		return "", fmt.Errorf("Error trying to convert tile point: %w ", err)
-	}
-
-	minPt, maxPt := minGeo.(geom.Point), maxGeo.(geom.Point)
 
 	bbox := fmt.Sprintf(
 		"ST_MakeEnvelope(%.8f,%.8f,%.8f,%.8f,%d)",
-		minPt.X(),
-		minPt.Y(),
-		maxPt.X(),
-		maxPt.Y(),
+		sourceExtent.MinX(),
+		sourceExtent.MinY(),
+		sourceExtent.MaxX(),
+		sourceExtent.MaxY(),
 		srid,
 	)
 

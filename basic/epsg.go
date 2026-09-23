@@ -178,7 +178,7 @@ func Proj4DefnSRID(proj4 string) (uint64, bool) {
 func isSupportedProj4(proj4 string) (ok bool) {
 	probe := nextProbeCode()
 	proj.CustomProjection(probe, proj4)
-	defer proj.CustomProjection(probe, "+proj=merc +datum=WGS84")
+	defer proj.RemoveCustomProjection(probe)
 	defer func() {
 		if recover() != nil {
 			ok = false

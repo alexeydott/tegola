@@ -59,7 +59,7 @@ The `geometry_format` config option controls decoding:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect the packed binary geometry format written by Mappl GIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse `!BBOX!` filter in the raw MOS units, then applies an exact intersection check in Go after decoding; individual undecodable rows are logged and skipped.
+- `mos` — expect the packed binary geometry format written by Mappl GIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
 
 ## MOS geometry format
 
@@ -72,7 +72,7 @@ The MOS blob layout (little-endian): a 12-byte header (object type, subobject co
 
 ### Layer system info blob (auto-configuration)
 
-MapplBase stores a `TLayerSystemInfoRec` version wrapper blob as the **first row** of every MOS geometry table. It carries the layer's self-description, and the provider parses it automatically at registration (both for `tablename` and `sql` layers):
+MapplBase commonly stores a `TLayerSystemInfoRec` version wrapper blob near the beginning of every MOS geometry table. It carries the layer's self-description, and the provider samples up to 16 rows while looking for both a decodable geometry and this metadata at registration (for `tablename` and `sql` layers):
 
 - `Precision` — the quantization precision (`kPrecision = 10^Precision`). Applied as the layer's `mos_precision` when neither the provider- nor layer-level `mos_precision` key is set.
 - `Projection` — the layer's full PROJ.4 definition. Registered as a synthetic SRID (≥ 340000001, same mechanism as `crs_defn`) and used as the layer SRID when no `srid`/`crs_defn` is configured at provider or layer level. Explicit config values always win.
@@ -158,7 +158,7 @@ definitions (vendored proj limitation).
 
 The following tokens are supported in custom `sql` (case-insensitive) and behave identically to the postgis provider:
 
-- `!BBOX!` — for native spatial geometries, replaced with `ST_Intersects(<geom_field>, ST_GeomFromText('POLYGON(...)'))` using the tile's buffered extent in the layer's SRID. For MOS, replaced with an indexed `MINX`/`MAXX`/`MINY`/`MAXY` overlap predicate in the raw packed coordinate units.
+- `!BBOX!` — for native spatial geometries, replaced with `ST_Intersects(<geom_field>, ST_GeomFromText('POLYGON(...)', <layer_srid>))` using the tile's buffered extent in the layer's SRID. WKT columns are wrapped with the same SRID. For MOS, replaced with an indexed `MINX`/`MAXX`/`MINY`/`MAXY` overlap predicate in the raw packed coordinate units.
 - `!ZOOM!`, `!Z!` — the tile's zoom (Z) value.
 - `!X!`, `!Y!` — the tile's X/Y values.
 - `!SCALE_DENOMINATOR!` — scale denominator assuming 90.7 DPI.

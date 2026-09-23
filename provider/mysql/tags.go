@@ -78,10 +78,11 @@ func convertTagValue(v interface{}, cat mysqlTypeCategory) (interface{}, error) 
 		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return i, nil
 		}
-		// unsigned values above math.MaxInt64 still fit an int64 tag when
-		// they fit uint64; loss beyond that is acceptable for MVT tags
+		// Preserve unsigned values above math.MaxInt64. MVT has a native
+		// uint_value representation, so narrowing these to int64 would turn
+		// valid identifiers into negative values.
 		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
-			return int64(u), nil
+			return u, nil
 		}
 		return nil, fmt.Errorf("cannot parse %q as int", s)
 	case typeCategoryFloat:

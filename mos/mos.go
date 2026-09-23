@@ -99,6 +99,11 @@ func (o Options) unitFactor() float64 {
 // kPrecision converts the configured decimal precision into the multiplicative
 // precision factor used by Mappl (x / kPrecision + OffsetX).
 func (o Options) kPrecision() (float64, error) {
+	if math.IsNaN(o.Precision) || math.IsInf(o.Precision, 0) ||
+		o.Precision < 0 || math.Trunc(o.Precision) != o.Precision ||
+		o.Precision > 308 {
+		return 0, fmt.Errorf("mos: invalid precision %v", o.Precision)
+	}
 	k := math.Pow(10, o.Precision)
 	if math.IsNaN(k) || math.IsInf(k, 0) || k <= 0 {
 		return 0, fmt.Errorf("mos: invalid precision %v", o.Precision)

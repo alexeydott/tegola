@@ -70,7 +70,7 @@ func TestConvertTagValue(t *testing.T) {
 		{"bytes as string", []byte("hello"), typeCategoryString, "hello", false},
 		{"bytes as int", []byte("123"), typeCategoryInt, int64(123), false},
 		{"bytes as negative int", []byte("-7"), typeCategoryInt, int64(-7), false},
-		{"bytes as huge uint", []byte("18446744073709551615"), typeCategoryInt, int64(-1), false},
+		{"bytes as huge uint", []byte("18446744073709551615"), typeCategoryInt, uint64(18446744073709551615), false},
 		{"bytes as float", []byte("2.5"), typeCategoryFloat, 2.5, false},
 		{"bytes as time string", []byte("2024-01-02 15:04:05"), typeCategoryTime, "2024-01-02 15:04:05", false},
 		{"bad int bytes", []byte("notanint"), typeCategoryInt, nil, true},

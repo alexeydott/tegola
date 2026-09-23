@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-spatial/geom"
@@ -374,19 +375,14 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 	// read the tile extent
 	tileBBox, tileSRID := tile.BufferedExtent()
 
-	// check if the SRID of the layer differs from that of the tile. tileSRID is assumed to always be WebMercator
+	// tileSRID is assumed to always be WebMercator. Build a conservative
+	// source-CRS extent before applying the provider's spatial filter.
 	if pLayer.srid != tileSRID {
-		minGeo, err := basic.FromWebMercator(pLayer.srid, geom.Point{tileBBox.MinX(), tileBBox.MinY()})
+		sourceBBox, err := basic.FromWebMercatorExtent(pLayer.srid, tileBBox)
 		if err != nil {
-			return fmt.Errorf("error converting point: %v ", err)
+			return fmt.Errorf("error converting tile extent: %v ", err)
 		}
-
-		maxGeo, err := basic.FromWebMercator(pLayer.srid, geom.Point{tileBBox.MaxX(), tileBBox.MaxY()})
-		if err != nil {
-			return fmt.Errorf("error converting point: %v ", err)
-		}
-
-		tileBBox = geom.NewExtent(minGeo.(geom.Point), maxGeo.(geom.Point))
+		tileBBox = sourceBBox
 	}
 
 	var qtext string
@@ -599,9 +595,13 @@ func wktPolygon(ext *geom.Extent) string {
 
 // reference to all instantiated providers
 var providers []Provider
+var providersMu sync.Mutex
 
 // Cleanup will close all database connections and destroy all previously instantiated Provider instances
 func Cleanup() {
+	providersMu.Lock()
+	defer providersMu.Unlock()
+
 	if len(providers) > 0 {
 		log.Infof("cleaning up mysql providers")
 	}

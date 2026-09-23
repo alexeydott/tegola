@@ -175,6 +175,7 @@ func TestMakeValid(t *testing.T) {
 		polygons [][][]maths.Pt
 		err      error
 	}
+
 	ctx := context.Background()
 
 	fn := func(idx int, test tcase) {

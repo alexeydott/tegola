@@ -142,6 +142,10 @@ func (w *tileCacheResponseWriter) Header() http.Header {
 }
 
 func (w *tileCacheResponseWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+
 	// only write to the multi writer when http response == StatusOK
 	if w.status == http.StatusOK {
 
@@ -154,6 +158,9 @@ func (w *tileCacheResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (w *tileCacheResponseWriter) WriteHeader(i int) {
+	if w.status != 0 {
+		return
+	}
 	w.status = i
 
 	w.resp.WriteHeader(i)

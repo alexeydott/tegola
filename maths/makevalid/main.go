@@ -197,9 +197,8 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 	pts := allPointsForSegments(flines)
 	xs := sortUniqueF64(allCoordForPts(0, pts...))
 
-	// Add lines at each x going from the miny to maxy. Keep track of how
-	// many segments pre-existed so clipbox edge rows can be identified
-	// after the split (the cut lines are appended below).
+	// Add lines at each x going from the miny to maxy. The cut lines are
+	// appended after the clipped input segments below.
 	numSegs := len(flines)
 	for i := range xs {
 		flines = append(flines, [2][2]float64{{xs[i], clipbox.MinY()}, {xs[i], clipbox.MaxY()}})
@@ -215,23 +214,15 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 	// each point with the value of their x, and the max y value to the next
 	// x.
 	//
-	// The clipbox's own edge rows are not polygon boundary: they would give
-	// every column fake boundary points at (x, miny)/(x, maxy) and corrupt
-	// the triangulation. Identify them by matching the surviving split
-	// segments against the four clipbox edges, so polygon edges that happen
-	// to lie on the clipbox border are kept. The vertical cut lines are kept
-	// whole: their endpoints sit on the clipbox border and are capped by
-	// Pt2MaxY, and their intersections with polygon edges are essential
-	// column points.
-	edgeRows := make(map[int]bool)
-	for i := 0; i < numSegs; i++ {
-		if isClipboxEdgeSegment(flines[i], clipbox) {
-			edgeRows[i] = true
-		}
-	}
 	colPts := make([][]maths.Pt, 0, len(splitPts))
 	for i, row := range splitPts {
-		if i < numSegs && edgeRows[i] {
+		// Clipbox edge segments are construction artifacts unless the
+		// original polygon actually contains that part of its boundary.
+		// Keep real polygon boundaries that happen to lie exactly on the
+		// clipping edge; dropping those changes the polygon topology.
+		if i < numSegs &&
+			isClipboxEdgeSegment(flines[i], clipbox) &&
+			!isOriginalClipboxEdgeSegment(flines[i], plygs) {
 			continue
 		}
 		if len(row) > 0 {
@@ -278,15 +269,16 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 					continue
 				}
 			}
-			ringCols[i], err = plyg.BuildRingCol(
+			ringCol, buildErr := plyg.BuildRingCol(
 				ctx,
 				hm,
 				x2pts[xs[i]],
 				x2pts[xs[i+1]],
 				pt2MaxY,
 			)
-			if err != nil {
-				switch err {
+			ringCols[i] = ringCol
+			if buildErr != nil {
+				switch buildErr {
 				case context.Canceled:
 					cancelled = true
 				default:
@@ -294,7 +286,7 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 						logout := fmt.Sprintf("clipbox := %v\n", clipbox)
 						logout += fmt.Sprintf("plygs := %v\n", plygs)
 						logout += logOutBuildRings(pt2MaxY, xs, x2pts)
-						log.Println(logout+"For ", i, "Got error (", err, ") trying to process ")
+						log.Println(logout+"For ", i, "Got error (", buildErr, ") trying to process ")
 					}
 					//panic(err)
 				}
@@ -720,7 +712,7 @@ func fixup(pts [][]maths.Pt) {
 
 // isClipboxEdgeSegment reports whether the segment lies exactly on one of
 // the clipbox's boundary edges (horizontal top/bottom or vertical
-// left/right). These segments are clip artifacts, not polygon boundary.
+// left/right).
 func isClipboxEdgeSegment(ln [2][2]float64, clipbox *geom.Extent) bool {
 	if ln[0][1] == ln[1][1] && (ln[0][1] == clipbox.MinY() || ln[0][1] == clipbox.MaxY()) {
 		return true
@@ -731,3 +723,27 @@ func isClipboxEdgeSegment(ln [2][2]float64, clipbox *geom.Extent) bool {
 	return false
 }
 
+// isOriginalClipboxEdgeSegment reports whether a segment on a clipbox edge
+// is covered by an input polygon boundary. The clipbox itself is added to the
+// segment set before splitting, so coordinate-only checks cannot distinguish
+// its synthetic edge from a real polygon edge.
+func isOriginalClipboxEdgeSegment(ln [2][2]float64, polygons [][]maths.Line) bool {
+	segment := maths.NewLineFloat64(ln)
+	for _, polygon := range polygons {
+		for _, boundary := range polygon {
+			if segment.IsHorizontal() && boundary.IsHorizontal() &&
+				segment[0].Y == boundary[0].Y &&
+				boundary.InBetween(segment[0]) &&
+				boundary.InBetween(segment[1]) {
+				return true
+			}
+			if segment.IsVertical() && boundary.IsVertical() &&
+				segment[0].X == boundary[0].X &&
+				boundary.InBetween(segment[0]) &&
+				boundary.InBetween(segment[1]) {
+				return true
+			}
+		}
+	}
+	return false
+}

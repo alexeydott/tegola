@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -55,8 +56,25 @@ func detectServerFlavor(db *sql.DB) (string, error) {
 // cannot decode, so a single-row sample would poison provider registration.
 const geomTypeSampleRows = 16
 
-// limitClauseRe matches a trailing LIMIT [offset,] n clause.
-var limitClauseRe = regexp.MustCompile(`\s+limit\s+(\d+\s*,\s*\d+|\d+)\s*$`)
+// limitClauseRe matches a trailing LIMIT [offset,] n or LIMIT n OFFSET offset
+// clause.
+var limitClauseRe = regexp.MustCompile(`\s+limit\s+(\d+\s*,\s*\d+|\d+(?:\s+offset\s+\d+)?)\s*$`)
+
+func sampleGeometryQuery(qtext string) string {
+	base := strings.TrimSpace(qtext)
+	// A caller may provide a complete SQL statement with a trailing
+	// semicolon. Strip it before removing the caller's LIMIT clause so the
+	// sampling LIMIT is never appended after a statement terminator.
+	base = strings.TrimSpace(strings.TrimSuffix(base, ";"))
+	for {
+		m := limitClauseRe.FindStringIndex(strings.ToLower(base))
+		if m == nil || m[0] == 0 {
+			break
+		}
+		base = strings.TrimSpace(base[:m[0]])
+	}
+	return fmt.Sprintf("%v LIMIT %v", base, geomTypeSampleRows)
+}
 
 // geomTypeFromColumn samples up to geomTypeSampleRows geometry values from
 // the given query and decodes the first one that succeeds. A
@@ -66,23 +84,15 @@ var limitClauseRe = regexp.MustCompile(`\s+limit\s+(\d+\s*,\s*\d+|\d+)\s*$`)
 // when the query yields no rows at all, and the decode error only when
 // every sampled row failed to decode.
 func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosPrecision float64) (geo geom.Geometry, headerSRID uint64, sysInfo *mos.SystemInfo, err error) {
-	// strip any trailing LIMIT clause the caller added; we manage row
-	// limiting ourselves via geomTypeSampleRows.
-	base := strings.TrimSpace(qtext)
-	for {
-		m := limitClauseRe.FindStringIndex(strings.ToLower(base))
-		if m == nil || m[0] == 0 {
-			break
-		}
-		base = strings.TrimSpace(base[:m[0]])
-	}
-	rows, err := db.Query(fmt.Sprintf("%v LIMIT %v", base, geomTypeSampleRows))
+	rows, err := db.Query(sampleGeometryQuery(qtext))
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	defer rows.Close()
 
 	var lastErr error
+	var firstGeo geom.Geometry
+	var firstHeaderSRID uint64
 	for rows.Next() {
 		var geomVal interface{}
 		if err := rows.Scan(&geomVal); err != nil {
@@ -99,15 +109,21 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 			sysInfo = &si
 			continue
 		}
-		srid, geo, err := decodeGeometry(geomVal, geometryFormat, serverFlavor, mos.Options{Precision: mosPrecision})
-		if err != nil {
-			lastErr = err
-			continue
+		if firstGeo == nil {
+			srid, decoded, decodeErr := decodeGeometry(geomVal, geometryFormat, serverFlavor, mos.Options{Precision: mosPrecision})
+			if decodeErr != nil {
+				lastErr = decodeErr
+				continue
+			}
+			firstGeo = decoded
+			firstHeaderSRID = srid
 		}
-		return geo, srid, sysInfo, nil
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, nil, err
+	}
+	if firstGeo != nil {
+		return firstGeo, firstHeaderSRID, sysInfo, nil
 	}
 	if lastErr != nil {
 		return nil, 0, nil, fmt.Errorf("error decoding sampled geometry: %v", lastErr)
@@ -197,6 +213,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	if mosPrecision, err = config.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
 		return nil, err
 	}
+	if err := validateMOSPrecision(mosPrecision); err != nil {
+		return nil, fmt.Errorf("invalid %v: %w", ConfigKeyMOSPrecision, err)
+	}
 	if geometryFormat != GeometryFormatMOS {
 		if mosPrecision != mosPrecisionDefault {
 			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSPrecision, ConfigKeyGeometryFormat, GeometryFormatMOS)
@@ -258,6 +277,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	if err != nil {
 		return nil, fmt.Errorf("unable to open mysql connection to %v:%v/%v: %v", host, port, database, err)
 	}
+	keepDB := false
+	defer func() {
+		if !keepDB {
+			_ = db.Close()
+		}
+	}()
 	db.SetMaxOpenConns(maxConn)
 	maxIdle := maxConn
 	if maxIdle <= 0 {
@@ -372,6 +397,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		if layer.mosPrecision, err = layerConf.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSPrecision, err)
 		}
+		if err := validateMOSPrecision(layer.mosPrecision); err != nil {
+			return nil, fmt.Errorf("for layer (%v) %v invalid %v: %w", i, layerName, ConfigKeyMOSPrecision, err)
+		}
 		if _, explicit := layerConf.Interface(ConfigKeyMOSPrecision); explicit {
 			layer.mosPrecisionExplicit = true
 		}
@@ -477,7 +505,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				"!bbox!", "1=1",
 			)
 
-			inspectionSQL := tokenReplacer.Replace(customSQL)
+			inspectionSQL := tokenReplacer.Replace(trimTrailingSemicolon(customSQL))
 			inspectionTile := provider.NewTile(0, 0, 0, 0, uint(srid))
 			inspectionExtent, _ := inspectionTile.BufferedExtent()
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
@@ -540,7 +568,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	}
 
 	// track the provider so we can clean it up later
+	providersMu.Lock()
 	providers = append(providers, p)
+	providersMu.Unlock()
+	keepDB = true
 
 	return &p, nil
 }
@@ -561,6 +592,10 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 		return nil
 	}
 
+	if err := validateMOSPrecision(float64(sysInfo.Precision)); err != nil {
+		return fmt.Errorf("invalid system-info MOS precision: %w", err)
+	}
+
 	// precision: only when mos_precision is absent on both provider and
 	// layer level. layer.mosPrecision currently holds the (possibly
 	// defaulted) provider value; a layer-level key overrides it.
@@ -576,9 +611,26 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 		layer.mosUnitsFactor = factor
 	}
 
+	// A layer-level CRS must also suppress system-info projection. The
+	// provider-level flag alone is insufficient because layer config is
+	// intentionally allowed to override provider defaults.
+	crsExplicit := sridExplicit
+	if layerConf != nil {
+		if _, ok := layerConf.Interface(ConfigKeySRID); ok {
+			crsExplicit = true
+		}
+		if raw, ok := layerConf.Interface(ConfigKeyCRSDefn); ok && raw != nil {
+			defn, err := layerConf.String(ConfigKeyCRSDefn, nil)
+			if err != nil {
+				return fmt.Errorf("invalid %v: %v", ConfigKeyCRSDefn, err)
+			}
+			crsExplicit = crsExplicit || strings.TrimSpace(defn) != ""
+		}
+	}
+
 	// projection: register the blob's PROJ.4 definition as the layer SRID
-	// when the user did not pick one explicitly.
-	if sysInfo.Projection != "" && !sridExplicit {
+	// when no provider- or layer-level CRS was selected.
+	if sysInfo.Projection != "" && !crsExplicit {
 		code, err := basic.RegisterProj4Defn(sysInfo.Projection)
 		if err != nil {
 			return fmt.Errorf("unable to register layer projection %q: %v", sysInfo.Projection, err)
@@ -593,6 +645,17 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 	} else {
 		log.Debugf("layer %v system info: precision=%v projection=%q",
 			layer.name, sysInfo.Precision, sysInfo.Projection)
+	}
+	return nil
+}
+
+const maxMOSPrecision = 308
+
+func validateMOSPrecision(precision float64) error {
+	if math.IsNaN(precision) || math.IsInf(precision, 0) ||
+		precision < 0 || math.Trunc(precision) != precision ||
+		precision > maxMOSPrecision {
+		return fmt.Errorf("must be a finite non-negative integer no greater than %d, got %v", maxMOSPrecision, precision)
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	conf "github.com/go-spatial/tegola/config"
 	_ "github.com/mattn/go-sqlite3"
@@ -60,13 +61,15 @@ type featureTableDetails struct {
 }
 
 // Creates a config instance of the type NewTileProvider() requires including all available feature
-//    tables in the gpkg at 'gpkgPath'.
+//
+//	tables in the gpkg at 'gpkgPath'.
 func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 	// Get all feature tables
 	db, err := sql.Open("sqlite3", gpkgPath)
 	if err != nil {
 		return nil, err
 	}
+	defer db.Close()
 
 	ftMetaData, err := featureTableMetaData(db)
 	if err != nil {
@@ -241,6 +244,9 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 			bbox: bbox,
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return geomTableDetails, nil
 }
@@ -266,6 +272,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	if err != nil {
 		return nil, err
 	}
+	keepDB := false
+	defer func() {
+		if !keepDB {
+			_ = db.Close()
+		}
+	}()
 
 	geomTableDetails, err := featureTableMetaData(db)
 	if err != nil {
@@ -301,6 +313,11 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		providerSRIDExplicit = true
 		log.Infof("registered %v as synthetic srid %v", ConfigKeyCRSDefn, defnSRID)
 	}
+	// Register the same common projected SRIDs supported by the other SQL
+	// providers. GeoPackages frequently carry UTM or Gauss-Kruger metadata;
+	// without this registration a valid numeric layer SRID cannot be used for
+	// source-CRS bbox conversion or feature reprojection.
+	basic.RegisterBuiltinProj4SRIDs()
 
 	p := Provider{
 		Filepath: filepath,
@@ -344,11 +361,11 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		// ensure only one of sql or tablename exist
 		_, errTable := layerConf.String(ConfigKeyTableName, nil)
 		if _, ok := errTable.(dict.ErrKeyRequired); errTable != nil && !ok {
-			return nil, err
+			return nil, errTable
 		}
 		_, errSQL := layerConf.String(ConfigKeySQL, nil)
 		if _, ok := errSQL.(dict.ErrKeyRequired); errSQL != nil && !ok {
-			return nil, err
+			return nil, errSQL
 		}
 		// err != nil <-> key != exists
 		if errTable != nil && errSQL != nil {
@@ -446,7 +463,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				"!bbox!", "1=1",
 			)
 
-			inspectionSQL := tokenReplacer.Replace(customSQL)
+			inspectionSQL := tokenReplacer.Replace(trimTrailingSemicolon(customSQL))
 			inspectionTile := provider.NewTile(0, 0, 0, 0, uint(p.srid))
 			inspectionExtent, _ := inspectionTile.BufferedExtent()
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
@@ -520,16 +537,23 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	}
 
 	// track the provider so we can clean it up later
+	providersMu.Lock()
 	providers = append(providers, p)
+	providersMu.Unlock()
+	keepDB = true
 
 	return &p, err
 }
 
 // reference to all instantiated providers
 var providers []Provider
+var providersMu sync.Mutex
 
 // Cleanup will close all database connections and destroy all previously instantiated Provider instances
 func Cleanup() {
+	providersMu.Lock()
+	defer providersMu.Unlock()
+
 	if len(providers) > 0 {
 		log.Infof("cleaning up gpkg providers")
 	}

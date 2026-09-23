@@ -64,6 +64,15 @@ type Provider struct {
 	srid uint64
 }
 
+// ErrUnknownLayer denotes a layer name that is not registered on the provider.
+type ErrUnknownLayer struct {
+	Name string
+}
+
+func (e ErrUnknownLayer) Error() string {
+	return fmt.Sprintf("layer not registered with provider: %v", e.Name)
+}
+
 func (p *Provider) Layers() ([]provider.LayerInfo, error) {
 	log.Debug("attempting gpkg.Layers()")
 
@@ -83,25 +92,22 @@ func (p *Provider) Layers() ([]provider.LayerInfo, error) {
 func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider.Tile, queryParams provider.Params, fn func(f *provider.Feature) error) error {
 	log.Debugf("fetching layer %v", layer)
 
-	pLayer := p.layers[layer]
+	pLayer, ok := p.layers[layer]
+	if !ok {
+		return ErrUnknownLayer{layer}
+	}
 
 	// read the tile extent
 	tileBBox, tileSRID := tile.BufferedExtent()
 
-	// TODO(arolek): reimplement once the geom package has reprojection
-	// check if the SRID of the layer differs from that of the tile. tileSRID is assumed to always be WebMercator
+	// tileSRID is assumed to always be WebMercator. Build a conservative
+	// source-CRS extent before applying the provider's spatial filter.
 	if pLayer.srid != tileSRID {
-		minGeo, err := basic.FromWebMercator(pLayer.srid, geom.Point{tileBBox.MinX(), tileBBox.MinY()})
+		sourceBBox, err := basic.FromWebMercatorExtent(pLayer.srid, tileBBox)
 		if err != nil {
-			return fmt.Errorf("error converting point: %v ", err)
+			return fmt.Errorf("error converting tile extent: %v ", err)
 		}
-
-		maxGeo, err := basic.FromWebMercator(pLayer.srid, geom.Point{tileBBox.MaxX(), tileBBox.MaxY()})
-		if err != nil {
-			return fmt.Errorf("error converting point: %v ", err)
-		}
-
-		tileBBox = geom.NewExtent(minGeo.(geom.Point), maxGeo.(geom.Point))
+		tileBBox = sourceBBox
 	}
 
 	var qtext string
@@ -237,6 +243,9 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		}
 	}
 
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	return nil
 }
 

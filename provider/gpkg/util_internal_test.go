@@ -113,3 +113,9 @@ func TestReplaceTokens(t *testing.T) {
 		t.Run(name, fn(tc))
 	}
 }
+
+func TestTrimTrailingSemicolon(t *testing.T) {
+	if got := trimTrailingSemicolon(" SELECT * FROM features ;  "); got != "SELECT * FROM features" {
+		t.Fatalf("trimTrailingSemicolon() = %q", got)
+	}
+}

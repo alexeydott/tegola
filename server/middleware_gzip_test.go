@@ -18,8 +18,6 @@ func TestMiddlewareGzipHandler(t *testing.T) {
 
 	fn := func(tc tcase) func(t *testing.T) {
 		return func(t *testing.T) {
-			t.Parallel()
-
 			// our tests don't use the URIPrefix but our server is a singleton
 			// so we set it to the default for this test
 			server.URIPrefix = "/"
@@ -179,6 +177,14 @@ func TestMiddlewareGzipHandlerDoesNotEncodeErrorsOrEmptyResponses(t *testing.T) 
 			}),
 			statusCode: http.StatusNoContent,
 		},
+		{
+			name: "reset content",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", "0")
+				w.WriteHeader(http.StatusResetContent)
+			}),
+			statusCode: http.StatusResetContent,
+		},
 	}
 
 	for _, tc := range tests {
@@ -197,6 +203,11 @@ func TestMiddlewareGzipHandlerDoesNotEncodeErrorsOrEmptyResponses(t *testing.T) 
 			}
 			if got := recorder.Body.String(); got != tc.body {
 				t.Fatalf("expected body %q, got %q", tc.body, got)
+			}
+			if (tc.statusCode == http.StatusNoContent || tc.statusCode == http.StatusResetContent) &&
+				recorder.Header().Get("Content-Length") != "" {
+				t.Fatalf("expected no Content-Length for status %d, got %q",
+					tc.statusCode, recorder.Header().Get("Content-Length"))
 			}
 		})
 	}

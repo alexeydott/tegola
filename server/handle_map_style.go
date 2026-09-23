@@ -151,9 +151,12 @@ func (req HandleMapStyle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// lines as polygons, so fill layers are restricted to polygons.
 		if layer.Type == style.LayerTypeFill {
 			layer.Filter = []interface{}{"==", "$type", "Polygon"}
+		}
 
-			// sibling line layer renders polylines from the same source layer
-			// so they are not swallowed (and filled) by the fill layer.
+		if layer.Type == style.LayerTypeFill {
+			// Add a sibling line layer for polylines served by the same
+			// source layer. Keep the established ordering (line before fill)
+			// so the generated style remains backwards-compatible.
 			lineLayer := style.Layer{
 				ID:          l.MVTName() + "-line",
 				Source:      req.mapName,

@@ -24,6 +24,160 @@ import (
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
+func TestSampleGeometryQueryRemovesTrailingLimitAndSemicolon(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "limit and semicolon",
+			sql:  "SELECT geom FROM features LIMIT 1;",
+			want: "SELECT geom FROM features LIMIT 16",
+		},
+		{
+			name: "limit without semicolon",
+			sql:  "SELECT geom FROM features LIMIT 1",
+			want: "SELECT geom FROM features LIMIT 16",
+		},
+		{
+			name: "limit offset",
+			sql:  "SELECT geom FROM features LIMIT 1 OFFSET 4;",
+			want: "SELECT geom FROM features LIMIT 16",
+		},
+		{
+			name: "no limit",
+			sql:  "SELECT geom FROM features;",
+			want: "SELECT geom FROM features LIMIT 16",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sampleGeometryQuery(tc.sql); got != tc.want {
+				t.Fatalf("sampleGeometryQuery(%q) = %q, want %q", tc.sql, got, tc.want)
+			}
+			if strings.Contains(tc.want, "; LIMIT") {
+				t.Fatalf("sampling LIMIT was appended after a statement terminator: %q", tc.want)
+			}
+		})
+	}
+}
+
+func TestMySQLBBoxUsesConfiguredSRID(t *testing.T) {
+	layer := &Layer{
+		geomFieldname:  "geom",
+		geometryFormat: GeometryFormatWKT,
+		srid:           4326,
+	}
+	tile := provider.NewTile(0, 0, 0, 0, 4326)
+	extent, _ := tile.BufferedExtent()
+
+	query := replaceTokens("WHERE !BBOX!", layer, tile, extent)
+	if !strings.Contains(query, "ST_GeomFromText(`geom`, 4326)") {
+		t.Fatalf("WKT geometry expression does not carry SRID: %q", query)
+	}
+	if !strings.Contains(query, "ST_GeomFromText('POLYGON") {
+		t.Fatalf("bbox expression does not use ST_GeomFromText: %q", query)
+	}
+	if !strings.Contains(query, ", 4326)") {
+		t.Fatalf("bbox expression does not carry SRID: %q", query)
+	}
+
+	layer.srid = 0
+	query = replaceTokens("WHERE !BBOX!", layer, tile, extent)
+	if strings.Contains(query, ", 4326)") {
+		t.Fatalf("SRID leaked into zero-SRID query: %q", query)
+	}
+}
+
+func TestTrimTrailingSemicolon(t *testing.T) {
+	if got := trimTrailingSemicolon(" SELECT * FROM features ;  "); got != "SELECT * FROM features" {
+		t.Fatalf("trimTrailingSemicolon() = %q", got)
+	}
+}
+
+func TestValidateMOSPrecision(t *testing.T) {
+	for _, precision := range []float64{0, 2, maxMOSPrecision} {
+		if err := validateMOSPrecision(precision); err != nil {
+			t.Errorf("validateMOSPrecision(%v) = %v", precision, err)
+		}
+	}
+	for _, precision := range []float64{-1, 1.5, maxMOSPrecision + 1, math.NaN(), math.Inf(1)} {
+		if err := validateMOSPrecision(precision); err == nil {
+			t.Errorf("validateMOSPrecision(%v) succeeded, want error", precision)
+		}
+	}
+}
+
+type samplingTestDriver struct {
+	values [][]driver.Value
+}
+
+func (d *samplingTestDriver) Open(string) (driver.Conn, error) {
+	return &samplingTestConn{driver: d}, nil
+}
+
+type samplingTestConn struct {
+	driver *samplingTestDriver
+}
+
+func (c *samplingTestConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("not supported")
+}
+func (c *samplingTestConn) Close() error              { return nil }
+func (c *samplingTestConn) Begin() (driver.Tx, error) { return nil, errors.New("not supported") }
+
+func (c *samplingTestConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return &samplingTestRows{values: c.driver.values}, nil
+}
+
+type samplingTestRows struct {
+	values [][]driver.Value
+	index  int
+}
+
+func (r *samplingTestRows) Columns() []string { return []string{"geom"} }
+func (r *samplingTestRows) Close() error      { return nil }
+
+func (r *samplingTestRows) Next(dest []driver.Value) error {
+	if r.index == len(r.values) {
+		return io.EOF
+	}
+	dest[0] = r.values[r.index][0]
+	r.index++
+	return nil
+}
+
+func (r *samplingTestRows) ColumnTypeDatabaseTypeName(int) string { return "BLOB" }
+
+func TestGeomTypeFromColumnKeepsSamplingAfterGeometry(t *testing.T) {
+	systemInfo := make([]byte, 64)
+	copy(systemInfo, []byte{5, 'V', 'e', 'r', ' ', '1'})
+	binary.LittleEndian.PutUint32(systemInfo[11:15], 4)
+
+	driverName := "tegola_mysql_sampling_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+	sql.Register(driverName, &samplingTestDriver{
+		values: [][]driver.Value{{"POINT(1 2)"}, {systemInfo}},
+	})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	geo, _, sysInfo, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := geo.(geom.Point); !ok {
+		t.Fatalf("expected geom.Point, got %T", geo)
+	}
+	if sysInfo == nil || sysInfo.Precision != 4 {
+		t.Fatalf("expected system info precision 4, got %#v", sysInfo)
+	}
+}
+
 type retryTestDriver struct {
 	mu          sync.Mutex
 	queryCount  int
@@ -580,6 +734,30 @@ func TestApplySystemInfo(t *testing.T) {
 		}
 		if layer.srid != 3857 {
 			t.Errorf("srid = %v, want 3857 (explicit srid wins)", layer.srid)
+		}
+	})
+
+	t.Run("layer srid suppresses system projection", func(t *testing.T) {
+		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1, srid: 32637}
+		if err := applySystemInfo(&layer, dict.Dict{ConfigKeySRID: 32637}, sysInfo, false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.srid != 32637 {
+			t.Errorf("srid = %v, want 32637 (layer srid wins)", layer.srid)
+		}
+	})
+
+	t.Run("layer crs definition suppresses system projection", func(t *testing.T) {
+		layerSRID, err := basic.RegisterProj4Defn(projDefn)
+		if err != nil {
+			t.Fatalf("registering layer CRS: %v", err)
+		}
+		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1, srid: layerSRID}
+		if err := applySystemInfo(&layer, dict.Dict{ConfigKeyCRSDefn: projDefn}, sysInfo, false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if layer.srid != layerSRID {
+			t.Errorf("srid = %v, want %v (layer crs_defn wins)", layer.srid, layerSRID)
 		}
 	})
 

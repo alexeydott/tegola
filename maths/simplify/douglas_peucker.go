@@ -36,10 +36,14 @@ func DouglasPeucker(points []maths.Pt, tolerance float64) []maths.Pt {
 	}
 
 	if dmax > tolerance {
-		rec1 := DouglasPeucker(points[0:idx], tolerance)
+		rec1 := DouglasPeucker(points[:idx+1], tolerance)
 		rec2 := DouglasPeucker(points[idx:], tolerance)
 
-		newpts := append(rec1, rec2...)
+		// The split point belongs to both recursive ranges; retain it only
+		// once when joining the simplified segments.
+		newpts := make([]maths.Pt, 0, len(rec1)+len(rec2)-1)
+		newpts = append(newpts, rec1[:len(rec1)-1]...)
+		newpts = append(newpts, rec2...)
 
 		return newpts
 	}

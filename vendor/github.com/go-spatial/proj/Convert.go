@@ -77,9 +77,27 @@ func Inverse(src EPSGCode, input []float64) ([]float64, error) {
 // CustomProjection provides write-only access to the internal projection list
 // so that projections may be added without having to modify the library code.
 func CustomProjection(code EPSGCode, str string) {
+	// The conversion cache is keyed only by EPSG code. Invalidate an existing
+	// entry when a definition is replaced, otherwise subsequent conversions
+	// silently continue using the old projection. Keep the cache lock outermost
+	// because newConversion holds it while reading projStrings.
+	cacheLock.Lock()
 	projStringLock.Lock()
 	projStrings[code] = str
 	projStringLock.Unlock()
+	delete(conversions, code)
+	cacheLock.Unlock()
+}
+
+// RemoveCustomProjection removes a projection registered through
+// CustomProjection and invalidates its cached conversion.
+func RemoveCustomProjection(code EPSGCode) {
+	cacheLock.Lock()
+	projStringLock.Lock()
+	delete(projStrings, code)
+	projStringLock.Unlock()
+	delete(conversions, code)
+	cacheLock.Unlock()
 }
 
 //---------------------------------------------------------------------------
