@@ -22,6 +22,10 @@ const (
 	// QueryKeyDebug is a common query string key used throughout the pacakge
 	// the value should always be a boolean
 	QueryKeyDebug = "debug"
+
+	// QueryKeyDirty forces regeneration of a tile even when its cache entry
+	// already exists. The regenerated response replaces the cache entry.
+	QueryKeyDirty = "dirty"
 )
 
 var (

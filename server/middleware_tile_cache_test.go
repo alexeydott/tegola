@@ -139,3 +139,35 @@ func TestMiddlewareTileCacheHandlerIgnoreParams(t *testing.T) {
 		t.Run(name, fn(tc))
 	}
 }
+
+func TestMiddlewareTileCacheHandlerDirtyRegenerates(t *testing.T) {
+	server.URIPrefix = "/"
+	a := newTestMapWithLayers(testLayer1)
+	cacher, _ := memory.New(nil)
+	a.SetCache(cacher)
+	router := server.NewRouter(a)
+	uri := "/maps/test-map/4/2/3.pbf"
+
+	request := func(uri string) *httptest.ResponseRecorder {
+		r, err := http.NewRequest(http.MethodGet, uri, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := request(uri); w.Header().Get("Tegola-Cache") != "MISS" {
+		t.Fatalf("initial request should miss cache, got %q", w.Header().Get("Tegola-Cache"))
+	}
+	if w := request(uri); w.Header().Get("Tegola-Cache") != "HIT" {
+		t.Fatalf("second request should hit cache, got %q", w.Header().Get("Tegola-Cache"))
+	}
+	if w := request(uri + "?" + server.QueryKeyDirty + "=true"); w.Header().Get("Tegola-Cache") != "MISS" {
+		t.Fatalf("dirty request should regenerate and miss cache, got %q", w.Header().Get("Tegola-Cache"))
+	}
+	if w := request(uri); w.Header().Get("Tegola-Cache") != "HIT" {
+		t.Fatalf("request after dirty regeneration should hit cache, got %q", w.Header().Get("Tegola-Cache"))
+	}
+}

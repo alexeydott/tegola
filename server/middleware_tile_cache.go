@@ -28,16 +28,31 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 			return
 		}
 
-		// ignore requests with query parameters
-		if r.URL.RawQuery != "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// parse our URI into a cache key structure (remove any configured URIPrefix + "maps/" )
 		key, err := cache.ParseKey(strings.TrimPrefix(r.URL.Path, path.Join(URIPrefix, "maps")))
 		if err != nil {
 			log.Errorf("cache middleware: ParseKey err: %v", err)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		query := r.URL.Query()
+		dirty := query.Get(QueryKeyDirty)
+		forceRegenerate := dirty == "" || dirty == "1" || strings.EqualFold(dirty, "true")
+		if _, ok := query[QueryKeyDirty]; !ok {
+			forceRegenerate = false
+		}
+
+		// A dirty request is only cacheable when it is the sole query
+		// parameter. Caching a response that depends on map query parameters
+		// under the ordinary tile key would serve the wrong data later.
+		if forceRegenerate && len(query) == 1 {
+			serveAndCacheTile(w, r, next, cacher, key)
+			return
+		}
+
+		// Preserve the existing behavior for ordinary query parameters.
+		if r.URL.RawQuery != "" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -86,6 +101,21 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 		w.Write(cachedTile)
 		return
 	})
+}
+
+func serveAndCacheTile(w http.ResponseWriter, r *http.Request, next http.Handler, cacher cache.Interface, key *cache.Key) {
+	var buff bytes.Buffer
+	w = newTileCacheResponseWriter(w, &buff)
+
+	next.ServeHTTP(w, r)
+
+	if r.Context().Err() != nil || buff.Len() == 0 {
+		return
+	}
+
+	if err := cacher.Set(r.Context(), key, buff.Bytes()); err != nil {
+		log.Warnf("cache response writer err: %v", err)
+	}
 }
 
 func newTileCacheResponseWriter(resp http.ResponseWriter, w io.Writer) http.ResponseWriter {
