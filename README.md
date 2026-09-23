@@ -14,7 +14,7 @@ Tegola is a vector tile server delivering [Mapbox Vector Tiles](https://github.c
 - [Mapbox Vector Tile v2 specification](https://github.com/mapbox/vector-tile-spec) compliant.
 - An embedded viewer with an automatically generated style for quick data visualization and inspection.
 - Support for [PostGIS](provider/postgis) and [GeoPackage](provider/gpkg) data providers. Extensible design to support additional data providers.
-- Support for several cache backends: [memory](cache/memory), [file](cache/file), [s3](cache/s3), [redis](cache/redis), [azure blob store](cache/azblob).
+- Support for several cache backends: [memory](cache/memory), [multilevel](cache/multilevel), [file](cache/file), [s3](cache/s3), [redis](cache/redis), [azure blob store](cache/azblob).
 - Cache seeding and invalidation via individual tiles (ZXY), lat / lon bounds and ZXY tile list.
 - Parallelized tile serving and geometry processing.
 - Support for Web Mercator (3857) and WGS84 (4326) projections.
@@ -158,6 +158,27 @@ Tegola process. `max_zoom` controls which tiles are inserted, while total
 memory usage is limited only by available process memory; use a persistent or
 distributed backend when cache contents must survive restarts or be shared
 between instances.
+
+For a two-level memory-plus-file cache, configure each backend independently:
+
+```toml
+[cache]
+type = "multilevel"
+
+[cache.memory]
+max_zoom = 18
+ttl = 60
+
+[cache.file]
+basepath = "./cache/maps"
+max_zoom = 22
+ttl = 86400
+```
+
+Reads check memory first and then file; a file hit is promoted to memory.
+Writes and purges are sent to both levels. A failed promotion is logged while
+the successful file hit is still returned; errors from reads, writes, and
+purges are otherwise returned to the caller.
 
 The tegola config file uses the [TOML](https://github.com/toml-lang/toml) format. The following example shows how to configure a `mvt_postgis` data provider. The `mvt_postgis` provider will leverage PostGIS's `ST_AsMVT()` function for the encoding of the vector tile.
 
