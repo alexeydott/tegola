@@ -175,6 +175,12 @@ max_zoom = 22
 ttl = 86400
 ```
 
+The `multilevel` cache requires both nested sections. The `memory` section
+supports `max_zoom` (optional, defaults to the maximum Tegola zoom) and `ttl`
+(optional seconds, `0` means no expiration until restart). The `file` section
+requires `basepath` and also supports `max_zoom` (optional, defaults to the
+maximum Tegola zoom) and `ttl` (optional seconds, `0` means no expiration).
+
 Reads check memory first and then file; a file hit is promoted to memory.
 Writes and purges are sent to both levels. A failed promotion is logged while
 the successful file hit is still returned. A non-cancellation memory read
