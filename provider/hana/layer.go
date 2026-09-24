@@ -1,6 +1,9 @@
 package hana
 
-import "github.com/go-spatial/geom"
+import (
+	"github.com/go-spatial/geom"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+)
 
 // layer holds information about a query.
 type Layer struct {
@@ -18,6 +21,14 @@ type Layer struct {
 	srid uint64
 	// The description of fields in the sql query. Used only by the non-MVT provider.
 	fields []FieldDescription
+	// geometryFormat selects how the geometry column is decoded:
+	// "" (default; HANA native geometry returned via ST_AsBinary),
+	// "wkb" (plain WKB column read raw, no ST_AsBinary), "wkt" (WKT text)
+	// or "mos" (opaque MapplBase binary blob read raw).
+	geometryFormat string
+	// mosConfig holds the resolved MOS quantization settings used with
+	// geometry_format = "mos".
+	mosConfig codec.MOSConfig
 }
 
 func (l Layer) Name() string {

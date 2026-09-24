@@ -16,9 +16,12 @@ import (
 	"github.com/go-spatial/geom/encoding/wkb"
 	"github.com/go-spatial/geom/encoding/wkt"
 	"github.com/go-spatial/tegola"
+	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -211,6 +214,39 @@ const (
 	ConfigKeyClipGeometry    = "clip_geometry"
 )
 
+// resolveGeometryFormatConfig validates the geometry_format config value.
+// An empty string means the provider default (native HANA geometry).
+func resolveGeometryFormatConfig(config dict.Dicter) (string, error) {
+	def := ""
+	v, err := config.String(codec.ConfigKeyGeometryFormat, &def)
+	if err != nil {
+		return "", err
+	}
+	switch v = strings.TrimSpace(v); v {
+	case "", codec.FormatWKB, codec.FormatWKT, codec.FormatMOS:
+		return v, nil
+	default:
+		return "", fmt.Errorf("invalid %v: %q (expected one of %q, %q, %q)",
+			codec.ConfigKeyGeometryFormat, v, codec.FormatWKB, codec.FormatWKT, codec.FormatMOS)
+	}
+}
+
+// decodeGeometryValue decodes a raw geometry column value according to the
+// layer's geometry format. The default (empty) format expects HANA native
+// geometry already serialized via ST_AsBinary(), decoded as WKB.
+func decodeGeometryValue(v any, format string, mosCfg codec.MOSConfig) (geom.Geometry, error) {
+	switch format {
+	case "", codec.FormatWKB:
+		return codec.DecodeWKB(v)
+	case codec.FormatWKT:
+		return codec.DecodeWKT(v)
+	case codec.FormatMOS:
+		return codec.DecodeMOS(v, mosCfg)
+	default:
+		return nil, fmt.Errorf("unknown geometry_format: %v", format)
+	}
+}
+
 type DataType byte
 
 const (
@@ -400,6 +436,29 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		return nil, err
 	}
 
+	// provider-level geometry format / MOS settings, shared by all layers
+	// that do not override them (same contract as the other providers).
+	providerGeometryFormat, err := resolveGeometryFormatConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	providerMOSCfg, err := codec.ResolveMOSConfig(config, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	if providerGeometryFormat != "" && providerGeometryFormat != codec.FormatMOS &&
+		(providerMOSCfg.PrecisionSet || providerMOSCfg.UnitsSet) {
+		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
+			codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
+			codec.ConfigKeyGeometryFormat, providerGeometryFormat)
+		if providerMOSCfg.PrecisionSet {
+			providerMOSCfg.Precision = codec.DefaultMOSConfig().Precision
+		}
+		if providerMOSCfg.UnitsSet {
+			providerMOSCfg.UnitFactor = codec.DefaultMOSConfig().UnitFactor
+		}
+	}
+
 	name, err := config.String(ConfigKeyName, nil)
 	if err != nil {
 		return nil, err
@@ -505,10 +564,52 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		}
 
 		l := Layer{
-			name:      lName,
-			idField:   idfld,
-			geomField: geomfld,
-			srid:      uint64(lsrid),
+			name:           lName,
+			idField:        idfld,
+			geomField:      geomfld,
+			srid:           uint64(lsrid),
+			geometryFormat: providerGeometryFormat,
+			mosConfig:      providerMOSCfg,
+		}
+
+		// layer-level geometry format / MOS overrides merge on top of the
+		// provider-level values.
+		layerMOSCfg, lerr := codec.ResolveMOSConfig(nil, layer, lName)
+		if lerr != nil {
+			return nil, lerr
+		}
+		layerGeometryFormat, lerr := resolveGeometryFormatConfig(layer)
+		if lerr != nil {
+			return nil, fmt.Errorf("for layer (%v) %w", i, lerr)
+		}
+		if layerGeometryFormat != "" {
+			l.geometryFormat = layerGeometryFormat
+		}
+		if layerMOSCfg.PrecisionSet {
+			l.mosConfig.Precision = layerMOSCfg.Precision
+		}
+		if layerMOSCfg.UnitsSet {
+			l.mosConfig.UnitFactor = layerMOSCfg.UnitFactor
+		}
+		if l.geometryFormat != "" && l.geometryFormat != codec.FormatMOS &&
+			(layerMOSCfg.PrecisionSet || layerMOSCfg.UnitsSet) {
+			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
+				lName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
+				codec.ConfigKeyGeometryFormat, l.geometryFormat)
+			if layerMOSCfg.PrecisionSet {
+				l.mosConfig.Precision = codec.DefaultMOSConfig().Precision
+			}
+			if layerMOSCfg.UnitsSet {
+				l.mosConfig.UnitFactor = codec.DefaultMOSConfig().UnitFactor
+			}
+		}
+		// MVT providers must not take the raw MOS path: their geometry is
+		// MVT bytes produced by the database, not a raw feature geometry.
+		if providerType == MVTProviderType && l.geometryFormat == codec.FormatMOS {
+			return nil, fmt.Errorf(
+				"for layer (%v) %v: %v = %q is not supported for MVT providers",
+				i, lName, codec.ConfigKeyGeometryFormat, codec.FormatMOS,
+			)
 		}
 
 		if sql != "" && !isSelectQuery(sql) {
@@ -636,6 +737,19 @@ func (p Provider) setLayerGeomType(l *Layer, geomType string) error {
 func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.Map) error {
 	var err error
 
+	// Raw geometry formats (wkb/wkt/mos) carry non-HANA values in the
+	// geometry column, so ST_GeometryType-based inspection cannot work.
+	// For MOS the type is derived after decoding the first real geometry.
+	if l.geometryFormat == codec.FormatWKB || l.geometryFormat == codec.FormatWKT {
+		return fmt.Errorf(
+			"layer (%v): geometry_type is required when %v = %q; native geometry inspection cannot be used",
+			l.name, codec.ConfigKeyGeometryFormat, l.geometryFormat,
+		)
+	}
+	if l.geometryFormat == codec.FormatMOS {
+		return p.inspectMOSLayerGeomType(l)
+	}
+
 	re := regexp.MustCompile(`(?i)ST_AsBinary`)
 	sqlQuery := re.ReplaceAllString(l.sql, "ST_GeometryType")
 
@@ -716,6 +830,109 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 	return rows.Err()
 }
 
+// geometryFormatName returns a human-readable name for a geometry format,
+// used in error messages.
+func geometryFormatName(format string) string {
+	if format == "" {
+		return "wkb"
+	}
+	return format
+}
+
+// inspectMOSLayerGeomType samples the first rows of the layer's SQL, applies
+// any TLayerSystemInfoRec blob to the MOS config, and derives the geometry
+// type from the first decodable MOS geometry.
+func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
+	sqlQuery := strings.Replace(l.sql, "!ZOOM!", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24", 1)
+	// neutralize the spatial predicate: MOS blobs cannot use it and it
+	// could filter out all rows during inspection
+	sqlQuery = strings.Replace(sqlQuery, bboxToken, "1=1", -1)
+
+	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
+	sqlQuery, err := replaceTokens(p.dbVersion, sqlQuery, l.IDFieldName(), l.GeomFieldName(), l.GeomType(), l.SRID(), tile, true)
+	if err != nil {
+		return err
+	}
+
+	sqlQuery = provider.ParameterTokenRegexp.ReplaceAllString(sqlQuery, "")
+
+	rows, err := p.pool.QueryContext(context.Background(), sqlQuery)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	columns, err := rows.ColumnTypes()
+	if err != nil {
+		return err
+	}
+
+	fields, err := getFieldDescriptions(l.Name(), l.GeomFieldName(), l.IDFieldName(), columns, false)
+	if err != nil {
+		return err
+	}
+
+	rowValues := make([]interface{}, len(fields))
+
+	for rows.Next() {
+		setupRowValues(fields, rowValues)
+
+		if err := rows.Scan(rowValues...); err != nil {
+			return fmt.Errorf("error running layer (%v) SQL (%v): %w", l.name, sqlQuery, err)
+		}
+
+		for i := range rowValues {
+			if rowValues[i] == nil || fields[i].name != l.GeomFieldName() {
+				continue
+			}
+
+			raw, ok := blobBytes(rowValues[i])
+			if !ok {
+				return fmt.Errorf("layer (%v): unexpected MOS column type %T", l.name, rowValues[i])
+			}
+
+			// system info rows configure the MOS quantization and are not
+			// features
+			if mos.IsSystemInfoBlob(raw) {
+				sysInfo, serr := mos.ParseSystemInfo(raw)
+				if serr != nil {
+					return fmt.Errorf("layer (%v): invalid MOS system info: %w", l.name, serr)
+				}
+				if aerr := l.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
+					return fmt.Errorf("layer (%v): %w", l.name, aerr)
+				}
+				continue
+			}
+
+			g, derr := codec.DecodeMOS(raw, l.mosConfig)
+			if derr != nil {
+				return fmt.Errorf("layer (%v): %w", l.name, derr)
+			}
+			l.geomType = g
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// No decodable geometry found; leave geomType unset (nil) so the layer
+	// still registers and MVT encoding stays permissive.
+	return nil
+}
+
+// blobBytes normalizes driver values that may arrive as []byte or string.
+func blobBytes(v interface{}) ([]byte, bool) {
+	switch val := v.(type) {
+	case []byte:
+		return val, true
+	case string:
+		return []byte(val), true
+	case *sql.NullString:
+		return []byte(val.String), true
+	}
+	return nil, false
+}
+
 // Layer fetches an individual layer from the provider, if it's configured
 // if no name is provider, the first layer is returned
 func (p *Provider) Layer(name string) (Layer, bool) {
@@ -753,6 +970,22 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 	plyr, ok := p.Layer(layer)
 	if !ok {
 		return ErrLayerNotFound{layer}
+	}
+
+	// per-tile copy of the layer's resolved MOS config so runtime
+	// TLayerSystemInfoRec application does not mutate provider state.
+	mosCfg := plyr.mosConfig
+
+	// buffered tile extent in WebMercator, used by the exact in-memory
+	// filter for raw geometry formats.
+	tileBBox, _ := tile.BufferedExtent()
+	tileSRID := plyr.SRID()
+	if tileSRID != tegola.WebMercator {
+		sourceBBox, berr := basic.FromWebMercatorExtent(tileSRID, tileBBox)
+		if berr != nil {
+			return fmt.Errorf("error converting tile extent for layer (%v): %w", layer, berr)
+		}
+		tileBBox = sourceBBox
 	}
 
 	sqlQuery, err := replaceTokens(p.dbVersion, plyr.sql, plyr.IDFieldName(), plyr.GeomFieldName(), plyr.GeomType(), plyr.SRID(), tile, true)
@@ -828,21 +1061,43 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 			continue
 		}
 
-		// decode our WKB
-		geometry, err := wkb.DecodeBytes(geobytes)
-		if err != nil {
-			switch err.(type) {
-			case wkb.ErrUnknownGeometryType:
-				rplfn := layer + ":" + plyr.GeomFieldName()
-				// Only report to the log once. This is to prevent the logs from filling up if there are many geometries in the layer
-				if reportedLayerFieldName == "" || reportedLayerFieldName == rplfn {
-					reportedLayerFieldName = rplfn
-					log.Warnf("Ignoring unsupported geometry in layer (%v). Only basic 2D geometry type are supported. Try using `ST_Force2D(%v)`.", layer, plyr.GeomFieldName())
-				}
-				continue
-			default:
-				return fmt.Errorf("unable to decode layer (%v) geometry field (%v) into wkb where (%v = %v): %w", layer, plyr.GeomFieldName(), plyr.IDFieldName(), gid, err)
+		// The MOS layer self-description blob (TLayerSystemInfoRec) is
+		// metadata, never a feature: apply it to the MOS config and skip
+		// the row.
+		if plyr.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geobytes) {
+			sysInfo, serr := codec.ParseSystemInfoValue(geobytes)
+			if serr != nil {
+				return fmt.Errorf("for layer (%v) %w", plyr.Name(), serr)
 			}
+			if aerr := mosCfg.ApplySystemInfo(&sysInfo); aerr != nil {
+				return fmt.Errorf("for layer (%v) %w", plyr.Name(), aerr)
+			}
+			continue
+		}
+
+		// decode our geometry according to the layer's geometry format
+		geometry, err := decodeGeometryValue(geobytes, plyr.geometryFormat, mosCfg)
+		if err != nil {
+			if plyr.geometryFormat == "" {
+				switch err.(type) {
+				case wkb.ErrUnknownGeometryType:
+					rplfn := layer + ":" + plyr.GeomFieldName()
+					// Only report to the log once. This is to prevent the logs from filling up if there are many geometries in the layer
+					if reportedLayerFieldName == "" || reportedLayerFieldName == rplfn {
+						reportedLayerFieldName = rplfn
+						log.Warnf("Ignoring unsupported geometry in layer (%v). Only basic 2D geometry type are supported. Try using `ST_Force2D(%v)`.", layer, plyr.GeomFieldName())
+					}
+					continue
+				}
+			}
+			return fmt.Errorf("unable to decode layer (%v) geometry field (%v) into %v where (%v = %v): %w", layer, plyr.GeomFieldName(), geometryFormatName(plyr.geometryFormat), plyr.IDFieldName(), gid, err)
+		}
+
+		// Exact in-memory bbox filter. Mandatory for raw formats (wkb/wkt/
+		// mos) whose SQL cannot use native spatial predicates; harmless for
+		// native geometry already filtered via !BBOX!.
+		if plyr.geometryFormat == codec.FormatMOS && !codec.GeometryIntersectsExtent(geometry, tileBBox) {
+			continue
 		}
 
 		feature := provider.Feature{

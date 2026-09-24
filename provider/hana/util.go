@@ -17,6 +17,7 @@ import (
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/env"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -91,6 +92,13 @@ func isSrsRoundEarth(pool *connectionPoolCollector, srid uint64) bool {
 
 func genGeomField(name string, providerType string) string {
 	return fmt.Sprintf(`%v.ST_AsBinary()  AS %[1]v`, quoteIdentifier(name))
+}
+
+// genRawGeomField selects a raw geometry column verbatim: MOS blobs and
+// plain WKB/WKT values are not HANA ST_Geometry values and native spatial
+// functions cannot be applied to them.
+func genRawGeomField(name string) string {
+	return fmt.Sprintf(`%v AS %[1]v`, quoteIdentifier(name))
 }
 
 func getLayerSQL(tblname string) string {
@@ -175,9 +183,21 @@ func genSQL(l *Layer, tblName string, fieldNames []string, buffer bool, provider
 	}
 
 	if fgeom == -1 {
-		fieldNames = append(fieldNames, genGeomField(l.geomField, providerType))
+		if l.geometryFormat == codec.FormatWKB ||
+			l.geometryFormat == codec.FormatWKT ||
+			l.geometryFormat == codec.FormatMOS {
+			fieldNames = append(fieldNames, genRawGeomField(l.geomField))
+		} else {
+			fieldNames = append(fieldNames, genGeomField(l.geomField, providerType))
+		}
 	} else {
-		fieldNames[fgeom] = genGeomField(l.geomField, providerType)
+		if l.geometryFormat == codec.FormatWKB ||
+			l.geometryFormat == codec.FormatWKT ||
+			l.geometryFormat == codec.FormatMOS {
+			fieldNames[fgeom] = genRawGeomField(l.geomField)
+		} else {
+			fieldNames[fgeom] = genGeomField(l.geomField, providerType)
+		}
 	}
 
 	if fid == -1 && l.idField != "" {
@@ -185,6 +205,13 @@ func genSQL(l *Layer, tblName string, fieldNames []string, buffer bool, provider
 	}
 
 	stdSQL := `SELECT %[1]v FROM %[2]v WHERE ` + bboxToken
+
+	if l.geometryFormat == codec.FormatMOS {
+		// MOS blobs are not HANA ST_Geometry values: native spatial
+		// predicates (ST_IntersectsRect, ...) cannot be applied to them.
+		// Filtering is done in memory after decoding (see TileFeatures).
+		stdSQL = `SELECT %[1]v FROM %[2]v WHERE ` + quoteIdentifier(l.geomField) + ` IS NOT NULL`
+	}
 
 	return fmt.Sprintf(stdSQL, strings.Join(fieldNames, ", "), quoteTableName(tblName)), nil
 }
