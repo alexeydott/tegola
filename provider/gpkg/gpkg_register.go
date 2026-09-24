@@ -21,9 +21,9 @@ import (
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 var colFinder *regexp.Regexp
@@ -301,8 +301,8 @@ func sqliteTableSQL(db *sql.DB, tablename string) (string, error) {
 // table that currently holds no decodable geometry registers without an
 // inferred type, matching the custom-SQL path.
 func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
-	qtext := fmt.Sprintf("SELECT `%v` FROM `%v` WHERE `%v` IS NOT NULL LIMIT 10;",
-		layer.geomFieldname, layer.tablename, layer.geomFieldname)
+	qtext := fmt.Sprintf("SELECT `%v` FROM `%v` WHERE `%v` IS NOT NULL LIMIT %v;",
+		layer.geomFieldname, layer.tablename, layer.geomFieldname, codec.InspectionSampleLimit)
 
 	rows, err := db.Query(qtext)
 	if err != nil {
@@ -310,6 +310,9 @@ func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 	}
 	defer rows.Close()
 
+	// The whole window is scanned so MOS system-info rows are applied
+	// regardless of their position; the first decodable geometry sets the
+	// geometry type.
 	for rows.Next() {
 		var value interface{}
 		if err := rows.Scan(&value); err != nil {
@@ -333,13 +336,18 @@ func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 			continue
 		}
 
+		if layer.geomType != nil {
+			// geometry type already inferred; later rows only matter for
+			// system-info metadata handled above
+			continue
+		}
+
 		_, geo, derr := decodeGeometryValue(value, layer.geometryFormat, layer.mosConfig)
 		if derr != nil {
 			return fmt.Errorf("table %q decode %v geometry: %v", layer.tablename, layer.geometryFormat, derr)
 		}
 		if geo != nil {
 			layer.geomType = geo
-			return nil
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -421,18 +429,11 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	if err != nil {
 		return nil, err
 	}
-	// A non-mos provider-level format must not carry leftover MOS settings;
-	// mirror the MySQL provider's warn + reset semantics.
-	if providerGeometryFormat != "" && providerGeometryFormat != GeometryFormatMOS &&
-		(providerMOSCfg.PrecisionSet || providerMOSCfg.UnitsSet) {
-		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
-			codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
-			codec.ConfigKeyGeometryFormat, providerGeometryFormat)
-		if providerMOSCfg.UnitsSet {
-			providerMOSCfg.UnitFactor = codec.MOSUnitsFactorDefault
-		}
-		providerMOSCfg.Precision = codec.DefaultMOSPrecisionForUnits(providerMOSCfg.UnitFactor)
-	}
+	// NOTE: mos_precision/mos_units are NOT rejected here even when the
+	// provider-level geometry_format is not "mos": they are provider-level
+	// defaults for layers that may still select the MOS format via their own
+	// layer-level geometry_format. Relevance (warn) is decided per layer,
+	// after the effective layer format is known.
 
 	p := Provider{
 		Filepath: filepath,
@@ -500,9 +501,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 		// layer container. will be added to the provider after it's configured
 		layer := Layer{
-			name:          layerName,
-			idFieldname:   idFieldname,
-			geomFieldname: geomFieldname,
+			name:           layerName,
+			idFieldname:    idFieldname,
+			geomFieldname:  geomFieldname,
 			geometryFormat: providerGeometryFormat,
 			mosConfig:      providerMOSCfg,
 		}
@@ -513,37 +514,28 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		if err != nil {
 			return nil, err
 		}
-		layerGeometryFormat := ""
-		if v, ok := layerConf.Interface(codec.ConfigKeyGeometryFormat); ok {
-			s, isStr := v.(string)
-			if !isStr {
-				return nil, fmt.Errorf("for layer (%v) invalid %v: expected string, got %T", i, codec.ConfigKeyGeometryFormat, v)
-			}
-			layerGeometryFormat, err = resolveGeometryFormat(strings.TrimSpace(s))
-			if err != nil {
-				return nil, fmt.Errorf("for layer (%v) %v", i, err)
-			}
+		layerGeometryFormat, gerr := codec.ResolveLayerGeometryFormat(providerGeometryFormat, layerConf, layerName, gpkgGeometryFormats)
+		if gerr != nil {
+			return nil, gerr
 		}
-		if layerGeometryFormat != "" {
-			layer.geometryFormat = layerGeometryFormat
-		}
-		if layerMOSCfg.PrecisionSet {
-			layer.mosConfig.Precision = layerMOSCfg.Precision
-			layer.mosConfig.PrecisionSet = true
-		}
-		if layerMOSCfg.UnitsSet {
-			layer.mosConfig.UnitFactor = layerMOSCfg.UnitFactor
-			layer.mosConfig.UnitsSet = true
-		}
-		if layer.geometryFormat != "" && layer.geometryFormat != GeometryFormatMOS &&
-			(layerMOSCfg.PrecisionSet || layerMOSCfg.UnitsSet) {
+		layer.geometryFormat = layerGeometryFormat
+		layer.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
+		if layer.geometryFormat != GeometryFormatMOS && layer.mosConfig.HasExplicitMOSParams() {
 			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
 				layerName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
 				codec.ConfigKeyGeometryFormat, layer.geometryFormat)
-			if layerMOSCfg.UnitsSet {
-				layer.mosConfig.UnitFactor = codec.MOSUnitsFactorDefault
-			}
-			layer.mosConfig.Precision = codec.DefaultMOSPrecisionForUnits(layer.mosConfig.UnitFactor)
+			layer.mosConfig = codec.DefaultMOSConfig()
+		}
+
+		// common geometry_type key: an explicit value fixes the layer type
+		// before any data is read and wins over metadata/sampled inference.
+		explicitGeomType, gtypeExplicit, terr := codec.ResolveGeometryType(layerConf, layerName)
+		if terr != nil {
+			return nil, terr
+		}
+		if gtypeExplicit {
+			layer.geomType = explicitGeomType
+			layer.geomTypeExplicit = true
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
@@ -617,6 +609,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 				layer.geomFieldname = d.geomFieldname
 				layer.geomType = d.geomType
+				if gtypeExplicit {
+					// explicit geometry_type wins over the gpkg metadata
+					layer.geomType = explicitGeomType
+				}
 				layer.srid = uint64(lcrs.SRID)
 				layer.bbox = *d.bbox
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
@@ -629,6 +625,27 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				return nil, fmt.Errorf("for %v layer(%v) %v has an error: %v", i, layerName, ConfigKeySQL, err)
 			}
 			layer.sql = customSQL
+
+			// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use
+			// the native-spatial !BBOX! token; reject it up front instead of
+			// generating invalid per-tile SQL.
+			if verr := codec.ValidateRawCustomSQL(layerName, layer.geometryFormat, customSQL, conf.BboxToken, "!BOX!"); verr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, verr)
+			}
+
+			if gtypeExplicit {
+				// an explicit geometry_type skips startup inspection for
+				// custom SQL as well: no sampling query runs and
+				// tile-dependent SQL needs no deferred registration.
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(p.srid))
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
+				}
+				layer.srid = uint64(lcrs.SRID)
+				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
+				p.layers[layer.name] = layer
+				continue
+			}
 
 			if customSQLNeedsDeferredInspection(customSQL) {
 				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(p.srid))
@@ -674,9 +691,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
 
 			// Get geometry type & srid from geometry of first row. For raw
-			// formats several rows are inspected because a MOS system-info
-			// blob may precede the first decodable geometry.
-			qtext := fmt.Sprintf("SELECT %[1]v FROM (%v) WHERE %[1]v IS NOT NULL LIMIT 10;", layer.geomFieldname, inspectionSQL)
+			// formats the whole sample window is scanned because MOS
+			// system-info blobs may be stored at any position before or
+			// after the first decodable geometry.
+			qtext := fmt.Sprintf("SELECT %[1]v FROM (%v) WHERE %[1]v IS NOT NULL LIMIT %[3]v;", layer.geomFieldname, inspectionSQL, codec.InspectionSampleLimit)
 
 			log.Debugf("qtext: %v", qtext)
 
@@ -687,6 +705,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 			var firstGeom geom.Geometry
 			var firstHeader *BinaryHeader
+			var sysInfoCRSApplied bool
 			for inspectRows.Next() {
 				var geomData interface{}
 				if serr := inspectRows.Scan(&geomData); serr != nil {
@@ -707,6 +726,19 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 							inspectRows.Close()
 							return nil, fmt.Errorf("layer '%v' apply MOS system info: %v", layerName, aerr)
 						}
+						if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection); aerr != nil {
+							inspectRows.Close()
+							return nil, fmt.Errorf("layer '%v' apply MOS projection: %v", layerName, aerr)
+						} else if applied {
+							layer.srid = uint64(srid)
+							layer.crsExplicit = true
+							sysInfoCRSApplied = true
+						}
+						continue
+					}
+					if firstGeom != nil {
+						// geometry type already inferred; later rows only
+						// matter for system-info metadata handled above
 						continue
 					}
 					_, geo, derr := decodeGeometryValue(geomData, layer.geometryFormat, layer.mosConfig)
@@ -716,7 +748,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					}
 					if geo != nil {
 						firstGeom = geo
-						break
 					}
 					continue
 				}
@@ -760,6 +791,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// as above: an explicit provider-level srid always wins over the value
 				// decoded from the sampled row's WKB header, which is frequently 0 or
 				// otherwise unreliable for GPKGs produced by third-party tooling.
+				if sysInfoCRSApplied {
+					// the MOS system-info projection already resolved the
+					// layer SRID (registered as a synthetic SRID); keep it.
+					layer.geomType = firstGeom
+					break
+				}
 				layerSRID := p.srid
 				if !providerSRIDExplicit && firstHeader != nil && firstHeader.SRSId() > 0 {
 					layerSRID = uint64(firstHeader.SRSId())

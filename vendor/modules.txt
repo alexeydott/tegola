@@ -51,6 +51,10 @@ cloud.google.com/go/storage/experimental
 cloud.google.com/go/storage/internal
 cloud.google.com/go/storage/internal/apiv2
 cloud.google.com/go/storage/internal/apiv2/storagepb
+# filippo.io/edwards25519 v1.1.0
+## explicit; go 1.20
+filippo.io/edwards25519
+filippo.io/edwards25519/field
 # github.com/Azure/azure-pipeline-go v0.0.0-20180607212504-7571e8eb0876
 ## explicit
 github.com/Azure/azure-pipeline-go/pipeline
@@ -255,8 +259,8 @@ github.com/go-spatial/proj/merror
 github.com/go-spatial/proj/mlog
 github.com/go-spatial/proj/operations
 github.com/go-spatial/proj/support
-# github.com/go-sql-driver/mysql v1.7.1
-## explicit; go 1.13
+# github.com/go-sql-driver/mysql v1.8.1
+## explicit; go 1.18
 github.com/go-sql-driver/mysql
 # github.com/go-test/deep v1.1.1
 ## explicit; go 1.16

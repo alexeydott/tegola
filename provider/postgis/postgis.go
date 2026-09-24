@@ -193,6 +193,14 @@ func resolveGeometryFormatConfig(config dict.Dicter) (string, error) {
 	}
 }
 
+// postgisGeometryFormats is the set of geometry_format values accepted at
+// the layer level (an empty value falls back to the provider-level value).
+var postgisGeometryFormats = map[string]struct{}{
+	codec.FormatWKB: {},
+	codec.FormatWKT: {},
+	codec.FormatMOS: {},
+}
+
 // decodeGeometryValue decodes a raw geometry column value according to the
 // layer's geometry format. The default (empty) format expects PostGIS native
 // geometry already serialized via ST_AsBinary, decoded as WKB.
@@ -438,6 +446,35 @@ func geometryFormatName(format string) string {
 	return format
 }
 
+// splitTableName splits an optionally schema-qualified table name into its
+// schema and table parts; the PostGIS default schema "public" is assumed
+// when no qualifier is present.
+func splitTableName(tbl string) (schema, table string) {
+	if i := strings.Index(tbl, "."); i >= 0 {
+		return tbl[:i], tbl[i+1:]
+	}
+	return "public", tbl
+}
+
+// inferTableSRID looks up the source SRID of a native geometry column in the
+// PostGIS spatial metadata. It backs the documented source-SRID auto-detect
+// for table layers and is only consulted when neither the provider nor the
+// layer CRS was configured explicitly. Unknown tables and mixed-SRID columns
+// produce a controlled error instead of a silent default.
+func inferTableSRID(ctx context.Context, pool *connectionPoolCollector, schema, table, geomField string) (uint64, error) {
+	var srid int
+	err := pool.QueryRow(ctx,
+		fmt.Sprintf("SELECT Find_SRID('%v', '%v', '%v')", schema, table, geomField),
+	).Scan(&srid)
+	if err != nil {
+		return 0, err
+	}
+	if srid <= 0 {
+		return 0, fmt.Errorf("Find_SRID returned invalid SRID %v", srid)
+	}
+	return uint64(srid), nil
+}
+
 // inspectMOSLayerGeomType samples the first rows of the layer's SQL, applies
 // any MapplGIS LayerInfo blob to the MOS config, and derives the geometry
 // type from the first decodable MOS geometry.
@@ -455,6 +492,10 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 
 	args := make([]any, 0)
 	sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
+
+	// Cap the inspection at the shared sample window (docs/provider-contract.md)
+	sql = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sql), ";"))
+	sql = fmt.Sprintf("SELECT * FROM (%v) AS mos_inspection LIMIT %v", sql, codec.InspectionSampleLimit)
 
 	rows, err := p.pool.Query(context.Background(), sql, args...)
 	if err != nil {
@@ -503,12 +544,15 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 				continue
 			}
 
-			g, derr := codec.DecodeMOS(raw, l.mosConfig)
-			if derr != nil {
-				return fmt.Errorf("layer (%v): %w", l.name, derr)
+			// The first decodable geometry infers the geometry type; later
+			// rows in the window can still carry system-info metadata.
+			if l.geomType == nil {
+				g, derr := codec.DecodeMOS(raw, l.mosConfig)
+				if derr != nil {
+					return fmt.Errorf("layer (%v): %w", l.name, derr)
+				}
+				l.geomType = g
 			}
-			l.geomType = g
-			return rows.Err()
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -923,20 +967,15 @@ func CreateProvider(
 	if err != nil {
 		return nil, err
 	}
+	// NOTE: mos_precision/mos_units are NOT rejected here even when the
+	// provider-level geometry_format is not "mos": they are provider-level
+	// defaults for layers that may still select the MOS format via their own
+	// layer-level geometry_format. Relevance (warn) is decided per layer,
+	// after the effective layer format is known.
 	if isMVT(providerType) {
 		if verr := codec.ValidateMVTGeometryFormat(providerGeometryFormat); verr != nil {
 			return nil, verr
 		}
-	}
-	if providerGeometryFormat != "" && providerGeometryFormat != codec.FormatMOS &&
-		(providerMOSCfg.PrecisionSet || providerMOSCfg.UnitsSet) {
-		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
-			codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
-			codec.ConfigKeyGeometryFormat, providerGeometryFormat)
-		if providerMOSCfg.UnitsSet {
-			providerMOSCfg.UnitFactor = codec.MOSUnitsFactorDefault
-		}
-		providerMOSCfg.Precision = codec.DefaultMOSPrecisionForUnits(providerMOSCfg.UnitFactor)
 	}
 
 	name, err := config.String(ConfigKeyName, nil)
@@ -1130,30 +1169,17 @@ func CreateProvider(
 		if lerr != nil {
 			return nil, lerr
 		}
-		layerGeometryFormat, lerr := resolveGeometryFormatConfig(layer)
+		layerGeometryFormat, lerr := codec.ResolveLayerGeometryFormat(providerGeometryFormat, layer, lName, postgisGeometryFormats)
 		if lerr != nil {
 			return nil, fmt.Errorf("for layer (%v) %w", i, lerr)
 		}
-		if layerGeometryFormat != "" {
-			l.geometryFormat = layerGeometryFormat
-		}
-		if layerMOSCfg.PrecisionSet {
-			l.mosConfig.Precision = layerMOSCfg.Precision
-			l.mosConfig.PrecisionSet = true
-		}
-		if layerMOSCfg.UnitsSet {
-			l.mosConfig.UnitFactor = layerMOSCfg.UnitFactor
-			l.mosConfig.UnitsSet = true
-		}
-		if l.geometryFormat != "" && l.geometryFormat != codec.FormatMOS &&
-			(layerMOSCfg.PrecisionSet || layerMOSCfg.UnitsSet) {
+		l.geometryFormat = layerGeometryFormat
+		l.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
+		if l.geometryFormat != codec.FormatMOS && l.mosConfig.HasExplicitMOSParams() {
 			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
 				lName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
 				codec.ConfigKeyGeometryFormat, l.geometryFormat)
-			if layerMOSCfg.UnitsSet {
-				l.mosConfig.UnitFactor = codec.MOSUnitsFactorDefault
-			}
-			l.mosConfig.Precision = codec.DefaultMOSPrecisionForUnits(l.mosConfig.UnitFactor)
+			l.mosConfig = codec.DefaultMOSConfig()
 		}
 		// MVT providers must not take the raw geometry path: their geometry
 		// is MVT bytes produced by the database, not a raw feature geometry.
@@ -1168,6 +1194,23 @@ func CreateProvider(
 			// (`(select ...) as foo`) which we can handle like a tablename
 			tblName = sql
 			sql = ""
+		}
+
+		// PostGIS metadata source-SRID auto-detect (docs/crs.md): for native
+		// table layers with no explicit provider/layer CRS, the SRID
+		// recorded in the spatial metadata wins over the documented 3857
+		// default. Custom SQL and raw formats cannot be introspected this
+		// way and keep the documented default.
+		if tblPresent && !sqlPresent && !pcrs.Explicit && !lcrs.Explicit && !isMVT(providerType) && !codec.IsRawFormat(l.geometryFormat) {
+			schema, table := splitTableName(tblName)
+			detected, derr := inferTableSRID(context.Background(), p.pool, schema, table, geomfld)
+			if derr != nil {
+				return nil, fmt.Errorf(
+					"for layer (%v) %v: unable to auto-detect source SRID from PostGIS metadata; set srid or crs_defn explicitly: %w",
+					i, lName, derr,
+				)
+			}
+			l.srid = detected
 		}
 
 		if sql != "" {
@@ -1216,6 +1259,13 @@ func CreateProvider(
 						sql,
 					)
 				}
+			}
+
+			// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use
+			// the native-spatial !BBOX! token; reject it up front instead of
+			// generating invalid per-tile SQL.
+			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken); verr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
 			}
 
 			l.sql = sql

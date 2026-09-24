@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,13 +17,14 @@ import (
 	"database/sql/driver"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/geom/encoding/wkb"
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/mos"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
@@ -90,6 +92,30 @@ func TestMySQLBBoxUsesConfiguredSRID(t *testing.T) {
 	query = replaceTokens("WHERE !BBOX!", layer, tile, extent)
 	if strings.Contains(query, ", 4326)") {
 		t.Fatalf("SRID leaked into zero-SRID query: %q", query)
+	}
+}
+
+func TestMySQLBBoxWKBUsesGeomFromWKB(t *testing.T) {
+	layer := &Layer{
+		geomFieldname:  "geom",
+		geometryFormat: GeometryFormatWKB,
+		srid:           4326,
+	}
+	tile := provider.NewTile(0, 0, 0, 0, 4326)
+	extent, _ := tile.BufferedExtent()
+
+	query := replaceTokens("WHERE !BBOX!", layer, tile, extent)
+	if !strings.Contains(query, "ST_GeomFromWKB(`geom`, 4326)") {
+		t.Fatalf("WKB geometry expression does not use ST_GeomFromWKB with SRID: %q", query)
+	}
+
+	layer.srid = 0
+	query = replaceTokens("WHERE !BBOX!", layer, tile, extent)
+	if !strings.Contains(query, "ST_GeomFromWKB(`geom`)") {
+		t.Fatalf("zero-SRID WKB expression must omit the SRID argument: %q", query)
+	}
+	if strings.Contains(query, "ST_Intersects(`geom`") {
+		t.Fatalf("raw WKB column must never be used directly as a geometry: %q", query)
 	}
 }
 
@@ -287,6 +313,103 @@ func (r *samplingTestRows) Next(dest []driver.Value) error {
 
 func (r *samplingTestRows) ColumnTypeDatabaseTypeName(int) string { return "BLOB" }
 
+// staticRowsDriver is a fake database/sql driver that returns a fixed set of
+// rows for every query, regardless of the SQL text. It emulates a server that
+// cannot evaluate spatial predicates, so only the provider's in-memory exact
+// filter can drop out-of-tile rows.
+type staticRowsDriver struct {
+	rows [][]driver.Value
+}
+
+func (d *staticRowsDriver) Open(string) (driver.Conn, error) {
+	return &staticRowsConn{rows: d.rows}, nil
+}
+
+type staticRowsConn struct {
+	rows [][]driver.Value
+}
+
+func (c *staticRowsConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("not supported")
+}
+func (c *staticRowsConn) Close() error              { return nil }
+func (c *staticRowsConn) Begin() (driver.Tx, error) { return nil, errors.New("not supported") }
+
+func (c *staticRowsConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return &staticRows{rows: c.rows}, nil
+}
+
+type staticRows struct {
+	rows [][]driver.Value
+	next int
+}
+
+func (r *staticRows) Columns() []string { return []string{"id", "geom"} }
+func (r *staticRows) Close() error      { return nil }
+func (r *staticRows) Next(dest []driver.Value) error {
+	if r.next >= len(r.rows) {
+		return io.EOF
+	}
+	copy(dest, r.rows[r.next])
+	r.next++
+	return nil
+}
+
+func TestTileFeaturesWKBInMemoryFilter(t *testing.T) {
+	inside, err := wkb.EncodeBytes(geom.Point{-1000000, 1000000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside, err := wkb.EncodeBytes(geom.Point{1000000, -1000000})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	driverName := "tegola_mysql_wkb_rows_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+	sql.Register(driverName, &staticRowsDriver{rows: [][]driver.Value{
+		{int64(1), inside},
+		{int64(2), outside},
+	}})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// The fake server returns both rows for any query, so the SQL !BBOX!
+	// predicate cannot be what filters: the exact in-memory filter is
+	// mandatory for the raw wkb format.
+	p := &Provider{
+		db: db,
+		layers: map[string]Layer{
+			"test": {
+				name:           "test",
+				sql:            "SELECT id, geom FROM test WHERE !BBOX!",
+				idFieldname:    "id",
+				geomFieldname:  "geom",
+				geometryFormat: GeometryFormatWKB,
+				srid:           tegola.WebMercator,
+			},
+		},
+	}
+
+	var got []provider.Feature
+	err = p.TileFeatures(context.Background(), "test", provider.NewTile(1, 0, 0, 0, tegola.WebMercator), nil,
+		func(f *provider.Feature) error {
+			got = append(got, *f)
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected only the inside point to survive the exact in-memory filter, got %d features", len(got))
+	}
+	if got[0].ID != uint64(1) {
+		t.Fatalf("expected feature id 1, got %v", got[0].ID)
+	}
+}
+
 func TestGeomTypeFromColumnKeepsSamplingAfterGeometry(t *testing.T) {
 	systemInfo := make([]byte, 64)
 	copy(systemInfo, []byte{5, 'V', 'e', 'r', ' ', '1'})
@@ -311,6 +434,48 @@ func TestGeomTypeFromColumnKeepsSamplingAfterGeometry(t *testing.T) {
 	}
 	if sysInfo == nil || sysInfo.Precision != 4 {
 		t.Fatalf("expected system info precision 4, got %#v", sysInfo)
+	}
+}
+
+func TestGeomTypeFromColumnLayerInfoPositionInvariant(t *testing.T) {
+	// Sampling invariant (docs/provider-contract.md): the MapplGIS LayerInfo
+	// blob must be picked up wherever it sits inside the shared 16-row
+	// sample window — first row, middle or last.
+	systemInfo := make([]byte, 64)
+	copy(systemInfo, []byte{5, 'V', 'e', 'r', ' ', '1'})
+	binary.LittleEndian.PutUint32(systemInfo[11:15], 4)
+
+	for _, pos := range []int{1, 5, codec.InspectionSampleLimit} {
+		pos := pos
+		t.Run("position "+strconv.Itoa(pos), func(t *testing.T) {
+			values := make([][]driver.Value, 0, codec.InspectionSampleLimit)
+			for i := 1; i <= codec.InspectionSampleLimit; i++ {
+				if i == pos {
+					values = append(values, []driver.Value{systemInfo})
+					continue
+				}
+				values = append(values, []driver.Value{"POINT(1 2)"})
+			}
+
+			driverName := "tegola_mysql_layerinfo_pos_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+			sql.Register(driverName, &samplingTestDriver{values: values})
+			db, err := sql.Open(driverName, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			geo, _, sysInfo, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := geo.(geom.Point); !ok {
+				t.Fatalf("expected geom.Point, got %T", geo)
+			}
+			if sysInfo == nil || sysInfo.Precision != 4 {
+				t.Fatalf("expected system info precision 4, got %#v", sysInfo)
+			}
+		})
 	}
 }
 
@@ -982,5 +1147,218 @@ func TestApplyRuntimeSystemInfo(t *testing.T) {
 	}
 	if tileBBox == webMercatorBBox {
 		t.Fatal("expected tile extent to be converted for runtime projection")
+	}
+}
+
+// TestMySQLLayerGeometryFormatResolution verifies the layer-level
+// geometry_format override contract (R4-02): the layer value wins over the
+// provider value, is validated against the full MySQL value set with the
+// layer name in the error context, and resolving one layer never mutates
+// the provider-level value seen by subsequent layers.
+func TestMySQLLayerGeometryFormatResolution(t *testing.T) {
+	tcases := []struct {
+		name          string
+		providerValue string
+		layer         dict.Dict
+		expect        string
+		expectErr     bool
+	}{
+		{name: "provider auto + layer mos", providerValue: GeometryFormatAuto, layer: dict.Dict{"geometry_format": "mos"}, expect: GeometryFormatMOS},
+		{name: "provider mysql + layer wkb", providerValue: GeometryFormatMySQL, layer: dict.Dict{"geometry_format": "wkb"}, expect: GeometryFormatWKB},
+		{name: "provider mos + layer wkt", providerValue: GeometryFormatMOS, layer: dict.Dict{"geometry_format": "wkt"}, expect: GeometryFormatWKT},
+		{name: "no layer key keeps provider value", providerValue: GeometryFormatMariaDB, layer: dict.Dict{}, expect: GeometryFormatMariaDB},
+		{name: "invalid layer format errors", providerValue: GeometryFormatAuto, layer: dict.Dict{"geometry_format": "bogus"}, expectErr: true},
+	}
+
+	for _, tc := range tcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := codec.ResolveLayerGeometryFormat(tc.providerValue, tc.layer, "roads", mysqlGeometryFormats)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "roads") {
+					t.Errorf("error should mention layer name: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.expect {
+				t.Errorf("expected %q got %q", tc.expect, got)
+			}
+		})
+	}
+}
+
+// TestMySQLTwoLayersDifferentFormats verifies that two sequential layer
+// resolutions with different layer-level overrides stay independent.
+func TestMySQLTwoLayersDifferentFormats(t *testing.T) {
+	providerValue := GeometryFormatAuto
+	first, err := codec.ResolveLayerGeometryFormat(providerValue, dict.Dict{"geometry_format": "mos"}, "mos_layer", mysqlGeometryFormats)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	second, err := codec.ResolveLayerGeometryFormat(providerValue, dict.Dict{"geometry_format": "wkb"}, "wkb_layer", mysqlGeometryFormats)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if first != GeometryFormatMOS || second != GeometryFormatWKB {
+		t.Errorf("expected (mos, wkb), got (%v, %v)", first, second)
+	}
+}
+
+// TestMySQLMOSParamsKeptForAutoFormat verifies the R4-04 semantics: with
+// geometry_format auto (which may still switch to MOS at runtime via a
+// MapplGIS LayerInfo blob) explicit MOS params are kept, not warned or
+// reset; only explicitly raw layer formats ignore them.
+func TestMySQLMOSParamsKeptForAutoFormat(t *testing.T) {
+	cfg := codec.MOSConfig{Precision: 3, PrecisionSet: true, UnitFactor: 0.001, UnitsSet: true}
+
+	for _, format := range []string{GeometryFormatAuto, GeometryFormatMOS} {
+		if format != GeometryFormatAuto && format != GeometryFormatMOS {
+			continue
+		}
+		if !cfg.HasExplicitMOSParams() {
+			t.Errorf("%v: explicit params should be detected", format)
+		}
+	}
+
+	for _, format := range []string{GeometryFormatWKB, GeometryFormatWKT, GeometryFormatMySQL, GeometryFormatMariaDB} {
+		// registration warns and resets to defaults for these formats
+		reset := codec.DefaultMOSConfig()
+		if reset.PrecisionSet || reset.UnitsSet {
+			t.Errorf("%v: reset config should carry no explicit flags: %+v", format, reset)
+		}
+	}
+}
+
+type noQueryDriver struct{}
+
+func (d *noQueryDriver) Open(string) (driver.Conn, error) { return &noQueryConn{}, nil }
+
+type noQueryConn struct{}
+
+func (c *noQueryConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("not supported") }
+func (c *noQueryConn) Close() error                        { return nil }
+func (c *noQueryConn) Begin() (driver.Tx, error)           { return nil, errors.New("not supported") }
+func (c *noQueryConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return nil, errors.New("no startup queries expected")
+}
+
+// TestExplicitGeometryTypeSkipsStartupInspection verifies the common
+// geometry_type layer key contract for MySQL (docs/provider-contract.md):
+// an explicit value fixes the layer type before any data is read and skips
+// the startup inspection query entirely, and an unsupported value fails
+// provider construction.
+func TestExplicitGeometryTypeSkipsStartupInspection(t *testing.T) {
+	baseConfig := func() dict.Dict {
+		return dict.Dict{
+			"host": "localhost", "database": "test",
+			"user": "u", "password": "p",
+			"layers": []map[string]interface{}{
+				{
+					"name":           "lines",
+					"tablename":      "lines",
+					"id_fieldname":   "id",
+					"geom_fieldname": "geom",
+				},
+			},
+		}
+	}
+
+	t.Run("explicit type skips inspection", func(t *testing.T) {
+		// This subtest exercises the full provider construction path, which
+		// requires a reachable MySQL server. It is gated the same way as the
+		// postgis live tests (RUN_MYSQL_TESTS=yes).
+		if os.Getenv("RUN_MYSQL_TESTS") != "yes" {
+			t.Skip("skip live construction test, set RUN_MYSQL_TESTS=yes to run")
+		}
+		driverName := "tegola_mysql_no_query_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+		sql.Register(driverName, &noQueryDriver{})
+
+		config := baseConfig()
+		config["layers"].([]map[string]interface{})[0]["geometry_type"] = "LineString"
+
+		prov, err := NewTileProvider(config, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		lyrs, err := prov.(provider.Layerer).Layers()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(lyrs) != 1 {
+			t.Fatalf("expected 1 layer, got %d", len(lyrs))
+		}
+		if _, ok := lyrs[0].GeomType().(geom.LineString); !ok {
+			t.Fatalf("expected geom.LineString, got %T", lyrs[0].GeomType())
+		}
+	})
+
+	t.Run("invalid type fails construction", func(t *testing.T) {
+		driverName := "tegola_mysql_no_query_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+		sql.Register(driverName, &noQueryDriver{})
+
+		config := baseConfig()
+		config["layers"].([]map[string]interface{})[0]["geometry_type"] = "triangle"
+
+		if _, err := NewTileProvider(config, nil); err == nil {
+			t.Fatal("expected error for unsupported geometry_type, got nil")
+		}
+	})
+}
+
+// TestExplicitGeometryTypeMixedContentPermitted verifies the mixed-content
+// policy: features whose decoded type differs from the explicitly configured
+// geometry_type are permitted (with a one-time warning), they do not break
+// tile rendering.
+func TestExplicitGeometryTypeMixedContentPermitted(t *testing.T) {
+	inside, err := wkb.EncodeBytes(geom.Point{-1000000, 1000000})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	driverName := "tegola_mysql_mixed_rows_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+	sql.Register(driverName, &staticRowsDriver{rows: [][]driver.Value{
+		{int64(1), inside},
+	}})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	p := &Provider{
+		db: db,
+		layers: map[string]Layer{
+			"test": {
+				name:             "test",
+				sql:              "SELECT id, geom FROM test WHERE !BBOX!",
+				idFieldname:      "id",
+				geomFieldname:    "geom",
+				geometryFormat:   GeometryFormatWKB,
+				srid:             tegola.WebMercator,
+				geomType:         geom.LineString{},
+				geomTypeExplicit: true,
+			},
+		},
+	}
+
+	var got []provider.Feature
+	err = p.TileFeatures(context.Background(), "test", provider.NewTile(1, 0, 0, 0, tegola.WebMercator), nil,
+		func(f *provider.Feature) error {
+			got = append(got, *f)
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("mixed-content feature must not break tile rendering: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected the point feature to be permitted, got %d features", len(got))
+	}
+	if _, ok := got[0].Geometry.(geom.Point); !ok {
+		t.Fatalf("expected geom.Point, got %T", got[0].Geometry)
 	}
 }

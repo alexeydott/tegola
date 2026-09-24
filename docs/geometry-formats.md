@@ -47,13 +47,31 @@ reprojected geometry — one consistent CRS contract end to end.
 | Format | SQL filter | In-memory filter |
 |---|---|---|
 | Native | Provider spatial predicate against the indexed geometry (e.g. `&&`, MBR, RTree) | Exact bounding-box check |
-| `wkb` | None (raw bytes are not database geometries) | Exact bounding-box check |
-| `wkt` | None | Exact bounding-box check |
+| `wkb` | None (raw bytes are not database geometries); `mysql` wraps the WKB column in `ST_GeomFromWKB` as a provider optimization | Exact bounding-box check |
+| `wkt` | None; `mysql` wraps the WKT column in `ST_GeomFromText` as a provider optimization | Exact bounding-box check |
 | `mos` | Provider-specific: none for `gpkg`/`hana`, indexed bounds columns (`MINX/MAXX/MINY/MAXY`) for `mysql` | Exact bounding-box check |
 
 Because raw formats cannot use the database spatial index (except the
 MySQL bounds-column case), spatial selectivity comes from the in-memory
-bounding-box check applied to every decoded feature.
+bounding-box check applied to every decoded feature. The MySQL
+`ST_GeomFromWKB`/`ST_GeomFromText` wrapping is only a server-side coarse
+filter (a provider optimization, not an index use); the exact in-memory
+bounding-box check remains mandatory for every raw format.
+
+### Raw formats and custom SQL
+
+Custom SQL (`sql` key) combined with a raw `geometry_format` (`wkb`, `wkt`,
+`mos`) must **not** use the `!BBOX!` token (nor its `!BOX!` alias): its
+expansion assumes a native spatial column (e.g. `geom && ST_MakeEnvelope(...)`
+or a `minx`/`maxx` column predicate), which a raw BLOB/TEXT column does not
+provide. Providers reject such custom SQL at startup with an error naming the
+layer and the offending token — remove `!BBOX!` from the custom SQL; the exact
+in-memory bounding-box filter is always applied for raw formats. Custom SQL
+without `!BBOX!` works for raw formats in every provider, so the same
+configuration behaves identically across `postgis`, `hana`, `gpkg`, and
+`mysql`. The `auto` format of `mysql` is exempt from the startup check because
+runtime inspection may resolve the column to a native spatial type for which
+`!BBOX!` is valid.
 
 ## GeometryCollection behaviour
 

@@ -100,9 +100,44 @@ func TestRootReadmeListsMOSConfigKeys(t *testing.T) {
 		t.Skipf("docs/provider-contract.md not readable from this working dir: %v", err)
 	}
 	content := string(readme)
-	for _, key := range []string{"`srid`", "`crs_defn`", "`geometry_format`", "`mos_precision`", "`mos_units`"} {
+	for _, key := range []string{"`srid`", "`crs_defn`", "`geometry_format`", "`mos_precision`", "`mos_units`", "`geometry_type`", "`fields`"} {
 		if !strings.Contains(content, key) {
 			t.Errorf("docs/provider-contract.md does not document common config key %v", key)
+		}
+	}
+}
+
+// TestProviderReadmesReferenceCommonContract verifies that every standard
+// provider README exposes the common geometry contract: it must contain a
+// "Common geometry / CRS options" section and reference the shared contract
+// document, so capability drift between code and provider-local docs is
+// caught instead of silently diverging.
+func TestProviderReadmesReferenceCommonContract(t *testing.T) {
+	stdDrivers := provider.Drivers(provider.TypeStd)
+	if len(stdDrivers) == 0 {
+		t.Fatal("no standard providers registered")
+	}
+	for _, name := range stdDrivers {
+		path := "../provider/" + name + "/README.md"
+		if name == "test" || name == "debug" || name == "collection" || name == "emptycollection" {
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("provider %q has no README at %v", name, path)
+			continue
+		}
+		doc := string(content)
+		if !strings.Contains(doc, "Common geometry / CRS options") {
+			t.Errorf("provider %q README lacks the common geometry options section", name)
+		}
+		if !strings.Contains(doc, "docs/provider-contract.md") {
+			t.Errorf("provider %q README does not reference docs/provider-contract.md", name)
+		}
+		for _, key := range []string{"`geometry_type`", "`geometry_format`", "`mos_precision`", "`mos_units`"} {
+			if !strings.Contains(doc, key) {
+				t.Errorf("provider %q README does not document common key %v", name, key)
+			}
 		}
 	}
 }

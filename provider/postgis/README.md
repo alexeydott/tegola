@@ -75,6 +75,7 @@ as parameters.
 
 -   `sslmode`: [Optional] PostGIS SSL mode. Default: "prefer"
 -   `pool_min_conns`: [Optional] The minimum number of connections to keep in the connection pool. Defaults to 0.
+-   `pool_min_idle_conns`: [Optional] The minimum number of idle connections to keep in the connection pool. Defaults to 0.
 -   `pool_max_conns`: [Optional] The max connections to maintain in the connection pool. Defaults to the greater of 4 or the number of CPUs.
 -   `pool_max_conn_idle_time`: [Optional] The maximum time an idle connection is kept alive. Defaults to "30m".
 -   `pool_max_conn_lifetime` [Optional] The maximum time a connection lives before it is terminated and recreated. Defaults to "1h".
@@ -165,6 +166,42 @@ tablename = "gis.zoning_base_3857"
 
 `*Required`: either the `tablename` or `sql` must be defined, but not both.
 
+### Common geometry / CRS options
+
+The PostGIS provider implements the common geometry contract documented in
+[docs/provider-contract.md](../../docs/provider-contract.md). The keys below
+are valid at provider level (defaults for all layers) and at layer level
+(overrides), exactly as described there:
+
+- `geometry_type` (string): [Optional] explicit layer geometry type
+  (`Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`,
+  `MultiPolygon`, `GeometryCollection`). Skips startup type inspection;
+  mixed content is permitted with a one-time warning.
+- `geometry_format` (string): [Optional] `wkb`, `wkt` or `mos`. Empty/unset
+  uses the PostGIS native geometry handling. With a raw format the column is
+  read as bytes/text (e.g. `ST_AsBinary(geom)`) instead of using the native
+  spatial API.
+- `mos_precision` (int): [Optional] decimal digits carried by MOS
+  coordinates. Only applies when the effective geometry format is `mos`.
+- `mos_units` (string): [Optional] packed linear unit of MOS coordinates
+  (`mm`, `cm`, `dm`, `m` or `km`). Only applies when the effective geometry
+  format is `mos`.
+
+```toml
+[[providers]]
+name = "test_postgis"
+type = "postgis"
+uri = "******localhost:5432/tegola?sslmode=prefer"
+geometry_format = "mos"
+mos_precision = 2
+mos_units = "m"
+
+[[providers.layers]]
+name = "rivers"
+tablename = "gis.rivers"
+geometry_type = "LineString"
+```
+
 When `crs_defn` creates a synthetic Tegola-only SRID (≥ 340000001), generated
 table SQL uses SRID 0 for the database-side envelope and geometry comparison;
 the source coordinates are still interpreted with the configured PROJ.4
@@ -201,7 +238,7 @@ $ TEGOLA_SQL_DEBUG=LAYER_SQL tegola serve --config=/path/to/conf.toml
 ## Testing
 
 Testing is designed to work against a live PostGIS database. To see how to set
-up a database check this [github actions script](https://github.com/go-spatial/tegola/blob/master/.github/worksflows/on_pr_push.yml).
+up a database check this [github actions script](https://github.com/go-spatial/tegola/blob/master/.github/workflows/on_pr_push.yml).
 To run the PostGIS tests, the following environment variables need to be set:
 
 ```bash

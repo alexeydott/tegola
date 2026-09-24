@@ -13,12 +13,15 @@ package geometrycodec
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/geom/encoding/wkb"
 	"github.com/go-spatial/geom/encoding/wkt"
 	"github.com/go-spatial/tegola/dict"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
 )
 
@@ -59,6 +62,14 @@ func IsRawFormat(format string) bool {
 	return false
 }
 
+// InspectionSampleLimit is the uniform number of rows every provider samples
+// during startup inspection. All rows in the window are scanned: MOS
+// system-info metadata rows are applied regardless of their position and the
+// first decodable geometry infers the layer geometry type. This keeps
+// LayerInfo auto-configuration independent of physical row order, which SQL
+// does not guarantee without ORDER BY. See docs/provider-contract.md.
+const InspectionSampleLimit = 16
+
 // ValidateMVTGeometryFormat rejects raw geometry formats on MVT passthrough
 // providers (mvt_postgis, mvt_hana): their geometry is MVT bytes produced by
 // the database, not a raw feature geometry that can be decoded client-side.
@@ -69,6 +80,32 @@ func ValidateMVTGeometryFormat(format string) error {
 			"%v = %q is not supported for MVT providers; use a standard provider (postgis/hana) instead",
 			ConfigKeyGeometryFormat, format,
 		)
+	}
+	return nil
+}
+
+// ValidateRawCustomSQL enforces the raw custom-SQL contract shared by all
+// providers: raw geometry formats (wkb/wkt/mos) store geometries as BLOB/TEXT
+// columns, so custom SQL cannot use the legacy !BBOX! token, whose expansion
+// assumes a native spatial column (e.g. "geom && ST_MakeEnvelope(...)" or a
+// minx/maxx column predicate). Custom SQL for a raw layer must not require
+// !BBOX!; tegola applies an exact in-memory bbox filter instead. Passing any
+// of bboxTokens in customSQL is rejected with a descriptive error naming the
+// layer, so misconfiguration fails at startup instead of producing invalid
+// per-tile SQL. Token matching is case-insensitive, mirroring the providers'
+// uppercaseTokens normalization. Non-raw formats and empty SQL are always
+// accepted.
+func ValidateRawCustomSQL(layerName, geometryFormat, customSQL string, bboxTokens ...string) error {
+	if !IsRawFormat(geometryFormat) || customSQL == "" {
+		return nil
+	}
+	for _, tok := range bboxTokens {
+		if strings.Contains(strings.ToLower(customSQL), strings.ToLower(tok)) {
+			return fmt.Errorf(
+				"layer (%v): custom SQL cannot use %v with geometry_format=%q: raw formats store geometries as BLOB/TEXT and have no native spatial column for the token's predicate; remove %v from the custom SQL (tegola applies an exact in-memory bbox filter instead)",
+				layerName, tok, geometryFormat, tok,
+			)
+		}
 	}
 	return nil
 }
@@ -238,6 +275,62 @@ func resolveMOSUnits(cfg dict.Dicter, errPrefix string) (float64, bool, error) {
 	return factor, true, nil
 }
 
+// MergeMOSConfig merges a layer-level MOS config override onto a base
+// (provider-level) config. Explicit layer values override the base
+// atomically: the value and its explicit flag travel together, so a layer
+// value never bleeds into the provider base and vice versa. Values left
+// unset at both levels keep the base's (default) values.
+func MergeMOSConfig(base, override MOSConfig) MOSConfig {
+	cfg := base
+	if override.PrecisionSet {
+		cfg.Precision, cfg.PrecisionSet = override.Precision, true
+	}
+	if override.UnitsSet {
+		cfg.UnitFactor, cfg.UnitsSet = override.UnitFactor, true
+	}
+	return cfg
+}
+
+// HasExplicitMOSParams reports whether any MOS quantization setting was
+// explicitly configured (layer or provider level).
+func (c MOSConfig) HasExplicitMOSParams() bool {
+	return c.PrecisionSet || c.UnitsSet
+}
+
+// ResolveLayerGeometryFormat resolves the effective layer geometry format:
+// an optional layer-level geometry_format key, validated against allowed,
+// overriding the provider-level value. An empty (or unset) layer value
+// falls back to providerValue. layer may be nil; layerName is used for
+// error context. allowed must contain every non-empty format value the
+// provider accepts at either level.
+func ResolveLayerGeometryFormat(providerValue string, layer dict.Dicter, layerName string, allowed map[string]struct{}) (string, error) {
+	if layer == nil {
+		return providerValue, nil
+	}
+	if _, explicit := layer.Interface(ConfigKeyGeometryFormat); !explicit {
+		return providerValue, nil
+	}
+	v := ""
+	v, err := layer.String(ConfigKeyGeometryFormat, &v)
+	if err != nil {
+		return "", fmt.Errorf("for layer (%v) invalid %v: %v", layerName, ConfigKeyGeometryFormat, err)
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return providerValue, nil
+	}
+	if _, ok := allowed[v]; !ok {
+		keys := make([]string, 0, len(allowed))
+		for k := range allowed {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return "", fmt.Errorf("for layer (%v) invalid %v: %q (expected one of: %v)",
+			layerName, ConfigKeyGeometryFormat, v, strings.Join(keys, ", "))
+	}
+	return v, nil
+}
+
 // ApplySystemInfo fills in the unset values from a parsed
 // MapplGIS LayerInfo layer self-description. Explicit configuration always
 // wins. The receiver is updated in place so both startup registration and
@@ -391,4 +484,72 @@ func GeomTypeName(g geom.Geometry) string {
 		return "GEOMETRYCOLLECTION"
 	}
 	return ""
+}
+
+// GeometryTypeFromName maps an OGC-style geometry type name (case
+// insensitive) to the corresponding empty tegola geometry value. It is the
+// shared parser behind the common `geometry_type` layer key.
+func GeometryTypeFromName(name string) (geom.Geometry, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "point":
+		return geom.Point{}, nil
+	case "linestring":
+		return geom.LineString{}, nil
+	case "polygon":
+		return geom.Polygon{}, nil
+	case "multipoint":
+		return geom.MultiPoint{}, nil
+	case "multilinestring":
+		return geom.MultiLineString{}, nil
+	case "multipolygon":
+		return geom.MultiPolygon{}, nil
+	case "geometrycollection":
+		return geom.Collection{}, nil
+	}
+	return nil, fmt.Errorf("unsupported geometry_type (%v)", name)
+}
+
+// ResolveGeometryType reads the common `geometry_type` layer key. It returns
+// (geometry, true, nil) when the key is present and valid, (nil, false, nil)
+// when the key is absent or empty, and an error for an unsupported value.
+// Providers use the explicit value to fix the layer geometry type before any
+// data is read, which skips startup type inspection (including the sampling
+// query that would otherwise infer the type).
+func ResolveGeometryType(layerConf dict.Dicter, layerName string) (geom.Geometry, bool, error) {
+	var raw string
+	raw, err := layerConf.String(ConfigKeyGeometryType, &raw)
+	if err != nil {
+		return nil, false, fmt.Errorf("layer (%v) %v: %w", layerName, ConfigKeyGeometryType, err)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, false, nil
+	}
+	g, err := GeometryTypeFromName(raw)
+	if err != nil {
+		return nil, false, fmt.Errorf("layer (%v): %w", layerName, err)
+	}
+	return g, true, nil
+}
+
+// warnedGeomTypeMismatch tracks layers that already produced a mixed-content
+// geometry-type warning, so the warning is emitted at most once per layer.
+var warnedGeomTypeMismatch sync.Map
+
+// WarnOnceGeometryTypeMismatch implements the mixed-content policy for
+// explicitly configured `geometry_type` values: features whose decoded type
+// differs from the declared type are permitted, but the mismatch is logged
+// once per layer. It reports whether this call emitted the warning.
+func WarnOnceGeometryTypeMismatch(layerName string, declared, got geom.Geometry) bool {
+	if declared == nil || got == nil {
+		return false
+	}
+	if GeomTypeName(declared) == GeomTypeName(got) {
+		return false
+	}
+	if _, loaded := warnedGeomTypeMismatch.LoadOrStore(layerName, struct{}{}); loaded {
+		return false
+	}
+	log.Warnf("layer (%v): feature geometry type %v does not match configured geometry_type %v; permitting mixed content",
+		layerName, GeomTypeName(got), GeomTypeName(declared))
+	return true
 }

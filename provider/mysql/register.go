@@ -15,9 +15,9 @@ import (
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 // ErrMissingLayerName is returned when a layer config is missing the 'name' key
@@ -54,7 +54,9 @@ func detectServerFlavor(db *sql.DB) (string, error) {
 // will try before giving up. Some datasets (e.g. MapplGIS exports) store a
 // small fraction of rows in wrapper formats that the active geometry_format
 // cannot decode, so a single-row sample would poison provider registration.
-const geomTypeSampleRows = 16
+// It is shared with the other providers through the common inspection
+// contract (docs/provider-contract.md).
+const geomTypeSampleRows = codec.InspectionSampleLimit
 
 // limitClauseRe matches a trailing LIMIT [offset,] n or LIMIT n OFFSET offset
 // clause.
@@ -226,18 +228,11 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	if err != nil {
 		return nil, err
 	}
-	if geometryFormat != GeometryFormatMOS {
-		if mosCfg.UnitsSet {
-			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSUnits, ConfigKeyGeometryFormat, GeometryFormatMOS)
-			mosCfg.UnitFactor = codec.MOSUnitsFactorDefault
-		}
-		// The default precision is paired with the units in effect.
-		defaultPrecision := codec.DefaultMOSPrecisionForUnits(mosCfg.UnitFactor)
-		if mosCfg.PrecisionSet && mosCfg.Precision != defaultPrecision {
-			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSPrecision, ConfigKeyGeometryFormat, GeometryFormatMOS)
-		}
-		mosCfg.Precision = defaultPrecision
-	}
+	// NOTE: mos_precision/mos_units are NOT rejected here even when the
+	// provider-level geometry_format is not "mos": they are provider-level
+	// defaults for layers that may still select the MOS format via their own
+	// layer-level geometry_format. Relevance (warn) is decided per layer,
+	// after the effective layer format is known.
 
 	// register the built-in table of common projected SRIDs (UTM zones,
 	// Pulkovo Gauss-Kruger) so any of them can be used as a layer srid
@@ -368,17 +363,43 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			mosConfig:      mosCfg,
 		}
 
+		// layer-level geometry_format overrides the provider-level value.
+		// Validated against the full MySQL value set with the layer name in
+		// the error context.
+		layerGeometryFormat, gerr := codec.ResolveLayerGeometryFormat(geometryFormat, layerConf, layerName, mysqlGeometryFormats)
+		if gerr != nil {
+			return nil, gerr
+		}
+		layer.geometryFormat = layerGeometryFormat
+
+		// common geometry_type key: an explicit value fixes the layer type
+		// before any data is read and skips startup type inspection.
+		explicitGeomType, gtypeExplicit, terr := codec.ResolveGeometryType(layerConf, layerName)
+		if terr != nil {
+			return nil, terr
+		}
+		if gtypeExplicit {
+			layer.geomType = explicitGeomType
+			layer.geomTypeExplicit = true
+		}
+
 		// layer-level mos_precision/mos_units override the provider-level
-		// values through the shared resolution contract.
+		// values atomically (value + explicit flag) through the shared
+		// resolution contract.
 		layerMosCfg, lerr := codec.ResolveMOSConfig(nil, layerConf, "")
 		if lerr != nil {
 			return nil, fmt.Errorf("for layer (%v) %v %v", i, layerName, lerr)
 		}
-		if layerMosCfg.PrecisionSet {
-			layer.mosConfig.Precision, layer.mosConfig.PrecisionSet = layerMosCfg.Precision, true
-		}
-		if layerMosCfg.UnitsSet {
-			layer.mosConfig.UnitFactor, layer.mosConfig.UnitsSet = layerMosCfg.UnitFactor, true
+		layer.mosConfig = codec.MergeMOSConfig(layer.mosConfig, layerMosCfg)
+
+		// The effective layer format is now known: MOS quantization settings
+		// are irrelevant for explicitly raw formats. With geometry_format
+		// auto they are kept, since a runtime MapplGIS LayerInfo blob can
+		// still switch the layer to the MOS format.
+		if layerGeometryFormat != GeometryFormatMOS && layerGeometryFormat != GeometryFormatAuto && layer.mosConfig.HasExplicitMOSParams() {
+			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
+				layerName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits, codec.ConfigKeyGeometryFormat, GeometryFormatMOS)
+			layer.mosConfig = codec.DefaultMOSConfig()
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
@@ -387,12 +408,31 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 			}
 
+			if gtypeExplicit {
+				// an explicit geometry_type skips startup inspection: the
+				// declared type wins over any sampled inference. MOS
+				// system-info auto-configuration does not run for these
+				// layers; use explicit srid/crs_defn/mos_* settings when
+				// needed. The layer CRS contract still applies: a
+				// layer-level srid/crs_defn overrides the provider-level
+				// default even though no geometry header is decoded.
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, srid)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
+				}
+				layer.srid = uint64(lcrs.SRID)
+				layer.crsExplicit = sridExplicit || lcrs.Explicit
+				layer.idFieldname = idFieldname
+				p.layers[layer.name] = layer
+				continue
+			}
+
 			// verify the table exists and sample its geometry to learn the
 			// geometry type and SRID
 			inspectionSQL := fmt.Sprintf("SELECT %v FROM %v WHERE %v IS NOT NULL LIMIT 1",
 				quoteIdentifier(geomFieldname), quoteIdentifier(tablename), quoteIdentifier(geomFieldname))
 
-			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, inspectionSQL, geometryFormat, serverFlavor, layer.mosConfig)
+			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, inspectionSQL, layerGeometryFormat, serverFlavor, layer.mosConfig)
 			switch {
 			case err == sql.ErrNoRows:
 				layer.deferredInspection = true
@@ -440,6 +480,29 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 			layer.sql = customSQL
 
+			// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use
+			// the native-spatial !BBOX! token; reject it up front instead of
+			// generating invalid per-tile SQL. The auto format is exempt:
+			// runtime inspection may resolve the column to a native spatial
+			// type for which !BBOX! is valid.
+			if verr := codec.ValidateRawCustomSQL(layerName, layerGeometryFormat, customSQL, conf.BboxToken); verr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, verr)
+			}
+
+			if gtypeExplicit {
+				// an explicit geometry_type skips startup inspection for
+				// custom SQL as well: no sampling query runs, so
+				// tile-dependent SQL needs no deferred registration either.
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, srid)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
+				}
+				layer.srid = uint64(lcrs.SRID)
+				layer.crsExplicit = sridExplicit || lcrs.Explicit
+				p.layers[layer.name] = layer
+				continue
+			}
+
 			// if a !ZOOM! token exists, all features could be filtered out so we
 			// don't have a geometry to inspect its type. Replace comparisons
 			// against !ZOOM! with a permissive IN list and !BBOX! with 1=1 for
@@ -485,7 +548,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 			log.Debugf("qtext: %v", qtext)
 
-			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, qtext, geometryFormat, serverFlavor, layer.mosConfig)
+			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, qtext, layerGeometryFormat, serverFlavor, layer.mosConfig)
 			switch {
 			case err == sql.ErrNoRows:
 				layer.deferredInspection = true

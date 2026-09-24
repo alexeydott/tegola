@@ -30,11 +30,11 @@ raw geometry format / MOS parts of this contract.
 | `sql` | string | Custom SQL. Mutually exclusive with `tablename`. Supports `!BBOX!`, `!ZOOM!`, `!X!`, `!Y!`, `!Z!`, `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, `!PIXEL_HEIGHT!`, `!ID_FIELD!`, `!GEOM_FIELD!`, `!GEOM_TYPE!` (token support varies slightly per provider; unknown tokens are rejected). |
 | `geometry_fieldname` | string | Geometry column. Defaults to `geom` for generated table SQL. For custom SQL the column must be present in the result set. |
 | `id_fieldname` | string | Feature id column. Defaults: `fid` for `mysql`/`gpkg`, empty for `postgis`/`hana`. |
-| `geometry_type` | string | Skips startup geometry-type inspection. Valid values: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`. |
+| `geometry_type` | string | Explicit layer geometry type, valid for every standard provider: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`. An explicit value fixes the layer type before any data is read and skips startup type inspection entirely (including system-info auto-configuration for table layers). Mixed content is permitted: features whose decoded type differs from the declared value are rendered, and the mismatch is logged once per layer. |
 | `srid` / `crs_defn` | int / string | Layer CRS override; see [crs.md](crs.md). |
 | `geometry_format` | string | Layer-level geometry format override. |
 | `mos_precision` / `mos_units` | int / string | Layer-level MOS overrides (only with `mos`). |
-| `fields` | []string | Additional fields to include for generated table SQL. Empty means all columns. |
+| `fields` | []string | Additional fields to include for generated table SQL. Semantics of an absent or empty `fields` differ per provider and cannot be mixed freely (see matrix below). |
 
 ## CRS
 
@@ -93,7 +93,13 @@ filter, the data and the MVT encoding agree on one CRS (see
 ## System info auto-configuration (MOS)
 
 MOS tables written by MapplGIS carry a `MapplGIS LayerInfo` metadata blob.
-During startup inspection (up to 16 rows sampled) the provider reads:
+During startup inspection every provider samples the same window of up to
+`codec.InspectionSampleLimit` (16) rows. The whole window is scanned: rows
+carrying the blob are applied wherever they appear — before, between or after
+feature rows — and the first decodable geometry infers the layer geometry
+type. LayerInfo auto-configuration is therefore independent of physical row
+order, which SQL does not guarantee without `ORDER BY` (custom SQL may even
+reorder rows). The provider reads:
 
 - `Precision` → `mos_precision` (when not explicitly configured),
 - `Projection` → layer PROJ.4 definition registered as a synthetic SRID (same
@@ -101,7 +107,8 @@ During startup inspection (up to 16 rows sampled) the provider reads:
 - `MapUnits` / `flMapUnitsDefined` → `mos_units` metres factor.
 
 Explicit configuration always wins over system info. Rows that carry the blob
-are skipped as feature rows.
+are skipped as feature rows. A layer whose window holds no decodable geometry
+registers without an inferred geometry type (MVT encoding stays permissive).
 
 ## Provider support matrix
 
@@ -113,6 +120,7 @@ are skipped as feature rows.
 | system info auto-config | yes | yes | yes | yes |
 | native spatial filter | yes (MBR/indexed bounds) | yes (RTree index; skipped for `mos`) | yes (`&&`) | yes (`ST_IntersectsRect*`; skipped for `mos` and synthetic CRS) |
 | `id_fieldname` default | `fid` | `fid` | empty | empty |
+| absent/empty `fields` | id + geometry only | id + geometry only | all columns | all columns |
 | MVT variant | — | — | `mvt_postgis` | `mvt_hana` |
 
 HANA notes:

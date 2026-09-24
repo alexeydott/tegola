@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/go-spatial/tegola"
+	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/ttools"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/postgis"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestNewTileProvider(t *testing.T) {
@@ -46,6 +50,121 @@ func TestNewTileProvider(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+func TestSourceSRIDAutoDetect(t *testing.T) {
+	ttools.ShouldSkip(t, postgis.TESTENV)
+
+	uri := ttools.GetEnvDefault("PGURI", "postgres://postgres:postgres@localhost:5432/tegola?sslmode=disable")
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, uri)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	const tbl4326 = "tegola_srid_detect_4326"
+	const tblUnknown = "tegola_srid_detect_unknown"
+	drop := func() {
+		conn.Exec(ctx, "DROP TABLE IF EXISTS "+tbl4326)
+		conn.Exec(ctx, "DROP TABLE IF EXISTS "+tblUnknown)
+	}
+	drop()
+	t.Cleanup(drop)
+
+	if _, err = conn.Exec(ctx, fmt.Sprintf(
+		`CREATE TABLE %v (gid serial primary key, geom geometry(Point, 4326));
+		 INSERT INTO %v (geom) VALUES (ST_SetSRID(ST_MakePoint(10.5, 48.5), 4326));`,
+		tbl4326, tbl4326)); err != nil {
+		t.Fatalf("setup 4326 table: %v", err)
+	}
+	if _, err = conn.Exec(ctx, fmt.Sprintf(
+		`CREATE TABLE %v (gid serial primary key);`,
+		tblUnknown)); err != nil {
+		t.Fatalf("setup unknown table: %v", err)
+	}
+
+	type tcase struct {
+		name         string
+		providerCfg  map[string]any
+		layerCfg     map[string]any
+		expectedSRID uint64
+		expectedErr  string
+	}
+
+	fn := func(tc tcase) func(t *testing.T) {
+		return func(t *testing.T) {
+			layerCfg := map[string]any{
+				postgis.ConfigKeyLayerName: "detect",
+				postgis.ConfigKeyTablename: tbl4326,
+			}
+			for k, v := range tc.layerCfg {
+				layerCfg[k] = v
+			}
+			config := map[string]any{
+				postgis.ConfigKeyName:   "srid_detect_provider",
+				postgis.ConfigKeyURI:    uri,
+				postgis.ConfigKeyLayers: []map[string]any{layerCfg},
+			}
+			for k, v := range tc.providerCfg {
+				config[k] = v
+			}
+
+			p, err := postgis.NewTileProvider(dict.Dict(config), nil)
+			if tc.expectedErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.expectedErr)
+				}
+				if !strings.Contains(err.Error(), tc.expectedErr) {
+					t.Fatalf("expected error containing %q, got %q", tc.expectedErr, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewTileProvider: %v", err)
+			}
+
+			lyrs, lerr := p.Layers()
+			if lerr != nil {
+				t.Fatalf("Layers: %v", lerr)
+			}
+			if len(lyrs) != 1 {
+				t.Fatalf("layer count = %v, want 1", len(lyrs))
+			}
+			if got := lyrs[0].SRID(); got != tc.expectedSRID {
+				t.Fatalf("layer srid = %v, want %v", got, tc.expectedSRID)
+			}
+		}
+	}
+
+	tests := []tcase{
+		{
+			name:         "native table 4326 without srid auto-detects",
+			expectedSRID: uint64(4326),
+		},
+		{
+			name:         "provider explicit srid wins over metadata",
+			providerCfg:  map[string]any{postgis.ConfigKeySRID: 3857},
+			expectedSRID: uint64(3857),
+		},
+		{
+			name:         "layer srid wins over metadata",
+			layerCfg:     map[string]any{postgis.ConfigKeySRID: 3857},
+			expectedSRID: uint64(3857),
+		},
+		{
+			name: "table without geometry column fails with controlled error",
+			layerCfg: map[string]any{
+				postgis.ConfigKeyLayerName: "detect",
+				postgis.ConfigKeyTablename: tblUnknown,
+			},
+			expectedErr: "unable to auto-detect source SRID",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, fn(tc))
 	}
 }
 

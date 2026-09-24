@@ -17,6 +17,7 @@ import (
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/gpkg"
 )
 
@@ -560,6 +561,70 @@ func TestRawFormatTableLayer(t *testing.T) {
 		}
 	})
 
+	t.Run("raw custom sql mos system info applies projection", func(t *testing.T) {
+		// custom SQL against a MOS table where the system-info blob carries
+		// a non-empty projection: it must be consumed, the projection
+		// registered as the layer SRID (ApplySystemInfoCRS), and the next
+		// row decoded.
+		fx := newRawFixture(t, []string{
+			"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+		})
+		proj4 := "+proj=merc +lat_ts=56.5 +ellps=clrk66 +type=crs"
+		insertRows(t, fx.path, "mos_layer", []string{"geom"}, [][]interface{}{
+			{mosSystemInfoBlob(2, proj4, byte(mos.UnitsMetres), true)},
+			{mosPolylineBlob([][2]int32{{100, 100}, {300, 300}})},
+		})
+
+		conf := dict.Dict{
+			"filepath": fx.path,
+			"layers": []map[string]interface{}{
+				{
+					"name":            "raw_layer",
+					"sql":             "SELECT id, geom FROM mos_layer",
+					"geometry_format": "mos",
+				},
+			},
+		}
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			t.Fatalf("NewTileProvider: %v", err)
+		}
+		t.Cleanup(gpkg.Cleanup)
+
+		// the non-empty system info projection must be applied: the layer
+		// SRID becomes the synthetic SRID registered from the proj.4 defn
+		// instead of the provider default (3857).
+		lyrs, lerr := p.Layers()
+		if lerr != nil {
+			t.Fatalf("Layers: %v", lerr)
+		}
+		if len(lyrs) != 1 {
+			t.Fatalf("layer count = %v, want 1", len(lyrs))
+		}
+		if srid := lyrs[0].SRID(); srid == 3857 {
+			t.Errorf("layer srid = %v, want the synthetic SRID from the system info projection", srid)
+		}
+
+		tile := MockTile{
+			srid: 3857,
+			bufferedExtent: geom.NewExtent(
+				[2]float64{-10, -10},
+				[2]float64{10, 10},
+			),
+		}
+		var count int
+		err = p.TileFeatures(context.TODO(), "raw_layer", &tile, nil, func(f *provider.Feature) error {
+			count++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("TileFeatures: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("feature count = %v, want 1", count)
+		}
+	})
+
 	t.Run("raw custom sql empty result registers", func(t *testing.T) {
 		// custom SQL returning no rows must register a placeholder layer
 		// rather than fail startup.
@@ -588,6 +653,50 @@ func TestRawFormatTableLayer(t *testing.T) {
 		}
 		if len(layers) != 1 {
 			t.Fatalf("layer count = %v, want 1", len(layers))
+		}
+	})
+
+	t.Run("raw custom sql with bbox token rejected", func(t *testing.T) {
+		// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use the
+		// native-spatial !BBOX! token (its expansion assumes a native spatial
+		// column); startup must fail with a descriptive error instead of
+		// generating invalid per-tile SQL. Matching is case-insensitive,
+		// mirroring uppercaseTokens normalization at tile time.
+		for _, tc := range []struct {
+			name string
+			sql  string
+		}{
+			{"upper", "SELECT id, geom FROM wkb_layer WHERE geom && !BBOX!"},
+			{"lower", "SELECT id, geom FROM wkb_layer WHERE geom && !bbox!"},
+		} {
+			fx := newRawFixture(t, []string{
+				"CREATE TABLE wkb_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+			})
+			insertRows(t, fx.path, "wkb_layer", []string{"geom"}, [][]interface{}{
+				{wkbGeomBytes(t, geom.Point{10, 20})},
+			})
+
+			conf := dict.Dict{
+				"filepath": fx.path,
+				"layers": []map[string]interface{}{
+					{
+						"name":            "raw_layer",
+						"sql":             tc.sql,
+						"geometry_format": "wkb",
+					},
+				},
+			}
+			_, err := gpkg.NewTileProvider(conf, nil)
+			t.Cleanup(gpkg.Cleanup)
+			if err == nil {
+				t.Fatalf("%v: expected NewTileProvider to reject !BBOX! in raw custom SQL", tc.name)
+			}
+			if !strings.Contains(err.Error(), "raw_layer") {
+				t.Errorf("%v: error must name the layer, got: %v", tc.name, err)
+			}
+			if !strings.Contains(err.Error(), "in-memory") {
+				t.Errorf("%v: error must suggest the in-memory filter, got: %v", tc.name, err)
+			}
 		}
 	})
 
@@ -649,4 +758,83 @@ func joinStrings(parts []string, sep string) string {
 		out += p
 	}
 	return out
+}
+
+func TestMOSLayerInfoPositionInvariant(t *testing.T) {
+	// Sampling invariant (docs/provider-contract.md): the MOS system-info
+	// blob must configure the layer identically wherever it sits inside the
+	// shared 16-row sample window — first row, middle or last.
+	proj4 := "+proj=merc +lat_ts=56.5 +ellps=clrk66 +type=crs"
+	geomBlob := mosPolylineBlob([][2]int32{{100, 100}, {300, 300}})
+
+	for _, pos := range []int{1, 5, geometrycodec.InspectionSampleLimit} {
+		for _, mode := range []string{"table", "custom sql"} {
+			pos, mode := pos, mode
+			t.Run(fmt.Sprintf("%s position %d", mode, pos), func(t *testing.T) {
+				fx := newRawFixture(t, []string{
+					"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+				})
+				rows := make([][]interface{}, 0, geometrycodec.InspectionSampleLimit)
+				for i := 1; i <= geometrycodec.InspectionSampleLimit; i++ {
+					if i == pos {
+						rows = append(rows, []interface{}{mosSystemInfoBlob(2, proj4, byte(mos.UnitsMetres), true)})
+						continue
+					}
+					rows = append(rows, []interface{}{geomBlob})
+				}
+				insertRows(t, fx.path, "mos_layer", []string{"geom"}, rows)
+
+				layerConf := map[string]interface{}{
+					"name":            "raw_layer",
+					"geometry_format": "mos",
+				}
+				if mode == "custom sql" {
+					layerConf["sql"] = "SELECT id, geom FROM mos_layer"
+				} else {
+					layerConf["tablename"] = "mos_layer"
+				}
+				conf := dict.Dict{
+					"filepath": fx.path,
+					"layers":   []map[string]interface{}{layerConf},
+				}
+				p, err := gpkg.NewTileProvider(conf, nil)
+				if err != nil {
+					t.Fatalf("NewTileProvider: %v", err)
+				}
+				t.Cleanup(gpkg.Cleanup)
+
+				lyrs, lerr := p.Layers()
+				if lerr != nil {
+					t.Fatalf("Layers: %v", lerr)
+				}
+				if len(lyrs) != 1 {
+					t.Fatalf("layer count = %v, want 1", len(lyrs))
+				}
+				// the projection must register the synthetic SRID in every
+				// position, never the provider default (3857)
+				if srid := lyrs[0].SRID(); srid == 3857 {
+					t.Errorf("layer srid = %v, want the synthetic SRID from the system info projection", srid)
+				}
+
+				tile := MockTile{
+					srid: 3857,
+					bufferedExtent: geom.NewExtent(
+						[2]float64{-10, -10},
+						[2]float64{10, 10},
+					),
+				}
+				var count int
+				err = p.TileFeatures(context.TODO(), "raw_layer", &tile, nil, func(f *provider.Feature) error {
+					count++
+					return nil
+				})
+				if err != nil {
+					t.Fatalf("TileFeatures: %v", err)
+				}
+				if count != geometrycodec.InspectionSampleLimit-1 {
+					t.Errorf("feature count = %v, want %v (system-info row skipped)", count, geometrycodec.InspectionSampleLimit-1)
+				}
+			})
+		}
+	}
 }

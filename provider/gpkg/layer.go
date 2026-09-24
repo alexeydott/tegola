@@ -13,9 +13,14 @@ type Layer struct {
 	idFieldname   string
 	geomFieldname string
 	geomType      geom.Geometry
-	srid          uint64
-	bbox          geom.Extent
-	sql           string
+	// geomTypeExplicit marks that geometry_type was set explicitly in the
+	// layer config: the declared type wins over sampled/metadata inference
+	// and runtime features of a different type are permitted with a
+	// one-time warning.
+	geomTypeExplicit bool
+	srid             uint64
+	bbox             geom.Extent
+	sql              string
 	// geometryFormat selects how the geometry column is decoded:
 	// "" / "gpkg" (default; GeoPackage binary header + WKB), "wkb" (plain
 	// WKB without the GeoPackage header), "wkt" (WKT text) or "mos"

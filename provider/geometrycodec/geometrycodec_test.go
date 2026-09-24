@@ -2,6 +2,7 @@ package geometrycodec_test
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/go-spatial/geom"
@@ -30,15 +31,89 @@ func TestValidateMOSPrecision(t *testing.T) {
 	}
 
 	tests := map[string]tcase{
-		"zero":            {0, false},
-		"integer":         {3, false},
-		"negative":        {-1, true},
-		"fractional":      {2.5, true},
-		"nan":             {math.NaN(), true},
-		"too large":       {309, true},
-		"max valid":       {308, false},
-		"infinity":        {math.Inf(1), true},
+		"zero":       {0, false},
+		"integer":    {3, false},
+		"negative":   {-1, true},
+		"fractional": {2.5, true},
+		"nan":        {math.NaN(), true},
+		"too large":  {309, true},
+		"max valid":  {308, false},
+		"infinity":   {math.Inf(1), true},
 	}
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
+
+func TestValidateRawCustomSQL(t *testing.T) {
+	type tcase struct {
+		layerName   string
+		format      string
+		sql         string
+		expectedErr []string // substrings required in the error; empty means no error
+	}
+
+	fn := func(tc tcase) func(*testing.T) {
+		return func(t *testing.T) {
+			err := geometrycodec.ValidateRawCustomSQL(tc.layerName, tc.format, tc.sql, "!BBOX!", "!BOX!")
+			if len(tc.expectedErr) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %v, got nil", tc.expectedErr)
+			}
+			for _, want := range tc.expectedErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q must contain %q", err.Error(), want)
+				}
+			}
+		}
+	}
+
+	tests := map[string]tcase{
+		"raw wkb with bbox rejected": {
+			layerName:   "roads",
+			format:      geometrycodec.FormatWKB,
+			sql:         "SELECT id, geom FROM roads WHERE geom && !BBOX!",
+			expectedErr: []string{"roads", "!BBOX!", "wkb", "in-memory"},
+		},
+		"raw wkt lowercase token rejected": {
+			layerName:   "wkt_layer",
+			format:      geometrycodec.FormatWKT,
+			sql:         "SELECT id, geom FROM t WHERE ST_Intersects(geom, !bbox!)",
+			expectedErr: []string{"wkt_layer", "wkt"},
+		},
+		"raw mos box token rejected": {
+			layerName:   "mos_layer",
+			format:      geometrycodec.FormatMOS,
+			sql:         "SELECT id, geom FROM t WHERE minx <= !BOX!",
+			expectedErr: []string{"mos_layer", "!BOX!", "mos"},
+		},
+		"raw without bbox accepted": {
+			layerName: "roads",
+			format:    geometrycodec.FormatWKB,
+			sql:       "SELECT id, geom FROM roads",
+		},
+		"native with bbox accepted": {
+			layerName: "roads",
+			format:    "native",
+			sql:       "SELECT id, geom FROM roads WHERE geom && !BBOX!",
+		},
+		"auto with bbox accepted": {
+			layerName: "roads",
+			format:    "auto",
+			sql:       "SELECT id, geom FROM roads WHERE geom && !BBOX!",
+		},
+		"raw empty sql accepted": {
+			layerName: "roads",
+			format:    geometrycodec.FormatWKB,
+			sql:       "",
+		},
+	}
+
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
 	}
@@ -92,13 +167,13 @@ func TestValidateMVTGeometryFormat(t *testing.T) {
 
 func TestResolveMOSConfig(t *testing.T) {
 	type tcase struct {
-		provider     dict.Dict
-		layer        dict.Dict
-		expectPrec   float64
-		expectPrecSet bool
-		expectFactor float64
+		provider       dict.Dict
+		layer          dict.Dict
+		expectPrec     float64
+		expectPrecSet  bool
+		expectFactor   float64
 		expectUnitsSet bool
-		expectErr    bool
+		expectErr      bool
 	}
 
 	fn := func(tc tcase) func(*testing.T) {
@@ -188,11 +263,11 @@ func TestResolveMOSConfig(t *testing.T) {
 			expectUnitsSet: true,
 		},
 		"layer precision only": {
-			provider:     dict.Dict{"mos_precision": 3.0},
-			layer:        dict.Dict{"mos_precision": 1.0},
-			expectPrec:   1,
+			provider:      dict.Dict{"mos_precision": 3.0},
+			layer:         dict.Dict{"mos_precision": 1.0},
+			expectPrec:    1,
 			expectPrecSet: true,
-			expectFactor: 1,
+			expectFactor:  1,
 		},
 		"blank units not explicit": {
 			provider:     dict.Dict{"mos_units": "  "},
@@ -213,10 +288,10 @@ func TestResolveMOSConfig(t *testing.T) {
 			expectErr: true,
 		},
 		"nil layer": {
-			provider:     dict.Dict{"mos_precision": 2.0},
-			expectPrec:   2,
+			provider:      dict.Dict{"mos_precision": 2.0},
+			expectPrec:    2,
 			expectPrecSet: true,
-			expectFactor: 1,
+			expectFactor:  1,
 		},
 	}
 	for name, tc := range tests {
@@ -450,5 +525,209 @@ func TestGeomTypeName(t *testing.T) {
 	}
 	if got := geometrycodec.GeomTypeName(nil); got != "" {
 		t.Errorf("nil geometry: expected empty name got %v", got)
+	}
+}
+
+func TestResolveLayerGeometryFormat(t *testing.T) {
+	allowed := map[string]struct{}{
+		"auto": {}, "mysql": {}, "mariadb": {}, "wkb": {}, "wkt": {}, "mos": {},
+	}
+
+	tcases := []struct {
+		name          string
+		providerValue string
+		layer         dict.Dict
+		layerName     string
+		expect        string
+		expectErr     bool
+	}{
+		{
+			name:          "no layer config falls back to provider value",
+			providerValue: "auto",
+			layer:         dict.Dict{},
+			expect:        "auto",
+		},
+		{
+			name:          "nil layer falls back to provider value",
+			providerValue: "mysql",
+			expect:        "mysql",
+		},
+		{
+			name:          "empty layer value falls back to provider value",
+			providerValue: "auto",
+			layer:         dict.Dict{"geometry_format": ""},
+			expect:        "auto",
+		},
+		{
+			name:          "layer override",
+			providerValue: "auto",
+			layer:         dict.Dict{"geometry_format": "mos"},
+			expect:        "mos",
+		},
+		{
+			name:          "layer override with whitespace",
+			providerValue: "mysql",
+			layer:         dict.Dict{"geometry_format": " wkb "},
+			expect:        "wkb",
+		},
+		{
+			name:          "provider mos overridden by layer wkt",
+			providerValue: "mos",
+			layer:         dict.Dict{"geometry_format": "wkt"},
+			expect:        "wkt",
+		},
+		{
+			name:          "invalid layer value errors with layer name",
+			providerValue: "auto",
+			layer:         dict.Dict{"geometry_format": "bogus"},
+			layerName:     "roads",
+			expectErr:     true,
+		},
+	}
+
+	for _, tc := range tcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := geometrycodec.ResolveLayerGeometryFormat(tc.providerValue, tc.layer, tc.layerName, allowed)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.layerName != "" && !strings.Contains(err.Error(), tc.layerName) {
+					t.Errorf("error should mention layer name %q: %v", tc.layerName, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.expect {
+				t.Errorf("expected %q got %q", tc.expect, got)
+			}
+		})
+	}
+}
+
+func TestResolveLayerGeometryFormatDoesNotMutateProviderValue(t *testing.T) {
+	allowed := map[string]struct{}{"auto": {}, "wkb": {}, "wkt": {}, "mos": {}}
+	providerValue := "auto"
+	if _, err := geometrycodec.ResolveLayerGeometryFormat(providerValue, dict.Dict{"geometry_format": "wkb"}, "a", allowed); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, err := geometrycodec.ResolveLayerGeometryFormat(providerValue, dict.Dict{}, "b", allowed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "auto" {
+		t.Errorf("second layer should still see provider value %q, got %q", providerValue, got)
+	}
+}
+
+func TestMergeMOSConfig(t *testing.T) {
+	base := geometrycodec.MOSConfig{Precision: 2, UnitFactor: 1}
+
+	// layer explicit precision overrides atomically (value + flag)
+	got := geometrycodec.MergeMOSConfig(base, geometrycodec.MOSConfig{Precision: 3, PrecisionSet: true})
+	if got.Precision != 3 || !got.PrecisionSet {
+		t.Errorf("expected precision 3 set, got %+v", got)
+	}
+	if got.UnitFactor != 1 || got.UnitsSet {
+		t.Errorf("units should inherit base, got %+v", got)
+	}
+
+	// layer explicit units override atomically (value + flag)
+	got = geometrycodec.MergeMOSConfig(base, geometrycodec.MOSConfig{UnitFactor: 0.001, UnitsSet: true})
+	if got.UnitFactor != 0.001 || !got.UnitsSet {
+		t.Errorf("expected factor 0.001 set, got %+v", got)
+	}
+	if got.Precision != 2 || got.PrecisionSet {
+		t.Errorf("precision should inherit base, got %+v", got)
+	}
+
+	// empty override keeps base untouched
+	got = geometrycodec.MergeMOSConfig(base, geometrycodec.MOSConfig{})
+	if got != base {
+		t.Errorf("expected base %+v, got %+v", base, got)
+	}
+}
+
+func TestMOSConfigHasExplicitMOSParams(t *testing.T) {
+	if (geometrycodec.MOSConfig{}).HasExplicitMOSParams() {
+		t.Error("zero config should have no explicit params")
+	}
+	if !(geometrycodec.MOSConfig{PrecisionSet: true}).HasExplicitMOSParams() {
+		t.Error("PrecisionSet should count as explicit")
+	}
+	if !(geometrycodec.MOSConfig{UnitsSet: true}).HasExplicitMOSParams() {
+		t.Error("UnitsSet should count as explicit")
+	}
+}
+
+func TestResolveGeometryType(t *testing.T) {
+	type tcase struct {
+		name      string
+		layerConf dict.Dict
+		expected  geom.Geometry
+		err       bool
+	}
+
+	fn := func(tc tcase) func(*testing.T) {
+		return func(t *testing.T) {
+			g, explicit, err := geometrycodec.ResolveGeometryType(tc.layerConf, "test")
+			if tc.err {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.expected == nil {
+				if explicit {
+					t.Fatal("expected no explicit geometry, got one")
+				}
+				return
+			}
+			if !explicit {
+				t.Fatal("expected explicit geometry, got none")
+			}
+			if geometrycodec.GeomTypeName(g) != geometrycodec.GeomTypeName(tc.expected) {
+				t.Fatalf("expected %v, got %v", geometrycodec.GeomTypeName(tc.expected), geometrycodec.GeomTypeName(g))
+			}
+		}
+	}
+
+	tests := map[string]tcase{
+		"missing key":         {layerConf: dict.Dict{}, expected: nil},
+		"empty value":         {layerConf: dict.Dict{"geometry_type": ""}, expected: nil},
+		"point":               {layerConf: dict.Dict{"geometry_type": "point"}, expected: geom.Point{}},
+		"canonical case":      {layerConf: dict.Dict{"geometry_type": "LineString"}, expected: geom.LineString{}},
+		"padded spaces":       {layerConf: dict.Dict{"geometry_type": "  Polygon  "}, expected: geom.Polygon{}},
+		"multipolygon":        {layerConf: dict.Dict{"geometry_type": "MULTIPOLYGON"}, expected: geom.MultiPolygon{}},
+		"geometrycollection":  {layerConf: dict.Dict{"geometry_type": "geometrycollection"}, expected: geom.Collection{}},
+		"invalid type":        {layerConf: dict.Dict{"geometry_type": "triangle"}, err: true},
+		"non string":          {layerConf: dict.Dict{"geometry_type": 42}, err: true},
+		"layer name in error": {layerConf: dict.Dict{"geometry_type": "bogus"}, err: true},
+	}
+
+	for tname, tc := range tests {
+		t.Run(tname, fn(tc))
+	}
+}
+
+func TestWarnOnceGeometryTypeMismatch(t *testing.T) {
+	first := geometrycodec.WarnOnceGeometryTypeMismatch("mismatch-layer-test", geom.LineString{}, geom.Point{})
+	if !first {
+		t.Fatal("expected first mismatch to warn")
+	}
+	second := geometrycodec.WarnOnceGeometryTypeMismatch("mismatch-layer-test", geom.LineString{}, geom.Point{})
+	if second {
+		t.Fatal("expected warning only once per layer")
+	}
+	if geometrycodec.WarnOnceGeometryTypeMismatch("mismatch-layer-test", geom.LineString{}, geom.LineString{}) {
+		t.Fatal("matching type must not warn")
+	}
+	if geometrycodec.WarnOnceGeometryTypeMismatch("mismatch-layer-test", nil, geom.Point{}) {
+		t.Fatal("nil declared type must not warn")
 	}
 }

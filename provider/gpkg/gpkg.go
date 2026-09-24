@@ -14,9 +14,9 @@ import (
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/log"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 const (
@@ -59,6 +59,15 @@ func resolveGeometryFormat(v string) (string, error) {
 			codec.ConfigKeyGeometryFormat, v,
 			GeometryFormatGPKG, GeometryFormatWKB, GeometryFormatWKT, GeometryFormatMOS)
 	}
+}
+
+// gpkgGeometryFormats is the set of geometry_format values accepted at the
+// layer level (an empty value falls back to the provider-level value).
+var gpkgGeometryFormats = map[string]struct{}{
+	GeometryFormatGPKG: {},
+	GeometryFormatWKB:  {},
+	GeometryFormatWKT:  {},
+	GeometryFormatMOS:  {},
 }
 
 func decodeGeometry(bytes []byte) (*BinaryHeader, geom.Geometry, error) {
@@ -309,6 +318,12 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 					feature.SRID = p.srid
 				} else {
 					feature.SRID = DefaultSRID
+				}
+
+				// mixed-content policy for explicit geometry_type: permit
+				// the feature but warn once per layer.
+				if pLayer.geomTypeExplicit {
+					codec.WarnOnceGeometryTypeMismatch(pLayer.Name(), pLayer.geomType, geo)
 				}
 				feature.Geometry = geo
 			case "minx", "miny", "maxx", "maxy", "min_zoom", "max_zoom":

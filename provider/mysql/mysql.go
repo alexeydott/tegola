@@ -19,9 +19,9 @@ import (
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
@@ -54,6 +54,17 @@ const (
 	GeometryFormatWKT     = "wkt"
 	GeometryFormatMOS     = "mos"
 )
+
+// mysqlGeometryFormats is the set of geometry_format values accepted at both
+// the provider and the layer level.
+var mysqlGeometryFormats = map[string]struct{}{
+	GeometryFormatAuto:    {},
+	GeometryFormatMySQL:   {},
+	GeometryFormatMariaDB: {},
+	GeometryFormatWKB:     {},
+	GeometryFormatWKT:     {},
+	GeometryFormatMOS:     {},
+}
 
 // config keys
 const (
@@ -419,11 +430,12 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 					}
 				}
 
-				// MOS blobs are opaque binaries, so the spatial filter cannot
-				// be pushed into SQL (!BBOX! degrades to 1=1). Drop rows whose
-				// decoded geometry cannot intersect the tile's buffered extent
+				// Raw formats (mos/wkb/wkt) cannot push an exact spatial
+				// filter into SQL (MOS blobs are opaque; WKB/WKT predicates
+				// are best-effort optimizations). Drop rows whose decoded
+				// geometry cannot intersect the tile's buffered extent
 				// (already transformed into the layer's source SRID).
-				if (geometryFormat == GeometryFormatMOS || inMemoryTileFilter) && !codec.GeometryIntersectsExtent(geo, tileBBox) {
+				if (codec.IsRawFormat(geometryFormat) || inMemoryTileFilter) && !codec.GeometryIntersectsExtent(geo, tileBBox) {
 					skipRow = true
 					break
 				}
@@ -439,6 +451,12 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 					feature.SRID = p.srid
 				} else {
 					feature.SRID = DefaultSRID
+				}
+
+				// mixed-content policy for explicit geometry_type: permit
+				// the feature but warn once per layer.
+				if pLayer.geomTypeExplicit {
+					codec.WarnOnceGeometryTypeMismatch(pLayer.Name(), pLayer.geomType, geo)
 				}
 				feature.Geometry = geo
 

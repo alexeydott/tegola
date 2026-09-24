@@ -34,12 +34,31 @@ tablename = "buildings"
 # fields = ["height", "name"]
 # srid = 4326               # optional, layer-level override (see "SRID handling")
 # crs_defn = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs" # optional, wins over srid
+# geometry_format = "wkb"   # optional, layer-level override: auto | mysql | mariadb | wkb | wkt | mos (overrides the provider-level value for this layer)
 # mos_precision = 2         # optional, layer-level override, MOS format only
 # mos_units = "mm"          # optional, layer-level override: mm | cm | dm | m | km
 
 [[providers.layers]]
 name = "landmarks"
 sql = "SELECT fid, geom, name FROM landmarks WHERE geom && !BBOX! AND zoom_level >= !ZOOM!"
+```
+
+## Common geometry / CRS options
+
+The MySQL/MariaDB provider implements the common geometry contract documented
+in [docs/provider-contract.md](../../docs/provider-contract.md). Alongside the
+format keys above, the common `geometry_type` layer key is supported: an
+explicit value (`Point`, `LineString`, `Polygon`, `MultiPoint`,
+`MultiLineString`, `MultiPolygon`, `GeometryCollection`) fixes the layer
+geometry type before any data is read and skips startup type inspection
+(including system-info auto-configuration for table layers). Mixed content is
+permitted with a one-time warning.
+
+```toml
+[[providers.layers]]
+name = "lines"
+tablename = "lines"
+geometry_type = "LineString"
 ```
 
 ## Geometry formats
@@ -52,7 +71,9 @@ MySQL and MariaDB store geometry columns in different *native internal layouts*,
 | MariaDB ≤ 10.6 | `[1B byte-order][4B SRID in that byte order][WKB type + body]` — note the SRID comes **after** the byte-order marker |
 | MariaDB 10.7+ | same as above, but the top 3 bits of the SRID carry axis-order flags for reference geometries (masked off automatically) |
 
-The `geometry_format` config option controls decoding:
+The `geometry_format` config option controls decoding. It can be set at the
+provider level (a default for all layers) and overridden per layer with the
+same value set:
 
 - `auto` (default) — the provider runs `SELECT VERSION()` at startup to detect whether the server is MySQL or MariaDB and uses the matching native layout. If a blob does not fit the native layout, plain WKB decoding is attempted as a fallback (covers values already converted with `ST_AsBinary()` in custom SQL).
 - `mysql` — force the MySQL native layout.

@@ -887,3 +887,92 @@ func TestSRIDConfigAndFeatureSRID(t *testing.T) {
 		t.Errorf("expected feature SRID to be 4326, got %v", featureSRID)
 	}
 }
+
+// TestExplicitGeometryType verifies the common geometry_type layer key
+// contract for GPKG (docs/provider-contract.md): the explicit value wins
+// over gpkg_contents metadata inference, it is validated at construction
+// time, and for custom SQL it removes the deferred startup inspection.
+func TestExplicitGeometryType(t *testing.T) {
+	baseConfig := func() dict.Dict {
+		return dict.Dict{
+			"name":     "explicit_geom_type",
+			"type":     "gpkg",
+			"filepath": GPKGAthensFilePath,
+			"layers": []map[string]interface{}{
+				{
+					"name":         "amenities_points",
+					"tablename":    "amenities_points",
+					"id_fieldname": "fid",
+				},
+			},
+		}
+	}
+
+	t.Run("explicit type wins over gpkg metadata", func(t *testing.T) {
+		config := baseConfig()
+		config["layers"].([]map[string]interface{})[0]["geometry_type"] = "LineString"
+
+		prov, err := gpkg.NewTileProvider(config, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		lyrs, err := prov.(provider.Layerer).Layers()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(lyrs) != 1 {
+			t.Fatalf("expected 1 layer, got %d", len(lyrs))
+		}
+		if _, ok := lyrs[0].GeomType().(geom.LineString); !ok {
+			t.Fatalf("expected explicit geom.LineString, got %T", lyrs[0].GeomType())
+		}
+	})
+
+	t.Run("metadata type retained by default", func(t *testing.T) {
+		prov, err := gpkg.NewTileProvider(baseConfig(), nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		lyrs, err := prov.(provider.Layerer).Layers()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, ok := lyrs[0].GeomType().(geom.Point); !ok {
+			t.Fatalf("expected metadata geom.Point, got %T", lyrs[0].GeomType())
+		}
+	})
+
+	t.Run("invalid type fails construction", func(t *testing.T) {
+		config := baseConfig()
+		config["layers"].([]map[string]interface{})[0]["geometry_type"] = "triangle"
+
+		if _, err := gpkg.NewTileProvider(config, nil); err == nil {
+			t.Fatal("expected error for unsupported geometry_type, got nil")
+		}
+	})
+
+	t.Run("custom sql with explicit type skips deferred inspection", func(t *testing.T) {
+		config := baseConfig()
+		config["layers"].([]map[string]interface{})[0] = map[string]interface{}{
+			"name":          "amenities_points",
+			"sql":           "SELECT fid, geom FROM amenities_points WHERE !ZOOM! > 0",
+			"id_fieldname":  "fid",
+			"geometry_type": "Point",
+		}
+
+		prov, err := gpkg.NewTileProvider(config, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		lyrs, err := prov.(provider.Layerer).Layers()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(lyrs) != 1 {
+			t.Fatalf("expected 1 layer, got %d", len(lyrs))
+		}
+		if _, ok := lyrs[0].GeomType().(geom.Point); !ok {
+			t.Fatalf("expected explicit geom.Point, got %T", lyrs[0].GeomType())
+		}
+	})
+}

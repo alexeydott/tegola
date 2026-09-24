@@ -240,6 +240,14 @@ func resolveGeometryFormatConfig(config dict.Dicter) (string, error) {
 	}
 }
 
+// hanaGeometryFormats is the set of geometry_format values accepted at the
+// layer level (an empty value falls back to the provider-level value).
+var hanaGeometryFormats = map[string]struct{}{
+	codec.FormatWKB: {},
+	codec.FormatWKT: {},
+	codec.FormatMOS: {},
+}
+
 // decodeGeometryValue decodes a raw geometry column value according to the
 // layer's geometry format. The default (empty) format expects HANA native
 // geometry already serialized via ST_AsBinary(), decoded as WKB.
@@ -458,20 +466,15 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 	if err != nil {
 		return nil, err
 	}
+	// NOTE: mos_precision/mos_units are NOT rejected here even when the
+	// provider-level geometry_format is not "mos": they are provider-level
+	// defaults for layers that may still select the MOS format via their own
+	// layer-level geometry_format. Relevance (warn) is decided per layer,
+	// after the effective layer format is known.
 	if providerType == MVTProviderType {
 		if verr := codec.ValidateMVTGeometryFormat(providerGeometryFormat); verr != nil {
 			return nil, verr
 		}
-	}
-	if providerGeometryFormat != "" && providerGeometryFormat != codec.FormatMOS &&
-		(providerMOSCfg.PrecisionSet || providerMOSCfg.UnitsSet) {
-		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
-			codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
-			codec.ConfigKeyGeometryFormat, providerGeometryFormat)
-		if providerMOSCfg.UnitsSet {
-			providerMOSCfg.UnitFactor = codec.MOSUnitsFactorDefault
-		}
-		providerMOSCfg.Precision = codec.DefaultMOSPrecisionForUnits(providerMOSCfg.UnitFactor)
 	}
 
 	name, err := config.String(ConfigKeyName, nil)
@@ -626,30 +629,17 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		if lerr != nil {
 			return nil, lerr
 		}
-		layerGeometryFormat, lerr := resolveGeometryFormatConfig(layer)
+		layerGeometryFormat, lerr := codec.ResolveLayerGeometryFormat(providerGeometryFormat, layer, lName, hanaGeometryFormats)
 		if lerr != nil {
 			return nil, fmt.Errorf("for layer (%v) %w", i, lerr)
 		}
-		if layerGeometryFormat != "" {
-			l.geometryFormat = layerGeometryFormat
-		}
-		if layerMOSCfg.PrecisionSet {
-			l.mosConfig.Precision = layerMOSCfg.Precision
-			l.mosConfig.PrecisionSet = true
-		}
-		if layerMOSCfg.UnitsSet {
-			l.mosConfig.UnitFactor = layerMOSCfg.UnitFactor
-			l.mosConfig.UnitsSet = true
-		}
-		if l.geometryFormat != "" && l.geometryFormat != codec.FormatMOS &&
-			(layerMOSCfg.PrecisionSet || layerMOSCfg.UnitsSet) {
+		l.geometryFormat = layerGeometryFormat
+		l.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
+		if l.geometryFormat != codec.FormatMOS && l.mosConfig.HasExplicitMOSParams() {
 			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
 				lName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
 				codec.ConfigKeyGeometryFormat, l.geometryFormat)
-			if layerMOSCfg.UnitsSet {
-				l.mosConfig.UnitFactor = codec.MOSUnitsFactorDefault
-			}
-			l.mosConfig.Precision = codec.DefaultMOSPrecisionForUnits(l.mosConfig.UnitFactor)
+			l.mosConfig = codec.DefaultMOSConfig()
 		}
 
 		if lsrid < 0 {
@@ -718,8 +708,15 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 
 		if sql != "" {
 			sql = sanitizeSQL(sql)
-			// make sure that the sql has a !BBOX! token
-			if !strings.Contains(sql, bboxToken) {
+			// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use
+			// the native-spatial !BBOX! token; reject it up front instead of
+			// generating invalid per-tile SQL.
+			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, bboxToken); verr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
+			}
+			// make sure that the sql has a !BBOX! token (native formats only:
+			// raw formats filter in memory and must not require !BBOX!)
+			if !codec.IsRawFormat(l.geometryFormat) && !strings.Contains(sql, bboxToken) {
 				return nil, fmt.Errorf("SQL for layer (%v) %v is missing required token: %v", i, lName, bboxToken)
 			}
 			if !strings.Contains(sql, "*") {
@@ -953,6 +950,10 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 
 	sqlQuery = provider.ParameterTokenRegexp.ReplaceAllString(sqlQuery, "")
 
+	// Cap the inspection at the shared sample window (docs/provider-contract.md)
+	sqlQuery = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sqlQuery), ";"))
+	sqlQuery = fmt.Sprintf("SELECT TOP %v * FROM (%v) AS mos_inspection", codec.InspectionSampleLimit, sqlQuery)
+
 	rows, err := p.pool.QueryContext(context.Background(), sqlQuery)
 	if err != nil {
 		return err
@@ -1001,12 +1002,15 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 				continue
 			}
 
-			g, derr := codec.DecodeMOS(raw, l.mosConfig)
-			if derr != nil {
-				return fmt.Errorf("layer (%v): %w", l.name, derr)
+			// The first decodable geometry infers the geometry type; later
+			// rows in the window can still carry system-info metadata.
+			if l.geomType == nil {
+				g, derr := codec.DecodeMOS(raw, l.mosConfig)
+				if derr != nil {
+					return fmt.Errorf("layer (%v): %w", l.name, derr)
+				}
+				l.geomType = g
 			}
-			l.geomType = g
-			return rows.Err()
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1047,6 +1051,10 @@ func (p Provider) applyMOSSourceCRS(l *Layer, explicit bool, layerSQL string, tb
 
 	sqlQuery = provider.ParameterTokenRegexp.ReplaceAllString(sqlQuery, "")
 
+	// Cap the inspection at the shared sample window (docs/provider-contract.md)
+	sqlQuery = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sqlQuery), ";"))
+	sqlQuery = fmt.Sprintf("SELECT TOP %v * FROM (%v) AS mos_inspection", codec.InspectionSampleLimit, sqlQuery)
+
 	rows, err := p.pool.QueryContext(context.Background(), sqlQuery)
 	if err != nil {
 		return err
@@ -1065,6 +1073,9 @@ func (p Provider) applyMOSSourceCRS(l *Layer, explicit bool, layerSQL string, tb
 
 	rowValues := make([]interface{}, len(fields))
 
+	// The whole window is scanned: feature rows are skipped and every
+	// system-info blob found is applied, so a LayerInfo stored after the
+	// first geometry still resolves the source CRS.
 	for rows.Next() {
 		setupRowValues(fields, rowValues)
 
@@ -1097,15 +1108,7 @@ func (p Provider) applyMOSSourceCRS(l *Layer, explicit bool, layerSQL string, tb
 					return fmt.Errorf("layer (%v): %w", l.name, aerr)
 				}
 				l.srid = uint64(srid)
-				return rows.Err()
 			}
-
-			// first real geometry: the layer carries no system info, so no
-			// source projection can be recovered
-			return fmt.Errorf(
-				"layer (%v): source CRS unresolved; MOS column carries no system info, specify %v or %v",
-				l.name, crsconfig.KeySRID, crsconfig.KeyCRSDefn,
-			)
 		}
 	}
 	if err := rows.Err(); err != nil {

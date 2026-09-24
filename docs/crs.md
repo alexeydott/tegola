@@ -34,7 +34,16 @@ providers (not just MySQL):
 
 - **postgis** — `geometry_columns` / spatial metadata for `tablename` layers;
   MOS layers carry no native spatial metadata, so their CRS comes from the
-  `MapplGIS LayerInfo` projection (below).
+  `MapplGIS LayerInfo` projection (below). Concretely: for a plain table
+  layer (no `sql`), native geometry format, when neither the provider nor
+  the layer has an explicit `srid`/`crs_defn`, Tegola runs
+  `Find_SRID('<schema>', '<table>', '<geom field>')` (schema defaults to
+  `public`) and uses the result as the layer source SRID. If the lookup
+  fails — unknown table/column, unregistered or mixed SRID — provider
+  creation fails with a controlled error advising an explicit `srid` or
+  `crs_defn`; it does **not** silently fall back to 3857. Custom-SQL layers
+  and raw geometry formats (`wkb`/`wkt`/`mos`) have no single table column
+  to introspect, so they keep the documented defaults.
 - **gpkg** — `gpkg_contents.srs_id` and the WKB geometry-header srs id; raw
   format tables (`wkb`/`wkt`/`mos`) carry no GeoPackage metadata, so the MOS
   system-info projection applies there too.

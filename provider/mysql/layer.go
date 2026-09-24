@@ -12,6 +12,11 @@ type Layer struct {
 	idFieldname   string
 	geomFieldname string
 	geomType      geom.Geometry
+	// geomTypeExplicit marks that geometry_type was set explicitly in the
+	// layer config: the declared type wins over sampled inference (startup
+	// inspection is skipped entirely) and runtime features of a different
+	// type are permitted with a one-time warning.
+	geomTypeExplicit bool
 	// srid is the SRID the layer's data is stored in (the "source SRID").
 	// Feature geometries are reprojected from this SRID to Web Mercator
 	// on the fly when tiles are served.

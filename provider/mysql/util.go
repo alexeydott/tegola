@@ -22,10 +22,14 @@ import (
 func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) string {
 	// WKT geometry columns hold text, so ST_Intersects(col, ...) fails; wrap
 	// the column in ST_GeomFromText so MariaDB/MySQL can intersect it with
-	// the tile bbox polygon.
+	// the tile bbox polygon. WKB columns hold BLOBs: ST_GeomFromWKB is the
+	// documented constructor, avoiding implicit BLOB->geometry coercion.
 	geomRef := quoteIdentifier(layer.geomFieldname)
-	if layer.geometryFormat == GeometryFormatWKT {
+	switch layer.geometryFormat {
+	case GeometryFormatWKT:
 		geomRef = geomFromTextSQL(geomRef, layer.srid)
+	case GeometryFormatWKB:
+		geomRef = geomFromWKBSQL(geomRef, layer.srid)
 	}
 
 	bboxSQL := "1=1"
@@ -83,6 +87,18 @@ func geomFromTextSQL(value string, srid uint64) string {
 		return fmt.Sprintf("ST_GeomFromText(%v)", value)
 	}
 	return fmt.Sprintf("ST_GeomFromText(%v, %d)", value, srid)
+}
+
+// geomFromWKBSQL creates a geometry expression from a raw WKB BLOB column
+// with the layer SRID when one is configured, symmetric to geomFromTextSQL.
+// ST_GeomFromWKB is the documented MySQL/MariaDB constructor for WKB values;
+// without it, spatial predicates would rely on implicit BLOB->geometry
+// coercion whose behavior differs between server versions.
+func geomFromWKBSQL(value string, srid uint64) string {
+	if srid == 0 {
+		return fmt.Sprintf("ST_GeomFromWKB(%v)", value)
+	}
+	return fmt.Sprintf("ST_GeomFromWKB(%v, %d)", value, srid)
 }
 
 // mosBoundsSQL builds a coarse indexed filter for the raw bounds stored

@@ -78,6 +78,14 @@ id_fieldname = "gid"
 
 `*Required`: either the `tablename` or `sql` must be defined, but not both.
 
+### Common geometry / CRS options
+
+The HANA provider implements the common geometry contract documented in
+[docs/provider-contract.md](../../docs/provider-contract.md). The
+`geometry_type` layer key, `geometry_format`, `mos_precision`, `mos_units`
+and the CRS keys above follow the shared semantics; mixed-content features
+under an explicit `geometry_type` are permitted with a one-time warning.
+
 ### HANA-specific restrictions
 
 - **Synthetic CRS** (from `crs_defn` at either level, or from a MOS
@@ -121,7 +129,7 @@ $ TEGOLA_SQL_DEBUG=LAYER_SQL tegola serve --config=/path/to/conf.toml
 ```
 
 ## Testing
-Testing is designed to work against a live SAP HANA database. To see how to set up a database check this [github actions script](https://github.com/go-spatial/tegola/blob/master/.github/worksflows/on_pr_push.yml). To run the HANA tests, the following environment variables need to be set:
+Testing is designed to work against a live SAP HANA database. To see how to set up a database check this [github actions script](https://github.com/go-spatial/tegola/blob/master/.github/workflows/on_pr_push.yml). To run the HANA tests, the following environment variables need to be set:
 
 ```bash
 $ export RUN_HANA_TESTS=yes

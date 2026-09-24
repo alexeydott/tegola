@@ -92,6 +92,41 @@ definitions (vendored proj limitation). Note the RTree spatial index bounds
 must be stored in the same CRS as the geometries for `!BBOX!` filtering to
 work correctly.
 
+### Common geometry / CRS options
+
+The GPKG provider implements the common geometry contract documented in
+[docs/provider-contract.md](../../docs/provider-contract.md). The keys below
+are valid at provider level (defaults for all layers) and at layer level
+(overrides), exactly as described there:
+
+- `geometry_type` (string): [Optional] explicit layer geometry type
+  (`Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`,
+  `MultiPolygon`, `GeometryCollection`). Skips startup type inspection;
+  mixed content is permitted with a one-time warning.
+- `geometry_format` (string): [Optional] `wkb`, `wkt` or `mos`. Empty/unset
+  uses the GeoPackage native binary format. With `mos` the GeoPackage
+  binary header is skipped and the raw MOS payload is used directly.
+- `mos_precision` (int): [Optional] decimal digits carried by MOS
+  coordinates. Only applies when the effective geometry format is `mos`.
+- `mos_units` (string): [Optional] packed linear unit of MOS coordinates
+  (`mm`, `cm`, `dm`, `m` or `km`). Only applies when the effective geometry
+  format is `mos`.
+
+```toml
+[[providers]]
+name = "sample_gpkg"
+type = "gpkg"
+filepath = "/path/to/my/sample_gpkg.gpkg"
+geometry_format = "mos"
+mos_precision = 2
+mos_units = "m"
+
+[[providers.layers]]
+name = "lines"
+tablename = "lines"
+geometry_type = "LineString"
+```
+
 ### Empty layers
 
 If a configured custom-SQL layer currently returns no rows, Tegola logs a
