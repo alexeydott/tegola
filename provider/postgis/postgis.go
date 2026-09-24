@@ -831,7 +831,8 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 // Additional provider configuration:
 //
 //   - srid (int): [Optional] default SRID for the provider. Defaults to
-//     WebMercator (3857) but also supports WGS84 (4326).
+//     WebMercator (3857). Any numeric SRID is supported; use crs_defn for a
+//     full PROJ.4 definition. See docs/crs.md.
 //
 //   - max_connections (int): [Optional] maximum number of connections in the
 //     pool. Default is 100. A value of 0 disables the limit.
@@ -842,17 +843,19 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 //   - name (string): [Required] name of the layer.
 //
 //   - tablename (string): [Required if sql is not defined] database table
-//     to query.
+//     to query. tablename and sql are mutually exclusive.
 //
 //   - geometry_fieldname (string): [Optional] geometry column name.
 //     Defaults to "geom".
 //
-//   - id_fieldname (string): [Optional] feature ID column.
+//   - id_fieldname (string): [Optional] feature ID column. Defaults to
+//     empty (no id column selected; MVT feature IDs are left unset).
 //
 //   - fields ([]string): [Optional] additional fields to include if sql
 //     is not defined.
 //
-//   - srid (int): [Optional] layer SRID (3857 or 4326).
+//   - srid (int): [Optional] layer SRID; supports any numeric SRID
+//     available in spatial_ref_sys.
 //
 //   - sql (string): [Required if tablename is not defined] custom SQL
 //     statement. The SQL must include required tokens where applicable.
@@ -986,31 +989,37 @@ func CreateProvider(
 			return nil, fmt.Errorf("for layer (%v) %v : %w", i, lName, err)
 		}
 
-		var tblName string
-		tblName, err = layer.String(ConfigKeyTablename, &lName)
-		if err != nil {
+		// tablename and sql are mutually exclusive. Presence is checked
+		// explicitly (like the gpkg/mysql providers) so an explicit tablename
+		// equal to the layer name is still detected.
+		_, errTable := layer.String(ConfigKeyTablename, nil)
+		_, errSQL := layer.String(ConfigKeySQL, nil)
+		tblPresent := true
+		if _, ok := errTable.(dict.ErrKeyRequired); ok {
+			tblPresent = false
+		} else if errTable != nil {
 			return nil, fmt.Errorf(
 				"for %v layer (%v) %v has an error: %w",
 				i,
 				lName,
 				ConfigKeyTablename,
-				err,
+				errTable,
 			)
 		}
-
-		var sql string
-		sql, err = layer.String(ConfigKeySQL, &sql)
-		if err != nil {
+		sqlPresent := true
+		if _, ok := errSQL.(dict.ErrKeyRequired); ok {
+			sqlPresent = false
+		} else if errSQL != nil {
 			return nil, fmt.Errorf(
 				"for %v layer (%v) %v has an error: %w",
 				i,
 				lName,
 				ConfigKeySQL,
-				err,
+				errSQL,
 			)
 		}
 
-		if tblName != lName && sql != "" {
+		if tblPresent && sqlPresent {
 			return nil, fmt.Errorf(
 				"for %v layer (%v) %v: only one of %v or %v can be specified",
 				providerType,
@@ -1019,6 +1028,44 @@ func CreateProvider(
 				ConfigKeyTablename,
 				ConfigKeySQL,
 			)
+		}
+		if !tblPresent && !sqlPresent {
+			return nil, fmt.Errorf(
+				"for %v layer (%v) %v: one of %v or %v must be specified",
+				providerType,
+				lName,
+				i,
+				ConfigKeyTablename,
+				ConfigKeySQL,
+			)
+		}
+
+		var tblName string
+		if tblPresent {
+			tblName, err = layer.String(ConfigKeyTablename, &lName)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"for %v layer (%v) %v has an error: %w",
+					i,
+					lName,
+					ConfigKeyTablename,
+					err,
+				)
+			}
+		}
+
+		var sql string
+		if sqlPresent {
+			sql, err = layer.String(ConfigKeySQL, &sql)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"for %v layer (%v) %v has an error: %w",
+					i,
+					lName,
+					ConfigKeySQL,
+					err,
+				)
+			}
 		}
 
 		// layer-level srid/crs_defn via the shared CRS contract; a layer

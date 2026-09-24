@@ -25,9 +25,11 @@ application_name = "tegola"
 # PostGIS connection config run time parameter (optional)
 # A read-only SQL transaction cannot alter non-temporary tables.
 # This parameter controls the default read-only status of each new transaction.
-# The default is OFF (read/write).
+# The default is TRUE (read-only). Tegola only reads from PostGIS, so the
+# read-only default protects your data. Set it to "off" (or an empty value)
+# if a layer's custom SQL needs write access.
 # (optional)
-default_transaction_read_only = "off"
+default_transaction_read_only = "true"
 ```
 
 ## Connection Properties
@@ -72,10 +74,10 @@ PostgresSQL connections that allows the following configurations to be passed
 as parameters.
 
 -   `sslmode`: [Optional] PostGIS SSL mode. Default: "prefer"
--   `pool_min_conns`: [Optional] The min connections to maintain in the connection pool. Defaults to 100. 0 means no max.
--   `pool_max_conns`: [Optional] The max connections to maintain in the connection pool. Defaults to 100. 0 means no max.
+-   `pool_min_conns`: [Optional] The minimum number of connections to keep in the connection pool. Defaults to 0.
+-   `pool_max_conns`: [Optional] The max connections to maintain in the connection pool. Defaults to the greater of 4 or the number of CPUs.
 -   `pool_max_conn_idle_time`: [Optional] The maximum time an idle connection is kept alive. Defaults to "30m".
--   `pool_max_connection_lifetime` [Optional] The maximum time a connection lives before it is terminated and recreated. Defaults to "1h".
+-   `pool_max_conn_lifetime` [Optional] The maximum time a connection lives before it is terminated and recreated. Defaults to "1h".
 -   `pool_max_conn_lifetime_jitter` [Optional] Duration after `max_conn_lifetime` to randomly decide to close a connection.
 -   `pool_health_check_period` [Optional] Is the duration between checks of the health of idle connections. Defaults to 1m
 
@@ -86,8 +88,8 @@ In addition to the connection configuration above, Provider Layers need to be co
 ```toml
 [[providers.layers]]
 name = "landuse"
-# this table uses "geom" for the geometry_fieldname and "gid" for the
-# id_fieldname so they don't need to be configured
+# this table uses "geom" for the geometry_fieldname; set id_fieldname
+# explicitly (e.g. "gid") if you want MVT feature IDs to be populated
 tablename = "gis.zoning_base_3857"
 ```
 
@@ -96,9 +98,9 @@ tablename = "gis.zoning_base_3857"
 -   `name` (string): [Required] the name of the layer. This is used to reference this layer from map layers.
 -   `tablename` (string): [*Required] the name of the database table to query against. Required if `sql` is not defined.
 -   `geometry_fieldname` (string): [Optional] the name of the filed which contains the geometry for the feature. defaults to `geom`.
--   `id_fieldname` (string): [Optional] the name of the feature id field. defaults to `gid`.
+-   `id_fieldname` (string): [Optional] the name of the feature id field. Defaults to empty: no id column is added to generated table SQL and MVT feature IDs are left unset (the database-side `ST_AsMVT` receives `NULL` as the feature id name). Set it to your table's primary key (commonly `gid`) to populate feature IDs.
 -   `fields` ([]string): [Optional] a list of fields to include alongside the feature. Can be used if `sql` is not defined.
--   `srid` (int): [Optional] the SRID of the layer. Supports `3857` (WebMercator) or `4326` (WGS84), or any SRID registered via the provider's `proj4` config option.
+-   `srid` (int): [Optional] the SRID of the layer. Defaults to the provider-level `srid`. Supports any numeric SRID available in the database's `spatial_ref_sys` (a `crs_defn` on the same level wins over a numeric `srid`).
 -   `crs_defn` (string): [Optional] a full PROJ.4 coordinate system definition used instead of a numeric `srid`. Validated at startup; wins over `srid` at the same level and over the provider-level `crs_defn`/`srid`.
 -   `geometry_type` (string): [Optional] the layer geometry type. If not set, the table will be inspected at startup to try and infer the gemetry type. Valid values are: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`.
 -   `sql` (string): [*Required] custom SQL to use use. Required if `tablename` is not defined. Supports the following tokens:
