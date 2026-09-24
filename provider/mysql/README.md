@@ -22,7 +22,7 @@ user = "user"
 password = "password"
 srid = 3857                 # optional, default 3857
 geometry_format = "auto"    # optional: auto (default) | mysql | mariadb | wkb | wkt | mos
-mos_precision = 2           # optional, MOS format only: decimal digits of quantized int coords, default 0
+mos_precision = 2           # optional, MOS format only: decimal digits of quantized int coords; default depends on mos_units (mm→0, cm→1, dm→1, m→2, km→5)
 mos_units = "m"             # optional, MOS format only: mm | cm | dm | m | km, default m
 max_connections = 100       # optional, default 100
 
@@ -59,7 +59,7 @@ The `geometry_format` config option controls decoding:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
+- `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`; the default `mos_precision` is paired with the units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`, `km`→`5`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
 
 ## MOS geometry format
 

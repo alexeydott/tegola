@@ -933,12 +933,10 @@ func CreateProvider(
 		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
 			codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
 			codec.ConfigKeyGeometryFormat, providerGeometryFormat)
-		if providerMOSCfg.PrecisionSet {
-			providerMOSCfg.Precision = codec.DefaultMOSConfig().Precision
-		}
 		if providerMOSCfg.UnitsSet {
-			providerMOSCfg.UnitFactor = codec.DefaultMOSConfig().UnitFactor
+			providerMOSCfg.UnitFactor = codec.MOSUnitsFactorDefault
 		}
+		providerMOSCfg.Precision = codec.DefaultMOSPrecisionForUnits(providerMOSCfg.UnitFactor)
 	}
 
 	name, err := config.String(ConfigKeyName, nil)
@@ -1141,21 +1139,21 @@ func CreateProvider(
 		}
 		if layerMOSCfg.PrecisionSet {
 			l.mosConfig.Precision = layerMOSCfg.Precision
+			l.mosConfig.PrecisionSet = true
 		}
 		if layerMOSCfg.UnitsSet {
 			l.mosConfig.UnitFactor = layerMOSCfg.UnitFactor
+			l.mosConfig.UnitsSet = true
 		}
 		if l.geometryFormat != "" && l.geometryFormat != codec.FormatMOS &&
 			(layerMOSCfg.PrecisionSet || layerMOSCfg.UnitsSet) {
 			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
 				lName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
 				codec.ConfigKeyGeometryFormat, l.geometryFormat)
-			if layerMOSCfg.PrecisionSet {
-				l.mosConfig.Precision = codec.DefaultMOSConfig().Precision
-			}
 			if layerMOSCfg.UnitsSet {
-				l.mosConfig.UnitFactor = codec.DefaultMOSConfig().UnitFactor
+				l.mosConfig.UnitFactor = codec.MOSUnitsFactorDefault
 			}
+			l.mosConfig.Precision = codec.DefaultMOSPrecisionForUnits(l.mosConfig.UnitFactor)
 		}
 		// MVT providers must not take the raw geometry path: their geometry
 		// is MVT bytes produced by the database, not a raw feature geometry.

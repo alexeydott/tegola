@@ -25,8 +25,11 @@ layer.
 ## MOS quantization
 
 MOS coordinates are integers in a packed linear unit. `mos_precision` (decimal
-digits, default `0`) and `mos_units` (`mm`, `cm`, `dm`, `m`, `km`; default `m`)
-define the scale factor applied when converting to metres. Explicitly set
+digits) and `mos_units` (`mm`, `cm`, `dm`, `m`, `km`; default `m`) define the
+scale factor applied when converting to metres. The default `mos_precision` is
+paired with the effective units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`,
+`km`→`5`. An explicitly set `mos_precision` overrides the units-paired default.
+Explicitly set
 `mos_precision`/`mos_units` always win over values detected from a
 `MapplGIS LayerInfo` metadata blob during startup inspection (see
 [provider-contract.md](provider-contract.md#system-info-auto-configuration-mos)).

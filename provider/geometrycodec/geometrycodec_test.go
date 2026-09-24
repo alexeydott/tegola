@@ -132,8 +132,45 @@ func TestResolveMOSConfig(t *testing.T) {
 		"defaults": {
 			provider:     dict.Dict{},
 			layer:        dict.Dict{},
-			expectPrec:   0,
+			expectPrec:   2,
 			expectFactor: 1,
+		},
+		"units only selects paired precision mm": {
+			provider:       dict.Dict{"mos_units": "mm"},
+			expectPrec:     0,
+			expectFactor:   0.001,
+			expectUnitsSet: true,
+		},
+		"units only selects paired precision cm": {
+			provider:       dict.Dict{"mos_units": "cm"},
+			expectPrec:     1,
+			expectFactor:   0.01,
+			expectUnitsSet: true,
+		},
+		"units only selects paired precision dm": {
+			provider:       dict.Dict{"mos_units": "dm"},
+			expectPrec:     1,
+			expectFactor:   0.1,
+			expectUnitsSet: true,
+		},
+		"units only selects paired precision km": {
+			provider:       dict.Dict{"mos_units": "km"},
+			expectPrec:     5,
+			expectFactor:   1000,
+			expectUnitsSet: true,
+		},
+		"layer units only selects paired precision": {
+			layer:          dict.Dict{"mos_units": "km"},
+			expectPrec:     5,
+			expectFactor:   1000,
+			expectUnitsSet: true,
+		},
+		"explicit precision overrides units-paired default": {
+			provider:       dict.Dict{"mos_units": "mm", "mos_precision": 3.0},
+			expectPrec:     3,
+			expectPrecSet:  true,
+			expectFactor:   0.001,
+			expectUnitsSet: true,
 		},
 		"provider level": {
 			provider:       dict.Dict{"mos_precision": 3.0, "mos_units": "mm"},
@@ -159,7 +196,7 @@ func TestResolveMOSConfig(t *testing.T) {
 		},
 		"blank units not explicit": {
 			provider:     dict.Dict{"mos_units": "  "},
-			expectPrec:   0,
+			expectPrec:   2,
 			expectFactor: 1,
 		},
 		"invalid precision": {
@@ -277,6 +314,9 @@ func TestDecodeMOS(t *testing.T) {
 	// MOS layout: [type][mod][addflag u16][subobjects u16][points i32]
 	// then per-subobject u32 counts and i32 x,y pairs. One subobject, two
 	// points: type 2 decodes to a MultiPoint.
+	// Use precision 0 / metre units so raw coordinates pass through
+	// unquantized; units-paired default precision is covered by
+	// TestResolveMOSConfig and TestDefaultMOSPrecisionForUnits.
 	blob := []byte{
 		2, 0, 0, 0, // type 2 (point), mod 0, addflag 0
 		1, 0, // one subobject
@@ -286,7 +326,8 @@ func TestDecodeMOS(t *testing.T) {
 		10, 0, 0, 0, 10, 0, 0, 0, // point (10,10)
 	}
 
-	g, err := geometrycodec.DecodeMOS(blob, geometrycodec.DefaultMOSConfig())
+	mosCfg := geometrycodec.MOSConfig{Precision: 0, UnitFactor: 1}
+	g, err := geometrycodec.DecodeMOS(blob, mosCfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -299,11 +340,37 @@ func TestDecodeMOS(t *testing.T) {
 		t.Errorf("unexpected points: %v", pts)
 	}
 
-	if _, err := geometrycodec.DecodeMOS([]byte{0xFF, 0x00}, geometrycodec.DefaultMOSConfig()); err == nil {
+	if _, err := geometrycodec.DecodeMOS([]byte{0xFF, 0x00}, mosCfg); err == nil {
 		t.Error("expected error for garbage blob")
 	}
-	if _, err := geometrycodec.DecodeMOS(42, geometrycodec.DefaultMOSConfig()); err == nil {
+	if _, err := geometrycodec.DecodeMOS(42, mosCfg); err == nil {
 		t.Error("expected error for non-blob value")
+	}
+}
+
+func TestDefaultMOSPrecisionForUnits(t *testing.T) {
+	tests := map[string]struct {
+		factor float64
+		want   float64
+	}{
+		"mm":      {factor: 0.001, want: 0},
+		"cm":      {factor: 0.01, want: 1},
+		"dm":      {factor: 0.1, want: 1},
+		"m":       {factor: 1, want: 2},
+		"km":      {factor: 1000, want: 5},
+		"unknown": {factor: 42, want: 0},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := geometrycodec.DefaultMOSPrecisionForUnits(tc.factor); got != tc.want {
+				t.Fatalf("DefaultMOSPrecisionForUnits(%v) = %v, want %v", tc.factor, got, tc.want)
+			}
+		})
+	}
+
+	def := geometrycodec.DefaultMOSConfig()
+	if def.Precision != 2 || def.UnitFactor != 1 {
+		t.Fatalf("DefaultMOSConfig() = %+v, want precision 2 / factor 1", def)
 	}
 }
 

@@ -227,14 +227,16 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 	if geometryFormat != GeometryFormatMOS {
-		if mosCfg.PrecisionSet && mosCfg.Precision != codec.MOSPrecisionDefault {
-			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSPrecision, ConfigKeyGeometryFormat, GeometryFormatMOS)
-			mosCfg.Precision = codec.MOSPrecisionDefault
-		}
 		if mosCfg.UnitsSet {
 			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSUnits, ConfigKeyGeometryFormat, GeometryFormatMOS)
 			mosCfg.UnitFactor = codec.MOSUnitsFactorDefault
 		}
+		// The default precision is paired with the units in effect.
+		defaultPrecision := codec.DefaultMOSPrecisionForUnits(mosCfg.UnitFactor)
+		if mosCfg.PrecisionSet && mosCfg.Precision != defaultPrecision {
+			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSPrecision, ConfigKeyGeometryFormat, GeometryFormatMOS)
+		}
+		mosCfg.Precision = defaultPrecision
 	}
 
 	// register the built-in table of common projected SRIDs (UTM zones,

@@ -79,6 +79,26 @@ const (
 	MOSUnitsFactorDefault = 1.0
 )
 
+// DefaultMOSPrecisionForUnits returns the default mos_precision paired with
+// the given map-unit factor (metres per unit):
+//
+//	mm (0.001) → 0, cm (0.01) → 1, dm (0.1) → 1, m (1) → 2, km (1000) → 5.
+//
+// An unknown or undefined factor falls back to MOSPrecisionDefault.
+func DefaultMOSPrecisionForUnits(unitFactor float64) float64 {
+	switch unitFactor {
+	case 0.001: // mm
+		return 0
+	case 0.01, 0.1: // cm, dm
+		return 1
+	case 1: // m
+		return 2
+	case 1000: // km
+		return 5
+	}
+	return MOSPrecisionDefault
+}
+
 // MaxMOSPrecision bounds the decimal digit count a float64 can represent
 // exactly in MOS dequantization.
 const MaxMOSPrecision = 308
@@ -111,10 +131,11 @@ type MOSConfig struct {
 	UnitsSet bool
 }
 
-// DefaultMOSConfig returns the default MOS quantization configuration.
+// DefaultMOSConfig returns the default MOS quantization configuration. The
+// default precision is paired with the default units factor (metres).
 func DefaultMOSConfig() MOSConfig {
 	return MOSConfig{
-		Precision:  MOSPrecisionDefault,
+		Precision:  DefaultMOSPrecisionForUnits(MOSUnitsFactorDefault),
 		UnitFactor: MOSUnitsFactorDefault,
 	}
 }
@@ -123,6 +144,10 @@ func DefaultMOSConfig() MOSConfig {
 // layer configuration dictionaries. Layer-level values override provider
 // level values. A nil layer dict is allowed. Errors are prefixed with the
 // layer name when one is provided.
+//
+// The default mos_precision is paired with the effective units
+// (see DefaultMOSPrecisionForUnits): an explicit mos_units without an
+// explicit mos_precision selects the units-paired default precision.
 func ResolveMOSConfig(provider, layer dict.Dicter, layerName string) (MOSConfig, error) {
 	cfg := DefaultMOSConfig()
 
@@ -161,6 +186,12 @@ func ResolveMOSConfig(provider, layer dict.Dicter, layerName string) (MOSConfig,
 	}
 	if unitsSet {
 		cfg.UnitFactor, cfg.UnitsSet = unitsFactor, true
+	}
+
+	// mos_precision is paired with the effective units: when the caller did
+	// not set it explicitly, derive the default from the units in effect.
+	if !cfg.PrecisionSet {
+		cfg.Precision = DefaultMOSPrecisionForUnits(cfg.UnitFactor)
 	}
 
 	return cfg, nil

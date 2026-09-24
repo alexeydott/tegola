@@ -428,12 +428,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
 			codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
 			codec.ConfigKeyGeometryFormat, providerGeometryFormat)
-		if providerMOSCfg.PrecisionSet {
-			providerMOSCfg.Precision = codec.DefaultMOSConfig().Precision
-		}
 		if providerMOSCfg.UnitsSet {
-			providerMOSCfg.UnitFactor = codec.DefaultMOSConfig().UnitFactor
+			providerMOSCfg.UnitFactor = codec.MOSUnitsFactorDefault
 		}
+		providerMOSCfg.Precision = codec.DefaultMOSPrecisionForUnits(providerMOSCfg.UnitFactor)
 	}
 
 	p := Provider{
@@ -542,12 +540,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
 				layerName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
 				codec.ConfigKeyGeometryFormat, layer.geometryFormat)
-			if layerMOSCfg.PrecisionSet {
-				layer.mosConfig.Precision = codec.DefaultMOSConfig().Precision
-			}
 			if layerMOSCfg.UnitsSet {
-				layer.mosConfig.UnitFactor = codec.DefaultMOSConfig().UnitFactor
+				layer.mosConfig.UnitFactor = codec.MOSUnitsFactorDefault
 			}
+			layer.mosConfig.Precision = codec.DefaultMOSPrecisionForUnits(layer.mosConfig.UnitFactor)
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
