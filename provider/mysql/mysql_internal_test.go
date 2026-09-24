@@ -21,6 +21,7 @@ import (
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/mos"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
@@ -158,8 +159,8 @@ func TestGeometryIntersectsExtent(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := geometryIntersectsExtent(tc.g, extent); got != tc.want {
-				t.Fatalf("geometryIntersectsExtent(%v) = %v, want %v", tc.g, got, tc.want)
+			if got := codec.GeometryIntersectsExtent(tc.g, extent); got != tc.want {
+				t.Fatalf("codec.GeometryIntersectsExtent(%v) = %v, want %v", tc.g, got, tc.want)
 			}
 		})
 	}
@@ -172,14 +173,14 @@ func TestTrimTrailingSemicolon(t *testing.T) {
 }
 
 func TestValidateMOSPrecision(t *testing.T) {
-	for _, precision := range []float64{0, 2, maxMOSPrecision} {
-		if err := validateMOSPrecision(precision); err != nil {
-			t.Errorf("validateMOSPrecision(%v) = %v", precision, err)
+	for _, precision := range []float64{0, 2, codec.MaxMOSPrecision} {
+		if err := codec.ValidateMOSPrecision(precision); err != nil {
+			t.Errorf("codec.ValidateMOSPrecision(%v) = %v", precision, err)
 		}
 	}
-	for _, precision := range []float64{-1, 1.5, maxMOSPrecision + 1, math.NaN(), math.Inf(1)} {
-		if err := validateMOSPrecision(precision); err == nil {
-			t.Errorf("validateMOSPrecision(%v) succeeded, want error", precision)
+	for _, precision := range []float64{-1, 1.5, codec.MaxMOSPrecision + 1, math.NaN(), math.Inf(1)} {
+		if err := codec.ValidateMOSPrecision(precision); err == nil {
+			t.Errorf("codec.ValidateMOSPrecision(%v) succeeded, want error", precision)
 		}
 	}
 }
@@ -240,7 +241,7 @@ func TestGeomTypeFromColumnKeepsSamplingAfterGeometry(t *testing.T) {
 	}
 	defer db.Close()
 
-	geo, _, sysInfo, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, 0)
+	geo, _, sysInfo, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +264,7 @@ func TestGeomTypeFromColumnSkipsNullGeometryRows(t *testing.T) {
 	}
 	defer db.Close()
 
-	geo, _, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, 0)
+	geo, _, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +547,7 @@ func TestDecodeGeometryAutoFallback(t *testing.T) {
 	native = append(native, 1)
 	native = append(native, wkb...)
 
-	srid, geo, err := decodeGeometry(native, GeometryFormatAuto, GeometryFormatMySQL)
+	srid, geo, err := decodeGeometry(native, GeometryFormatAuto, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +560,7 @@ func TestDecodeGeometryAutoFallback(t *testing.T) {
 
 	// plain WKB with the auto flavor should fall back and decode successfully
 	// (SRID 0 since plain WKB carries no header)
-	srid, geo, err = decodeGeometry(wkb, GeometryFormatAuto, GeometryFormatMySQL)
+	srid, geo, err = decodeGeometry(wkb, GeometryFormatAuto, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +572,7 @@ func TestDecodeGeometryAutoFallback(t *testing.T) {
 	}
 
 	// explicit wkb format
-	srid, geo, err = decodeGeometry(wkb, GeometryFormatWKB, GeometryFormatMySQL)
+	srid, geo, err = decodeGeometry(wkb, GeometryFormatWKB, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +581,7 @@ func TestDecodeGeometryAutoFallback(t *testing.T) {
 	}
 
 	// unknown format is an error
-	if _, _, err := decodeGeometry(wkb, "bogus", GeometryFormatMySQL); err == nil {
+	if _, _, err := decodeGeometry(wkb, "bogus", GeometryFormatMySQL, codec.DefaultMOSConfig()); err == nil {
 		t.Error("expected error for unknown format, got nil")
 	}
 }
@@ -591,7 +592,7 @@ func TestDecodeGeometryWKT(t *testing.T) {
 	const line = "LINESTRING(6832560.11 7372555.90, 6832518.72 7372428.95)"
 
 	// string value
-	srid, geo, err := decodeGeometry(line, GeometryFormatWKT, GeometryFormatMariaDB)
+	srid, geo, err := decodeGeometry(line, GeometryFormatWKT, GeometryFormatMariaDB, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,7 +604,7 @@ func TestDecodeGeometryWKT(t *testing.T) {
 	}
 
 	// []byte value (TEXT columns may arrive as []byte depending on driver)
-	_, geo, err = decodeGeometry([]byte(line), GeometryFormatWKT, GeometryFormatMariaDB)
+	_, geo, err = decodeGeometry([]byte(line), GeometryFormatWKT, GeometryFormatMariaDB, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -612,18 +613,18 @@ func TestDecodeGeometryWKT(t *testing.T) {
 	}
 
 	// invalid WKT is an error
-	if _, _, err := decodeGeometry("NOT WKT", GeometryFormatWKT, GeometryFormatMariaDB); err == nil {
+	if _, _, err := decodeGeometry("NOT WKT", GeometryFormatWKT, GeometryFormatMariaDB, codec.DefaultMOSConfig()); err == nil {
 		t.Error("expected error for invalid WKT, got nil")
 	}
 
 	// wrong type is an error
-	if _, _, err := decodeGeometry(42, GeometryFormatWKT, GeometryFormatMariaDB); err == nil {
+	if _, _, err := decodeGeometry(42, GeometryFormatWKT, GeometryFormatMariaDB, codec.DefaultMOSConfig()); err == nil {
 		t.Error("expected error for int geometry value, got nil")
 	}
 
 	// auto + MariaDB flavor: WKT text in a blob column falls back through
 	// mariadb -> wkb -> wkt and decodes successfully
-	_, geo, err = decodeGeometry([]byte(line), GeometryFormatAuto, GeometryFormatMariaDB)
+	_, geo, err = decodeGeometry([]byte(line), GeometryFormatAuto, GeometryFormatMariaDB, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,8 +686,7 @@ func TestReplaceTokens(t *testing.T) {
 	mosLayer := &Layer{
 		tablename:      "",
 		geometryFormat: GeometryFormatMOS,
-		mosPrecision:   0,
-		mosUnitsFactor: 0.001,
+		mosConfig:      codec.MOSConfig{Precision: 0, UnitFactor: 0.001},
 	}
 	mosExtent := geom.NewExtent(geom.Point{1.25, -2.5}, geom.Point{3.75, 4.5})
 	got = replaceTokens("SELECT * FROM buildings WHERE !BBOX!", mosLayer, tile, mosExtent)
@@ -773,12 +773,12 @@ func TestApplySystemInfo(t *testing.T) {
 	}
 
 	t.Run("units factor applied", func(t *testing.T) {
-		layer := Layer{name: "l", geometryFormat: GeometryFormatAuto, mosPrecision: 0, mosUnitsFactor: 1}
+		layer := Layer{name: "l", geometryFormat: GeometryFormatAuto, mosConfig: codec.DefaultMOSConfig()}
 		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if layer.mosUnitsFactor != 0.001 {
-			t.Errorf("mosUnitsFactor = %v, want 0.001", layer.mosUnitsFactor)
+		if layer.mosConfig.UnitFactor != 0.001 {
+			t.Errorf("mosConfig.UnitFactor = %v, want 0.001", layer.mosConfig.UnitFactor)
 		}
 		if layer.geometryFormat != GeometryFormatMOS {
 			t.Errorf("geometryFormat = %q, want %q", layer.geometryFormat, GeometryFormatMOS)
@@ -786,48 +786,48 @@ func TestApplySystemInfo(t *testing.T) {
 	})
 
 	t.Run("precision applied when not explicit", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1}
+		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig()}
 		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if layer.mosPrecision != 2 {
-			t.Errorf("mosPrecision = %v, want 2", layer.mosPrecision)
+		if layer.mosConfig.Precision != 2 {
+			t.Errorf("mosConfig.Precision = %v, want 2", layer.mosConfig.Precision)
 		}
 	})
 
 	t.Run("explicit precision wins", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 4, mosPrecisionExplicit: true, mosUnitsFactor: 1}
+		layer := Layer{name: "l", mosConfig: codec.MOSConfig{Precision: 4, UnitFactor: 1, PrecisionSet: true}}
 		conf := dict.Dict{"mos_precision": 4.0}
 		if err := applySystemInfo(&layer, conf, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if layer.mosPrecision != 4 {
-			t.Errorf("mosPrecision = %v, want 4 (explicit config wins)", layer.mosPrecision)
+		if layer.mosConfig.Precision != 4 {
+			t.Errorf("mosConfig.Precision = %v, want 4 (explicit config wins)", layer.mosConfig.Precision)
 		}
 	})
 
 	t.Run("explicit zero precision wins", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 0, mosPrecisionExplicit: true, mosUnitsFactor: 1}
+		layer := Layer{name: "l", mosConfig: codec.MOSConfig{Precision: 0, UnitFactor: 1, PrecisionSet: true}}
 		if err := applySystemInfo(&layer, dict.Dict{"mos_precision": 0.0}, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if layer.mosPrecision != 0 {
-			t.Errorf("mosPrecision = %v, want 0 (explicit config wins)", layer.mosPrecision)
+		if layer.mosConfig.Precision != 0 {
+			t.Errorf("mosConfig.Precision = %v, want 0 (explicit config wins)", layer.mosConfig.Precision)
 		}
 	})
 
 	t.Run("explicit units wins", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1000, mosUnitsExplicit: true}
+		layer := Layer{name: "l", mosConfig: codec.MOSConfig{Precision: 0, UnitFactor: 1000, UnitsSet: true}}
 		if err := applySystemInfo(&layer, dict.Dict{"mos_units": "km"}, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if layer.mosUnitsFactor != 1000 {
-			t.Errorf("mosUnitsFactor = %v, want 1000 (explicit config wins)", layer.mosUnitsFactor)
+		if layer.mosConfig.UnitFactor != 1000 {
+			t.Errorf("mosConfig.UnitFactor = %v, want 1000 (explicit config wins)", layer.mosConfig.UnitFactor)
 		}
 	})
 
 	t.Run("projection applied when srid not explicit", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1}
+		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig()}
 		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -844,7 +844,7 @@ func TestApplySystemInfo(t *testing.T) {
 	})
 
 	t.Run("projection not applied when srid explicit", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1, srid: 3857}
+		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig(), srid: 3857}
 		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -854,7 +854,7 @@ func TestApplySystemInfo(t *testing.T) {
 	})
 
 	t.Run("layer srid suppresses system projection", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1, srid: 32637}
+		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig(), srid: 32637}
 		if err := applySystemInfo(&layer, dict.Dict{ConfigKeySRID: 32637}, sysInfo, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -868,7 +868,7 @@ func TestApplySystemInfo(t *testing.T) {
 		if err != nil {
 			t.Fatalf("registering layer CRS: %v", err)
 		}
-		layer := Layer{name: "l", mosPrecision: 0, mosUnitsFactor: 1, srid: layerSRID}
+		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig(), srid: layerSRID}
 		if err := applySystemInfo(&layer, dict.Dict{ConfigKeyCRSDefn: projDefn}, sysInfo, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -878,12 +878,12 @@ func TestApplySystemInfo(t *testing.T) {
 	})
 
 	t.Run("nil sysinfo is a no-op", func(t *testing.T) {
-		layer := Layer{name: "l", mosPrecision: 3, mosUnitsFactor: 1, srid: 3395}
+		layer := Layer{name: "l", mosConfig: codec.MOSConfig{Precision: 3, UnitFactor: 1}, srid: 3395}
 		if err := applySystemInfo(&layer, dict.Dict{}, nil, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if layer.mosPrecision != 3 || layer.srid != 3395 {
-			t.Errorf("layer modified by nil sysinfo: precision=%v srid=%v", layer.mosPrecision, layer.srid)
+		if layer.mosConfig.Precision != 3 || layer.srid != 3395 {
+			t.Errorf("layer modified by nil sysinfo: precision=%v srid=%v", layer.mosConfig.Precision, layer.srid)
 		}
 	})
 }
@@ -899,25 +899,23 @@ func TestApplyRuntimeSystemInfo(t *testing.T) {
 	binary.LittleEndian.PutUint32(blob[60:64], uint32(len(projection)))
 	copy(blob[64:], projection)
 
-	layer := Layer{name: "deferred", geometryFormat: GeometryFormatAuto}
+	layer := Layer{name: "deferred", geometryFormat: GeometryFormatAuto, mosConfig: codec.DefaultMOSConfig()}
 	format := layer.geometryFormat
-	precision := 0.0
-	unitsFactor := 1.0
 	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
 	tileBBox, tileSRID := tile.BufferedExtent()
 	webMercatorBBox := tileBBox
 
-	if err := applyRuntimeSystemInfo(&layer, &format, &precision, &unitsFactor, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
+	if err := applyRuntimeSystemInfo(&layer, &format, &layer.mosConfig, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
 		t.Fatalf("applyRuntimeSystemInfo: %v", err)
 	}
 	if format != GeometryFormatMOS {
 		t.Fatalf("geometry format = %q, want %q", format, GeometryFormatMOS)
 	}
-	if precision != 3 {
-		t.Fatalf("precision = %v, want 3", precision)
+	if layer.mosConfig.Precision != 3 {
+		t.Fatalf("precision = %v, want 3", layer.mosConfig.Precision)
 	}
-	if unitsFactor != 0.01 {
-		t.Fatalf("units factor = %v, want 0.01", unitsFactor)
+	if layer.mosConfig.UnitFactor != 0.01 {
+		t.Fatalf("units factor = %v, want 0.01", layer.mosConfig.UnitFactor)
 	}
 	if layer.srid == 0 || !basic.IsSyntheticSRID(layer.srid) {
 		t.Fatalf("expected synthetic runtime SRID, got %v", layer.srid)

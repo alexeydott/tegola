@@ -1,6 +1,9 @@
 package mysql
 
-import "github.com/go-spatial/geom"
+import (
+	"github.com/go-spatial/geom"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+)
 
 type Layer struct {
 	name          string
@@ -24,19 +27,11 @@ type Layer struct {
 	// crsExplicit records whether the provider or layer explicitly selected a
 	// CRS. It prevents a runtime MOS system-info row from replacing that CRS.
 	crsExplicit bool
-	// mosPrecision is the number of decimal digits MOS blob coordinates
-	// carry (mos_precision config or TLayerSystemInfoRec.Precision); 0
-	// means integer units.
-	mosPrecision float64
-	// mosPrecisionExplicit prevents the layer system-info blob from overriding
-	// an explicit provider- or layer-level mos_precision setting, including 0.
-	mosPrecisionExplicit bool
-	// mosUnitsFactor scales decoded MOS coordinates from mos_units (or
-	// TLayerSystemInfoRec.MapUnits) to metres; defaults to 1.
-	mosUnitsFactor float64
-	// mosUnitsExplicit prevents the layer system-info blob from overriding an
-	// explicit provider- or layer-level mos_units setting.
-	mosUnitsExplicit bool
+	// mosConfig holds the resolved MOS quantization settings (precision,
+	// unit factor) plus explicit-config flags that prevent a runtime
+	// TLayerSystemInfoRec blob from overriding an explicit provider- or
+	// layer-level mos_precision/mos_units setting, including explicit 0.
+	mosConfig codec.MOSConfig
 }
 
 func (l Layer) Name() string            { return l.name }

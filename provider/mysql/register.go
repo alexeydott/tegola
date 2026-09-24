@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
 	"regexp"
 	"strings"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -115,7 +115,7 @@ func sampleGeometryQuery(qtext string) string {
 // via sysInfo without terminating the sampling. It returns sql.ErrNoRows
 // when the query yields no rows at all, and the decode error only when
 // every sampled row failed to decode.
-func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosPrecision float64) (geo geom.Geometry, headerSRID uint64, sysInfo *mos.SystemInfo, err error) {
+func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosCfg codec.MOSConfig) (geo geom.Geometry, headerSRID uint64, sysInfo *mos.SystemInfo, err error) {
 	rows, err := db.Query(sampleGeometryQuery(qtext))
 	if err != nil {
 		return nil, 0, nil, err
@@ -158,7 +158,7 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 	}
 
 	for _, geomVal := range values {
-		srid, decoded, decodeErr := decodeGeometry(geomVal, sampleFormat, serverFlavor, mos.Options{Precision: mosPrecision})
+		srid, decoded, decodeErr := decodeGeometry(geomVal, sampleFormat, serverFlavor, mosCfg)
 		if decodeErr != nil {
 			lastErr = decodeErr
 			continue
@@ -243,49 +243,26 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			ConfigKeyGeometryFormat, geometryFormat, GeometryFormatAuto, GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, GeometryFormatWKT, GeometryFormatMOS)
 	}
 
-	// mos_precision: number of decimal digits quantized MOS blob coordinates
-	// carry (e.g. 3 = metre units with millimetre precision). Only used with
+	// mos_precision/mos_units: number of decimal digits quantized MOS blob
+	// coordinates carry (e.g. 3 = metre units with millimetre precision) and
+	// the linear unit of the dequantized coordinates. Only used with
 	// geometry_format = "mos". The MOS format itself carries no CRS
 	// information, so the coordinate units come from the layer/provider
-	// srid (or crs_defn).
-	_, mosPrecisionExplicit := config.Interface(ConfigKeyMOSPrecision)
-	mosPrecision := mosPrecisionDefault
-	if mosPrecision, err = config.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
+	// srid (or crs_defn). Resolution (layer > provider, explicit flags,
+	// validation) lives in the shared geometrycodec contract.
+	mosCfg, err := codec.ResolveMOSConfig(config, nil, "")
+	if err != nil {
 		return nil, err
-	}
-	if err := validateMOSPrecision(mosPrecision); err != nil {
-		return nil, fmt.Errorf("invalid %v: %w", ConfigKeyMOSPrecision, err)
 	}
 	if geometryFormat != GeometryFormatMOS {
-		if mosPrecision != mosPrecisionDefault {
+		if mosCfg.PrecisionSet && mosCfg.Precision != codec.MOSPrecisionDefault {
 			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSPrecision, ConfigKeyGeometryFormat, GeometryFormatMOS)
-			mosPrecision = mosPrecisionDefault
+			mosCfg.Precision = codec.MOSPrecisionDefault
 		}
-	}
-
-	// mos_units identifies the linear units used by quantized MOS
-	// coordinates. Decoded coordinates are converted to metres before they
-	// enter the SRID reprojection path.
-	mosUnitsFactor := mosUnitsFactorDefault
-	mosUnitsExplicit := false
-	mosUnitsName := ""
-	if mosUnitsName, err = config.String(ConfigKeyMOSUnits, &mosUnitsName); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(mosUnitsName) != "" {
-		units, uerr := mos.ParseMapUnits(mosUnitsName)
-		if uerr != nil {
-			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyMOSUnits, uerr)
+		if mosCfg.UnitsSet {
+			log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSUnits, ConfigKeyGeometryFormat, GeometryFormatMOS)
+			mosCfg.UnitFactor = codec.MOSUnitsFactorDefault
 		}
-		mosUnitsFactor, uerr = units.ToMetres()
-		if uerr != nil {
-			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyMOSUnits, uerr)
-		}
-		mosUnitsExplicit = true
-	}
-	if geometryFormat != GeometryFormatMOS && mosUnitsExplicit {
-		log.Warnf("%v is only used with %v = %q; ignoring", ConfigKeyMOSUnits, ConfigKeyGeometryFormat, GeometryFormatMOS)
-		mosUnitsFactor = mosUnitsFactorDefault
 	}
 
 	// register the built-in table of common projected SRIDs (UTM zones,
@@ -400,15 +377,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 		// layer container. will be added to the provider after it's configured
 		layer := Layer{
-			name:                 layerName,
-			idFieldname:          idFieldname,
-			geomFieldname:        geomFieldname,
-			geometryFormat:       geometryFormat,
-			crsExplicit:          sridExplicit,
-			mosPrecision:         mosPrecision,
-			mosPrecisionExplicit: mosPrecisionExplicit,
-			mosUnitsFactor:       mosUnitsFactor,
-			mosUnitsExplicit:     mosUnitsExplicit,
+			name:           layerName,
+			idFieldname:    idFieldname,
+			geomFieldname:  geomFieldname,
+			geometryFormat: geometryFormat,
+			crsExplicit:    sridExplicit,
+			mosConfig:      mosCfg,
 		}
 		if _, explicit := layerConf.Interface(ConfigKeySRID); explicit {
 			layer.crsExplicit = true
@@ -421,32 +395,17 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			layer.crsExplicit = layer.crsExplicit || strings.TrimSpace(defn) != ""
 		}
 
-		// layer-level mos_precision overrides the provider-level value
-		if layer.mosPrecision, err = layerConf.Float(ConfigKeyMOSPrecision, &mosPrecision); err != nil {
-			return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSPrecision, err)
+		// layer-level mos_precision/mos_units override the provider-level
+		// values through the shared resolution contract.
+		layerMosCfg, lerr := codec.ResolveMOSConfig(nil, layerConf, "")
+		if lerr != nil {
+			return nil, fmt.Errorf("for layer (%v) %v %v", i, layerName, lerr)
 		}
-		if err := validateMOSPrecision(layer.mosPrecision); err != nil {
-			return nil, fmt.Errorf("for layer (%v) %v invalid %v: %w", i, layerName, ConfigKeyMOSPrecision, err)
+		if layerMosCfg.PrecisionSet {
+			layer.mosConfig.Precision, layer.mosConfig.PrecisionSet = layerMosCfg.Precision, true
 		}
-		if _, explicit := layerConf.Interface(ConfigKeyMOSPrecision); explicit {
-			layer.mosPrecisionExplicit = true
-		}
-
-		// layer-level mos_units overrides the provider-level value.
-		if _, explicit := layerConf.Interface(ConfigKeyMOSUnits); explicit {
-			layerMosUnits, uerr := layerConf.String(ConfigKeyMOSUnits, nil)
-			if uerr != nil {
-				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSUnits, uerr)
-			}
-			units, uerr := mos.ParseMapUnits(layerMosUnits)
-			if uerr != nil {
-				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSUnits, uerr)
-			}
-			layer.mosUnitsFactor, uerr = units.ToMetres()
-			if uerr != nil {
-				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyMOSUnits, uerr)
-			}
-			layer.mosUnitsExplicit = true
+		if layerMosCfg.UnitsSet {
+			layer.mosConfig.UnitFactor, layer.mosConfig.UnitsSet = layerMosCfg.UnitFactor, true
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
@@ -460,7 +419,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			inspectionSQL := fmt.Sprintf("SELECT %v FROM %v WHERE %v IS NOT NULL LIMIT 1",
 				quoteIdentifier(geomFieldname), quoteIdentifier(tablename), quoteIdentifier(geomFieldname))
 
-			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, inspectionSQL, geometryFormat, serverFlavor, layer.mosPrecision)
+			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, inspectionSQL, geometryFormat, serverFlavor, layer.mosConfig)
 			switch {
 			case err == sql.ErrNoRows:
 				lsrid, rerr := configuredLayerSRID(layerConf, srid)
@@ -564,7 +523,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 			log.Debugf("qtext: %v", qtext)
 
-			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, qtext, geometryFormat, serverFlavor, layer.mosPrecision)
+			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, qtext, geometryFormat, serverFlavor, layer.mosConfig)
 			switch {
 			case err == sql.ErrNoRows:
 				lsrid, rerr := configuredLayerSRID(layerConf, srid)
@@ -640,23 +599,8 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 		layer.geometryFormat = GeometryFormatMOS
 	}
 
-	if err := validateMOSPrecision(float64(sysInfo.Precision)); err != nil {
-		return fmt.Errorf("invalid system-info MOS precision: %w", err)
-	}
-
-	// precision: only when mos_precision is absent on both provider and
-	// layer level. layer.mosPrecision currently holds the (possibly
-	// defaulted) provider value; a layer-level key overrides it.
-	if !layer.mosPrecisionExplicit {
-		layer.mosPrecision = float64(sysInfo.Precision)
-	}
-
-	if !layer.mosUnitsExplicit && sysInfo.MapUnitsDefined {
-		factor, err := sysInfo.ScaleToMetres()
-		if err != nil {
-			return fmt.Errorf("unable to convert MOS map units %v to metres: %v", sysInfo.MapUnits, err)
-		}
-		layer.mosUnitsFactor = factor
+	if err := layer.mosConfig.ApplySystemInfo(sysInfo); err != nil {
+		return err
 	}
 
 	// A layer-level CRS must also suppress system-info projection. The
@@ -690,21 +634,10 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 
 	if sysInfo.MapUnitsDefined {
 		log.Debugf("layer %v system info: precision=%v map units=%v factor=%v projection=%q",
-			layer.name, sysInfo.Precision, sysInfo.MapUnits, layer.mosUnitsFactor, sysInfo.Projection)
+			layer.name, sysInfo.Precision, sysInfo.MapUnits, layer.mosConfig.UnitFactor, sysInfo.Projection)
 	} else {
 		log.Debugf("layer %v system info: precision=%v projection=%q",
 			layer.name, sysInfo.Precision, sysInfo.Projection)
-	}
-	return nil
-}
-
-const maxMOSPrecision = 308
-
-func validateMOSPrecision(precision float64) error {
-	if math.IsNaN(precision) || math.IsInf(precision, 0) ||
-		precision < 0 || math.Trunc(precision) != precision ||
-		precision > maxMOSPrecision {
-		return fmt.Errorf("must be a finite non-negative integer no greater than %d, got %v", maxMOSPrecision, precision)
 	}
 	return nil
 }

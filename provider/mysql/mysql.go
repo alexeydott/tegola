@@ -19,6 +19,7 @@ import (
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
@@ -136,18 +137,16 @@ func decodeMariaDBFormat(b []byte) (srid uint64, g geom.Geometry, err error) {
 // "auto". With "auto" the server flavor detected at startup (serverFlavor)
 // selects the native layout. Plain WKB is accepted as a last resort, which
 // covers values already converted with ST_AsBinary() in custom SQL.
-// For the "mos" format an optional Options value overrides the default
-// quantization precision/offset (layer-level mos_precision).
-func decodeGeometry(v interface{}, format string, serverFlavor string, mosOpts ...mos.Options) (srid uint64, g geom.Geometry, err error) {
+// The MOS quantization settings come from the resolved provider/layer
+// mosConfig (layer-level mos_precision/mos_units).
+func decodeGeometry(v interface{}, format string, serverFlavor string, mosCfg codec.MOSConfig) (srid uint64, g geom.Geometry, err error) {
 	switch format {
 	case GeometryFormatWKT:
-		return decodeWKT(v)
+		g, err = codec.DecodeWKT(v)
+		return 0, g, err
 	case GeometryFormatMOS:
-		var opts = mos.Options{Precision: mosPrecisionDefault, OffsetX: mosOffsetDefault, OffsetY: mosOffsetDefault}
-		if len(mosOpts) > 0 {
-			opts = mosOpts[0]
-		}
-		return decodeMOS(v, opts)
+		g, err = codec.DecodeMOS(v, mosCfg)
+		return 0, g, err
 	}
 
 	// all remaining formats operate on binary blobs
@@ -201,59 +200,6 @@ func decodeGeometry(v interface{}, format string, serverFlavor string, mosOpts .
 	}
 }
 
-// default MOS quantization: integer units with no offset. Configured per
-// provider/layer via mos_precision (decimal digits) and mos_units, overridden
-// by layer-level settings when present.
-const (
-	mosPrecisionDefault   = 0.0
-	mosOffsetDefault      = 0.0
-	mosUnitsFactorDefault = 1.0
-)
-
-// decodeMOS decodes a MapplBase MOS blob (the proprietary binary geometry
-// format written by TMapObjectStructureBase) using the mos package. The
-// quantized integer coordinates are dequantized with the configured
-// precision (decimal digits). MOS carries no SRID, so 0 is returned and
-// the configured provider/layer SRID applies.
-func decodeMOS(v interface{}, opts mos.Options) (uint64, geom.Geometry, error) {
-	var b []byte
-	switch val := v.(type) {
-	case []byte:
-		b = val
-	case string:
-		b = []byte(val)
-	default:
-		return 0, nil, fmt.Errorf("unexpected MOS geometry column type %T, expected blob", v)
-	}
-	g, err := mos.Decode(b, opts)
-	if err != nil {
-		return 0, nil, fmt.Errorf("error decoding MOS geometry: %v", err)
-	}
-	return 0, g, nil
-}
-
-// geometryIntersectsExtent reports whether a geometry's bounding box
-// intersects the given extent. It is used for the MOS geometry format,
-// where the spatial filter cannot be pushed into SQL. If a bbox cannot be
-// computed the geometry is kept (conservative).
-func geometryIntersectsExtent(g geom.Geometry, e *geom.Extent) bool {
-	if g == nil || e == nil {
-		return true
-	}
-	gb, err := geom.NewExtentFromGeometry(g)
-	if err != nil || gb == nil {
-		return true
-	}
-	// geom.Extent.Intersect rejects zero-width/height extents. That is
-	// correct for area intersections but drops valid Point and degenerate
-	// geometry features before they reach MVT encoding. Bounds overlap is
-	// inclusive here because touching the tile boundary still intersects it.
-	return gb.MinX() <= e.MaxX() &&
-		gb.MaxX() >= e.MinX() &&
-		gb.MinY() <= e.MaxY() &&
-		gb.MaxY() >= e.MinY()
-}
-
 func isRetryableConnectionError(err error) bool {
 	return errors.Is(err, driver.ErrBadConn) || errors.Is(err, mysqlDriver.ErrInvalidConn)
 }
@@ -276,50 +222,6 @@ func preferContextError(ctx context.Context, err error) error {
 		return ctxErr
 	}
 	return err
-}
-
-// decodeWKT parses a WKT string (e.g. "LINESTRING(1 2, 3 4)") into a
-// geometry. WKT carries no SRID, so 0 is returned and the configured
-// provider/layer SRID applies.
-func decodeWKT(v interface{}) (uint64, geom.Geometry, error) {
-	switch s := v.(type) {
-	case string:
-		g, err := wkt.DecodeString(s)
-		if err != nil {
-			return 0, nil, fmt.Errorf("error decoding WKT geometry: %v", err)
-		}
-		return 0, g, nil
-	case []byte:
-		g, err := wkt.DecodeBytes(s)
-		if err != nil {
-			return 0, nil, fmt.Errorf("error decoding WKT geometry: %v", err)
-		}
-		return 0, g, nil
-	default:
-		return 0, nil, fmt.Errorf("unexpected WKT geometry column type %T, expected text", v)
-	}
-}
-
-// geomTypeName returns the OGC-style name ("POINT", "MULTIPOLYGON", ...)
-// of a decoded geometry, used for the !GEOM_TYPE! token.
-func geomTypeName(g geom.Geometry) string {
-	switch g.(type) {
-	case geom.Point:
-		return "POINT"
-	case geom.MultiPoint:
-		return "MULTIPOINT"
-	case geom.LineString:
-		return "LINESTRING"
-	case geom.MultiLineString:
-		return "MULTILINESTRING"
-	case geom.Polygon:
-		return "POLYGON"
-	case geom.MultiPolygon:
-		return "MULTIPOLYGON"
-	case geom.Collection:
-		return "GEOMETRYCOLLECTION"
-	}
-	return ""
 }
 
 type Provider struct {
@@ -442,8 +344,9 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 
 	var geomErr error
 	geometryFormat := pLayer.geometryFormat
-	mosPrecision := pLayer.mosPrecision
-	mosUnitsFactor := pLayer.mosUnitsFactor
+	// mosCfg is a per-tile copy of the layer's resolved MOS config so a
+	// runtime system-info blob can adjust it without mutating the layer.
+	mosCfg := pLayer.mosConfig
 	inMemoryTileFilter := pLayer.deferredInspection || basic.IsSyntheticSRID(pLayer.srid)
 	features := make([]provider.Feature, 0)
 	var deferredRows [][]interface{}
@@ -482,13 +385,13 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 				// a layer system info blob (MapplBase layer self-description)
 				// is metadata, not geometry; skip it silently.
 				if blob, ok := vals[i].([]byte); ok && mos.IsSystemInfoBlob(blob) {
-					if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosPrecision, &mosUnitsFactor, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
+					if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosCfg, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
 						return err
 					}
 					skipRow = true
 					break
 				}
-				srid, geo, err := decodeGeometry(vals[i], geometryFormat, p.serverFlavor, mos.Options{Precision: mosPrecision, UnitFactor: mosUnitsFactor})
+				srid, geo, err := decodeGeometry(vals[i], geometryFormat, p.serverFlavor, mosCfg)
 				if err != nil {
 					// a single undecodable row (e.g. a version-prefixed or
 					// otherwise non-MOS blob) must not kill the whole tile;
@@ -519,7 +422,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 				// be pushed into SQL (!BBOX! degrades to 1=1). Drop rows whose
 				// decoded geometry cannot intersect the tile's buffered extent
 				// (already transformed into the layer's source SRID).
-				if (geometryFormat == GeometryFormatMOS || inMemoryTileFilter) && !geometryIntersectsExtent(geo, tileBBox) {
+				if (geometryFormat == GeometryFormatMOS || inMemoryTileFilter) && !codec.GeometryIntersectsExtent(geo, tileBBox) {
 					skipRow = true
 					break
 				}
@@ -621,7 +524,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 				if !ok || !mos.IsSystemInfoBlob(blob) {
 					continue
 				}
-				if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosPrecision, &mosUnitsFactor, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
+				if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosCfg, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
 					return err
 				}
 			}
@@ -661,8 +564,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 func applyRuntimeSystemInfo(
 	layer *Layer,
 	geometryFormat *string,
-	mosPrecision *float64,
-	mosUnitsFactor *float64,
+	mosConfig *codec.MOSConfig,
 	tileBBox **geom.Extent,
 	webMercatorBBox *geom.Extent,
 	tileSRID uint64,
@@ -676,18 +578,8 @@ func applyRuntimeSystemInfo(
 	if *geometryFormat == GeometryFormatAuto {
 		*geometryFormat = GeometryFormatMOS
 	}
-	if err := validateMOSPrecision(float64(sysInfo.Precision)); err != nil {
-		return fmt.Errorf("validate layer system-info MOS precision: %w", err)
-	}
-	if !layer.mosPrecisionExplicit {
-		*mosPrecision = float64(sysInfo.Precision)
-	}
-	if !layer.mosUnitsExplicit && sysInfo.MapUnitsDefined {
-		factor, err := sysInfo.ScaleToMetres()
-		if err != nil {
-			return fmt.Errorf("convert layer system-info units: %w", err)
-		}
-		*mosUnitsFactor = factor
+	if err := mosConfig.ApplySystemInfo(&sysInfo); err != nil {
+		return fmt.Errorf("apply layer system-info: %w", err)
 	}
 
 	if !layer.crsExplicit && sysInfo.Projection != "" {

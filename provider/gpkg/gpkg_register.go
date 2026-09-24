@@ -21,6 +21,7 @@ import (
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -348,6 +349,38 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	// source-CRS bbox conversion or feature reprojection.
 	basic.RegisterBuiltinProj4SRIDs()
 
+	// provider-level geometry format / MOS settings, shared by all layers
+	// that do not override them (same contract as the MySQL provider).
+	providerGeometryFormat := ""
+	if v, ok := config.Interface(codec.ConfigKeyGeometryFormat); ok {
+		s, isStr := v.(string)
+		if !isStr {
+			return nil, fmt.Errorf("invalid %v: expected string, got %T", codec.ConfigKeyGeometryFormat, v)
+		}
+		providerGeometryFormat, err = resolveGeometryFormat(strings.TrimSpace(s))
+		if err != nil {
+			return nil, err
+		}
+	}
+	providerMOSCfg, err := codec.ResolveMOSConfig(config, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	// A non-mos provider-level format must not carry leftover MOS settings;
+	// mirror the MySQL provider's warn + reset semantics.
+	if providerGeometryFormat != "" && providerGeometryFormat != GeometryFormatMOS &&
+		(providerMOSCfg.PrecisionSet || providerMOSCfg.UnitsSet) {
+		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
+			codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
+			codec.ConfigKeyGeometryFormat, providerGeometryFormat)
+		if providerMOSCfg.PrecisionSet {
+			providerMOSCfg.Precision = codec.DefaultMOSConfig().Precision
+		}
+		if providerMOSCfg.UnitsSet {
+			providerMOSCfg.UnitFactor = codec.DefaultMOSConfig().UnitFactor
+		}
+	}
+
 	p := Provider{
 		Filepath: filepath,
 		layers:   make(map[string]Layer),
@@ -417,6 +450,47 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			name:          layerName,
 			idFieldname:   idFieldname,
 			geomFieldname: geomFieldname,
+			geometryFormat: providerGeometryFormat,
+			mosConfig:      providerMOSCfg,
+		}
+
+		// layer-level geometry format / MOS overrides merge on top of the
+		// provider-level values.
+		layerMOSCfg, err := codec.ResolveMOSConfig(nil, layerConf, layerName)
+		if err != nil {
+			return nil, err
+		}
+		layerGeometryFormat := ""
+		if v, ok := layerConf.Interface(codec.ConfigKeyGeometryFormat); ok {
+			s, isStr := v.(string)
+			if !isStr {
+				return nil, fmt.Errorf("for layer (%v) invalid %v: expected string, got %T", i, codec.ConfigKeyGeometryFormat, v)
+			}
+			layerGeometryFormat, err = resolveGeometryFormat(strings.TrimSpace(s))
+			if err != nil {
+				return nil, fmt.Errorf("for layer (%v) %v", i, err)
+			}
+		}
+		if layerGeometryFormat != "" {
+			layer.geometryFormat = layerGeometryFormat
+		}
+		if layerMOSCfg.PrecisionSet {
+			layer.mosConfig.Precision = layerMOSCfg.Precision
+		}
+		if layerMOSCfg.UnitsSet {
+			layer.mosConfig.UnitFactor = layerMOSCfg.UnitFactor
+		}
+		if layer.geometryFormat != "" && layer.geometryFormat != GeometryFormatMOS &&
+			(layerMOSCfg.PrecisionSet || layerMOSCfg.UnitsSet) {
+			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
+				layerName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
+				codec.ConfigKeyGeometryFormat, layer.geometryFormat)
+			if layerMOSCfg.PrecisionSet {
+				layer.mosConfig.Precision = codec.DefaultMOSConfig().Precision
+			}
+			if layerMOSCfg.UnitsSet {
+				layer.mosConfig.UnitFactor = codec.DefaultMOSConfig().UnitFactor
+			}
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists

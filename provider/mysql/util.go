@@ -9,6 +9,7 @@ import (
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -51,7 +52,7 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 
 	var geomType string
 	if layer.geomType != nil {
-		geomType = geomTypeName(layer.geomType)
+		geomType = codec.GeomTypeName(layer.geomType)
 	}
 
 	z, x, y := tile.ZXY()
@@ -93,8 +94,8 @@ func mosBoundsSQL(layer *Layer, bboxExtent *geom.Extent) string {
 		return "1=1"
 	}
 
-	precisionScale := math.Pow(10, layer.mosPrecision)
-	unitFactor := layer.mosUnitsFactor
+	precisionScale := math.Pow(10, layer.mosConfig.Precision)
+	unitFactor := layer.mosConfig.UnitFactor
 	if math.IsNaN(precisionScale) || math.IsInf(precisionScale, 0) || precisionScale <= 0 ||
 		math.IsNaN(unitFactor) || math.IsInf(unitFactor, 0) || unitFactor <= 0 {
 		return "1=1"

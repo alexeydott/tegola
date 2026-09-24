@@ -1,6 +1,9 @@
 package gpkg
 
-import "github.com/go-spatial/geom"
+import (
+	"github.com/go-spatial/geom"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+)
 
 type Layer struct {
 	name          string
@@ -13,6 +16,20 @@ type Layer struct {
 	srid          uint64
 	bbox          geom.Extent
 	sql           string
+	// geometryFormat selects how the geometry column is decoded:
+	// "" / "gpkg" (default; GeoPackage binary header + WKB), "wkb" (plain
+	// WKB without the GeoPackage header), "wkt" (WKT text) or "mos"
+	// (opaque MapplBase binary blob).
+	geometryFormat string
+	// mosConfig holds the resolved MOS quantization settings used with
+	// geometry_format = "mos".
+	mosConfig codec.MOSConfig
+	// deferredInspection marks tile-dependent custom SQL whose geometry
+	// could not be inspected safely at startup.
+	deferredInspection bool
+	// crsExplicit records whether srid/crs_defn was set explicitly at
+	// provider or layer level, suppressing source-metadata CRS inference.
+	crsExplicit bool
 }
 
 func (l Layer) Name() string            { return l.name }

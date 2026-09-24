@@ -14,6 +14,7 @@ import (
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/log"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -38,6 +39,27 @@ const (
 	ConfigKeyFields      = "fields"
 )
 
+// Geometry format values accepted by the gpkg provider's geometry_format
+// setting. "" and "gpkg" select the native GeoPackage binary layout.
+const (
+	GeometryFormatGPKG = "gpkg"
+	GeometryFormatWKB  = codec.FormatWKB
+	GeometryFormatWKT  = codec.FormatWKT
+	GeometryFormatMOS  = codec.FormatMOS
+)
+
+// resolveGeometryFormat validates the geometry_format value.
+func resolveGeometryFormat(v string) (string, error) {
+	switch v {
+	case "", GeometryFormatGPKG, GeometryFormatWKB, GeometryFormatWKT, GeometryFormatMOS:
+		return v, nil
+	default:
+		return "", fmt.Errorf("invalid %v: %q (expected one of %q, %q, %q, %q)",
+			codec.ConfigKeyGeometryFormat, v,
+			GeometryFormatGPKG, GeometryFormatWKB, GeometryFormatWKT, GeometryFormatMOS)
+	}
+}
+
 func decodeGeometry(bytes []byte) (*BinaryHeader, geom.Geometry, error) {
 	h, err := NewBinaryHeader(bytes)
 	if err != nil {
@@ -52,6 +74,43 @@ func decodeGeometry(bytes []byte) (*BinaryHeader, geom.Geometry, error) {
 	}
 
 	return h, geo, nil
+}
+
+// decodeGeometryValue decodes a geometry column value according to the
+// layer's geometry format. Only the default GeoPackage binary layout carries
+// a GeoPackageBinaryHeader; wkb/wkt/mos values are passed through the shared
+// codec, which returns no header.
+func decodeGeometryValue(v interface{}, format string, mosCfg codec.MOSConfig) (*BinaryHeader, geom.Geometry, error) {
+	if format == "" || format == GeometryFormatGPKG {
+		geomData, ok := v.([]byte)
+		if !ok {
+			return nil, nil, errors.New("unexpected column type for geom field. expected blob")
+		}
+		return decodeGeometry(geomData)
+	}
+
+	switch format {
+	case GeometryFormatWKB:
+		geo, err := codec.DecodeWKB(v)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, geo, nil
+	case GeometryFormatWKT:
+		geo, err := codec.DecodeWKT(v)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, geo, nil
+	case GeometryFormatMOS:
+		geo, err := codec.DecodeMOS(v, mosCfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, geo, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown geometry_format: %v", format)
+	}
 }
 
 type Provider struct {
@@ -115,19 +174,32 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 	args := make([]interface{}, 0)
 
 	if pLayer.tablename != "" {
-		// If layer was specified via "tablename" in config, construct query.
-		rtreeTablename := fmt.Sprintf("rtree_%v_%s", pLayer.tablename, pLayer.geomFieldname)
+		if pLayer.geometryFormat != "" && pLayer.geometryFormat != GeometryFormatGPKG {
+			// Non-native geometry formats (wkb/wkt/mos) live in plain
+			// tables without a GeoPackage binary header or RTree index, so
+			// filtering happens in memory after decoding.
+			selectClause := fmt.Sprintf("SELECT l.`%v`, l.`%v`", pLayer.idFieldname, pLayer.geomFieldname)
 
-		selectClause := fmt.Sprintf("SELECT l.`%v`, l.`%v`", pLayer.idFieldname, pLayer.geomFieldname)
+			for _, tf := range pLayer.tagFieldnames {
+				selectClause += fmt.Sprintf(", l.`%v`", tf)
+			}
 
-		for _, tf := range pLayer.tagFieldnames {
-			selectClause += fmt.Sprintf(", l.`%v`", tf)
+			qtext = fmt.Sprintf("%v FROM `%v` l WHERE l.`%v` IS NOT NULL ORDER BY l.`%v`", selectClause, pLayer.tablename, pLayer.geomFieldname, pLayer.idFieldname)
+		} else {
+			// If layer was specified via "tablename" in config, construct query.
+			rtreeTablename := fmt.Sprintf("rtree_%v_%s", pLayer.tablename, pLayer.geomFieldname)
+
+			selectClause := fmt.Sprintf("SELECT l.`%v`, l.`%v`", pLayer.idFieldname, pLayer.geomFieldname)
+
+			for _, tf := range pLayer.tagFieldnames {
+				selectClause += fmt.Sprintf(", l.`%v`", tf)
+			}
+
+			// l - layer table, si - spatial index
+			qtext = fmt.Sprintf("%v FROM `%v` l JOIN `%v` si ON l.`%v` = si.id WHERE l.`%v` IS NOT NULL AND !BBOX! ORDER BY l.`%v`", selectClause, pLayer.tablename, rtreeTablename, pLayer.idFieldname, pLayer.geomFieldname, pLayer.idFieldname)
+
+			qtext = replaceTokens(qtext, &pLayer, tile, tileBBox)
 		}
-
-		// l - layer table, si - spatial index
-		qtext = fmt.Sprintf("%v FROM `%v` l JOIN `%v` si ON l.`%v` = si.id WHERE l.`%v` IS NOT NULL AND !BBOX! ORDER BY l.`%v`", selectClause, pLayer.tablename, rtreeTablename, pLayer.idFieldname, pLayer.geomFieldname, pLayer.idFieldname)
-
-		qtext = replaceTokens(qtext, &pLayer, tile, tileBBox)
 	} else {
 		// If layer was specified via "sql" in config, collect it
 		qtext = replaceTokens(pLayer.sql, &pLayer, tile, tileBBox)
@@ -190,22 +262,32 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				}
 
 			case pLayer.geomFieldname:
-				log.Debug("extracting geopackage geometry header.", vals[i])
-
-				geomData, ok := vals[i].([]byte)
-				if !ok {
-					log.Errorf("unexpected column type for geom field. got %t", vals[i])
-					return errors.New("unexpected column type for geom field. expected blob")
+				// The MOS layer self-description blob (TLayerSystemInfoRec)
+				// is metadata, never a feature: apply it to the MOS config
+				// and skip the row.
+				if pLayer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(vals[i]) {
+					sysInfo, serr := codec.ParseSystemInfoValue(vals[i])
+					if serr != nil {
+						log.Errorf("error parsing MOS system info: %v", serr)
+						return serr
+					}
+					if aerr := pLayer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
+						log.Errorf("error applying MOS system info: %v", aerr)
+						return aerr
+					}
+					skipRow = true
+					continue
 				}
 
-				h, geo, err := decodeGeometry(geomData)
+				h, geo, err := decodeGeometryValue(vals[i], pLayer.geometryFormat, pLayer.mosConfig)
 				if err != nil {
+					log.Errorf("error decoding geometry: %v", err)
 					return err
 				}
 
 				if pLayer.srid != 0 {
 					feature.SRID = pLayer.srid
-				} else if h.SRSId() > 0 {
+				} else if h != nil && h.SRSId() > 0 {
 					feature.SRID = uint64(h.SRSId())
 				} else if p.srid != 0 {
 					feature.SRID = p.srid
@@ -213,7 +295,6 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 					feature.SRID = DefaultSRID
 				}
 				feature.Geometry = geo
-
 			case "minx", "miny", "maxx", "maxy", "min_zoom", "max_zoom":
 				// Skip these columns used for bounding box and zoom filtering
 				continue
@@ -243,6 +324,13 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		}
 
 		if skipRow || feature.Geometry == nil {
+			continue
+		}
+
+		// Exact in-memory filter. Mandatory for wkb/wkt/mos formats whose
+		// queries cannot use the RTree join; harmless for native GPKG
+		// geometry that was already filtered via !BBOX!.
+		if !codec.GeometryIntersectsExtent(feature.Geometry, tileBBox) {
 			continue
 		}
 
