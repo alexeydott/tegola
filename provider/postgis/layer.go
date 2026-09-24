@@ -1,6 +1,9 @@
 package postgis
 
-import "github.com/go-spatial/geom"
+import (
+	"github.com/go-spatial/geom"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+)
 
 // layer holds information about a query.
 type Layer struct {
@@ -16,6 +19,14 @@ type Layer struct {
 	geomType geom.Geometry
 	// The SRID that the data in the table is stored in. This will default to WebMercator
 	srid uint64
+	// geometryFormat selects how the geometry column is decoded:
+	// "" (default; PostGIS native geometry returned via ST_AsBinary),
+	// "wkb" (plain WKB column read raw, no ST_AsBinary), "wkt" (WKT text)
+	// or "mos" (opaque MapplBase binary blob read raw).
+	geometryFormat string
+	// mosConfig holds the resolved MOS quantization settings used with
+	// geometry_format = "mos".
+	mosConfig codec.MOSConfig
 }
 
 func (l Layer) Name() string {

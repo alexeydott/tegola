@@ -13,6 +13,7 @@ import (
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/internal/env"
 	"github.com/go-spatial/tegola/internal/log"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -93,17 +94,29 @@ func genSQL(
 		flds[i] = fmt.Sprintf(`"%v"`, flds[i])
 	}
 
+	// rawGeometryFormat reports whether the geometry column carries a raw
+	// value (plain WKB/WKT/MOS blob) that must be selected verbatim instead
+	// of being wrapped in ST_AsBinary.
+	rawGeometryFormat := l.geometryFormat == codec.FormatWKB ||
+		l.geometryFormat == codec.FormatWKT ||
+		l.geometryFormat == codec.FormatMOS
+
 	// to avoid field names possibly colliding with Postgres keywords,
 	// we wrap the field names in quotes
 
 	if fgeom == -1 {
 		if isMVT(providerType) {
 			flds = append(flds, fmt.Sprintf(`"%v" AS "%[1]v"`, l.geomField))
+		} else if rawGeometryFormat {
+			// Raw geometry columns must bypass ST_AsBinary: MOS blobs and
+			// plain WKB/WKT values are not PostGIS geometry values and
+			// native spatial functions cannot be applied to them.
+			flds = append(flds, fmt.Sprintf(`"%v" AS "%[1]v"`, l.geomField))
 		} else {
 			flds = append(flds, fmt.Sprintf(`ST_AsBinary("%v") AS "%[1]v"`, l.geomField))
 		}
 	} else {
-		if isMVT(providerType) {
+		if isMVT(providerType) || rawGeometryFormat {
 			flds[fgeom] = fmt.Sprintf(`"%v" AS "%[1]v"`, l.geomField)
 		} else {
 			flds[fgeom] = fmt.Sprintf(`ST_AsBinary("%v") AS "%[1]v"`, l.geomField)
@@ -121,6 +134,11 @@ func genSQL(
 
 	if isMVT(providerType) {
 		sqlTmpl = mvtSQL
+	} else if l.geometryFormat == codec.FormatMOS {
+		// MOS blobs are not PostGIS geometries: native spatial predicates
+		// (&&, ST_Intersects, ...) cannot be applied to them. Filtering is
+		// done in memory after decoding (see TileFeatures).
+		sqlTmpl = `SELECT %[1]v FROM %[2]v WHERE "%[3]v" IS NOT NULL`
 	} else if basic.IsSyntheticSRID(l.srid) {
 		// A textual crs_defn is registered only in Tegola. Keep generated
 		// database comparisons in the unknown-SRS-safe SRID 0 domain; Atlas
