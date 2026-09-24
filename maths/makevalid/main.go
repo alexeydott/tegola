@@ -571,12 +571,12 @@ func constructPolygon(lns []maths.Line) (rpts [][]maths.Pt) {
 	for i := range lns {
 		lines[i] = maths.Line{
 			maths.Pt{
-				float64(int64(lns[i][0].X)),
-				float64(int64(lns[i][0].Y)),
+				X: float64(int64(lns[i][0].X)),
+				Y: float64(int64(lns[i][0].Y)),
 			},
 			maths.Pt{
-				float64(int64(lns[i][1].X)),
-				float64(int64(lns[i][1].Y)),
+				X: float64(int64(lns[i][1].X)),
+				Y: float64(int64(lns[i][1].Y)),
 			},
 		}
 	}

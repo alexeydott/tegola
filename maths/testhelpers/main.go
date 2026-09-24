@@ -42,7 +42,6 @@ func LoadLines(r io.Reader) (lines []maths.Line) {
 			if k == -1 {
 				// should never happen.
 				panic(fmt.Sprintln("Did not find `:` in [", str, "] part of:", txt))
-				continue
 			}
 
 			n, err := strconv.ParseFloat(strings.TrimSpace(str[k+1:]), 64)

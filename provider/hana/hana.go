@@ -635,12 +635,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		}
 		l.geometryFormat = layerGeometryFormat
 		l.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
-		if l.geometryFormat != codec.FormatMOS && l.mosConfig.HasExplicitMOSParams() {
-			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
-				lName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
-				codec.ConfigKeyGeometryFormat, l.geometryFormat)
-			l.mosConfig = codec.DefaultMOSConfig()
-		}
+		codec.WarnAndResetMOSParams(l.geometryFormat, &l.mosConfig, lName)
 
 		if lsrid < 0 {
 			// we try to auto detect SRID if it is not specified neither

@@ -19,7 +19,7 @@ func CleanLinestring(g []float64) (l []float64, err error) {
 	i := 0
 	for x, y := 0, 1; y < len(g); x, y = x+2, y+2 {
 
-		p := maths.Pt{g[x], g[y]}
+		p := maths.Pt{X: g[x], Y: g[y]}
 		ptsMap[p] = append(ptsMap[p], i)
 		pts = append(pts, p)
 		i++

@@ -8,6 +8,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/geom/encoding/wkb"
@@ -123,6 +127,55 @@ func decodeGeometryValue(v interface{}, format string, mosCfg codec.MOSConfig) (
 	}
 }
 
+// quoteIdent quotes a SQLite identifier, escaping embedded backticks so a
+// crafted config value cannot break out of the quoted name.
+func quoteIdent(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+// rawBoundsSQL builds a coarse SQL bounds filter from the raw bounds columns
+// detected at registration for a non-GPKG geometry format, mirroring the
+// MySQL provider's MOS bounds filter. The stored values use the layer's
+// stored coordinate units: quantized MOS units for the MOS format (scaled by
+// 10^precision / unit factor), otherwise the layer CRS coordinates that the
+// source extent is already expressed in. An empty result means the filter
+// cannot be applied and filtering must happen in memory after decoding.
+func rawBoundsSQL(l *Layer, extent *geom.Extent) string {
+	if l.boundFieldnames == nil || extent == nil {
+		return ""
+	}
+	minX, maxX, minY, maxY := extent.MinX(), extent.MaxX(), extent.MinY(), extent.MaxY()
+	if l.geometryFormat == codec.FormatMOS {
+		precisionScale := math.Pow(10, l.mosConfig.Precision)
+		unitFactor := l.mosConfig.UnitFactor
+		if math.IsNaN(precisionScale) || math.IsInf(precisionScale, 0) || precisionScale <= 0 ||
+			math.IsNaN(unitFactor) || math.IsInf(unitFactor, 0) || unitFactor <= 0 {
+			return ""
+		}
+		rawScale := precisionScale / unitFactor
+		if math.IsNaN(rawScale) || math.IsInf(rawScale, 0) || rawScale <= 0 {
+			return ""
+		}
+		minX, maxX = math.Floor(minX*rawScale), math.Ceil(maxX*rawScale)
+		minY, maxY = math.Floor(minY*rawScale), math.Ceil(maxY*rawScale)
+	}
+	format := func(value float64) string {
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	}
+	for _, value := range []float64{minX, maxX, minY, maxY} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return ""
+		}
+	}
+	return fmt.Sprintf(
+		"l.%v <= %v AND l.%v >= %v AND l.%v <= %v AND l.%v >= %v",
+		quoteIdent(l.boundFieldnames[0]), format(maxX),
+		quoteIdent(l.boundFieldnames[1]), format(minX),
+		quoteIdent(l.boundFieldnames[2]), format(maxY),
+		quoteIdent(l.boundFieldnames[3]), format(minY),
+	)
+}
+
 type Provider struct {
 	// path to the geopackage file
 	Filepath string
@@ -186,27 +239,34 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 	if pLayer.tablename != "" {
 		if pLayer.geometryFormat != "" && pLayer.geometryFormat != GeometryFormatGPKG {
 			// Non-native geometry formats (wkb/wkt/mos) live in plain
-			// tables without a GeoPackage binary header or RTree index, so
-			// filtering happens in memory after decoding.
-			selectClause := fmt.Sprintf("SELECT l.`%v`, l.`%v`", pLayer.idFieldname, pLayer.geomFieldname)
+			// tables without a GeoPackage binary header or RTree index.
+			// When the table carries raw bounds columns (minx/maxx/miny/
+			// maxy, detected at registration) they act as a coarse SQL
+			// filter; otherwise the whole geometry column is scanned and
+			// the exact in-memory filter below is the only one.
+			selectClause := fmt.Sprintf("SELECT l.%v, l.%v", quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname))
 
 			for _, tf := range pLayer.tagFieldnames {
-				selectClause += fmt.Sprintf(", l.`%v`", tf)
+				selectClause += fmt.Sprintf(", l.%v", quoteIdent(tf))
 			}
 
-			qtext = fmt.Sprintf("%v FROM `%v` l WHERE l.`%v` IS NOT NULL ORDER BY l.`%v`", selectClause, pLayer.tablename, pLayer.geomFieldname, pLayer.idFieldname)
+			where := fmt.Sprintf("l.%v IS NOT NULL", quoteIdent(pLayer.geomFieldname))
+			if bboxSQL := rawBoundsSQL(&pLayer, tileBBox); bboxSQL != "" {
+				where += " AND " + bboxSQL
+			}
+			qtext = fmt.Sprintf("%v FROM %v l WHERE %v", selectClause, quoteIdent(pLayer.tablename), where)
 		} else {
 			// If layer was specified via "tablename" in config, construct query.
-			rtreeTablename := fmt.Sprintf("rtree_%v_%s", pLayer.tablename, pLayer.geomFieldname)
+			rtreeTablename := fmt.Sprintf("rtree_%v_%v", pLayer.tablename, pLayer.geomFieldname)
 
-			selectClause := fmt.Sprintf("SELECT l.`%v`, l.`%v`", pLayer.idFieldname, pLayer.geomFieldname)
+			selectClause := fmt.Sprintf("SELECT l.%v, l.%v", quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname))
 
 			for _, tf := range pLayer.tagFieldnames {
-				selectClause += fmt.Sprintf(", l.`%v`", tf)
+				selectClause += fmt.Sprintf(", l.%v", quoteIdent(tf))
 			}
 
 			// l - layer table, si - spatial index
-			qtext = fmt.Sprintf("%v FROM `%v` l JOIN `%v` si ON l.`%v` = si.id WHERE l.`%v` IS NOT NULL AND !BBOX! ORDER BY l.`%v`", selectClause, pLayer.tablename, rtreeTablename, pLayer.idFieldname, pLayer.geomFieldname, pLayer.idFieldname)
+			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.%v = si.id WHERE l.%v IS NOT NULL AND !BBOX!", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname))
 
 			qtext = replaceTokens(qtext, &pLayer, tile, tileBBox)
 		}
@@ -218,8 +278,13 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 
 	log.Debugf("qtext: %v", qtext)
 
-	rows, err := p.db.Query(qtext, args...)
+	// QueryContext stops the SQLite query when the request context is
+	// cancelled instead of running it to completion.
+	rows, err := p.db.QueryContext(ctx, qtext, args...)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		log.Errorf("err during query: %v - %v", qtext, err)
 		return err
 	}
@@ -253,10 +318,6 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		skipRow := false
 
 		for i := range cols {
-			// check if the context cancelled or timed out
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
 			if vals[i] == nil {
 				if cols[i] == pLayer.geomFieldname {
 					skipRow = true
@@ -273,50 +334,55 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 
 			case pLayer.geomFieldname:
 				// The MOS layer self-description blob (MapplGIS LayerInfo)
-				// is metadata, never a feature: apply it to the MOS config
-				// and skip the row.
+				// is metadata, never a feature. When registration sampling
+				// already applied the system info (the common case) it is
+				// cached on the layer and only skipped here; otherwise it
+				// is applied on first sight and from then on cached.
 				if pLayer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(vals[i]) {
-					sysInfo, serr := codec.ParseSystemInfoValue(vals[i])
-					if serr != nil {
-						log.Errorf("error parsing MOS system info: %v", serr)
-						return serr
-					}
-					if aerr := pLayer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-						log.Errorf("error applying MOS system info: %v", aerr)
-						return aerr
-					}
-					if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(pLayer.srid), pLayer.crsExplicit, sysInfo.Projection); aerr != nil {
-						log.Errorf("error applying MOS system info projection: %v", aerr)
-						return aerr
-					} else if applied {
-						pLayer.srid = uint64(srid)
-						pLayer.crsExplicit = true
-						if pLayer.srid != tileSRID {
-							sourceBBox, berr := basic.FromWebMercatorExtent(pLayer.srid, tileBBox)
-							if berr != nil {
-								log.Errorf("error converting tile extent for system-info projection: %v", berr)
-								return berr
+					if !pLayer.systemInfoApplied {
+						sysInfo, serr := codec.ParseSystemInfoValue(vals[i])
+						if serr != nil {
+							log.Errorf("error parsing MOS system info: %v", serr)
+							return serr
+						}
+						if aerr := pLayer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
+							log.Errorf("error applying MOS system info: %v", aerr)
+							return aerr
+						}
+						if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(pLayer.srid), pLayer.crsExplicit, sysInfo.Projection); aerr != nil {
+							log.Errorf("error applying MOS system info projection: %v", aerr)
+							return aerr
+						} else if applied {
+							pLayer.srid = uint64(srid)
+							pLayer.crsExplicit = true
+							pLayer.systemInfoApplied = true
+							if pLayer.srid != tileSRID {
+								sourceBBox, berr := basic.FromWebMercatorExtent(pLayer.srid, tileBBox)
+								if berr != nil {
+									log.Errorf("error converting tile extent for system-info projection: %v", berr)
+									return berr
+								}
+								tileBBox = sourceBBox
 							}
-							tileBBox = sourceBBox
 						}
 					}
 					skipRow = true
 					continue
 				}
 
-				h, geo, err := decodeGeometryValue(vals[i], pLayer.geometryFormat, pLayer.mosConfig)
+				_, geo, err := decodeGeometryValue(vals[i], pLayer.geometryFormat, pLayer.mosConfig)
 				if err != nil {
 					log.Errorf("error decoding geometry: %v", err)
 					return err
 				}
 
-				if pLayer.srid != 0 {
-					feature.SRID = pLayer.srid
-				} else if h != nil && h.SRSId() > 0 {
-					feature.SRID = uint64(h.SRSId())
-				} else if p.srid != 0 {
-					feature.SRID = p.srid
-				} else {
+				// The layer SRID is resolved at registration time from the
+				// CRS contract (explicit config > gpkg_contents.srs_id >
+				// provider default, with MOS system-info projection as a
+				// last step), so the per-row WKB header is not consulted
+				// here.
+				feature.SRID = pLayer.srid
+				if feature.SRID == 0 {
 					feature.SRID = DefaultSRID
 				}
 
@@ -334,21 +400,18 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				// Grab any non-nil, non-id, non-bounding box, & non-geometry column as a tag
 				switch v := vals[i].(type) {
 				case []uint8:
-					asBytes := make([]byte, len(v))
-					for j := 0; j < len(v); j++ {
-						asBytes[j] = v[j]
-					}
-
-					feature.Tags[cols[i]] = string(asBytes)
-				case int64:
-					feature.Tags[cols[i]] = v
+					feature.Tags[cols[i]] = string(v)
 				case string:
+					feature.Tags[cols[i]] = v
+				case int64:
 					feature.Tags[cols[i]] = v
 				case float64:
 					feature.Tags[cols[i]] = v
-
+				case bool:
+					feature.Tags[cols[i]] = v
+				case time.Time:
+					feature.Tags[cols[i]] = v.Format(time.RFC3339)
 				default:
-					// TODO(arolek): return this error?
 					log.Errorf("unexpected type for sqlite column data: %v: %T", cols[i], v)
 				}
 			}
@@ -380,20 +443,6 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 // Close will close the Provider's database connection
 func (p *Provider) Close() error {
 	return p.db.Close()
-}
-
-type GeomTableDetails struct {
-	geomFieldname string
-	geomType      geom.Geometry
-	srid          uint64
-	bbox          geom.Extent
-}
-
-type GeomColumn struct {
-	name         string
-	geometryType string
-	geom         geom.Geometry // to populate Layer.geomType
-	srsId        int
 }
 
 func geomNameToGeom(name string) (geom.Geometry, error) {

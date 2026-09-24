@@ -160,9 +160,9 @@ func hitpoint(pt1, pt2, pt3 maths.Pt) maths.Pt {
 	tri := maths.Triangle{pt1, pt2, pt3}
 	sort.Sort(&tri)
 	if tri[0].X == tri[1].X {
-		return maths.Pt{tri[0].X + 1, float64(int64((tri[0].Y - tri[1].Y) / 2))}
+		return maths.Pt{X: tri[0].X + 1, Y: float64(int64((tri[0].Y - tri[1].Y) / 2))}
 	}
-	return maths.Pt{tri[1].X - 1, float64(int64((tri[0].Y - tri[1].Y) / 2))}
+	return maths.Pt{X: tri[1].X - 1, Y: float64(int64((tri[0].Y - tri[1].Y) / 2))}
 
 }
 func (rc *RingCol) addPts(hm hitmap.Interface, b *Builder, pts1, pts2 []maths.Pt) {
@@ -868,7 +868,7 @@ func merge2AdjectRC(c1, c2 RingCol) (col RingCol) {
 
 	// Verify that the cols indexes are pointed correctly.
 	for i := range col.Y1s {
-		cpt := maths.Pt{col.X1, col.Y1s[i].Y}
+		cpt := maths.Pt{X: col.X1, Y: col.Y1s[i].Y}
 		for j, d := range col.Y1s[i].Descs {
 			ring := col.Rings[d.Idx]
 			if d.Label != ring.Label {
@@ -897,7 +897,7 @@ func merge2AdjectRC(c1, c2 RingCol) (col RingCol) {
 
 	}
 	for i := range col.Y2s {
-		cpt := maths.Pt{col.X2, col.Y2s[i].Y}
+		cpt := maths.Pt{X: col.X2, Y: col.Y2s[i].Y}
 		for j, d := range col.Y2s[i].Descs {
 			ring := col.Rings[d.Idx]
 			if d.Label != ring.Label {

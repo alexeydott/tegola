@@ -70,8 +70,8 @@ Return vector tiles for a map. The URI supports the following variables:
 
 - `:map_name` is the name of the map as defined in the `config.toml` file.
 - `:z` is the zoom level of the map.
-- `:x` is the row of the tile at the zoom level.
-- `:y` is the column of the tile at the zoom level.
+- `:x` is the column of the tile at the zoom level.
+- `:y` is the row of the tile at the zoom level.
 
 ```
 /maps/:map_name/:layer_name/:z/:x/:y
@@ -297,27 +297,27 @@ The following environment variables can be used to control various runtime optio
 
 ## Client side debugging
 
-When debugging client side, it's often helpful to see an outline of a tile along with it's Z/X/Y values. To encode a debug layer into every tile add the query string variable `debug=true` to the URL template being used to request tiles. For example:
+When debugging client side, it's often helpful to see an outline of a tile along with its Z/X/Y values. To encode a debug layer into every tile add the query string variable `debug=true` to the URL template being used to request tiles. For example:
 
 ```
 http://localhost:8080/maps/mymap/{z}/{x}/{y}.vector.pbf?debug=true
 ```
 
-The requested tile will be encoded with a layer that has the `name` value set to `debug` and includes the three following features.
+The requested tile will be encoded with a layer that has the `name` value set to `debug` and includes the two following features.
 
 - `debug_outline` is a line feature that traces the border of the tile
-- `debug_text` is a point feature in the middle of the tile with the following tags:
+- `debug_text` is a point feature in the middle of the tile with the following tag:
 - `zxy` is a string with the `Z`, `X` and `Y` values formatted as: `Z:0, X:0, Y:0`
 
 ## Building from source
 
 Tegola is written in [Go](https://golang.org/) and requires [Go 1.26.7](https://go.dev/dl/) or higher to compile from the source.
-(We support the two newest versions of Go.)
+(CI builds with the Go version pinned in `go.mod`.)
 To build tegola from the source, make sure you have Go installed and have cloned the repository.
 Navigate to the repository then run the following command:
 
 ```bash
-go generate ... && cd cmd/tegola/ && go build -mod vendor
+go generate ./... && cd cmd/tegola/ && go build -mod vendor
 ```
 
 You will now have a binary named `tegola` in the current directory which is [ready to run](#running-tegola-as-a-vector-tile-server).
@@ -333,6 +333,7 @@ The following build flags can be used to turn off certain features of tegola:
 - `noViewer` - turn off the built-in viewer.
 - `pprof` - enable [Go profiler](https://golang.org/pkg/net/http/pprof/). Start profile server by setting the environment `TEGOLA_HTTP_PPROF_BIND` environment (e.g. `TEGOLA_HTTP_PPROF_BIND=localhost:6060`).
 - `noPrometheusObserver` - turn off support for the Prometheus metric end point.
+- `nopgxregisterdefaulttypes` - skip pgx default type registration in the PostGIS provider (rarely needed; used to work around pgx driver conflicts).
 
 Example of using the build flags to turn of the Redis cache back end, the GeoPackage provider and the built-in viewer.
 
@@ -345,7 +346,7 @@ go build -tags 'noRedisCache noGpkgProvider noViewer'
 ```bash
 # first set some env to make it easier to read:
 BUILD_PKG=github.com/go-spatial/tegola/internal/build
-VERSION=1.16.x
+VERSION=0.21.0
 GIT_BRANCH=$(git branch --no-color --show-current)
 GIT_REVISION=$(git log HEAD --oneline | head -n 1 | cut -d ' ' -f 1)
 

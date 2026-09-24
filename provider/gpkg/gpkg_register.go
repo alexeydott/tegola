@@ -4,12 +4,10 @@
 package gpkg
 
 import (
-	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -25,8 +23,6 @@ import (
 	"github.com/go-spatial/tegola/provider/crsconfig"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
-
-var colFinder *regexp.Regexp
 
 func customSQLNeedsDeferredInspection(sqlText string) bool {
 	upper := strings.ToUpper(sqlText)
@@ -52,7 +48,6 @@ func customSQLNeedsDeferredInspection(sqlText string) bool {
 
 func init() {
 	provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
-	colFinder = regexp.MustCompile(`^(([a-zA-Z_][a-zA-Z0-9_]*)|"([^"]+)")\s`)
 }
 
 // Metadata for feature tables in gpkg database
@@ -115,94 +110,95 @@ func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 	return conf, nil
 }
 
-// extractColsAndPKFromSQL extracts all column names and the primary key colum
-// from an SQL definition string.
-func extractColsAndPKFromSQL(sql string) ([]string, string) {
-	defs := extractColDefsFromSQL(sql)
-
-	var pkCol string
-	colNames := make([]string, 0, len(defs))
-
-	// match unquoted (`column_name`) or quoted (`"column name"`) indentifiers
-	for _, def := range defs {
-		matches := colFinder.FindStringSubmatch(def)
-		if matches == nil {
-			continue
-		}
-		colName := matches[2] + matches[3] // either from unquoted, or quoted submatch
-		colNames = append(colNames, colName)
-
-		if strings.Contains(strings.ToLower(def), "primary key") {
-			pkCol = colName
-		}
+// tableColumnsAndPK returns the column names (sorted for consistent output)
+// and the primary key column of a table, read via PRAGMA table_info. This
+// replaces the previous CREATE TABLE text parser, which could not handle
+// comments or quoted commas.
+func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, string, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%v);", quoteIdent(tablename)))
+	if err != nil {
+		return nil, "", fmt.Errorf("table %q column lookup: %v", tablename, err)
 	}
-	// Sort colNames for consistent output to facilitate testing
-	sort.Strings(colNames)
+	defer rows.Close()
 
-	return colNames, pkCol
-}
+	type columnInfo struct {
+		name string
+		pk   int
+	}
+	var cols []columnInfo
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return nil, "", fmt.Errorf("table %q column scan: %v", tablename, err)
+		}
+		cols = append(cols, columnInfo{name: name, pk: pk})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("table %q column rows: %v", tablename, err)
+	}
+	if len(cols) == 0 {
+		return nil, "", fmt.Errorf("table %q does not exist or has no columns", tablename)
+	}
 
-// extractColDefsFromSQL extracts all column definitions an SQL definition string.
-func extractColDefsFromSQL(sql string) []string {
-	// Simple parser for SQL definitions. Skips everything before the first
-	// parentheses, splits definitions at comma, but ignores commas between
-	// subsequent parentheses.
-
-	// Does not handle comments or quoted commas.
-
-	var defs []string
-	var col bytes.Buffer
-	p := 0 // count number of open parentheses
-
-	for _, r := range sql {
-
-		if r == ')' && p == 1 {
-			// closing outer brace of column definitions
-			defs = append(defs, strings.TrimSpace(col.String()))
-			col.Reset()
+	// The first column (in declaration order) participating in the primary
+	// key is used as the id field.
+	var pkCol string
+	for _, col := range cols {
+		if col.pk > 0 {
+			pkCol = col.name
 			break
 		}
-		if r == ',' && p == 1 {
-			// next definition
-			defs = append(defs, strings.TrimSpace(col.String()))
-			col.Reset()
-			continue
-		}
-
-		col.WriteRune(r)
-		if r == '(' {
-			if p == 0 {
-				// start of column definitions, ignore CREATE TABLE ...
-				col.Reset()
-			}
-			p++
-		}
-		if r == ')' {
-			p--
-		}
 	}
-	return defs
+
+	colNames := make([]string, 0, len(cols))
+	for _, col := range cols {
+		colNames = append(colNames, col.name)
+	}
+	sort.Strings(colNames)
+
+	return colNames, pkCol, nil
+}
+
+// detectBoundColumns maps the raw bounds columns (case-insensitive
+// minx/maxx/miny/maxy) from a table's column list to the query field order
+// [minx, maxx, miny, maxy]; nil when the table does not carry them. The
+// detected (actual case) names are kept for SQL quoting.
+func detectBoundColumns(colNames []string) *[4]string {
+	lookup := make(map[string]string, len(colNames))
+	for _, name := range colNames {
+		lookup[strings.ToLower(name)] = name
+	}
+	fields := [4]string{"minx", "maxx", "miny", "maxy"}
+	for i, key := range fields {
+		actual, ok := lookup[key]
+		if !ok {
+			return nil
+		}
+		fields[i] = actual
+	}
+	return &fields
 }
 
 // Collect meta data about all feature tables in opened gpkg.
 func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) {
-	// this query is used to read the metadata from the gpkg_contents, gpkg_geometry_columns, and
-	// sqlite_master tables for tables that store geographic features.
+	// this query is used to read the metadata from the gpkg_contents and
+	// gpkg_geometry_columns tables for tables that store geographic
+	// features. Column names and the primary key are read via
+	// PRAGMA table_info (see tableColumnsAndPK).
 	qtext := `
 		SELECT
-			c.table_name, c.min_x, c.min_y, c.max_x, c.max_y, c.srs_id, gc.column_name, gc.geometry_type_name, sm.sql
+			c.table_name, c.min_x, c.min_y, c.max_x, c.max_y, c.srs_id, gc.column_name, gc.geometry_type_name
 		FROM
-			gpkg_contents c JOIN gpkg_geometry_columns gc ON c.table_name == gc.table_name JOIN sqlite_master sm ON c.table_name = sm.tbl_name
+			gpkg_contents c JOIN gpkg_geometry_columns gc ON c.table_name = gc.table_name
 		WHERE
-			c.data_type = 'features' AND sm.type = 'table';`
+			c.data_type = 'features';`
 
 	rows, err := gpkg.Query(qtext)
 	if err != nil {
-		if isMissingGpkgMetadataErr(err) {
-			// No GeoPackage metadata tables: only raw-format layers can be
-			// served from this file.
-			return make(map[string]featureTableDetails), nil
-		}
 		log.Errorf("error during query: %v - %v", qtext, err)
 		return nil, err
 	}
@@ -213,15 +209,12 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 
 	// iterate each row extracting meta data about each table
 	for rows.Next() {
-		var tablename, geomCol, geomType, tableSql sql.NullString
+		var tablename, geomCol, geomType sql.NullString
 		var minX, minY, maxX, maxY sql.NullFloat64
 		var srid sql.NullInt64
 
-		if err = rows.Scan(&tablename, &minX, &minY, &maxX, &maxY, &srid, &geomCol, &geomType, &tableSql); err != nil {
+		if err = rows.Scan(&tablename, &minX, &minY, &maxX, &maxY, &srid, &geomCol, &geomType); err != nil {
 			return nil, err
-		}
-		if !tableSql.Valid {
-			return nil, fmt.Errorf("invalid sql for table '%v'", tablename)
 		}
 
 		// map the returned geom type to a tegola geom type
@@ -241,7 +234,10 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 			sridVal = uint64(srid.Int64)
 		}
 
-		colNames, pkCol := extractColsAndPKFromSQL(tableSql.String)
+		colNames, pkCol, cerr := tableColumnsAndPK(gpkg, tablename.String)
+		if cerr != nil {
+			return nil, cerr
+		}
 
 		geomTableDetails[tablename.String] = featureTableDetails{
 			colNames:      colNames,
@@ -250,7 +246,6 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 			geomType:      tg,
 			srid:          sridVal,
 			// the extent of the layer's features
-			//bbox: geom.BoundingBox{minX.Float64, minY.Float64, maxX.Float64, maxY.Float64},
 			bbox: bbox,
 		}
 	}
@@ -261,37 +256,19 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 	return geomTableDetails, nil
 }
 
-// isMissingGpkgMetadataErr reports whether the error indicates that the
-// GeoPackage metadata tables (gpkg_contents / gpkg_geometry_columns) do not
-// exist, in which case only raw-format (wkb/wkt/mos) layers can be served.
-func isMissingGpkgMetadataErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "no such table") &&
-		(strings.Contains(msg, "gpkg_contents") || strings.Contains(msg, "gpkg_geometry_columns"))
-}
-
-// sqliteTableSQL returns the CREATE TABLE statement of a plain SQLite table
-// from sqlite_master, used to inspect raw-format tables that are not
-// registered in gpkg_geometry_columns.
-func sqliteTableSQL(db *sql.DB, tablename string) (string, error) {
-	var tableSQL sql.NullString
+// hasGpkgMetadataTables reports whether the file has the GeoPackage metadata
+// tables (gpkg_contents / gpkg_geometry_columns) required by gpkg-format
+// layers. Raw-format (wkb/wkt/mos) layers read plain SQLite tables and can
+// be served without them.
+func hasGpkgMetadataTables(db *sql.DB) (bool, error) {
+	var count int
 	err := db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE type = 'table' AND tbl_name = ?;`,
-		tablename,
-	).Scan(&tableSQL)
-	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("table %q does not exist", tablename)
-	}
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('gpkg_contents', 'gpkg_geometry_columns');`,
+	).Scan(&count)
 	if err != nil {
-		return "", fmt.Errorf("table %q lookup: %v", tablename, err)
+		return false, err
 	}
-	if !tableSQL.Valid {
-		return "", fmt.Errorf("invalid sql for table %q", tablename)
-	}
-	return tableSQL.String, nil
+	return count == 2, nil
 }
 
 // sampleRawTableLayer samples a raw-format (wkb/wkt/mos) table's geometry
@@ -332,6 +309,7 @@ func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 			} else if applied {
 				layer.srid = uint64(srid)
 				layer.crsExplicit = true
+				layer.systemInfoApplied = true
 			}
 			continue
 		}
@@ -386,11 +364,18 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 	// The GeoPackage metadata tables (gpkg_contents / gpkg_geometry_columns)
 	// are only required for gpkg-format layers; raw-format (wkb/wkt/mos)
-	// layers read plain SQLite tables, so an empty metadata map is tolerated
+	// layers read plain SQLite tables, so an empty metadata map is used
 	// when those tables are absent.
-	geomTableDetails, err := featureTableMetaData(db)
-	if err != nil && !isMissingGpkgMetadataErr(err) {
-		return nil, err
+	geomTableDetails := make(map[string]featureTableDetails)
+	hasMetadata, merr := hasGpkgMetadataTables(db)
+	if merr != nil {
+		return nil, merr
+	}
+	if hasMetadata {
+		geomTableDetails, err = featureTableMetaData(db)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// provider-level srid/crs_defn via the shared CRS contract. An explicit
@@ -520,11 +505,8 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 		layer.geometryFormat = layerGeometryFormat
 		layer.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
-		if layer.geometryFormat != GeometryFormatMOS && layer.mosConfig.HasExplicitMOSParams() {
-			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
-				layerName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
-				codec.ConfigKeyGeometryFormat, layer.geometryFormat)
-			layer.mosConfig = codec.DefaultMOSConfig()
+		if layer.geometryFormat != GeometryFormatMOS {
+			codec.WarnAndResetMOSParams(layer.geometryFormat, &layer.mosConfig, layerName)
 		}
 
 		// common geometry_type key: an explicit value fixes the layer type
@@ -539,7 +521,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
-			tablename, err := layerConf.String(ConfigKeyTableName, &idFieldname)
+			tablename, err := layerConf.String(ConfigKeyTableName, nil)
 			if err != nil {
 				return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 			}
@@ -553,12 +535,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// SQLite tables that need not be registered in
 				// gpkg_geometry_columns; the GeoPackage metadata is neither
 				// required nor consulted and there is no RTree index, so
-				// TileFeatures filters in memory.
-				tableSQL, terr := sqliteTableSQL(db, tablename)
-				if terr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, terr)
+				// TileFeatures filters in memory (or via raw bounds
+				// columns when the table carries them).
+				colNames, pkCol, cerr := tableColumnsAndPK(db, tablename)
+				if cerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, cerr)
 				}
-				colNames, pkCol := extractColsAndPKFromSQL(tableSQL)
 				colSet := make(map[string]struct{}, len(colNames))
 				for _, c := range colNames {
 					colSet[c] = struct{}{}
@@ -573,6 +555,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					log.Warnf("layer (%v): table %q has no column %q; using primary key %q as id field",
 						layerName, tablename, layer.idFieldname, pkCol)
 					layer.idFieldname = pkCol
+				}
+				layer.boundFieldnames = detectBoundColumns(colNames)
+				if layer.boundFieldnames != nil {
+					log.Debugf("layer (%v): table %q carries raw bounds columns; enabling SQL bounds filter", layerName, tablename)
 				}
 
 				// Raw tables carry no SRID metadata, so the SRID comes from
@@ -733,6 +719,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 							layer.srid = uint64(srid)
 							layer.crsExplicit = true
 							sysInfoCRSApplied = true
+							layer.systemInfoApplied = true
 						}
 						continue
 					}

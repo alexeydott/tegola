@@ -68,7 +68,7 @@ func (s *Subject) GetPair(idx int) *Pair {
 // Contains will test to see if the point if fully contained by the subject. If the point is on the broader it is not considered as contained.
 func (s *Subject) Contains(pt maths.Pt) bool {
 
-	line := maths.Line{pt, maths.Pt{pt.X - 1, pt.Y}}
+	line := maths.Line{pt, maths.Pt{X: pt.X - 1, Y: pt.Y}}
 	count := 0
 	var lpt maths.Pt
 	var haveLpt bool

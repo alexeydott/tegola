@@ -157,14 +157,14 @@ func DrawPolygonTest(writer io.Writer, w, h int, r *region.Region, original tego
 		MaxX: int64(r.Max().X),
 		MaxY: int64(r.Max().Y),
 	}
-	mm := svg.MinMax{reg.MaxX, reg.MaxY, reg.MinX, reg.MinY}
+	mm := svg.MinMax{MinX: reg.MaxX, MinY: reg.MaxY, MaxX: reg.MinX, MaxY: reg.MinY}
 	mm.OfGeometry(original)
 
 	mm.ExpandBy(100)
 
 	canvas := &svg.Canvas{
 		Board:  mm,
-		Region: svg.MinMax{0, 0, 4096, 4096},
+		Region: svg.MinMax{MinX: 0, MinY: 0, MaxX: 4096, MaxY: 4096},
 	}
 
 	canvas.Init(writer, w, h, false)

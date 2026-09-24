@@ -37,7 +37,7 @@ func (l Line) AsGeomLineString() (ln [][2]float64) {
 // This assumes the linestring is a connected linestring.
 func (l Line) Contains(pt Point) bool {
 	pt0 := l[len(l)-1]
-	ptln := maths.Line{pt.AsPt(), maths.Pt{pt.X() + 1, pt.Y()}}
+	ptln := maths.Line{pt.AsPt(), maths.Pt{X: pt.X() + 1, Y: pt.Y()}}
 	count := 0
 	for _, pt1 := range l {
 		ln := maths.Line{pt0.AsPt(), pt1.AsPt()}

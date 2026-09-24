@@ -17,7 +17,7 @@ raw geometry format / MOS parts of this contract.
 | `name` | string | Provider name referenced from map layers. Required. |
 | `srid` | int | Default SRID for all layers of the provider. |
 | `crs_defn` | string | Full PROJ.4 definition used instead of a numeric `srid`. Wins over `srid` at the same level. See [crs.md](crs.md). |
-| `geometry_format` | string | Default geometry format for layers that do not override it: `wkb`, `wkt` or `mos`. Empty/unset means the provider's native geometry handling. |
+| `geometry_format` | string | Default geometry format for layers that do not override it: `wkb`, `wkt` or `mos`. Empty/unset means the provider's native geometry handling. Provider-specific values exist: `mysql` accepts `auto`, `mysql` and `mariadb` in addition to the shared formats; `gpkg` accepts `gpkg` (its native GeoPackage binary). |
 | `mos_precision` | int | Decimal digits carried by MOS coordinates (see below). Only applies when `geometry_format = "mos"`. |
 | `mos_units` | string | Packed linear unit of MOS coordinates: `mm`, `cm`, `dm`, `m` or `km`. Only applies when `geometry_format = "mos"`. |
 
@@ -65,8 +65,8 @@ still detected.
 
 ## Startup inspection and deferred layers
 
-At registration every layer is inspected to resolve its geometry type and
-(electronically where possible) its SRID:
+At registration every layer is inspected to resolve its geometry type and,
+where possible, its SRID:
 
 - **Table layers** are inspected via database metadata / a sample query.
 - **Custom SQL** is sampled with a token-normalized variant of the query
@@ -118,7 +118,7 @@ registers without an inferred geometry type (MVT encoding stays permissive).
 | `geometry_format` (`wkb`/`wkt`/`mos`) | yes | yes (`mos` skips the GeoPackage binary header) | yes | yes |
 | `mos_precision` / `mos_units` | yes | yes | yes | yes |
 | system info auto-config | yes | yes | yes | yes |
-| native spatial filter | yes (MBR/indexed bounds) | yes (RTree index; skipped for `mos`) | yes (`&&`) | yes (`ST_IntersectsRect*`; skipped for `mos` and synthetic CRS) |
+| native spatial filter | yes (MBR/indexed bounds) | yes (RTree index; skipped for all raw formats `wkb`/`wkt`/`mos`, and for raw tables without GeoPackage metadata) | yes (`&&`) | yes (`ST_IntersectsRect*`; skipped for `mos` and synthetic CRS) |
 | `id_fieldname` default | `fid` | `fid` | empty | empty |
 | absent/empty `fields` | id + geometry only | id + geometry only | all columns | all columns |
 | MVT variant | — | — | `mvt_postgis` | `mvt_hana` |

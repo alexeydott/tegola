@@ -1,0 +1,16 @@
+version: "2"
+
+# Skip _test.go files: the legacy test suite relies on unkeyed struct literals
+# which we do not want to mass-rewrite. Non-test code is fully vetted.
+run:
+  tests: false
+
+linters:
+  default: none
+  enable:
+    - govet
+
+formatters:
+  default: none
+  enable:
+    - gofmt

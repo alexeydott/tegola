@@ -78,7 +78,7 @@ func (d Dict) StringSlice(key string) (v []string, err error) {
 		var iv []interface{}
 		if iv, ok = val.([]interface{}); !ok {
 			// Could not convert to the generic type, so we don't have the correct thing.
-			return v, dict.ErrKeyType{key, val, reflect.TypeOf(iv)}
+			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(iv)}
 		}
 
 		v = make([]string, len(iv))
@@ -156,7 +156,7 @@ func (d Dict) BoolSlice(key string) (v []bool, err error) {
 		var iv []interface{}
 		if iv, ok = val.([]interface{}); !ok {
 			// Could not convert to the generic type, so we don't have the correct thing.
-			return v, dict.ErrKeyType{key, val, reflect.TypeOf(iv)}
+			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(iv)}
 		}
 
 		v = make([]bool, len(iv))
@@ -232,7 +232,7 @@ func (d Dict) IntSlice(key string) (v []int, err error) {
 		var iv []interface{}
 		if iv, ok = val.([]interface{}); !ok {
 			// Could not convert to the generic type, so we don't have the correct thing.
-			return v, dict.ErrKeyType{key, val, reflect.TypeOf(iv)}
+			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(iv)}
 		}
 		v = make([]int, len(iv))
 		for k := range iv {
@@ -436,7 +436,7 @@ func (d Dict) MapSlice(key string) (r []dict.Dicter, err error) {
 
 	arr, ok := v.([]map[string]interface{})
 	if !ok {
-		return r, dict.ErrKeyType{key, v, reflect.TypeOf(arr)}
+		return r, dict.ErrKeyType{Key: key, Value: v, T: reflect.TypeOf(arr)}
 	}
 
 	r = make([]dict.Dicter, len(arr))

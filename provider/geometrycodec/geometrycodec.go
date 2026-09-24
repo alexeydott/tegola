@@ -297,6 +297,28 @@ func (c MOSConfig) HasExplicitMOSParams() bool {
 	return c.PrecisionSet || c.UnitsSet
 }
 
+// WarnAndResetMOSParams implements the MOS relevance policy shared by the
+// SQL providers: explicit mos_precision / mos_units settings only apply when
+// the effective layer geometry format selects MOS decoding. When the format
+// is not FormatMOS (and not one of the alsoValid exceptions, such as the
+// MySQL "auto" format) and explicit parameters were configured, a warning is
+// logged and the config is reset to defaults. It reports whether the config
+// was reset.
+func WarnAndResetMOSParams(geometryFormat string, cfg *MOSConfig, layerName string, alsoValid ...string) bool {
+	if geometryFormat == FormatMOS || cfg == nil || !cfg.HasExplicitMOSParams() {
+		return false
+	}
+	for _, format := range alsoValid {
+		if geometryFormat == format {
+			return false
+		}
+	}
+	log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
+		layerName, ConfigKeyMOSPrecision, ConfigKeyMOSUnits, ConfigKeyGeometryFormat, geometryFormat)
+	*cfg = DefaultMOSConfig()
+	return true
+}
+
 // ResolveLayerGeometryFormat resolves the effective layer geometry format:
 // an optional layer-level geometry_format key, validated against allowed,
 // overriding the provider-level value. An empty (or unset) layer value

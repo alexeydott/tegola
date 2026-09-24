@@ -1175,12 +1175,7 @@ func CreateProvider(
 		}
 		l.geometryFormat = layerGeometryFormat
 		l.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
-		if l.geometryFormat != codec.FormatMOS && l.mosConfig.HasExplicitMOSParams() {
-			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
-				lName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits,
-				codec.ConfigKeyGeometryFormat, l.geometryFormat)
-			l.mosConfig = codec.DefaultMOSConfig()
-		}
+		codec.WarnAndResetMOSParams(l.geometryFormat, &l.mosConfig, lName)
 		// MVT providers must not take the raw geometry path: their geometry
 		// is MVT bytes produced by the database, not a raw feature geometry.
 		if isMVT(providerType) {

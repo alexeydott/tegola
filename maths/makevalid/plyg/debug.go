@@ -4,11 +4,11 @@ import (
 	"encoding/gob"
 	"os"
 
-	"github.com/pborman/uuid"
+	"github.com/google/uuid"
 )
 
 func genWriteoutCols(cols ...RingCol) string {
-	fn := "debug-uuid-" + uuid.New()
+	fn := "debug-uuid-" + uuid.NewString()
 	WriteoutCols(fn, cols...)
 	return fn
 }

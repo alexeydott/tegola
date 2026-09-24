@@ -105,6 +105,18 @@ func TestRootReadmeListsMOSConfigKeys(t *testing.T) {
 			t.Errorf("docs/provider-contract.md does not document common config key %v", key)
 		}
 	}
+	// provider-specific geometry_format values must be documented next to
+	// the shared wkb/wkt/mos set
+	for _, val := range []string{"`auto`", "`mysql`", "`mariadb`", "`gpkg`"} {
+		if !strings.Contains(content, val) {
+			t.Errorf("docs/provider-contract.md does not document provider-specific geometry_format value %v", val)
+		}
+	}
+	// the startup inspection sample size must be documented with the
+	// constant name and its value so code and docs stay aligned
+	if !strings.Contains(content, "InspectionSampleLimit") || !strings.Contains(content, "(16)") {
+		t.Error("docs/provider-contract.md does not document the InspectionSampleLimit (16) startup sample size")
+	}
 }
 
 // TestProviderReadmesReferenceCommonContract verifies that every standard

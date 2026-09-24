@@ -36,9 +36,10 @@ id_fieldname = "fid"
 - `fields` ([]string): [Optional] a list of fields (column names) to include as feature tags. Can be used if `sql` is not defined.
 - `srid` (int): [Optional] layer-level SRID override. Wins over the provider-level value and over the SRID inferred from the GeoPackage.
 - `crs_defn` (string): [Optional] layer-level full PROJ.4 definition used instead of a numeric `srid`. Wins over `srid` at the same level.
-- `sql` (string): [*Required] custom SQL to use use. Required if `tablename` is not defined. Supports the following WHERE-clause tokens:
+- `geometry_fieldname` (string): [Optional] the name of the geometry field. defaults to `geom`. Note: for layers backed by a GeoPackage `tablename` (native `gpkg` format), the geometry column is taken from `gpkg_geometry_columns` and this setting is ignored. Use a custom `sql` layer (or a raw `geometry_format`) if you need to point at a different geometry column.
+- `sql` (string): [*Required] custom SQL to use. Required if `tablename` is not defined. Supports the following WHERE-clause tokens:
   - !BBOX! - [Required] will be replaced with the bounding box of the tile before the query is sent to the database.  To support this token, your custom SQL must do a couple of things. 
-    - You must join your feature table to the spatial index table: i.e. `JOIN feature_table ft rtree_feature_table_geom si ON ft.fid = rt.si`
+    - You must join your feature table to the spatial index table: i.e. `JOIN feature_table ft JOIN rtree_feature_table_geom si ON ft.fid = si.id`
 	- Include the following fields in your SELECT clause: si.minx, si.miny, si.maxx, si.maxy
 	- Note that the id field for your feature table may be something other than `fid`
   - `!ZOOM!` - [Optional] will be replaced with the "Z" (zoom) value of the requested tile.
@@ -103,9 +104,10 @@ are valid at provider level (defaults for all layers) and at layer level
   (`Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`,
   `MultiPolygon`, `GeometryCollection`). Skips startup type inspection;
   mixed content is permitted with a one-time warning.
-- `geometry_format` (string): [Optional] `wkb`, `wkt` or `mos`. Empty/unset
-  uses the GeoPackage native binary format. With `mos` the GeoPackage
-  binary header is skipped and the raw MOS payload is used directly.
+- `geometry_format` (string): [Optional] `gpkg` (GeoPackage native binary,
+  the default), `wkb`, `wkt` or `mos`. With `gpkg` the GeoPackage binary
+  header is parsed and the embedded WKB body is decoded; with `mos` the
+  header is skipped and the raw MOS payload is used directly.
 - `mos_precision` (int): [Optional] decimal digits carried by MOS
   coordinates. Only applies when the effective geometry format is `mos`.
 - `mos_units` (string): [Optional] packed linear unit of MOS coordinates
@@ -126,6 +128,37 @@ name = "lines"
 tablename = "lines"
 geometry_type = "LineString"
 ```
+
+### Raw tables
+
+A layer with `geometry_format` set to a raw format (`wkb`, `wkt` or `mos`) or
+a raw table that has no `gpkg_contents` / `gpkg_geometry_columns` metadata
+does not need GeoPackage metadata at all: the table is registered from
+`PRAGMA table_info` and the RTree spatial index is **not** used. The `!BBOX!`
+token still works, but rows are filtered in memory, so performance depends on
+table size.
+
+**Performance warning:** without an RTree join every query scans the table
+and decodes all candidate geometries. For large tables prefer the native
+`gpkg` format (which joins `rtree_<table>_<geom>`), or declare per-row bounds
+columns so the coarse `!BBOX!` filter can be applied by SQLite.
+
+If the table has numeric bounds columns named (case-insensitively)
+`minx`, `maxx`, `miny` and `maxy`, holding the geometry bounds in the layer
+CRS, the provider detects them and applies a coarse SQL-level `!BBOX!` filter
+before in-memory refinement:
+
+```toml
+[[providers.layers]]
+name = "land_polygons"
+tablename = "land_polygons"
+id_fieldname = "fid"
+geometry_format = "wkb"
+```
+
+For raw custom-SQL layers `geometry_fieldname` and `id_fieldname` must point
+at existing columns; misconfiguration is rejected at startup with a warning
+and a fallback to the table primary key.
 
 ### Empty layers
 

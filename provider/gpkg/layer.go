@@ -29,6 +29,15 @@ type Layer struct {
 	// mosConfig holds the resolved MOS quantization settings used with
 	// geometry_format = "mos".
 	mosConfig codec.MOSConfig
+	// boundFieldnames holds the raw bounds columns (minx/maxx/miny/maxy,
+	// in that order) detected on a non-GPKG format table at registration.
+	// They act as a coarse SQL filter mirroring the MySQL provider's MOS
+	// bounds filter; nil when the table does not carry them.
+	boundFieldnames *[4]string
+	// systemInfoApplied records that a MOS system-info blob was already
+	// parsed and applied during registration sampling; TileFeatures skips
+	// re-parsing identical blobs on every tile.
+	systemInfoApplied bool
 	// deferredInspection marks tile-dependent custom SQL whose geometry
 	// could not be inspected safely at startup.
 	deferredInspection bool

@@ -1,3 +1,25 @@
+## Unreleased
+
+Fork-specific changes on top of upstream 0.17.0 (2023-07-27).
+
+Features
+
+* Unified CRS contract for all standard providers (`mysql`, `gpkg`, `postgis`, `hana`): `srid` and `crs_defn` (full PROJ.4 definition) at provider and layer level, explicit configuration wins over source auto-detection. Tile bounds (`!BBOX!`) are reprojected into the layer CRS so filter, data and MVT encoding always agree on one CRS.
+* Built-in EPSG registry (`basic/epsg`) and synthetic internal SRIDs (>= 340000001) for custom PROJ.4 definitions and MOS system-info projections.
+* Shared geometry formats for all standard providers: `wkb`, `wkt` and the packed `mos` payload, with `mos_precision` / `mos_units` configuration and system-info auto-configuration (`MapplGIS LayerInfo`).
+* GPKG provider reworked: native GeoPackage binary, WKB/WKT/MOS geometry formats, `gpkg_contents.srs_id` detection, RTree `!BBOX!` filtering for table layers and in-memory filtering (with optional bounds columns) for raw tables without GeoPackage metadata.
+* MySQL / MariaDB provider with `auto` / `mysql` / `mariadb` geometry formats.
+* HANA MVT provider (`mvt_hana`) alongside `mvt_postgis`.
+* Memory and multilevel tile caches.
+* Tile endpoint modes `?tile=status|update|getupdated` and cache invalidation via `?dirty`.
+
+Breaking changes
+
+* MySQL provider: the `proj4` config key was removed in favour of `srid` / `crs_defn`.
+* PostGIS provider: `tablename` and `sql` are strictly mutually exclusive (startup error).
+* PostGIS provider: `pool_*` connection-pool keys were introduced/renamed; review your `[[providers]]` blocks.
+* GPKG provider: unknown config keys are rejected at startup.
+
 ## 0.17.0 (2023-07-27)
 
 Features

@@ -204,8 +204,8 @@ func NewSegment(label maths.Label, linestring tegola.LineString) (seg Segment) {
 	j := len(subpts) - 1
 	for i := range subpts {
 		l := maths.Line{
-			maths.Pt{subpts[j].X(), subpts[j].Y()},
-			maths.Pt{subpts[i].X(), subpts[i].Y()},
+			maths.Pt{X: subpts[j].X(), Y: subpts[j].Y()},
+			maths.Pt{X: subpts[i].X(), Y: subpts[i].Y()},
 		}
 		seg.bbox.Add(l[:]...)
 		seg.events.Add(l)

@@ -396,11 +396,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		// are irrelevant for explicitly raw formats. With geometry_format
 		// auto they are kept, since a runtime MapplGIS LayerInfo blob can
 		// still switch the layer to the MOS format.
-		if layerGeometryFormat != GeometryFormatMOS && layerGeometryFormat != GeometryFormatAuto && layer.mosConfig.HasExplicitMOSParams() {
-			log.Warnf("layer (%v): %v / %v only apply when %v = %q; ignoring values",
-				layerName, codec.ConfigKeyMOSPrecision, codec.ConfigKeyMOSUnits, codec.ConfigKeyGeometryFormat, GeometryFormatMOS)
-			layer.mosConfig = codec.DefaultMOSConfig()
-		}
+		codec.WarnAndResetMOSParams(layerGeometryFormat, &layer.mosConfig, layerName, GeometryFormatAuto)
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
 			tablename, err := layerConf.String(ConfigKeyTableName, &idFieldname)

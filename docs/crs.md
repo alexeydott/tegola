@@ -44,7 +44,9 @@ providers (not just MySQL):
   `crs_defn`; it does **not** silently fall back to 3857. Custom-SQL layers
   and raw geometry formats (`wkb`/`wkt`/`mos`) have no single table column
   to introspect, so they keep the documented defaults.
-- **gpkg** — `gpkg_contents.srs_id` and the WKB geometry-header srs id; raw
+- **gpkg** — `gpkg_contents.srs_id` for `tablename` layers; for custom-SQL
+  layers the srs id of the sampled row's GeoPackage binary header is used as
+  a fallback (only when no explicit provider `srid` is configured). Raw
   format tables (`wkb`/`wkt`/`mos`) carry no GeoPackage metadata, so the MOS
   system-info projection applies there too.
 - **mysql** — `MapplGIS LayerInfo` projection (MOS layers).
@@ -98,6 +100,6 @@ The `!BBOX!` token is always evaluated **in the layer's source CRS**:
 | Provider | `srid` | `crs_defn` | Notes |
 |---|---|---|---|
 | postgis | yes | yes | Synthetic CRS via `ST_SetSRID(geom, 0) && !BBOX!` (no database SRS needed). |
-| gpkg | yes | yes | Explicit config wins over `gpkg_contents.srs_id` and the WKB header srs id. |
+| gpkg | yes | yes | Explicit config wins over `gpkg_contents.srs_id` (table layers) and the sampled header srs id (custom-SQL layers). |
 | mysql | yes | yes | `MapplGIS LayerInfo projection` applies only when no explicit CRS is configured. |
 | hana | yes | yes | `crs_defn` requires a raw `geometry_format` (`wkb`/`wkt`/`mos`); native `ST_Geometry` columns use a database-side SRS. Not supported for MVT providers. Round-earth SRSs are used through their planar-equivalent SRIDs (`PLANAR_SRID_OFFSET = 1000000000`). |
