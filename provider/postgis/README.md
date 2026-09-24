@@ -81,6 +81,37 @@ as parameters.
 -   `pool_max_conn_lifetime_jitter` [Optional] Duration after `max_conn_lifetime` to randomly decide to close a connection.
 -   `pool_health_check_period` [Optional] Is the duration between checks of the health of idle connections. Defaults to 1m
 
+### TLS / SSL configuration
+
+SSL can be configured three ways. The provider resolves the effective values
+at startup in the following order:
+
+1. Defaults: `ssl_mode = "prefer"`, empty `ssl_key`, `ssl_cert`, `ssl_root_cert`.
+2. TOML config keys on the provider:
+
+   ```toml
+   [[providers]]
+   name = "my_postgis"
+   type = "postgis"
+   uri = "postgres://tegola:password@localhost:5432/tegola"
+   ssl_mode = "verify-full"
+   ssl_key = "/path/to/client-key.pem"
+   ssl_cert = "/path/to/client-cert.pem"
+   ssl_root_cert = "/path/to/ca-cert.pem"
+   ```
+
+3. Overrides: in **env mode** (any of `PGHOST`/`PGUSER`/… triggers present)
+   non-empty `PGSSLMODE`, `PGSSLKEY`, `PGSSLCERT` and `PGSSLROOTCERT`
+   environment variables override the TOML values. In **uri mode** a
+   non-empty `sslmode` query parameter in the `uri` overrides the TOML
+   `ssl_mode` (the URI `sslkey`/`sslcert`/`sslrootcert` parameters are not
+   read by the planner — use the TOML keys for those).
+
+`ssl_key` and `ssl_cert` must be provided together (client certificate
+authentication); `ssl_root_cert` enables CA verification independently.
+Valid `ssl_mode` values follow libpq: `disable`, `allow`, `prefer`,
+`require`, `verify-ca`, `verify-full`.
+
 ## Provider Layers
 
 In addition to the connection configuration above, Provider Layers need to be configured. A Provider Layer tells tegola how to query PostGIS for a certain layer. An example minimum config:

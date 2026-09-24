@@ -93,10 +93,11 @@ SRID resolution order (highest priority first):
 2. Layer-level `srid` config value.
 3. Provider-level `crs_defn` config value.
 4. Provider-level `srid` config value (if explicitly configured).
-5. SRID decoded from the sampled geometry header at registration (native formats only).
-6. Default `3857` (Web Mercator).
+5. `TLayerSystemInfoRec.Projection` decoded from the sampled system info blob (MOS layers only, applied when no `srid`/`crs_defn` is configured at provider or layer level; registered as a synthetic SRID, see [docs/crs.md](../../docs/crs.md)).
+6. SRID decoded from the sampled geometry header at registration (native formats only).
+7. Default `3857` (Web Mercator).
 
-When the layer SRID differs from Web Mercator, tile bounding boxes are reprojected into the layer SRID before the `!BBOX!` filter is applied, and geometries are delivered to the MVT encoder with their true SRID.
+When the layer SRID differs from Web Mercator, tile bounding boxes are reprojected into the layer SRID before the `!BBOX!` filter is applied, and geometries are delivered to the MVT encoder with their true SRID. The full CRS contract (config keys, precedence, synthetic SRIDs, `!BBOX!` semantics) is documented in [docs/crs.md](../../docs/crs.md) and is shared by all standard providers.
 
 ### Reprojection
 
@@ -114,23 +115,9 @@ Reprojection between the layer SRID and Web Mercator uses the vendored `go-spati
    | 3785, 900913 | Web Mercator aliases |
    | 53004 | Sphere Mercator (ESRI) |
 
-2. **`proj4` config option** — register any additional EPSG code with an explicit PROJ.4 definition at provider level:
+2. **`crs_defn` config value** — a full PROJ.4 definition at provider or layer level, registered under a synthetic internal SRID. See the next section and [docs/crs.md](../../docs/crs.md).
 
-   ```toml
-   [[providers]]
-   name = "mysql_provider"
-   type = "mysql"
-   # ...
-   # either a string of "EPSG_CODE=proj4 def" entries (newline or ; separated):
-   proj4 = "2180=+proj=sterea +lat_0=52 +lon_0=19 +k=0.9993 +x_0=500000 +y_0=-5300000 +ellps=bessel +units=m +no_defs"
-   # or a TOML table:
-   [providers.proj4]
-   2180 = "+proj=sterea +lat_0=52 +lon_0=19 +k=0.9993 +x_0=500000 +y_0=-5300000 +ellps=bessel +units=m +no_defs"
-   ```
-
-   Keys may be written as plain integers or with an `EPSG:` / `epsg:` prefix (e.g. `"EPSG:2180"`). Definitions are validated at startup with a forward+inverse round trip; unsupported ones are rejected with a clear error.
-
-Geographic systems stored in degrees (e.g. EPSG:4326, EPSG:4258) do not require registration — they are converted natively. Note that only a subset of PROJ.4 operations is implemented by the vendored proj library (`merc`, `utm`, `etmerc`, `aea`, `leac`, `eqc`); transverse Mercator-based systems use `+proj=etmerc`, not `+proj=tmerc`.
+Note that only a subset of PROJ.4 operations is implemented by the vendored proj library (`merc`, `utm`, `etmerc`, `aea`, `leac`, `eqc`); transverse Mercator-based systems use `+proj=etmerc`, not `+proj=tmerc`.
 
 ### `crs_defn` — textual CRS definition instead of SRID
 

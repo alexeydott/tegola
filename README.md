@@ -6,18 +6,19 @@
 [![Godoc](http://img.shields.io/badge/godoc-reference-blue.svg?style=flat)](https://godoc.org/github.com/go-spatial/tegola)
 [![license](http://img.shields.io/badge/license-MIT-red.svg?style=flat)](https://github.com/go-spatial/tegola/blob/master/LICENSE.md)
 
-Tegola is a vector tile server delivering [Mapbox Vector Tiles](https://github.com/mapbox/vector-tile-spec) with support for [PostGIS](https://postgis.net/), [GeoPackage](https://www.geopackage.org/) and [SAP HANA Spatial](https://www.sap.com/products/technology-platform/hana/what-is-sap-hana.html) data providers. User documentation can be found at [tegola.io](https://tegola.io)
+Tegola is a vector tile server delivering [Mapbox Vector Tiles](https://github.com/mapbox/vector-tile-spec) with support for [PostGIS](provider/postgis), [GeoPackage](provider/gpkg), [MySQL/MariaDB](provider/mysql) and [SAP HANA Spatial](https://www.sap.com/products/technology-platform/hana/what-is-sap-hana.html) data providers. User documentation can be found at [tegola.io](https://tegola.io)
 
 ## Features
 
 - Native geometry processing (simplification, clipping, make valid, intersection, contains, scaling, translation)
 - [Mapbox Vector Tile v2 specification](https://github.com/mapbox/vector-tile-spec) compliant.
 - An embedded viewer with an automatically generated style for quick data visualization and inspection.
-- Support for [PostGIS](provider/postgis) and [GeoPackage](provider/gpkg) data providers. Extensible design to support additional data providers.
-- Support for several cache backends: [memory](cache/memory), [multilevel](cache/multilevel), [file](cache/file), [s3](cache/s3), [redis](cache/redis), [azure blob store](cache/azblob).
+- Support for [PostGIS](provider/postgis), [GeoPackage](provider/gpkg), [MySQL/MariaDB](provider/mysql) and SAP HANA data providers, with a common configuration contract (see [docs/provider-contract.md](docs/provider-contract.md)).
+- Support for several cache backends: [memory](cache/memory), [multilevel](cache/multilevel), [file](cache/file), [gcs](cache/gcs), [s3](cache/s3), [redis](cache/redis), [azure blob store](cache/azblob).
 - Cache seeding and invalidation via individual tiles (ZXY), lat / lon bounds and ZXY tile list.
 - Parallelized tile serving and geometry processing.
-- Support for Web Mercator (3857) and WGS84 (4326) projections.
+- CRS support beyond built-in Web Mercator (3857) and WGS84 (4326): per-layer `srid` / `crs_defn` overrides, including custom PROJ.4 definitions. See [docs/crs.md](docs/crs.md).
+- Configurable input geometry formats: native provider geometry, WKB, WKT and MapplBase MOS blobs. See [docs/geometry-formats.md](docs/geometry-formats.md).
 - Support for [AWS Lambda](cmd/tegola_lambda).
 - Support for serving HTTPS.
 - Support for [PostGIS ST_AsMVT](mvtprovider/postgis).
@@ -119,6 +120,25 @@ never included in the tile cache key:
 
 The `tile` operation cannot be combined with other query parameters.
 Operation responses are marked `Cache-Control: no-store`.
+
+A cache backend must be configured for `?tile=update` and `?tile=getupdated`
+to work; without a cache these requests fail. `?tile=status` works without a
+cache and reports `"cached": false` in that case.
+
+Tile regeneration can also be forced with the `dirty` query parameter:
+
+```
+/maps/:map_name/:layer_name/:z/:x/:y?dirty
+/maps/:map_name/:layer_name/:z/:x/:y?dirty=1
+/maps/:map_name/:layer_name/:z/:x/:y?dirty=true
+```
+
+- The parameter is detected by its presence; empty values and the values
+  `1` / `true` (case-insensitive) force regeneration, other values are
+  ignored.
+- The regenerated tile is written back to the cache only when `dirty` is the
+  sole query parameter. Combined with any other query parameter the request
+  bypasses the cache entirely (read and write).
 
 ```
 /capabilities
