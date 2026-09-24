@@ -16,6 +16,7 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
 )
 
 const (
@@ -262,7 +263,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				}
 
 			case pLayer.geomFieldname:
-				// The MOS layer self-description blob (TLayerSystemInfoRec)
+				// The MOS layer self-description blob (MapplGIS LayerInfo)
 				// is metadata, never a feature: apply it to the MOS config
 				// and skip the row.
 				if pLayer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(vals[i]) {
@@ -274,6 +275,21 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 					if aerr := pLayer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
 						log.Errorf("error applying MOS system info: %v", aerr)
 						return aerr
+					}
+					if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(pLayer.srid), pLayer.crsExplicit, sysInfo.Projection); aerr != nil {
+						log.Errorf("error applying MOS system info projection: %v", aerr)
+						return aerr
+					} else if applied {
+						pLayer.srid = uint64(srid)
+						pLayer.crsExplicit = true
+						if pLayer.srid != tileSRID {
+							sourceBBox, berr := basic.FromWebMercatorExtent(pLayer.srid, tileBBox)
+							if berr != nil {
+								log.Errorf("error converting tile extent for system-info projection: %v", berr)
+								return berr
+							}
+							tileBBox = sourceBBox
+						}
 					}
 					skipRow = true
 					continue

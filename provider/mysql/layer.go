@@ -29,7 +29,7 @@ type Layer struct {
 	crsExplicit bool
 	// mosConfig holds the resolved MOS quantization settings (precision,
 	// unit factor) plus explicit-config flags that prevent a runtime
-	// TLayerSystemInfoRec blob from overriding an explicit provider- or
+	// MapplGIS LayerInfo blob from overriding an explicit provider- or
 	// layer-level mos_precision/mos_units setting, including explicit 0.
 	mosConfig codec.MOSConfig
 }

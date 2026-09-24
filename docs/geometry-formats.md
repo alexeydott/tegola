@@ -16,7 +16,7 @@ layer.
 | Native | *(unset / empty)* | The provider's own binary geometry handling: WKB-backed blobs for `postgis`/`hana`/`mysql` (`ST_AsBinary`), GeoPackage binary blobs for `gpkg`. |
 | WKB | `wkb` | Plain OGC WKB, e.g. selected via `ST_AsBinary(...)` in custom SQL. |
 | WKT | `wkt` | OGC WKT text, e.g. selected via `ST_AsText(...)`. |
-| MOS | `mos` | Opaque MapplBase MOS binary blob with integer-quantized coordinates. |
+| MOS | `mos` | Opaque MapplGIS MOS binary blob with integer-quantized coordinates. |
 
 `geometry_fieldname` selects the column that carries the geometry (default
 `geom`); `id_fieldname` selects the feature id column (default `fid` except
@@ -28,7 +28,7 @@ MOS coordinates are integers in a packed linear unit. `mos_precision` (decimal
 digits, default `0`) and `mos_units` (`mm`, `cm`, `dm`, `m`, `km`; default `m`)
 define the scale factor applied when converting to metres. Explicitly set
 `mos_precision`/`mos_units` always win over values detected from a
-`TLayerSystemInfoRec` metadata blob during startup inspection (see
+`MapplGIS LayerInfo` metadata blob during startup inspection (see
 [provider-contract.md](provider-contract.md#system-info-auto-configuration-mos)).
 
 ## CRS handling

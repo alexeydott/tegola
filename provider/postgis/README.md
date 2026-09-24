@@ -81,6 +81,22 @@ as parameters.
 -   `pool_max_conn_lifetime_jitter` [Optional] Duration after `max_conn_lifetime` to randomly decide to close a connection.
 -   `pool_health_check_period` [Optional] Is the duration between checks of the health of idle connections. Defaults to 1m
 
+### Pool sizing via TOML
+
+The pool count keys (`pool_min_conns`, `pool_min_idle_conns`, `pool_max_conns`)
+can also be set in the TOML provider config. Use natural TOML integers
+(the legacy quoted-string form is still accepted for backwards compatibility):
+
+```toml
+[[providers]]
+name = "test_postgis"
+type = "postgis"
+uri = "******localhost:5432/tegola?sslmode=prefer"
+pool_min_conns = 1
+pool_min_idle_conns = 2
+pool_max_conns = 10
+```
+
 ### TLS / SSL configuration
 
 SSL can be configured three ways. The provider resolves the effective values

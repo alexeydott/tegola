@@ -30,7 +30,7 @@ const (
 // 		name (string): [Required] the name of the layer. This is used to reference this layer from map layers.
 // 		tablename (string): [*Required] the name of the database table to query against. Required if sql is not defined.
 // 		geometry_fieldname (string): [Optional] the name of the filed which contains the geometry for the feature. defaults to geom
-// 		id_fieldname (string): [Optional] the name of the feature id field. defaults to gid
+// 		id_fieldname (string): [Optional] the name of the feature id field. defaults to empty (no id attribute unless configured)
 // 		fields ([]string): [Optional] a list of fields to include alongside the feature. Can be used if sql is not defined.
 // 		srid (int): [Optional] the SRID of the layer. Any numeric SRID known to the database is supported, as well as a synthetic SRID registered via crs_defn.
 // 		crs_defn (string): [Optional] A PROJ.4 definition of the layer's coordinate reference system, registered internally under a synthetic SRID. Wins over srid on the same level. Requires a raw geometry_format (wkb/wkt/mos) and is not supported for MVT providers.

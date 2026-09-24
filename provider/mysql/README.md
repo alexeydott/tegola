@@ -59,7 +59,7 @@ The `geometry_format` config option controls decoding:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect the packed binary geometry format written by Mappl GIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
+- `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
 
 ## MOS geometry format
 
@@ -77,13 +77,13 @@ optional `uint16` flags word before the subobject counts. Real coordinates are
 
 ### Layer system info blob (auto-configuration)
 
-MapplBase commonly stores a `TLayerSystemInfoRec` version wrapper blob near the beginning of every MOS geometry table. It carries the layer's self-description, and the provider samples up to 16 rows while looking for both a decodable geometry and this metadata at registration (for `tablename` and `sql` layers):
+MapplGIS commonly stores a `MapplGIS LayerInfo` version wrapper blob near the beginning of every MOS geometry table. It carries the layer's self-description, and the provider samples up to 16 rows while looking for both a decodable geometry and this metadata at registration (for `tablename` and `sql` layers):
 
 - `Precision` — the quantization precision (`kPrecision = 10^Precision`). Applied as the layer's `mos_precision` when neither the provider- nor layer-level `mos_precision` key is set.
 - `Projection` — the layer's full PROJ.4 definition. Registered as a synthetic SRID (≥ 340000001, same mechanism as `crs_defn`) and used as the layer SRID when no `srid`/`crs_defn` is configured at provider or layer level. Explicit config values always win.
 - `MapUnits` / `flMapUnitsDefined` — when `mos_units` is not configured, the declared unit is converted to a metres factor and applied after dequantization. Supported units are millimetres (`muMm`), centimetres (`muSm`), decimetres (`muDm`), metres (`muM`) and kilometres (`muKm`). Unsupported angular/undefined units are rejected.
 
-In practice this means a MOS table exported by MapplBase needs no `mos_precision`/`mos_units`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides.
+In practice this means a MOS table exported by MapplGIS needs no `mos_precision`/`mos_units`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides.
 
 ## SRID handling
 
@@ -93,7 +93,7 @@ SRID resolution order (highest priority first):
 2. Layer-level `srid` config value.
 3. Provider-level `crs_defn` config value.
 4. Provider-level `srid` config value (if explicitly configured).
-5. `TLayerSystemInfoRec.Projection` decoded from the sampled system info blob (MOS layers only, applied when no `srid`/`crs_defn` is configured at provider or layer level; registered as a synthetic SRID, see [docs/crs.md](../../docs/crs.md)).
+5. `MapplGIS LayerInfo projection` decoded from the sampled system info blob (MOS layers only, applied when no `srid`/`crs_defn` is configured at provider or layer level; registered as a synthetic SRID, see [docs/crs.md](../../docs/crs.md)).
 6. SRID decoded from the sampled geometry header at registration (native formats only).
 7. Default `3857` (Web Mercator).
 

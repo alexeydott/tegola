@@ -50,6 +50,7 @@ type TCConfig struct {
 	BaseConfig     map[string]any
 	ConfigOverride map[string]any
 	LayerConfig    []map[string]any
+	ExpectedErr    error
 }
 
 func (cfg TCConfig) Config(mConfig map[string]any) dict.Dict {
@@ -290,7 +291,7 @@ func TestPGXOnNotice(t *testing.T) {
 	ctx := t.Context()
 
 	tc := &TCConfig{}
-	cfg := tc.Config(DefaultConfig)
+	cfg := tc.Config(DefaultEnvConfig)
 	c := newDefaultConnector(cfg)
 
 	_, pgxCfg, _, err := c.Connect(ctx)

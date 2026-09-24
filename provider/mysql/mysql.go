@@ -20,6 +20,7 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
@@ -382,7 +383,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 				}
 
 			case pLayer.geomFieldname:
-				// a layer system info blob (MapplBase layer self-description)
+				// a layer system info blob (MapplGIS layer self-description)
 				// is metadata, not geometry; skip it silently.
 				if blob, ok := vals[i].([]byte); ok && mos.IsSystemInfoBlob(blob) {
 					if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosCfg, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
@@ -582,12 +583,12 @@ func applyRuntimeSystemInfo(
 		return fmt.Errorf("apply layer system-info: %w", err)
 	}
 
-	if !layer.crsExplicit && sysInfo.Projection != "" {
-		srid, err := basic.RegisterProj4Defn(sysInfo.Projection)
-		if err != nil {
-			return fmt.Errorf("register layer system-info projection: %w", err)
-		}
-		layer.srid = srid
+	srid, applied, err := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection)
+	if err != nil {
+		return fmt.Errorf("register layer system-info projection: %w", err)
+	}
+	if applied {
+		layer.srid = uint64(srid)
 		// Treat the runtime self-description as the resolved CRS for this
 		// request. A native geometry header may contain a placeholder or
 		// database SRID and must not override the projection declared by the

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -457,6 +458,11 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 	if err != nil {
 		return nil, err
 	}
+	if providerType == MVTProviderType {
+		if verr := codec.ValidateMVTGeometryFormat(providerGeometryFormat); verr != nil {
+			return nil, verr
+		}
+	}
 	if providerGeometryFormat != "" && providerGeometryFormat != codec.FormatMOS &&
 		(providerMOSCfg.PrecisionSet || providerMOSCfg.UnitsSet) {
 		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
@@ -532,20 +538,71 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			return nil, fmt.Errorf("for layer (%v) %v : %w", i, lName, err)
 		}
 
+		// tablename and sql are mutually exclusive. Presence is checked
+		// explicitly (like the postgis/gpkg providers) so an explicit
+		// tablename equal to the layer name is still detected.
+		_, errTable := layer.String(ConfigKeyTablename, nil)
+		_, errSQL := layer.String(ConfigKeySQL, nil)
+		tblPresent := true
+		if _, ok := errTable.(dict.ErrKeyRequired); ok {
+			tblPresent = false
+		} else if errTable != nil {
+			return nil, fmt.Errorf(
+				"for %v layer (%v) %v has an error: %w",
+				i,
+				lName,
+				ConfigKeyTablename,
+				errTable,
+			)
+		}
+		sqlPresent := true
+		if _, ok := errSQL.(dict.ErrKeyRequired); ok {
+			sqlPresent = false
+		} else if errSQL != nil {
+			return nil, fmt.Errorf(
+				"for %v layer (%v) %v has an error: %w",
+				i,
+				lName,
+				ConfigKeySQL,
+				errSQL,
+			)
+		}
+
+		if tblPresent && sqlPresent {
+			return nil, fmt.Errorf(
+				"for %v layer (%v) %v: only one of %v or %v can be specified",
+				providerType,
+				lName,
+				i,
+				ConfigKeyTablename,
+				ConfigKeySQL,
+			)
+		}
+		if !tblPresent && !sqlPresent {
+			return nil, fmt.Errorf(
+				"for %v layer (%v) %v: one of %v or %v must be specified",
+				providerType,
+				lName,
+				i,
+				ConfigKeyTablename,
+				ConfigKeySQL,
+			)
+		}
+
 		var tblName string
-		tblName, err = layer.String(ConfigKeyTablename, &lName)
-		if err != nil {
-			return nil, fmt.Errorf("for %v layer (%v) %v has an error: %w", i, lName, ConfigKeyTablename, err)
+		if tblPresent {
+			tblName, err = layer.String(ConfigKeyTablename, &lName)
+			if err != nil {
+				return nil, fmt.Errorf("for %v layer (%v) %v has an error: %w", i, lName, ConfigKeyTablename, err)
+			}
 		}
 
 		var sql string
-		sql, err = layer.String(ConfigKeySQL, &sql)
-		if err != nil {
-			return nil, fmt.Errorf("for %v layer (%v) %v has an error: %w", i, lName, ConfigKeySQL, err)
-		}
-
-		if tblName != lName && sql != "" {
-			log.Debugf("both %v and %v field are specified for layer (%v) %v, using only %[2]v field.", ConfigKeyTablename, ConfigKeySQL, i, lName)
+		if sqlPresent {
+			sql, err = layer.String(ConfigKeySQL, &sql)
+			if err != nil {
+				return nil, fmt.Errorf("for %v layer (%v) %v has an error: %w", i, lName, ConfigKeySQL, err)
+			}
 		}
 
 		// layer-level srid/crs_defn via the shared CRS contract; a layer
@@ -555,45 +612,6 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, lerr)
 		}
 		lsrid := lcrs.SRID
-
-		if lsrid < 0 {
-			// we try to auto detect SRID if it is not specified neither
-			// for the provider nor for the layer.
-			sqlQuery := sql
-			if sqlQuery == "" {
-				sqlQuery = fmt.Sprintf(`(SELECT * FROM %v)`, quoteIdentifier(tblName))
-			}
-
-			lsrid, err = getGeometryColumnSRID(p.pool, p.dbVersion, sqlQuery, geomfld)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		switch {
-		case isSyntheticCRS(uint64(lsrid)):
-			// A synthetic SRID registered from crs_defn exists only on the
-			// client side: HANA spatial predicates and MVT generation need a
-			// database-side SRS, so !BBOX! degrades to 1=1 (see getBBoxFilter)
-			// and filtering happens in memory on a raw geometry format.
-			if providerType == MVTProviderType {
-				return nil, fmt.Errorf(
-					"for layer (%v) %v: %v (synthetic SRID) is not supported for MVT providers",
-					i, lName, crsconfig.KeyCRSDefn,
-				)
-			}
-			if providerGeometryFormat == "" {
-				return nil, fmt.Errorf(
-					"for layer (%v) %v: %v (synthetic SRID) requires %v = %q or %q; native HANA ST_Geometry columns use a database-side SRS",
-					i, lName, crsconfig.KeyCRSDefn, codec.ConfigKeyGeometryFormat, codec.FormatWKB, codec.FormatWKT,
-				)
-			}
-		case isSrsRoundEarth(p.pool, uint64(lsrid)):
-			if !hasSrsPlanarEquivalent(p.pool, uint64(lsrid)) {
-				return nil, fmt.Errorf("unable to find a planar equivalent for srid %v in layer: %v", lsrid, lName)
-			}
-			lsrid = int(toPlanarEquivalenSrid(uint64(lsrid)))
-		}
 
 		l := Layer{
 			name:           lName,
@@ -635,13 +653,62 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 				l.mosConfig.UnitFactor = codec.DefaultMOSConfig().UnitFactor
 			}
 		}
-		// MVT providers must not take the raw MOS path: their geometry is
-		// MVT bytes produced by the database, not a raw feature geometry.
-		if providerType == MVTProviderType && l.geometryFormat == codec.FormatMOS {
-			return nil, fmt.Errorf(
-				"for layer (%v) %v: %v = %q is not supported for MVT providers",
-				i, lName, codec.ConfigKeyGeometryFormat, codec.FormatMOS,
-			)
+
+		if lsrid < 0 {
+			// we try to auto detect SRID if it is not specified neither
+			// for the provider nor for the layer. Native HANA ST_Geometry
+			// columns can report their SRS via ST_SRID(); raw formats cannot:
+			// MOS layers self-describe through a system-info blob, while
+			// plain WKB/WKT columns carry no CRS information at all.
+			switch {
+			case l.geometryFormat == codec.FormatMOS:
+				if aerr := p.applyMOSSourceCRS(&l, lcrs.Explicit, sql, tblName); aerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, aerr)
+				}
+				lsrid = int(l.srid)
+			case codec.IsRawFormat(l.geometryFormat):
+				// wkb/wkt
+				return nil, fmt.Errorf(
+					"for layer (%v) %v: source CRS unresolved; %v columns carry no CRS metadata, specify %v or %v",
+					i, lName, l.geometryFormat, crsconfig.KeySRID, crsconfig.KeyCRSDefn,
+				)
+			default:
+				sqlQuery := sql
+				if sqlQuery == "" {
+					sqlQuery = fmt.Sprintf(`(SELECT * FROM %v)`, quoteTableName(tblName))
+				}
+
+				lsrid, err = getGeometryColumnSRID(p.pool, p.dbVersion, sqlQuery, geomfld)
+				if err != nil {
+					return nil, err
+				}
+				l.srid = uint64(lsrid)
+			}
+		}
+
+		switch {
+		case isSyntheticCRS(uint64(lsrid)):
+			// A synthetic SRID registered from crs_defn exists only on the
+			// client side: HANA spatial predicates and MVT generation need a
+			// database-side SRS, so !BBOX! degrades to 1=1 (see getBBoxFilter)
+			// and filtering happens in memory on a raw geometry format.
+			if verr := validateCRSFormatCompatibility(lsrid, providerType, l.geometryFormat); verr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
+			}
+		case isSrsRoundEarth(p.pool, uint64(lsrid)):
+			if !hasSrsPlanarEquivalent(p.pool, uint64(lsrid)) {
+				return nil, fmt.Errorf("unable to find a planar equivalent for srid %v in layer: %v", lsrid, lName)
+			}
+			lsrid = int(toPlanarEquivalenSrid(uint64(lsrid)))
+			l.srid = uint64(lsrid)
+		}
+
+		// MVT providers must not take the raw geometry path: their geometry
+		// is MVT bytes produced by the database, not a raw feature geometry.
+		if providerType == MVTProviderType {
+			if verr := codec.ValidateMVTGeometryFormat(l.geometryFormat); verr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
+			}
 		}
 
 		if sql != "" && !isSelectQuery(sql) {
@@ -872,7 +939,7 @@ func geometryFormatName(format string) string {
 }
 
 // inspectMOSLayerGeomType samples the first rows of the layer's SQL, applies
-// any TLayerSystemInfoRec blob to the MOS config, and derives the geometry
+// any MapplGIS LayerInfo blob to the MOS config, and derives the geometry
 // type from the first decodable MOS geometry.
 func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	sqlQuery := strings.Replace(l.sql, "!ZOOM!", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24", 1)
@@ -952,6 +1019,106 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	return nil
 }
 
+// applyMOSSourceCRS resolves the source CRS for a MOS layer whose srid was
+// not configured: it samples the first rows of the layer's SQL, applies any
+// MapplGIS LayerInfo blob to the MOS config, and registers the recorded
+// projection as the layer SRID. When the CRS was configured explicitly (via
+// srid or crs_defn at either level) the source projection is ignored, which
+// is also why an explicit crs_defn never appears here as a negative lsrid.
+func (p Provider) applyMOSSourceCRS(l *Layer, explicit bool, layerSQL string, tblName string) error {
+	sqlQuery := layerSQL
+	if sqlQuery == "" {
+		if tblName == "" {
+			return fmt.Errorf("unable to determine source SQL for layer (%v): neither %v nor %v specified",
+				l.name, crsconfig.KeySRID, crsconfig.KeyCRSDefn,
+			)
+		}
+		sqlQuery = fmt.Sprintf(`(SELECT * FROM %v)`, quoteTableName(tblName))
+	}
+
+	sqlQuery = strings.Replace(sqlQuery, "!ZOOM!", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24", 1)
+	// neutralize the spatial predicate: MOS blobs cannot use it and it
+	// could filter out all rows during inspection
+	sqlQuery = strings.Replace(sqlQuery, bboxToken, "1=1", -1)
+
+	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
+	sqlQuery, err := replaceTokens(p.dbVersion, sqlQuery, l.IDFieldName(), l.GeomFieldName(), l.GeomType(), l.SRID(), tile, true)
+	if err != nil {
+		return err
+	}
+
+	sqlQuery = provider.ParameterTokenRegexp.ReplaceAllString(sqlQuery, "")
+
+	rows, err := p.pool.QueryContext(context.Background(), sqlQuery)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	columns, err := rows.ColumnTypes()
+	if err != nil {
+		return err
+	}
+
+	fields, err := getFieldDescriptions(l.Name(), l.GeomFieldName(), l.IDFieldName(), columns, false)
+	if err != nil {
+		return err
+	}
+
+	rowValues := make([]interface{}, len(fields))
+
+	for rows.Next() {
+		setupRowValues(fields, rowValues)
+
+		if err := rows.Scan(rowValues...); err != nil {
+			return fmt.Errorf("error running layer (%v) SQL (%v): %w", l.name, sqlQuery, err)
+		}
+
+		for i := range rowValues {
+			if rowValues[i] == nil || fields[i].name != l.GeomFieldName() {
+				continue
+			}
+
+			raw, ok := blobBytes(rowValues[i])
+			if !ok {
+				return fmt.Errorf("layer (%v): unexpected MOS column type %T", l.name, rowValues[i])
+			}
+
+			// system info rows carry the layer's source projection
+			if mos.IsSystemInfoBlob(raw) {
+				sysInfo, serr := mos.ParseSystemInfo(raw)
+				if serr != nil {
+					return fmt.Errorf("layer (%v): invalid MOS system info: %w", l.name, serr)
+				}
+				if aerr := l.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
+					return fmt.Errorf("layer (%v): %w", l.name, aerr)
+				}
+				projection := sysInfo.Projection
+				srid, _, aerr := crsconfig.ApplySystemInfoCRS(int(l.srid), explicit, projection)
+				if aerr != nil {
+					return fmt.Errorf("layer (%v): %w", l.name, aerr)
+				}
+				l.srid = uint64(srid)
+				return rows.Err()
+			}
+
+			// first real geometry: the layer carries no system info, so no
+			// source projection can be recovered
+			return fmt.Errorf(
+				"layer (%v): source CRS unresolved; MOS column carries no system info, specify %v or %v",
+				l.name, crsconfig.KeySRID, crsconfig.KeyCRSDefn,
+			)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf(
+		"layer (%v): source CRS unresolved; MOS column carries no system info, specify %v or %v",
+		l.name, crsconfig.KeySRID, crsconfig.KeyCRSDefn,
+	)
+}
+
 // blobBytes normalizes driver values that may arrive as []byte or string.
 func blobBytes(v interface{}) ([]byte, bool) {
 	switch val := v.(type) {
@@ -1005,7 +1172,7 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 	}
 
 	// per-tile copy of the layer's resolved MOS config so runtime
-	// TLayerSystemInfoRec application does not mutate provider state.
+	// MapplGIS LayerInfo application does not mutate provider state.
 	mosCfg := plyr.mosConfig
 
 	// buffered tile extent in WebMercator, used by the exact in-memory
@@ -1093,7 +1260,7 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 			continue
 		}
 
-		// The MOS layer self-description blob (TLayerSystemInfoRec) is
+		// The MOS layer self-description blob (MapplGIS LayerInfo) is
 		// metadata, never a feature: apply it to the MOS config and skip
 		// the row.
 		if plyr.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geobytes) {
@@ -1111,8 +1278,8 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		geometry, err := decodeGeometryValue(geobytes, plyr.geometryFormat, mosCfg)
 		if err != nil {
 			if plyr.geometryFormat == "" {
-				switch err.(type) {
-				case wkb.ErrUnknownGeometryType:
+				var ugt wkb.ErrUnknownGeometryType
+				if errors.As(err, &ugt) {
 					rplfn := layer + ":" + plyr.GeomFieldName()
 					// Only report to the log once. This is to prevent the logs from filling up if there are many geometries in the layer
 					if reportedLayerFieldName == "" || reportedLayerFieldName == rplfn {
@@ -1129,7 +1296,7 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		// mos) and synthetic CRS layers whose SQL cannot use native spatial
 		// predicates; harmless for native geometry already filtered via
 		// !BBOX!.
-		if (plyr.geometryFormat == codec.FormatMOS || isSyntheticCRS(tileSRID)) &&
+		if (codec.IsRawFormat(plyr.geometryFormat) || isSyntheticCRS(tileSRID)) &&
 			!codec.GeometryIntersectsExtent(geometry, tileBBox) {
 			continue
 		}

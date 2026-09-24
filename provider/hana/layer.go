@@ -24,7 +24,7 @@ type Layer struct {
 	// geometryFormat selects how the geometry column is decoded:
 	// "" (default; HANA native geometry returned via ST_AsBinary),
 	// "wkb" (plain WKB column read raw, no ST_AsBinary), "wkt" (WKT text)
-	// or "mos" (opaque MapplBase binary blob read raw).
+	// or "mos" (opaque MapplGIS binary blob read raw).
 	geometryFormat string
 	// mosConfig holds the resolved MOS quantization settings used with
 	// geometry_format = "mos".

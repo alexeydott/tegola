@@ -4,8 +4,79 @@ import (
 	"testing"
 
 	"github.com/go-spatial/tegola"
+	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/provider"
 )
+
+func TestValidateCRSFormatCompatibility(t *testing.T) {
+	type tcase struct {
+		srid           int
+		providerType   string
+		geometryFormat string
+		expectedErr    string
+	}
+
+	fn := func(tc tcase) func(t *testing.T) {
+		return func(t *testing.T) {
+			err := validateCRSFormatCompatibility(tc.srid, tc.providerType, tc.geometryFormat)
+			if tc.expectedErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error, Expected nil Got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Errorf("expected error, Expected %v Got nil", tc.expectedErr)
+				return
+			}
+			if err.Error() != tc.expectedErr {
+				t.Errorf("incorrect error,\n Expected \n \t%v\n Got \n \t%v", tc.expectedErr, err.Error())
+			}
+		}
+	}
+
+	synthetic := int(basic.SyntheticSRIDMin + 1000)
+
+	tests := map[string]tcase{
+		"non-synthetic srid, native format": {
+			srid: 3857,
+		},
+		"non-synthetic srid, raw format": {
+			srid:           3857,
+			geometryFormat: "wkb",
+		},
+		"synthetic srid, wkb ok": {
+			srid:           synthetic,
+			geometryFormat: "wkb",
+		},
+		"synthetic srid, wkt ok": {
+			srid:           synthetic,
+			geometryFormat: "wkt",
+		},
+		"synthetic srid, mos ok": {
+			srid:           synthetic,
+			geometryFormat: "mos",
+		},
+		"synthetic srid, empty format rejected": {
+			srid:        synthetic,
+			expectedErr: `crs_defn (synthetic SRID) requires geometry_format = "wkb", "wkt", or "mos"; native HANA ST_Geometry columns use a database-side SRS`,
+		},
+		"synthetic srid, mvt rejected": {
+			srid:           synthetic,
+			providerType:   "mvt_hana",
+			geometryFormat: "wkb",
+			expectedErr:    `crs_defn (synthetic SRID) is not supported for MVT providers`,
+		},
+		"planar equivalent of round-earth is not synthetic": {
+			srid:           int(1000000000 + 4326),
+			geometryFormat: "",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
 
 func TestReplaceTokens(t *testing.T) {
 	type tcase struct {
@@ -85,6 +156,60 @@ func TestReplaceTokens(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+// TestGenSQLRawFormat covers the R3-08 provider-level regression for the
+// HANA SQL generation matrix: raw geometry columns (wkb / wkt / mos) must
+// bypass ST_Geometry wrappers and spatial predicates, while native format
+// keeps them.
+func TestGenSQLRawFormat(t *testing.T) {
+	type tcase struct {
+		name           string
+		geometryFormat string
+		expectedSQL    string
+	}
+
+	tests := []tcase{
+		{
+			name:           "native format uses spatial predicate",
+			geometryFormat: "",
+			expectedSQL:   `SELECT "id", "geom".ST_AsBinary()  AS "geom" FROM "tbl" WHERE !BBOX!`,
+		},
+		{
+			name:           "mos format selects raw blob without bbox predicate",
+			geometryFormat: "mos",
+			expectedSQL:   `SELECT "id", "geom" AS "geom" FROM "tbl" WHERE "geom" IS NOT NULL`,
+		},
+		{
+			name:           "wkb format selects raw value without bbox predicate",
+			geometryFormat: "wkb",
+			expectedSQL:   `SELECT "id", "geom" AS "geom" FROM "tbl" WHERE "geom" IS NOT NULL`,
+		},
+		{
+			name:           "wkt format selects raw value without bbox predicate",
+			geometryFormat: "wkt",
+			expectedSQL:   `SELECT "id", "geom" AS "geom" FROM "tbl" WHERE "geom" IS NOT NULL`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &Layer{
+				name:           "layer",
+				geomField:      "geom",
+				idField:        "id",
+				srid:           tegola.WebMercator,
+				geometryFormat: tc.geometryFormat,
+			}
+			sql, err := genSQL(l, "tbl", []string{"id", "geom"}, false, ProviderType)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sql != tc.expectedSQL {
+				t.Errorf("incorrect sql,\n Expected \n \t%v\n Got \n \t%v", tc.expectedSQL, sql)
+			}
+		})
 	}
 }
 

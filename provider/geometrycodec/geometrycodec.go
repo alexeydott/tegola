@@ -1,7 +1,7 @@
 // Package geometrycodec implements the provider-independent geometry format
 // contract shared by all standard storage providers (gpkg, postgis, mysql,
 // hana). It hosts the common configuration parsing for `geometry_format`,
-// `mos_precision` and `mos_units`, the MOS decode adapter, TLayerSystemInfoRec
+// `mos_precision` and `mos_units`, the MOS decode adapter, MapplGIS LayerInfo
 // (layer self-description) inspection/application and the exact in-memory
 // geometry-vs-extent filter used when a spatial predicate cannot be pushed
 // into SQL.
@@ -36,13 +36,42 @@ const (
 
 // Common geometry format values understood by every standard provider.
 const (
-	// FormatMOS selects the opaque MapplBase MOS binary blob format.
+	// FormatMOS selects the opaque MapplGIS MOS binary blob format.
 	FormatMOS = "mos"
 	// FormatWKB selects plain OGC WKB (e.g. selected via ST_AsBinary).
 	FormatWKB = "wkb"
 	// FormatWKT selects WKT text (e.g. selected via ST_AsText).
 	FormatWKT = "wkt"
 )
+
+// IsRawFormat reports whether the given geometry format value selects a raw
+// (non-native) geometry representation that the provider reads directly from
+// the database without database-side conversion helpers (e.g. ST_AsBinary).
+// Both WKB and WKT columns are raw formats, as is MOS. Raw formats share a
+// common behavior across providers: the geometry column cannot be used in
+// server-side geometry predicates (hence "IS NOT NULL" SQL guards and
+// in-memory bbox filtering) and is excluded from MVT providers.
+func IsRawFormat(format string) bool {
+	switch format {
+	case FormatMOS, FormatWKB, FormatWKT:
+		return true
+	}
+	return false
+}
+
+// ValidateMVTGeometryFormat rejects raw geometry formats on MVT passthrough
+// providers (mvt_postgis, mvt_hana): their geometry is MVT bytes produced by
+// the database, not a raw feature geometry that can be decoded client-side.
+// An empty format means the provider-native default and is always valid.
+func ValidateMVTGeometryFormat(format string) error {
+	if IsRawFormat(format) {
+		return fmt.Errorf(
+			"%v = %q is not supported for MVT providers; use a standard provider (postgis/hana) instead",
+			ConfigKeyGeometryFormat, format,
+		)
+	}
+	return nil
+}
 
 // Default MOS quantization settings: integer units with no offset.
 const (
@@ -67,14 +96,14 @@ func ValidateMOSPrecision(p float64) error {
 
 // MOSConfig holds the resolved MOS quantization settings for a layer together
 // with flags marking which values were set explicitly. Explicit settings
-// always win over TLayerSystemInfoRec self-description.
+// always win over MapplGIS LayerInfo self-description.
 type MOSConfig struct {
 	// Precision is the number of decimal digits the quantized integer
-	// coordinates carry (mos_precision config or TLayerSystemInfoRec.Precision).
+	// coordinates carry (mos_precision config or MapplGIS LayerInfo precision).
 	Precision float64
 	// UnitFactor scales the dequantized coordinates from the configured map
 	// units to metres of the projected CRS (mos_units config or
-	// TLayerSystemInfoRec.MapUnits); defaults to 1.
+	// MapplGIS LayerInfo map units); defaults to 1.
 	UnitFactor float64
 	// PrecisionSet marks an explicit provider- or layer-level mos_precision.
 	PrecisionSet bool
@@ -179,7 +208,7 @@ func resolveMOSUnits(cfg dict.Dicter, errPrefix string) (float64, bool, error) {
 }
 
 // ApplySystemInfo fills in the unset values from a parsed
-// TLayerSystemInfoRec layer self-description. Explicit configuration always
+// MapplGIS LayerInfo layer self-description. Explicit configuration always
 // wins. The receiver is updated in place so both startup registration and
 // per-tile runtime application share one implementation. nil is a no-op.
 func (c *MOSConfig) ApplySystemInfo(si *mos.SystemInfo) error {
@@ -221,7 +250,7 @@ func blobValue(v interface{}) ([]byte, bool) {
 	return nil, false
 }
 
-// IsSystemInfoValue reports whether v looks like a TLayerSystemInfoRec
+// IsSystemInfoValue reports whether v looks like a MapplGIS LayerInfo
 // version wrapper blob rather than a regular MOS geometry.
 func IsSystemInfoValue(v interface{}) bool {
 	b, ok := blobValue(v)
@@ -231,7 +260,7 @@ func IsSystemInfoValue(v interface{}) bool {
 	return mos.IsSystemInfoBlob(b)
 }
 
-// ParseSystemInfoValue parses v as a TLayerSystemInfoRec blob.
+// ParseSystemInfoValue parses v as a MapplGIS LayerInfo blob.
 func ParseSystemInfoValue(v interface{}) (mos.SystemInfo, error) {
 	b, ok := blobValue(v)
 	if !ok {
@@ -262,7 +291,9 @@ func DecodeWKB(v interface{}) (geom.Geometry, error) {
 	}
 	g, err := wkb.DecodeBytes(b)
 	if err != nil {
-		return nil, fmt.Errorf("error decoding WKB geometry: %v", err)
+		// %w keeps wkb.ErrUnknownGeometryType intact so providers can
+		// detect it with errors.As and skip unsupported 3D geometries.
+		return nil, fmt.Errorf("error decoding WKB geometry: %w", err)
 	}
 	return g, nil
 }

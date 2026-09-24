@@ -44,6 +44,52 @@ func TestValidateMOSPrecision(t *testing.T) {
 	}
 }
 
+func TestValidateMVTGeometryFormat(t *testing.T) {
+	type tcase struct {
+		format      string
+		expectedErr string
+	}
+
+	fn := func(tc tcase) func(*testing.T) {
+		return func(t *testing.T) {
+			err := geometrycodec.ValidateMVTGeometryFormat(tc.format)
+			if tc.expectedErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error, Expected nil Got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Errorf("expected error, Expected %v Got nil", tc.expectedErr)
+				return
+			}
+			if err.Error() != tc.expectedErr {
+				t.Errorf("incorrect error,\n Expected \n \t%v\n Got \n \t%v", tc.expectedErr, err.Error())
+			}
+		}
+	}
+
+	tests := map[string]tcase{
+		"empty is valid":  {"", ""},
+		"native is valid": {"native", ""},
+		"wkb rejected": {
+			"wkb",
+			`geometry_format = "wkb" is not supported for MVT providers; use a standard provider (postgis/hana) instead`,
+		},
+		"wkt rejected": {
+			"wkt",
+			`geometry_format = "wkt" is not supported for MVT providers; use a standard provider (postgis/hana) instead`,
+		},
+		"mos rejected": {
+			"mos",
+			`geometry_format = "mos" is not supported for MVT providers; use a standard provider (postgis/hana) instead`,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
+
 func TestResolveMOSConfig(t *testing.T) {
 	type tcase struct {
 		provider     dict.Dict
@@ -141,7 +187,7 @@ func TestResolveMOSConfig(t *testing.T) {
 	}
 }
 
-// sysInfoBlob builds a minimal valid TLayerSystemInfoRec blob with the given
+// sysInfoBlob builds a minimal valid MapplGIS LayerInfo blob with the given
 // precision, map units and projection, exercising the real mos parser.
 func sysInfoBlob(t *testing.T, precision int32, mapUnits byte, mapUnitsDefined bool, projection string) []byte {
 	t.Helper()

@@ -214,6 +214,60 @@ func TestConnPlanerConnModeEnv(t *testing.T) {
 				},
 			},
 		},
+		"pool count keys as TOML integers": {
+			mode: connModeURI,
+			config: dict.Dict(map[string]any{
+				"uri":                 "postgres://user:secret@host:1337/dbname",
+				"pool_max_conns":      10,
+				"pool_min_conns":      1,
+				"pool_min_idle_conns": 2,
+			}),
+			envTriggerKeys: connModeEnvTriggers,
+			expectedPlan: connPlan{
+				Mode:           connModeURI,
+				EnvTriggerKeys: connModeEnvTriggers,
+
+				URIProvided: true,
+				URIString:   "postgres://user:secret@host:1337/dbname",
+
+				SSLMode:     DefaultSSLMode,
+				SSLKey:      DefaultSSLKey,
+				SSLCert:     DefaultSSLCert,
+				SSLRootCert: "",
+
+				RuntimeParams: resolveRunTimeParams(dict.Dict{}, defaultRuntimeParamRules()),
+				Pool: PoolSettings{
+					MaxConns:     10,
+					MinConns:     1,
+					MinIdleConns: 2,
+				},
+			},
+		},
+		"pool count keys as strings stay backwards compatible": {
+			mode: connModeURI,
+			config: dict.Dict(map[string]any{
+				"uri":            "postgres://user:secret@host:1337/dbname",
+				"pool_max_conns": "10",
+			}),
+			envTriggerKeys: connModeEnvTriggers,
+			expectedPlan: connPlan{
+				Mode:           connModeURI,
+				EnvTriggerKeys: connModeEnvTriggers,
+
+				URIProvided: true,
+				URIString:   "postgres://user:secret@host:1337/dbname",
+
+				SSLMode:     DefaultSSLMode,
+				SSLKey:      DefaultSSLKey,
+				SSLCert:     DefaultSSLCert,
+				SSLRootCert: "",
+
+				RuntimeParams: resolveRunTimeParams(dict.Dict{}, defaultRuntimeParamRules()),
+				Pool: PoolSettings{
+					MaxConns: 10,
+				},
+			},
+		},
 		"canonical pool idle time key wins over deprecated alias": {
 			mode: connModeURI,
 			config: dict.Dict(map[string]any{

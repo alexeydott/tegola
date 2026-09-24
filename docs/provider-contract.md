@@ -44,9 +44,14 @@ The CRS resolution order is identical for every standard provider:
 2. Layer `srid`
 3. Provider `crs_defn`
 4. Provider `srid` (if explicitly configured)
-5. Source-derived SRID (database metadata, geometry header or — for MySQL MOS
-   layers — the `TLayerSystemInfoRec.Projection` blob)
+5. Source-derived SRID (database metadata, geometry header or — for MOS
+   layers of any standard provider — the `MapplGIS LayerInfo projection`
+   blob)
 6. Provider default (usually 3857)
+
+Provider-native metadata is consulted only in the provider's native geometry
+paths; raw-format layers always fall back to the system-info projection (see
+[crs.md](crs.md) for the per-provider auto-detect details).
 
 Built-in projected SRIDs and custom PROJ.4 definitions are documented in
 [crs.md](crs.md).
@@ -87,7 +92,7 @@ filter, the data and the MVT encoding agree on one CRS (see
 
 ## System info auto-configuration (MOS)
 
-MOS tables written by MapplBase carry a `TLayerSystemInfoRec` metadata blob.
+MOS tables written by MapplGIS carry a `MapplGIS LayerInfo` metadata blob.
 During startup inspection (up to 16 rows sampled) the provider reads:
 
 - `Precision` → `mos_precision` (when not explicitly configured),
@@ -108,7 +113,7 @@ are skipped as feature rows.
 | system info auto-config | yes | yes | yes | yes |
 | native spatial filter | yes (MBR/indexed bounds) | yes (RTree index; skipped for `mos`) | yes (`&&`) | yes (`ST_IntersectsRect*`; skipped for `mos` and synthetic CRS) |
 | `id_fieldname` default | `fid` | `fid` | empty | empty |
-| MVT variant | — | — | `mvt_postgis` | — |
+| MVT variant | — | — | `mvt_postgis` | `mvt_hana` |
 
 HANA notes:
 

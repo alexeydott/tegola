@@ -10,7 +10,61 @@ import (
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/ttools"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/geometrycodec"
 )
+
+// TestGenSQLRawFormat covers the R3-08 provider-level regression for the
+// PostGIS SQL generation matrix: raw geometry columns (wkb / wkt / mos) must
+// bypass ST_AsBinary and spatial predicates, while native format keeps them.
+func TestGenSQLRawFormat(t *testing.T) {
+	type tcase struct {
+		name           string
+		geometryFormat string
+		expectedSQL    string
+	}
+
+	tests := []tcase{
+		{
+			name:           "native format uses bbox predicate",
+			geometryFormat: "",
+			expectedSQL:    `SELECT "id", ST_AsBinary("geom") AS "geom", "id" FROM tbl WHERE "geom" && !BBOX!`,
+		},
+		{
+			name:           "mos format selects raw blob without bbox predicate",
+			geometryFormat: geometrycodec.FormatMOS,
+			expectedSQL:    `SELECT "id", "geom" AS "geom", "id" FROM tbl WHERE "geom" IS NOT NULL`,
+		},
+		{
+			name:           "wkb format selects raw value without bbox predicate",
+			geometryFormat: geometrycodec.FormatWKB,
+			expectedSQL:    `SELECT "id", "geom" AS "geom", "id" FROM tbl WHERE "geom" IS NOT NULL`,
+		},
+		{
+			name:           "wkt format selects raw value without bbox predicate",
+			geometryFormat: geometrycodec.FormatWKT,
+			expectedSQL:    `SELECT "id", "geom" AS "geom", "id" FROM tbl WHERE "geom" IS NOT NULL`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &Layer{
+				name:           "layer",
+				geomField:      "geom",
+				idField:        "id",
+				srid:           3857,
+				geometryFormat: tc.geometryFormat,
+			}
+			sql, err := genSQL(l, nil, "tbl", []string{"id", "geom"}, false, ProviderType)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sql != tc.expectedSQL {
+				t.Errorf("incorrect sql,\n Expected \n \t%v\n Got \n \t%v", tc.expectedSQL, sql)
+			}
+		})
+	}
+}
 
 func TestReplaceTokens(t *testing.T) {
 	type tcase struct {
@@ -167,7 +221,7 @@ func TestDecipherFields(t *testing.T) {
 		expectedTags     map[string]any
 	}
 
-	uri := "postgres://postgres:postgres@localhost:5432/tegola?sslmode=disable"
+	uri := ttools.GetEnvDefault("PGURI", "postgres://postgres:postgres@localhost:5432/tegola?sslmode=disable")
 	c := newDefaultConnector(dict.Dict{"uri": uri})
 
 	pool, _, _, err := c.Connect(ctx)

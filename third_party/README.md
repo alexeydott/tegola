@@ -35,3 +35,39 @@ under `third_party/`, then run `go mod vendor`.
 The `go` directive of the fork go.mod files (`go 1.21`) must stay at or below
 the main module's `go` directive. The `require` versions in the root
 `go.mod` still record the upstream baselines (`geom v0.1.0`, `proj v0.3.0`).
+
+## Consuming this fork as a Go module (external consumers)
+
+Go only honours `replace` directives from the **main** module of a build.
+A consumer that imports this fork as a dependency does **not** inherit the
+filesystem `replace` directives above, so it would build against the
+*unpatched* upstream `geom`/`proj` modules and silently lose both the
+`+towgs84` datum-shift reprojection fix (proj) and the MVT
+degenerate-geometry guards (geom).
+
+Until the fixes are upstreamed, external consumers (e.g. go-wfs/Jivan)
+**must** replicate the replaces in their own `go.mod`:
+
+```
+require github.com/go-spatial/tegola <fork-version>
+
+replace (
+    github.com/go-spatial/geom => github.com/alexeydott/geom <fork-revision>
+    github.com/go-spatial/proj => github.com/alexeydott/proj <fork-revision>
+)
+```
+
+Publish the fork modules under the same import paths at accessible VCS
+revisions (or point the replaces at your own local checkouts of
+`third_party/go-spatial/geom` / `third_party/go-spatial/proj`).
+
+Smoke-check a consumer module:
+
+1. Create a module outside this repository that imports a tegola provider
+   package (e.g. `provider/postgis`).
+2. `go list -m all` — confirm `github.com/go-spatial/geom` and
+   `github.com/go-spatial/proj` resolve to the fork revisions, not upstream.
+3. `go build ./...` — must succeed with **no reference** to this checkout's
+   `./third_party` paths.
+4. Verify patched behaviour: a `+towgs84` projection converts (proj fix) and
+   MVT encoding of a clipped degenerate LineString does not panic (geom fix).

@@ -97,9 +97,7 @@ func genSQL(
 	// rawGeometryFormat reports whether the geometry column carries a raw
 	// value (plain WKB/WKT/MOS blob) that must be selected verbatim instead
 	// of being wrapped in ST_AsBinary.
-	rawGeometryFormat := l.geometryFormat == codec.FormatWKB ||
-		l.geometryFormat == codec.FormatWKT ||
-		l.geometryFormat == codec.FormatMOS
+	rawGeometryFormat := codec.IsRawFormat(l.geometryFormat)
 
 	// to avoid field names possibly colliding with Postgres keywords,
 	// we wrap the field names in quotes
@@ -134,10 +132,11 @@ func genSQL(
 
 	if isMVT(providerType) {
 		sqlTmpl = mvtSQL
-	} else if l.geometryFormat == codec.FormatMOS {
-		// MOS blobs are not PostGIS geometries: native spatial predicates
-		// (&&, ST_Intersects, ...) cannot be applied to them. Filtering is
-		// done in memory after decoding (see TileFeatures).
+	} else if codec.IsRawFormat(l.geometryFormat) {
+		// Raw geometry columns (MOS blobs, plain WKB/WKT) are not PostGIS
+		// geometries: native spatial predicates (&&, ST_Intersects, ...)
+		// cannot be applied to them. Filtering is done in memory after
+		// decoding (see TileFeatures).
 		sqlTmpl = `SELECT %[1]v FROM %[2]v WHERE "%[3]v" IS NOT NULL`
 	} else if basic.IsSyntheticSRID(l.srid) {
 		// A textual crs_defn is registered only in Tegola. Keep generated

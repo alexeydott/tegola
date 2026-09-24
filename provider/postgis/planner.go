@@ -270,6 +270,27 @@ func (ps *PoolSettings) resolveFromConfig(cfg dict.Dicter) error {
 		return v, v != "", nil
 	}
 
+	// count accepts the natural TOML integer form as well as the legacy
+	// string form ("10") for backwards compatibility.
+	count := func(key string) (int32, bool, error) {
+		v, ok := cfg.Interface(key)
+		if !ok {
+			return 0, false, nil
+		}
+		switch n := v.(type) {
+		case int:
+			return int32(n), true, nil
+		case string:
+			parsed, err := strconv.ParseInt(n, 10, 32)
+			if err != nil {
+				return 0, false, fmt.Errorf("invalid %v value %q: %w", key, n, err)
+			}
+			return int32(parsed), true, nil
+		default:
+			return 0, false, fmt.Errorf("invalid %v value %v: expected an integer", key, v)
+		}
+	}
+
 	parseDuration := func(key, v string) (time.Duration, error) {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -286,34 +307,22 @@ func (ps *PoolSettings) resolveFromConfig(cfg dict.Dicter) error {
 		return ConfigKeyPoolMaxConnIdleTime
 	}()
 
-	if raw, ok, err := str(ConfigKeyPoolMinConns); err != nil {
+	if n, ok, err := count(ConfigKeyPoolMinConns); err != nil {
 		return err
 	} else if ok {
-		n, err := strconv.ParseInt(raw, 10, 32)
-		if err != nil {
-			return fmt.Errorf("invalid %v value %q: %w", ConfigKeyPoolMinConns, raw, err)
-		}
-		ps.MinConns = int32(n)
+		ps.MinConns = n
 	}
 
-	if raw, ok, err := str(ConfigKeyPoolMinIdleConns); err != nil {
+	if n, ok, err := count(ConfigKeyPoolMinIdleConns); err != nil {
 		return err
 	} else if ok {
-		n, err := strconv.ParseInt(raw, 10, 32)
-		if err != nil {
-			return fmt.Errorf("invalid %v value %q: %w", ConfigKeyPoolMinIdleConns, raw, err)
-		}
-		ps.MinIdleConns = int32(n)
+		ps.MinIdleConns = n
 	}
 
-	if raw, ok, err := str(ConfigKeyPoolMaxConns); err != nil {
+	if n, ok, err := count(ConfigKeyPoolMaxConns); err != nil {
 		return err
 	} else if ok {
-		n, err := strconv.ParseInt(raw, 10, 32)
-		if err != nil {
-			return fmt.Errorf("invalid %v value %q: %w", ConfigKeyPoolMaxConns, raw, err)
-		}
-		ps.MaxConns = int32(n)
+		ps.MaxConns = n
 	}
 
 	if raw, ok, err := str(ConfigKeyPoolMaxConnLifeTime); err != nil {

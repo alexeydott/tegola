@@ -198,6 +198,11 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 
 	rows, err := gpkg.Query(qtext)
 	if err != nil {
+		if isMissingGpkgMetadataErr(err) {
+			// No GeoPackage metadata tables: only raw-format layers can be
+			// served from this file.
+			return make(map[string]featureTableDetails), nil
+		}
 		log.Errorf("error during query: %v - %v", qtext, err)
 		return nil, err
 	}
@@ -256,6 +261,93 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 	return geomTableDetails, nil
 }
 
+// isMissingGpkgMetadataErr reports whether the error indicates that the
+// GeoPackage metadata tables (gpkg_contents / gpkg_geometry_columns) do not
+// exist, in which case only raw-format (wkb/wkt/mos) layers can be served.
+func isMissingGpkgMetadataErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no such table") &&
+		(strings.Contains(msg, "gpkg_contents") || strings.Contains(msg, "gpkg_geometry_columns"))
+}
+
+// sqliteTableSQL returns the CREATE TABLE statement of a plain SQLite table
+// from sqlite_master, used to inspect raw-format tables that are not
+// registered in gpkg_geometry_columns.
+func sqliteTableSQL(db *sql.DB, tablename string) (string, error) {
+	var tableSQL sql.NullString
+	err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND tbl_name = ?;`,
+		tablename,
+	).Scan(&tableSQL)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("table %q does not exist", tablename)
+	}
+	if err != nil {
+		return "", fmt.Errorf("table %q lookup: %v", tablename, err)
+	}
+	if !tableSQL.Valid {
+		return "", fmt.Errorf("invalid sql for table %q", tablename)
+	}
+	return tableSQL.String, nil
+}
+
+// sampleRawTableLayer samples a raw-format (wkb/wkt/mos) table's geometry
+// column to infer the layer's geometry type and apply a MOS system-info blob
+// when one is stored alongside the geometries. Only rows the in-memory tile
+// filter cannot pre-reject are needed, so a small LIMIT window suffices; a
+// table that currently holds no decodable geometry registers without an
+// inferred type, matching the custom-SQL path.
+func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
+	qtext := fmt.Sprintf("SELECT `%v` FROM `%v` WHERE `%v` IS NOT NULL LIMIT 10;",
+		layer.geomFieldname, layer.tablename, layer.geomFieldname)
+
+	rows, err := db.Query(qtext)
+	if err != nil {
+		return fmt.Errorf("table %q sample query: %v", layer.tablename, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var value interface{}
+		if err := rows.Scan(&value); err != nil {
+			return fmt.Errorf("table %q sample scan: %v", layer.tablename, err)
+		}
+
+		if layer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(value) {
+			sysInfo, serr := codec.ParseSystemInfoValue(value)
+			if serr != nil {
+				return fmt.Errorf("table %q parse MOS system info: %v", layer.tablename, serr)
+			}
+			if aerr := layer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
+				return fmt.Errorf("table %q apply MOS system info: %v", layer.tablename, aerr)
+			}
+			if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection); aerr != nil {
+				return fmt.Errorf("table %q apply MOS projection: %v", layer.tablename, aerr)
+			} else if applied {
+				layer.srid = uint64(srid)
+				layer.crsExplicit = true
+			}
+			continue
+		}
+
+		_, geo, derr := decodeGeometryValue(value, layer.geometryFormat, layer.mosConfig)
+		if derr != nil {
+			return fmt.Errorf("table %q decode %v geometry: %v", layer.tablename, layer.geometryFormat, derr)
+		}
+		if geo != nil {
+			layer.geomType = geo
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("table %q sample rows: %v", layer.tablename, err)
+	}
+	return nil
+}
+
 func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, error) {
 
 	log.Debugf("config: %v", config)
@@ -284,8 +376,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 	}()
 
+	// The GeoPackage metadata tables (gpkg_contents / gpkg_geometry_columns)
+	// are only required for gpkg-format layers; raw-format (wkb/wkt/mos)
+	// layers read plain SQLite tables, so an empty metadata map is tolerated
+	// when those tables are absent.
 	geomTableDetails, err := featureTableMetaData(db)
-	if err != nil {
+	if err != nil && !isMissingGpkgMetadataErr(err) {
 		return nil, err
 	}
 
@@ -435,9 +531,11 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 		if layerMOSCfg.PrecisionSet {
 			layer.mosConfig.Precision = layerMOSCfg.Precision
+			layer.mosConfig.PrecisionSet = true
 		}
 		if layerMOSCfg.UnitsSet {
 			layer.mosConfig.UnitFactor = layerMOSCfg.UnitFactor
+			layer.mosConfig.UnitsSet = true
 		}
 		if layer.geometryFormat != "" && layer.geometryFormat != GeometryFormatMOS &&
 			(layerMOSCfg.PrecisionSet || layerMOSCfg.UnitsSet) {
@@ -458,31 +556,75 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 			}
 
-			d, ok := geomTableDetails[tablename]
-			if !ok {
-				return nil, fmt.Errorf("table %q does not exist", tablename)
-			}
-
-			// an explicit provider-level srid always wins over the value inferred from
-			// gpkg_contents.srs_id; the inferred value is only used as a fallback when
-			// the user did not configure anything explicitly.
-			layerSRID := p.srid
-			if !providerSRIDExplicit && d.srid > 0 {
-				layerSRID = d.srid
-			}
-
-			lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
-			if rerr != nil {
-				return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
-			}
-
 			layer.tablename = tablename
 			layer.tagFieldnames = tagFieldnames
-			layer.geomFieldname = d.geomFieldname
-			layer.geomType = d.geomType
 			layer.idFieldname = idFieldname
-			layer.srid = uint64(lcrs.SRID)
-			layer.bbox = *d.bbox
+
+			if codec.IsRawFormat(layer.geometryFormat) {
+				// Raw geometry formats (wkb/wkt/mos) are read from plain
+				// SQLite tables that need not be registered in
+				// gpkg_geometry_columns; the GeoPackage metadata is neither
+				// required nor consulted and there is no RTree index, so
+				// TileFeatures filters in memory.
+				tableSQL, terr := sqliteTableSQL(db, tablename)
+				if terr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, terr)
+				}
+				colNames, pkCol := extractColsAndPKFromSQL(tableSQL)
+				colSet := make(map[string]struct{}, len(colNames))
+				for _, c := range colNames {
+					colSet[c] = struct{}{}
+				}
+				if _, ok := colSet[layer.geomFieldname]; !ok {
+					return nil, fmt.Errorf("for layer (%v) %v: table %q has no geometry column %q", i, layerName, tablename, layer.geomFieldname)
+				}
+				if _, ok := colSet[layer.idFieldname]; !ok {
+					if pkCol == "" {
+						return nil, fmt.Errorf("for layer (%v) %v: table %q has no id column %q", i, layerName, tablename, layer.idFieldname)
+					}
+					log.Warnf("layer (%v): table %q has no column %q; using primary key %q as id field",
+						layerName, tablename, layer.idFieldname, pkCol)
+					layer.idFieldname = pkCol
+				}
+
+				// Raw tables carry no SRID metadata, so the SRID comes from
+				// explicit config or the provider default. A MOS system-info
+				// blob (sampled below) may still register a projection.
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(p.srid))
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
+				}
+				layer.srid = uint64(lcrs.SRID)
+				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
+
+				if gerr := sampleRawTableLayer(db, &layer); gerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, gerr)
+				}
+			} else {
+				d, ok := geomTableDetails[tablename]
+				if !ok {
+					return nil, fmt.Errorf("table %q does not exist", tablename)
+				}
+
+				// an explicit provider-level srid always wins over the value inferred from
+				// gpkg_contents.srs_id; the inferred value is only used as a fallback when
+				// the user did not configure anything explicitly.
+				layerSRID := p.srid
+				if !providerSRIDExplicit && d.srid > 0 {
+					layerSRID = d.srid
+				}
+
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
+				}
+
+				layer.geomFieldname = d.geomFieldname
+				layer.geomType = d.geomType
+				layer.srid = uint64(lcrs.SRID)
+				layer.bbox = *d.bbox
+				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
+			}
 
 		} else { // layerConf[ConfigKeySQL] exists
 			var customSQL string
@@ -498,6 +640,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 				}
 				layer.srid = uint64(lcrs.SRID)
+				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
 				log.Warnf("layer '%v' uses tile-dependent custom SQL; deferring startup geometry inspection", layerName)
 				p.layers[layer.name] = layer
 				continue
@@ -534,18 +677,80 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			inspectionExtent, _ := inspectionTile.BufferedExtent()
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
 
-			// Get geometry type & srid from geometry of first row.
-			qtext := fmt.Sprintf("SELECT %[1]v FROM (%v) WHERE %[1]v IS NOT NULL LIMIT 1;", layer.geomFieldname, inspectionSQL)
+			// Get geometry type & srid from geometry of first row. For raw
+			// formats several rows are inspected because a MOS system-info
+			// blob may precede the first decodable geometry.
+			qtext := fmt.Sprintf("SELECT %[1]v FROM (%v) WHERE %[1]v IS NOT NULL LIMIT 10;", layer.geomFieldname, inspectionSQL)
 
 			log.Debugf("qtext: %v", qtext)
 
-			var geomData []byte
-			err = db.QueryRow(qtext).Scan(&geomData)
+			inspectRows, qerr := db.Query(qtext)
+			if qerr != nil {
+				return nil, fmt.Errorf("layer '%v' problem executing custom SQL: %v", layerName, qerr)
+			}
+
+			var firstGeom geom.Geometry
+			var firstHeader *BinaryHeader
+			for inspectRows.Next() {
+				var geomData interface{}
+				if serr := inspectRows.Scan(&geomData); serr != nil {
+					inspectRows.Close()
+					return nil, fmt.Errorf("layer '%v' problem reading custom SQL row: %v", layerName, serr)
+				}
+
+				if codec.IsRawFormat(layer.geometryFormat) {
+					// MOS system-info rows are metadata, never features:
+					// apply them and continue to the next row.
+					if layer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geomData) {
+						sysInfo, serr := codec.ParseSystemInfoValue(geomData)
+						if serr != nil {
+							inspectRows.Close()
+							return nil, fmt.Errorf("layer '%v' parse MOS system info: %v", layerName, serr)
+						}
+						if aerr := layer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
+							inspectRows.Close()
+							return nil, fmt.Errorf("layer '%v' apply MOS system info: %v", layerName, aerr)
+						}
+						continue
+					}
+					_, geo, derr := decodeGeometryValue(geomData, layer.geometryFormat, layer.mosConfig)
+					if derr != nil {
+						inspectRows.Close()
+						return nil, fmt.Errorf("layer '%v' decode %v geometry: %v", layerName, layer.geometryFormat, derr)
+					}
+					if geo != nil {
+						firstGeom = geo
+						break
+					}
+					continue
+				}
+
+				geomDataBytes, ok := geomData.([]byte)
+				if !ok {
+					inspectRows.Close()
+					return nil, errors.New("unexpected column type for geom field. expected blob")
+				}
+				h, geo, derr := decodeGeometry(geomDataBytes)
+				if derr != nil {
+					inspectRows.Close()
+					return nil, derr
+				}
+				firstGeom = geo
+				firstHeader = h
+				break
+			}
+			if rerr := inspectRows.Err(); rerr != nil {
+				inspectRows.Close()
+				return nil, fmt.Errorf("layer '%v' problem reading custom SQL rows: %v", layerName, rerr)
+			}
+			inspectRows.Close()
+
 			switch {
-			case err == sql.ErrNoRows:
-				// The layer's custom SQL currently returns no rows. Keep a
-				// placeholder layer so map registration can succeed; a later
-				// tile request can still execute the SQL when data appears.
+			case firstGeom == nil:
+				// The layer's custom SQL currently returns no decodable
+				// rows. Keep a placeholder layer so map registration can
+				// succeed; a later tile request can still execute the SQL
+				// when data appears.
 				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(p.srid))
 				if rerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
@@ -555,21 +760,13 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				p.layers[layer.name] = layer
 				continue
 
-			case err != nil:
-				return nil, fmt.Errorf("layer '%v' problem executing custom SQL: %v", layerName, err)
-
 			default:
-				h, geo, err := decodeGeometry(geomData)
-				if err != nil {
-					return nil, err
-				}
-
 				// as above: an explicit provider-level srid always wins over the value
 				// decoded from the sampled row's WKB header, which is frequently 0 or
 				// otherwise unreliable for GPKGs produced by third-party tooling.
 				layerSRID := p.srid
-				if !providerSRIDExplicit && h.SRSId() > 0 {
-					layerSRID = uint64(h.SRSId())
+				if !providerSRIDExplicit && firstHeader != nil && firstHeader.SRSId() > 0 {
+					layerSRID = uint64(firstHeader.SRSId())
 				}
 
 				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
@@ -577,8 +774,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 				}
 
-				layer.geomType = geo
+				layer.geomType = firstGeom
 				layer.srid = uint64(lcrs.SRID)
+				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
 				// keep the configured (or default) id/geometry field names set
 				// at layer creation; only fill in the inferred geometry type.
 			}

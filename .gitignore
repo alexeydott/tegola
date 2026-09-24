@@ -40,3 +40,5 @@ test-mysql.toml
 tegola.config.toml
 cache/
 cache/file/testfiles/tegola-cache/
+kaliningrad_oblast_32634.gpkg
+testdata/multi-provider-test/serve.log

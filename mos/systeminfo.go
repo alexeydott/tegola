@@ -1,6 +1,6 @@
-// This file implements parsing of the TLayerSystemInfoRec version wrapper
-// blob that MapplBase stores as the first row of every MOS geometry table
-// (see MapplTypes.pas). The blob carries the layer's self-description:
+// This file implements parsing of the MapplGIS LayerInfo version wrapper
+// blob that MapplGIS stores as the first row of every MOS geometry table
+// (MapplGIS packed record layout). The blob carries the layer's self-description:
 // quantization precision, map units and (optionally) the layer PROJ.4
 // definition, letting the provider auto-configure instead of hard-coding
 // srid/mos_precision in the config.
@@ -14,7 +14,7 @@ import (
 )
 
 // MapUnits enumerates the linear TMapUnits values supported for MOS
-// coordinate dequantization (MapplBaseTypes.pas TMapUnits). Angular and
+// coordinate dequantization (MapplGIS types TMapUnits). Angular and
 // undefined units (muGrad, muNone) are not supported.
 type MapUnits byte
 
@@ -26,8 +26,8 @@ const (
 	UnitsKilometres  MapUnits = 4 // muKm
 )
 
-// unitsToMetres mirrors Mappl's ConvertUnitCoeff[units] /
-// 10^ConvertUnitExponent[muM] (MapplTypes.pas, used by
+// unitsToMetres mirrors MapplGIS's ConvertUnitCoeff[units] /
+// 10^ConvertUnitExponent[muM] (MapplGIS unit-conversion helpers, used by
 // TMapObject.ConvertMosFromProjected): the factor that converts a
 // dequantized MOS coordinate in the given unit to metres of the target
 // projected CRS.
@@ -66,7 +66,7 @@ func (u MapUnits) String() string {
 	return unitsNames[u]
 }
 
-// systemInfoMinSize is the packed size of TLayerSystemInfoRec up to and
+// systemInfoMinSize is the packed size of MapplGIS LayerInfo up to and
 // including projectionSize:
 // Version string[10] (11) + Precision (4) + flProjection (1) +
 // reserved1 (4) + reserved2 (4) + reserved3 (2) + LayerID (4) +
@@ -79,7 +79,7 @@ const systemInfoMinSize = 64
 // prefix 5 + "Ver 1" + NUL padding).
 var systemInfoVersion = []byte{5, 'V', 'e', 'r', ' ', '1'}
 
-// IsSystemInfoBlob reports whether buf looks like a TLayerSystemInfoRec
+// IsSystemInfoBlob reports whether buf looks like a MapplGIS LayerInfo
 // version wrapper rather than a regular MOS geometry blob: long enough to
 // hold the fixed part and starting with the "Ver 1" version marker.
 // Regular MOS blobs always start with an object type byte <= 4, so the
@@ -92,7 +92,7 @@ func IsSystemInfoBlob(buf []byte) bool {
 }
 
 // SystemInfo holds the layer-level settings decoded from a
-// TLayerSystemInfoRec blob.
+// MapplGIS LayerInfo blob.
 type SystemInfo struct {
 	// Precision is the number of decimal digits the quantized MOS
 	// coordinates carry (kPrecision = 10^Precision).
@@ -106,12 +106,12 @@ type SystemInfo struct {
 	// Projection is the raw PROJ.4 definition of the layer CRS, empty
 	// when the layer carries none.
 	Projection string
-	// LayerID is the Mappl layer ID from the blob.
+	// LayerID is the MapplGIS layer ID from the blob.
 	LayerID int
 }
 
-// ParseSystemInfo decodes a TLayerSystemInfoRec version wrapper blob. The
-// layout mirrors the packed record in MapplTypes.pas: Version string[10]
+// ParseSystemInfo decodes a MapplGIS LayerInfo version wrapper blob. The
+// layout mirrors the packed MapplGIS record: Version string[10]
 // (11 bytes), Precision int32 @11, flProjection byte @15, reserved1 int32
 // @16, reserved2 int32 @20, reserved3 word @24, LayerID int32 @26,
 // flLockForExport byte @30, StylesIdentificationMode byte @31,
@@ -151,7 +151,7 @@ func (si SystemInfo) ScaleToMetres() (float64, error) {
 
 // ParseMapUnits parses the textual form accepted by the mysql provider's
 // mos_units option. Short forms are intended for configuration files; the
-// Mappl enum names and full English names are accepted as well.
+// MapplGIS enum names and full English names are accepted as well.
 func ParseMapUnits(value string) (MapUnits, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "mm", "millimetre", "millimetres", "millimeter", "millimeters", "mumm":

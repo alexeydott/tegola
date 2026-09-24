@@ -22,11 +22,15 @@ type Layer struct {
 	// geometryFormat selects how the geometry column is decoded:
 	// "" (default; PostGIS native geometry returned via ST_AsBinary),
 	// "wkb" (plain WKB column read raw, no ST_AsBinary), "wkt" (WKT text)
-	// or "mos" (opaque MapplBase binary blob read raw).
+	// or "mos" (opaque MapplGIS binary blob read raw).
 	geometryFormat string
 	// mosConfig holds the resolved MOS quantization settings used with
 	// geometry_format = "mos".
 	mosConfig codec.MOSConfig
+	// crsExplicit reports whether the layer's CRS was configured explicitly
+	// (via srid or crs_defn at the provider or layer level). When false, a
+	// source-provided projection (MOS system-info blob) may override srid.
+	crsExplicit bool
 }
 
 func (l Layer) Name() string {

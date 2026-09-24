@@ -172,6 +172,67 @@ func TestTrimTrailingSemicolon(t *testing.T) {
 	}
 }
 
+// TestMySQLMOSBoundsSQL covers the R3-08 provider-level regression: the
+// !BBOX! token for MOS layers must expand to the coarse indexed raw-bounds
+// filter scaled from the tile metres, not to a spatial predicate over the
+// opaque blob.
+func TestMySQLMOSBoundsSQL(t *testing.T) {
+	type tcase struct {
+		name        string
+		mosConfig   codec.MOSConfig
+		bbox        *geom.Extent
+		wantBBoxSQL string
+	}
+
+	fn := func(tc tcase) func(t *testing.T) {
+		return func(t *testing.T) {
+			layer := &Layer{
+				geomFieldname:  "geom",
+				geometryFormat: GeometryFormatMOS,
+				srid:           3857,
+				mosConfig:      tc.mosConfig,
+			}
+			tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
+			extent := tc.bbox
+			got := replaceTokens("WHERE !BBOX!", layer, tile, extent)
+			want := "WHERE " + tc.wantBBoxSQL
+			if got != want {
+				t.Fatalf("MOS bbox = %q, want %q", got, want)
+			}
+		}
+	}
+
+	// extent [-10..10] metres, precision 2 (scale 100) with metre units
+	// (unit factor 1) => raw bounds [-1000..1000].
+	metreUnits := codec.MOSConfig{Precision: 2, UnitFactor: 1}
+	tests := map[string]tcase{
+		"bounds scaled by precision": {
+			mosConfig:   metreUnits,
+			bbox:        geom.NewExtent(geom.Point{-10, -10}, geom.Point{10, 10}),
+			wantBBoxSQL: "MINX <= 1000 AND MAXX >= -1000 AND MINY <= 1000 AND MAXY >= -1000",
+		},
+		"degenerate zero-extent tile falls back to raw bounds too": {
+			mosConfig:   metreUnits,
+			bbox:        geom.NewExtent(geom.Point{0, 0}, geom.Point{0, 0}),
+			wantBBoxSQL: "MINX <= 0 AND MAXX >= 0 AND MINY <= 0 AND MAXY >= 0",
+		},
+		"invalid mos config falls back to 1=1": {
+			mosConfig:   codec.MOSConfig{Precision: 2, UnitFactor: 0},
+			bbox:        geom.NewExtent(geom.Point{-10, -10}, geom.Point{10, 10}),
+			wantBBoxSQL: "1=1",
+		},
+		"nil extent falls back to 1=1": {
+			mosConfig:   metreUnits,
+			bbox:        nil,
+			wantBBoxSQL: "1=1",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
+
 func TestValidateMOSPrecision(t *testing.T) {
 	for _, precision := range []float64{0, 2, codec.MaxMOSPrecision} {
 		if err := codec.ValidateMOSPrecision(precision); err != nil {

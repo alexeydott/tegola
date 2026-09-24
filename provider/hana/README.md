@@ -14,7 +14,11 @@ uri = "hdb://myuser:mypassword@something.hanacloud.ondemand.com:443?" # HANA con
 - `uri` (string): [Required] HANA connection string
 - `name` (string): [Required] provider name is referenced from map layers
 - `type` (string): [Required] the type of data provider. must be "hana" to use this data provider
-- `srid` (int): [Optional] The default SRID for the provider. Defaults to WebMercator (3857) but also supports WGS84 (4326)
+- `srid` (int): [Optional] The default SRID for the provider. When omitted the SRID is auto-detected from the geometry column. Any numeric SRID known to the database is supported, as well as a synthetic SRID registered via `crs_defn`.
+- `crs_defn` (string): [Optional] A PROJ.4 definition of the coordinate reference system, registered internally under a synthetic SRID. Wins over `srid` on the same level. Requires a raw `geometry_format` (`wkb`/`wkt`/`mos`) and is not supported for `mvt_hana`. See [docs/crs.md](../../docs/crs.md).
+- `geometry_format` (string): [Optional] Provider-level default geometry format for layers that do not override it: `wkb`, `wkt` or `mos`. Empty/unset means HANA's native `ST_Geometry` handling (`ST_AsBinary`). See [docs/geometry-formats.md](../../docs/geometry-formats.md).
+- `mos_precision` (int): [Optional] Decimal digits carried by MOS coordinates. Only applies when `geometry_format = "mos"`.
+- `mos_units` (string): [Optional] Packed linear unit of MOS coordinates: `mm`, `cm`, `dm`, `m` or `km`. Only applies when `geometry_format = "mos"`.
 
 #### Connection string properties
 
@@ -41,8 +45,10 @@ In addition to the connection configuration above, Provider Layers need to be co
 ```toml
 [[providers.layers]]
 name = "landuse"
-# this table uses "geom" for the geometry_fieldname and "gid" for the id_fieldname so they don't need to be configured
+# this table uses "geom" for the geometry_fieldname; set id_fieldname because
+# the HANA provider does not infer an id column by default
 tablename = "gis.zoning_base_3857"
+id_fieldname = "gid"
 ```
 
 ### Provider Layers Properties
@@ -50,9 +56,12 @@ tablename = "gis.zoning_base_3857"
 - `name` (string): [Required] the name of the layer. This is used to reference this layer from map layers.
 - `tablename` (string): [*Required] the name of the database table to query against. Required if `sql` is not defined.
 - `geometry_fieldname` (string): [Optional] the name of the filed which contains the geometry for the feature. defaults to `geom`.
-- `id_fieldname` (string): [Optional] the name of the feature id field. defaults to `gid`.
+- `id_fieldname` (string): [Optional] the name of the feature id field. Defaults to empty (no id attribute is attached to features unless configured). See [docs/provider-contract.md](../../docs/provider-contract.md).
 - `fields` ([]string): [Optional] a list of fields to include alongside the feature. Can be used if `sql` is not defined.
-- `srid` (int): [Optional] the SRID of the layer. Supports `3857` (WebMercator) or `4326` (WGS84).
+- `srid` (int): [Optional] the SRID of the layer. Any numeric SRID known to the database is supported, as well as a synthetic SRID registered via `crs_defn`.
+- `crs_defn` (string): [Optional] layer-level PROJ.4 CRS override; wins over `srid` on the same level. Requires a raw `geometry_format` (`wkb`/`wkt`/`mos`) and is not supported for `mvt_hana`. See [docs/crs.md](../../docs/crs.md).
+- `geometry_format` (string): [Optional] layer-level geometry format override: `wkb`, `wkt` or `mos`. Overrides the provider-level default.
+- `mos_precision` / `mos_units` (int / string): [Optional] layer-level MOS overrides (only with `geometry_format = "mos"`). Explicit values always win over the `MapplGIS LayerInfo` self-description blob. See [docs/geometry-formats.md](../../docs/geometry-formats.md).
 - `geometry_type` (string): [Optional] the layer geometry type. If not set, the table will be inspected at startup to try and infer the gemetry type. Valid values are: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`.
 - `sql` (string): [*Required] custom SQL to use use. Required if `tablename` is not defined. Supports the following tokens:
   - `!BBOX!` - [Required] will be replaced with the bounding box of the tile before the query is sent to the database. `!bbox!` and`!BOX!` are supported as well for compatibilitiy with queries from Mapnik and MapServer styles.
@@ -68,6 +77,25 @@ tablename = "gis.zoning_base_3857"
   - `!GEOM_TYPE!` - [Optional] the geom type field name.
 
 `*Required`: either the `tablename` or `sql` must be defined, but not both.
+
+### HANA-specific restrictions
+
+- **Synthetic CRS** (from `crs_defn` at either level, or from a MOS
+  `MapplGIS LayerInfo projection`): HANA's native `ST_Geometry` handling
+  cannot be used with a synthetic SRID, so such layers must set
+  `geometry_format` to `wkb`, `wkt` or `mos`. `mvt_hana` does not support
+  synthetic CRS at all.
+- **Planar-equivalent SRIDs**: HANA distinguishes round-earth and planar SRS.
+  A round-earth SRS is queried through its planar equivalent internally
+  (`PLANAR_SRID_OFFSET = 1000000000`); these internal SRIDs must not be
+  confused with Tegola's synthetic SRIDs (`>= 340000001`).
+- **MOS layers** do not use the database spatial index; filtering is done by
+  the in-memory bounding-box check (see
+  [docs/geometry-formats.md](../../docs/geometry-formats.md)).
+
+The common provider contract (CRS precedence, `!BBOX!` semantics, startup
+inspection, MOS system-info auto-configuration) is documented in
+[docs/provider-contract.md](../../docs/provider-contract.md).
 
 **Example minimum custom SQL config**
 

@@ -9,8 +9,8 @@ import (
 	"github.com/go-spatial/geom"
 )
 
-// systemInfoBlobBuilder assembles a TLayerSystemInfoRec blob mirroring the
-// packed record layout in MapplTypes.pas.
+// systemInfoBlobBuilder assembles a MapplGIS LayerInfo blob mirroring the
+// packed MapplGIS record layout.
 type systemInfoBlobBuilder struct {
 	version         string
 	precision       int32

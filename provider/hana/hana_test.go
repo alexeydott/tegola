@@ -3,6 +3,7 @@ package hana_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -32,6 +33,7 @@ type TCConfig struct {
 	BaseConfig     map[string]interface{}
 	ConfigOverride map[string]interface{}
 	LayerConfig    []map[string]interface{}
+	expectedErr    error
 }
 
 func (cfg TCConfig) Config() dict.Dict {
@@ -195,8 +197,14 @@ func TestNewTileProvider(t *testing.T) {
 			config := tc.Config()
 			_, err := hana.NewTileProvider(config, nil)
 			if err != nil {
-				t.Errorf("unable to create a new provider. err: %v", err)
+				if tc.expectedErr != nil && err.Error() == tc.expectedErr.Error() {
+					return
+				}
+				t.Errorf("unable to create a new provider. expected err (%v) got err (%v)", tc.expectedErr, err)
 				return
+			}
+			if tc.expectedErr != nil {
+				t.Errorf("expected err (%v) got nil", tc.expectedErr)
 			}
 		}
 	}
@@ -241,10 +249,14 @@ func TestTileFeatures(t *testing.T) {
 			config := tc.Config()
 			p, err := hana.NewTileProvider(config, nil)
 			if err != nil {
-				if err == tc.expectedErr {
+				if tc.expectedErr != nil && err.Error() == tc.expectedErr.Error() {
 					return
 				}
-				t.Errorf("unexpected error; unable to create a new provider, expected: nil Got %v", err)
+				t.Errorf("unexpected error; unable to create a new provider, expected: %v Got %v", tc.expectedErr, err)
+				return
+			}
+			if tc.expectedErr != nil {
+				t.Errorf("expected err (%v) got nil", tc.expectedErr)
 				return
 			}
 
@@ -348,9 +360,17 @@ func TestTileFeatures(t *testing.T) {
 					hana.ConfigKeyTablename: "not_good_name",
 				}},
 			},
-			tile:                 provider.NewTile(1, 1, 1, 64, tegola.WebMercator),
-			expectedFeatureCount: 100,
-			expectedTags:         []string{"featurecla"},
+			tile: provider.NewTile(1, 1, 1, 64, tegola.WebMercator),
+			expectedErr: errors.New(
+				fmt.Sprintf(
+					"for %v layer (land) 0 %v: only one of %v or %v can be specified",
+					"hana",
+					hana.ConfigKeyTablename,
+					hana.ConfigKeyTablename,
+					hana.ConfigKeySQL,
+				),
+			),
+			expectedFeatureCount: 0,
 		},
 		"SQL sub-query space after prens": {
 			TCConfig: TCConfig{

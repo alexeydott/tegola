@@ -18,6 +18,7 @@ import (
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/env"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -183,17 +184,13 @@ func genSQL(l *Layer, tblName string, fieldNames []string, buffer bool, provider
 	}
 
 	if fgeom == -1 {
-		if l.geometryFormat == codec.FormatWKB ||
-			l.geometryFormat == codec.FormatWKT ||
-			l.geometryFormat == codec.FormatMOS {
+		if codec.IsRawFormat(l.geometryFormat) {
 			fieldNames = append(fieldNames, genRawGeomField(l.geomField))
 		} else {
 			fieldNames = append(fieldNames, genGeomField(l.geomField, providerType))
 		}
 	} else {
-		if l.geometryFormat == codec.FormatWKB ||
-			l.geometryFormat == codec.FormatWKT ||
-			l.geometryFormat == codec.FormatMOS {
+		if codec.IsRawFormat(l.geometryFormat) {
 			fieldNames[fgeom] = genRawGeomField(l.geomField)
 		} else {
 			fieldNames[fgeom] = genGeomField(l.geomField, providerType)
@@ -206,10 +203,11 @@ func genSQL(l *Layer, tblName string, fieldNames []string, buffer bool, provider
 
 	stdSQL := `SELECT %[1]v FROM %[2]v WHERE ` + bboxToken
 
-	if l.geometryFormat == codec.FormatMOS {
-		// MOS blobs are not HANA ST_Geometry values: native spatial
-		// predicates (ST_IntersectsRect, ...) cannot be applied to them.
-		// Filtering is done in memory after decoding (see TileFeatures).
+	if codec.IsRawFormat(l.geometryFormat) {
+		// Raw geometry columns (MOS blobs, plain WKB/WKT) are not HANA
+		// ST_Geometry values: native spatial predicates
+		// (ST_IntersectsRect, ...) cannot be applied to them. Filtering is
+		// done in memory after decoding (see TileFeatures).
 		stdSQL = `SELECT %[1]v FROM %[2]v WHERE ` + quoteIdentifier(l.geomField) + ` IS NOT NULL`
 	}
 
@@ -260,6 +258,32 @@ func isPlanarEquivalentSrid(srid uint64) bool {
 // synthetic range, so it must be excluded explicitly.
 func isSyntheticCRS(srid uint64) bool {
 	return basic.IsSyntheticSRID(srid) && !isPlanarEquivalentSrid(srid)
+}
+
+// validateCRSFormatCompatibility checks that a layer on a synthetic SRID
+// (registered from crs_defn, unknown to the database) uses a raw geometry
+// format: spatial predicates degrade to 1=1 (see getBBoxFilter), so filtering
+// happens client-side on a decodable geometry. MVT passthrough cannot provide
+// that. Native HANA ST_Geometry columns require a database-side SRS and are
+// rejected as well. Unit-testable without a database connection.
+func validateCRSFormatCompatibility(srid int, providerType string, geometryFormat string) error {
+	if !isSyntheticCRS(uint64(srid)) {
+		return nil
+	}
+	if providerType == MVTProviderType {
+		return fmt.Errorf(
+			"%v (synthetic SRID) is not supported for MVT providers",
+			crsconfig.KeyCRSDefn,
+		)
+	}
+	if geometryFormat == "" {
+		return fmt.Errorf(
+			"%v (synthetic SRID) requires %v = %q, %q, or %q; native HANA ST_Geometry columns use a database-side SRS",
+			crsconfig.KeyCRSDefn, codec.ConfigKeyGeometryFormat,
+			codec.FormatWKB, codec.FormatWKT, codec.FormatMOS,
+		)
+	}
+	return nil
 }
 
 func toPlanarEquivalenSrid(srid uint64) uint64 {

@@ -102,3 +102,30 @@ func resolve(cfg dict.Dicter, fallback int, level string) (CRS, error) {
 
 	return CRS{SRID: srid, Explicit: explicit}, nil
 }
+
+// ApplySystemInfoCRS applies a source-provided projection (e.g. the
+// MapplGIS LayerInfo projection blob carried by MOS system-info records) on
+// top of an already resolved CRS. It is the shared contract used by all
+// providers that consume system-info blobs, so the projection registration
+// and explicit-CRS precedence behave identically everywhere:
+//
+//   - when the CRS was configured explicitly (via srid or crs_defn at either
+//     the provider or layer level), the source projection is ignored;
+//   - otherwise the projection is registered as a synthetic SRID via
+//     basic.RegisterProj4Defn and becomes the effective SRID.
+//
+// Returns the effective SRID and whether the projection was applied.
+func ApplySystemInfoCRS(currentSRID int, explicit bool, projection string) (int, bool, error) {
+	if strings.TrimSpace(projection) == "" {
+		return currentSRID, false, nil
+	}
+	if explicit {
+		return currentSRID, false, nil
+	}
+	code, err := basic.RegisterProj4Defn(projection)
+	if err != nil {
+		return currentSRID, false, fmt.Errorf("invalid system info projection %q: %w", projection, err)
+	}
+	log.Infof("registered system info projection %q as synthetic srid %v", projection, code)
+	return int(code), true, nil
+}

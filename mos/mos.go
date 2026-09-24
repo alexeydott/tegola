@@ -1,6 +1,6 @@
-// Package mos implements direct decoding of MapplBase MOS geometry blobs
+// Package mos implements direct decoding of MapplGIS MOS geometry blobs
 // (the proprietary binary format serialized by TMapObjectStructureBase,
-// see MapObjectBase.pas GetFromBufInternal in the Mappl sources).
+// MapplGIS blob reader layout).
 //
 // Format (all values little-endian, coordinates are quantized int32 pairs):
 //
@@ -16,7 +16,7 @@
 //	contiguously, in subobject order.
 //
 //	Some older Tegola fixtures used a 12-byte extension with a uint16 ofl
-//	field at offset 10. The decoder accepts that form too, but native Mappl
+//	field at offset 10. The decoder accepts that form too, but native MapplGIS
 //	geometry blobs use the 10-byte prefix above.
 //
 //	Everything after the points block (point icon params, labels, markers,
@@ -27,7 +27,7 @@
 // Real coordinates are recovered as x / kPrecision + OffsetX where
 // kPrecision = 10^Precision. Precision is the number of decimal digits the
 // quantized integers carry (e.g. 3 means millimetre precision for metre
-// units, matching Mappl layer SystemInfo.kPrecision).
+// units, matching MapplGIS layer SystemInfo.kPrecision).
 //
 // Point handling mirrors GetFromBufInternal: consecutive duplicate points
 // are dropped within each subobject, and for polygons a final vertex equal
@@ -87,12 +87,12 @@ type Options struct {
 	// coordinates carry (e.g. 3 = millimetres for metre units). Stored
 	// values are divided by 10^Precision. Defaults to 0 (integer units).
 	Precision float64
-	// OffsetX/OffsetY are added to the dequantized coordinates. Mappl
+	// OffsetX/OffsetY are added to the dequantized coordinates. MapplGIS
 	// stores blobs with a zero offset, defaults to 0.
 	OffsetX, OffsetY float64
 	// UnitFactor scales the dequantized coordinates after applying
 	// Precision and the offsets. It converts the layer's map units
-	// (from TLayerSystemInfoRec.MapUnits) to metres of the projected
+	// (from MapplGIS LayerInfo map units) to metres of the projected
 	// CRS, e.g. 0.001 for millimetre units. Defaults to 0 (treated as 1).
 	UnitFactor float64
 }
@@ -106,7 +106,7 @@ func (o Options) unitFactor() float64 {
 }
 
 // kPrecision converts the configured decimal precision into the multiplicative
-// precision factor used by Mappl (x / kPrecision + OffsetX).
+// precision factor used by MapplGIS (x / kPrecision + OffsetX).
 func (o Options) kPrecision() (float64, error) {
 	if math.IsNaN(o.Precision) || math.IsInf(o.Precision, 0) ||
 		o.Precision < 0 || math.Trunc(o.Precision) != o.Precision ||
@@ -214,7 +214,7 @@ func Decode(buf []byte, opts Options) (geom.Geometry, error) {
 }
 
 // decodeHeaderAndOffset parses the common header fields and selects the
-// layout whose subobject/point prefix is internally consistent. Native Mappl
+// layout whose subobject/point prefix is internally consistent. Native MapplGIS
 // blobs use a 10-byte header; a 12-byte flags extension is retained for
 // compatibility with older Tegola-generated fixtures.
 func decodeHeaderAndOffset(buf []byte) (Header, int, error) {
@@ -453,7 +453,7 @@ func pointInRing(ring [][2]float64, pt [2]float64) bool {
 // to the MOS object type.
 //
 // The polygon mapping follows TMapObjectStructureBase.ConvertPolygonGeometry
-// ToCanonicalFormat (MapObjectBase.pas): subobjects are classified by point-
+// MapplGIS canonical format logic: subobjects are classified by point-
 // in-polygon containment into exterior rings (InnerIndex < 0) and holes
 // (InnerIndex = exterior ring). One exterior ring yields a Polygon, several
 // exterior rings a MultiPolygon (e.g. an island inside a lake hole).

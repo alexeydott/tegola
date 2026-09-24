@@ -18,10 +18,10 @@ Tegola is a vector tile server delivering [Mapbox Vector Tiles](https://github.c
 - Cache seeding and invalidation via individual tiles (ZXY), lat / lon bounds and ZXY tile list.
 - Parallelized tile serving and geometry processing.
 - CRS support beyond built-in Web Mercator (3857) and WGS84 (4326): per-layer `srid` / `crs_defn` overrides, including custom PROJ.4 definitions. See [docs/crs.md](docs/crs.md).
-- Configurable input geometry formats: native provider geometry, WKB, WKT and MapplBase MOS blobs. See [docs/geometry-formats.md](docs/geometry-formats.md).
+- Configurable input geometry formats: native provider geometry, WKB, WKT and MapplGIS MOS blobs. See [docs/geometry-formats.md](docs/geometry-formats.md).
 - Support for [AWS Lambda](cmd/tegola_lambda).
 - Support for serving HTTPS.
-- Support for [PostGIS ST_AsMVT](mvtprovider/postgis).
+- Support for [PostGIS ST_AsMVT](mvtprovider/postgis) and [SAP HANA MVT](mvtprovider/hana) (`mvt_postgis` / `mvt_hana`).
 - Support for [Prometheus](observability/prometheus/README.md) observability.
 
 ## Usage

@@ -19,7 +19,7 @@ type Layer struct {
 	// geometryFormat selects how the geometry column is decoded:
 	// "" / "gpkg" (default; GeoPackage binary header + WKB), "wkb" (plain
 	// WKB without the GeoPackage header), "wkt" (WKT text) or "mos"
-	// (opaque MapplBase binary blob).
+	// (opaque MapplGIS binary blob).
 	geometryFormat string
 	// mosConfig holds the resolved MOS quantization settings used with
 	// geometry_format = "mos".

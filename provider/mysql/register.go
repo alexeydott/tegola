@@ -51,7 +51,7 @@ func detectServerFlavor(db *sql.DB) (string, error) {
 }
 
 // geomTypeSampleRows is the number of geometry values the table inspection
-// will try before giving up. Some datasets (e.g. MapplBase exports) store a
+// will try before giving up. Some datasets (e.g. MapplGIS exports) store a
 // small fraction of rows in wrapper formats that the active geometry_format
 // cannot decode, so a single-row sample would poison provider registration.
 const geomTypeSampleRows = 16
@@ -99,8 +99,8 @@ func sampleGeometryQuery(qtext string) string {
 
 // geomTypeFromColumn samples up to geomTypeSampleRows geometry values from
 // the given query and decodes the first one that succeeds. A
-// TLayerSystemInfoRec version wrapper blob (the layer self-description
-// MapplBase stores as the first row of a MOS table) is parsed and returned
+// MapplGIS LayerInfo version wrapper blob (the layer self-description
+// MapplGIS stores as the first row of a MOS table) is parsed and returned
 // via sysInfo without terminating the sampling. It returns sql.ErrNoRows
 // when the query yields no rows at all, and the decode error only when
 // every sampled row failed to decode.
@@ -140,7 +140,7 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 
 	sampleFormat := geometryFormat
 	if sampleFormat == GeometryFormatAuto && sysInfo != nil {
-		// MapplBase MOS tables identify themselves with a system-info row.
+		// MapplGIS MOS tables identify themselves with a system-info row.
 		// Decode the sampled values only after scanning all rows so the marker
 		// is honored even when the driver does not return it first.
 		sampleFormat = GeometryFormatMOS
@@ -423,7 +423,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.geomType = geo
 				layer.srid = uint64(lsrid)
 
-				// apply layer self-description from a TLayerSystemInfoRec blob:
+				// apply layer self-description from a MapplGIS LayerInfo blob:
 				// precision and PROJ.4 projection. Explicit config values
 				// (mos_precision / mos_units / srid / crs_defn) always win.
 				if err := applySystemInfo(&layer, sysInfo, sridExplicit || lcrs.Explicit); err != nil {
@@ -513,7 +513,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.srid = uint64(lsrid)
 				layer.idFieldname = idFieldname
 
-				// apply layer self-description from a TLayerSystemInfoRec blob:
+				// apply layer self-description from a MapplGIS LayerInfo blob:
 				// precision and PROJ.4 projection. Explicit config values
 				// (mos_precision / mos_units / srid / crs_defn) always win.
 				if err := applySystemInfo(&layer, sysInfo, sridExplicit || lcrs.Explicit); err != nil {
@@ -535,7 +535,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 }
 
 // applySystemInfo applies a layer self-description parsed from a
-// TLayerSystemInfoRec blob to the layer being registered. Only values not
+// MapplGIS LayerInfo blob to the layer being registered. Only values not
 // explicitly configured take effect:
 //   - precision: used when neither provider- nor layer-level mos_precision
 //     is set;
@@ -562,13 +562,10 @@ func applySystemInfo(layer *Layer, sysInfo *mos.SystemInfo, crsExplicit bool) er
 
 	// projection: register the blob's PROJ.4 definition as the layer SRID
 	// when no provider- or layer-level CRS was selected.
-	if sysInfo.Projection != "" && !crsExplicit {
-		code, err := basic.RegisterProj4Defn(sysInfo.Projection)
-		if err != nil {
-			return fmt.Errorf("unable to register layer projection %q: %v", sysInfo.Projection, err)
-		}
-		layer.srid = code
-		log.Infof("registered layer projection %q as synthetic srid %v", sysInfo.Projection, code)
+	if srid, applied, err := crsconfig.ApplySystemInfoCRS(int(layer.srid), crsExplicit, sysInfo.Projection); err != nil {
+		return fmt.Errorf("unable to register layer projection %q: %v", sysInfo.Projection, err)
+	} else if applied {
+		layer.srid = uint64(srid)
 	}
 
 	if sysInfo.MapUnitsDefined {

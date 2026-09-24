@@ -2,6 +2,7 @@ package postgis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -231,7 +232,8 @@ func (p Provider) TileFeatures(
 
 	// buffered tile extent in WebMercator, used by the exact in-memory
 	// filter for raw geometry formats.
-	tileBBox, _ := tile.BufferedExtent()
+	webMercatorBBox, _ := tile.BufferedExtent()
+	tileBBox := webMercatorBBox
 	if plyr.SRID() != tegola.WebMercator {
 		sourceBBox, berr := basic.FromWebMercatorExtent(plyr.SRID(), tileBBox)
 		if berr != nil {
@@ -350,9 +352,10 @@ func (p Provider) TileFeatures(
 			continue
 		}
 
-		// The MOS layer self-description blob (TLayerSystemInfoRec) is
-		// metadata, never a feature: apply it to the MOS config and skip
-		// the row.
+		// The MOS layer self-description blob (MapplGIS LayerInfo) is
+		// metadata, never a feature: apply it to the MOS config, register
+		// its Projection as the layer CRS when no explicit CRS was
+		// configured, and skip the row.
 		if plyr.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geobytes) {
 			sysInfo, serr := codec.ParseSystemInfoValue(geobytes)
 			if serr != nil {
@@ -361,6 +364,25 @@ func (p Provider) TileFeatures(
 			if aerr := plyr.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
 				return fmt.Errorf("for layer (%v) %w", plyr.Name(), aerr)
 			}
+			srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(plyr.srid), plyr.crsExplicit, sysInfo.Projection)
+			if aerr != nil {
+				return fmt.Errorf("for layer (%v) %w", plyr.Name(), aerr)
+			}
+			if applied {
+				plyr.srid = uint64(srid)
+				// The runtime self-description is the resolved CRS for this
+				// request; a source-inferred SRID must not override it.
+				plyr.crsExplicit = true
+				if plyr.srid != tegola.WebMercator {
+					sourceBBox, berr := basic.FromWebMercatorExtent(plyr.srid, webMercatorBBox)
+					if berr != nil {
+						return fmt.Errorf("error converting tile extent for layer (%v): %w", layer, berr)
+					}
+					tileBBox = sourceBBox
+				} else {
+					tileBBox = webMercatorBBox
+				}
+			}
 			continue
 		}
 
@@ -368,8 +390,8 @@ func (p Provider) TileFeatures(
 		geometry, err := decodeGeometryValue(geobytes, plyr.geometryFormat, plyr.mosConfig)
 		if err != nil {
 			if plyr.geometryFormat == "" {
-				switch err.(type) {
-				case wkb.ErrUnknownGeometryType:
+				var ugt wkb.ErrUnknownGeometryType
+				if errors.As(err, &ugt) {
 					rplfn := layer + ":" + plyr.GeomFieldName()
 					// Only report to the log once.
 					// This is to prevent the logs from filling up if there are many geometries in the layer
@@ -417,7 +439,7 @@ func geometryFormatName(format string) string {
 }
 
 // inspectMOSLayerGeomType samples the first rows of the layer's SQL, applies
-// any TLayerSystemInfoRec blob to the MOS config, and derives the geometry
+// any MapplGIS LayerInfo blob to the MOS config, and derives the geometry
 // type from the first decodable MOS geometry.
 func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	// neutralize tokens that could filter out all rows during inspection
@@ -466,6 +488,17 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 				}
 				if aerr := l.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
 					return fmt.Errorf("layer (%v): %w", l.name, aerr)
+				}
+				// The system-info Projection is the shared source-derived
+				// CRS for MOS layers: register it as a synthetic SRID unless
+				// an explicit srid/crs_defn was configured.
+				srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(l.srid), l.crsExplicit, sysInfo.Projection)
+				if aerr != nil {
+					return fmt.Errorf("layer (%v): %w", l.name, aerr)
+				}
+				if applied {
+					l.srid = uint64(srid)
+					l.crsExplicit = true
 				}
 				continue
 			}
@@ -890,6 +923,11 @@ func CreateProvider(
 	if err != nil {
 		return nil, err
 	}
+	if isMVT(providerType) {
+		if verr := codec.ValidateMVTGeometryFormat(providerGeometryFormat); verr != nil {
+			return nil, verr
+		}
+	}
 	if providerGeometryFormat != "" && providerGeometryFormat != codec.FormatMOS &&
 		(providerMOSCfg.PrecisionSet || providerMOSCfg.UnitsSet) {
 		log.Warnf("%v / %v only apply when %v = %q; ignoring provider-level values",
@@ -1081,6 +1119,9 @@ func CreateProvider(
 			idField:        idfld,
 			geomField:      geomfld,
 			srid:           uint64(lsrid),
+			// explicit CRS at either config level suppresses any
+			// source-provided projection (MOS system-info blob)
+			crsExplicit:    pcrs.Explicit || lcrs.Explicit,
 			geometryFormat: providerGeometryFormat,
 			mosConfig:      providerMOSCfg,
 		}
@@ -1116,13 +1157,12 @@ func CreateProvider(
 				l.mosConfig.UnitFactor = codec.DefaultMOSConfig().UnitFactor
 			}
 		}
-		// MVT providers must not take the raw MOS path: their geometry is
-		// MVT bytes produced by the database, not a raw feature geometry.
-		if isMVT(providerType) && l.geometryFormat == codec.FormatMOS {
-			return nil, fmt.Errorf(
-				"for layer (%v) %v: %v = %q is not supported for MVT providers",
-				i, lName, codec.ConfigKeyGeometryFormat, codec.FormatMOS,
-			)
+		// MVT providers must not take the raw geometry path: their geometry
+		// is MVT bytes produced by the database, not a raw feature geometry.
+		if isMVT(providerType) {
+			if verr := codec.ValidateMVTGeometryFormat(l.geometryFormat); verr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
+			}
 		}
 
 		if sql != "" && !isSelectQuery.MatchString(sql) {
