@@ -29,6 +29,14 @@ require (
 	gopkg.in/go-playground/colors.v1 v1.0.2-0.20150924111726-b53ecfb39623
 )
 
+// In-repo forks carrying fork-specific fixes (vendor tree patches moved here,
+// see third_party/README.md). Keep the require versions above in sync with
+// the upstream baselines the forks were created from.
+replace (
+	github.com/go-spatial/geom => ./third_party/go-spatial/geom
+	github.com/go-spatial/proj => ./third_party/go-spatial/proj
+)
+
 require (
 	cel.dev/expr v0.25.2 // indirect
 	cloud.google.com/go v0.123.0 // indirect
