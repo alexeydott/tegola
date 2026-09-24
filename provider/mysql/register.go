@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"strconv"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -291,25 +290,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 	// register the built-in table of common projected SRIDs (UTM zones,
 	// Pulkovo Gauss-Kruger) so any of them can be used as a layer srid
-	// without extra configuration.
+	// without extra configuration. Additional CRS definitions are supplied
+	// per provider/layer via crs_defn, matching the other standard providers.
 	basic.RegisterBuiltinProj4SRIDs()
-
-	// proj4 config option: extra SRID -> PROJ.4 definitions for systems not
-	// in the built-in table. Accepts either a single string with entries
-	// separated by newlines or ';' ("2180=+proj=sterea ...; 2177=+proj=tmerc
-	// ..."), or a TOML table ({2180 = "+proj=sterea ..."}).
-	if raw, ok := config.Interface(ConfigKeyProj4); ok && raw != nil {
-		defs, err := parseProj4ConfigValue(raw)
-		if err != nil {
-			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyProj4, err)
-		}
-		for srid, def := range defs {
-			if err := basic.RegisterProj4SRID(srid, def); err != nil {
-				return nil, fmt.Errorf("invalid %v: %v", ConfigKeyProj4, err)
-			}
-			log.Infof("registered proj4 definition for srid %v", srid)
-		}
-	}
 
 	dsn := fmt.Sprintf("%v:%v@tcp(%v:%v)/%v?parseTime=true&multiStatements=true",
 		user, password, host, port, database)
@@ -745,53 +728,6 @@ func applyLayerCRSDefn(layerConf dict.Dicter, lsrid *int) error {
 	return nil
 }
 
-// parseProj4ConfigValue parses the raw value of the proj4 config option.
-// Accepted shapes:
-//   - string: entries separated by newlines or ';', each "SRID=+proj=..."
-//   - []map[string]interface{} / map[string]interface{} (TOML table via env.Dict):
-//     keys are SRIDs, values are PROJ.4 strings
-func parseProj4ConfigValue(raw interface{}) (map[uint64]string, error) {
-	switch v := raw.(type) {
-	case string:
-		entries := strings.FieldsFunc(v, func(r rune) bool { return r == '\n' || r == ';' })
-		return basic.ParseProj4Config(entries)
-	case map[string]interface{}:
-		out := make(map[uint64]string, len(v))
-		for k, defStr := range v {
-			srid, err := parseSRIDKey(k)
-			if err != nil {
-				return nil, err
-			}
-			def, ok := defStr.(string)
-			if !ok {
-				return nil, fmt.Errorf("proj4 value for srid %v must be a string, got %T", k, defStr)
-			}
-			out[srid] = def
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("expected string or table, got %T", raw)
-	}
-}
-
-// parseSRIDKey parses a proj4 table key into an EPSG code. Accepts bare
-// numbers ("2180") and "EPSG:2180" / "epsg:2180" for convenience.
-func parseSRIDKey(key string) (uint64, error) {
-	k := strings.TrimSpace(key)
-	if len(k) >= 5 && strings.EqualFold(k[:5], "epsg:") {
-		k = strings.TrimSpace(k[5:])
-	}
-	if k == "" {
-		return 0, fmt.Errorf("proj4 table has an empty srid key")
-	}
-	for _, r := range k {
-		if r < '0' || r > '9' {
-			return 0, fmt.Errorf("proj4 table key %q is not a valid srid", key)
-		}
-	}
-	srid, err := strconv.ParseUint(k, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("proj4 table key %q is not a valid srid", key)
-	}
-	return srid, nil
-}
+// parseProj4ConfigValue was removed along with the public "proj4" config
+// key: custom CRS definitions are supplied via srid/crs_defn, matching the
+// other standard providers.

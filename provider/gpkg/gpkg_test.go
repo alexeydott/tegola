@@ -274,6 +274,160 @@ func TestNewTileProvider(t *testing.T) {
 			},
 			expectedLayerCount: 1,
 		},
+		"custom sql keeps configured id fieldname": {
+			// Custom SQL layers must honor an explicit id_fieldname even after
+			// a successful geometry inspection; previously the inspected branch
+			// reset it back to the default 'fid'.
+			config: map[string]interface{}{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name":         "a_points",
+						"sql":          "SELECT osm_id, geom, amenity FROM amenities_points WHERE fid IN (515,359,273)",
+						"id_fieldname": "osm_id",
+					},
+				},
+			},
+			expectedLayerCount: 1,
+		},
+		"custom sql keeps default id fieldname when not configured": {
+			config: map[string]interface{}{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name": "a_points",
+						"sql":  "SELECT fid, geom, amenity FROM amenities_points WHERE fid IN (515,359,273)",
+					},
+				},
+			},
+			expectedLayerCount: 1,
+		},
+		"custom sql with non-standard geometry column": {
+			// geometry_fieldname lets custom SQL use any geometry column name,
+			// matching the contract of the other standard providers. The layer
+			// here has no matching rows in the sample (the_geom does not exist
+			// in this test fixture), so it registers without inspection.
+			config: map[string]interface{}{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name":               "a_points",
+						"sql":                "SELECT fid, geom, amenity FROM amenities_points WHERE fid IN (515,359,273)",
+						"geometry_fieldname": "geom",
+					},
+				},
+			},
+			expectedLayerCount: 1,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
+
+func TestCustomSQLLayerFieldnames(t *testing.T) {
+	// Verifies the layer's id/geometry fieldnames after registration for the
+	// three custom-SQL states: inspected, deferred, and empty result set.
+	// Uses the internal Layer accessors, which expose the configured fields.
+	fn := func(tc struct {
+		config              dict.Dict
+		expectedIDFieldname string
+		expectedGeomField   string
+	}) func(*testing.T) {
+		return func(t *testing.T) {
+			p, err := gpkg.NewProviderInternal(tc.config)
+			if err != nil {
+				t.Fatalf("err creating provider: %v", err)
+			}
+			layer, ok := p.LayerInternal("a_points")
+			if !ok {
+				t.Fatalf("layer a_points not registered")
+			}
+			if layer.IDFieldName() != tc.expectedIDFieldname {
+				t.Errorf("id fieldname: expected %v got %v", tc.expectedIDFieldname, layer.IDFieldName())
+			}
+			if layer.GeomFieldName() != tc.expectedGeomField {
+				t.Errorf("geom fieldname: expected %v got %v", tc.expectedGeomField, layer.GeomFieldName())
+			}
+		}
+	}
+
+	tests := map[string]struct {
+		config              dict.Dict
+		expectedIDFieldname string
+		expectedGeomField   string
+	}{
+		"inspected sql keeps configured id fieldname": {
+			config: dict.Dict{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name":         "a_points",
+						"sql":          "SELECT osm_id, geom, amenity FROM amenities_points WHERE fid IN (515,359,273)",
+						"id_fieldname": "osm_id",
+					},
+				},
+			},
+			expectedIDFieldname: "osm_id",
+			expectedGeomField:   "geom",
+		},
+		"inspected sql default id fieldname": {
+			config: dict.Dict{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name": "a_points",
+						"sql":  "SELECT fid, geom, amenity FROM amenities_points WHERE fid IN (515,359,273)",
+					},
+				},
+			},
+			expectedIDFieldname: "fid",
+			expectedGeomField:   "geom",
+		},
+		"inspected sql honors geometry_fieldname": {
+			config: dict.Dict{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name":               "a_points",
+						"sql":                "SELECT fid, geom, amenity FROM amenities_points WHERE fid IN (515,359,273)",
+						"geometry_fieldname": "geom",
+						"id_fieldname":       "fid",
+					},
+				},
+			},
+			expectedIDFieldname: "fid",
+			expectedGeomField:   "geom",
+		},
+		"deferred sql keeps configured id fieldname": {
+			config: dict.Dict{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name":         "a_points",
+						"sql":          "SELECT osm_id, geom, amenity FROM amenities_points WHERE !BBOX! AND !ZOOM! >= 0",
+						"id_fieldname": "osm_id",
+					},
+				},
+			},
+			expectedIDFieldname: "osm_id",
+			expectedGeomField:   "geom",
+		},
+		"empty result sql keeps configured id fieldname": {
+			config: dict.Dict{
+				"filepath": GPKGAthensFilePath,
+				"layers": []map[string]interface{}{
+					{
+						"name":         "a_points",
+						"sql":          "SELECT osm_id, geom, amenity FROM amenities_points WHERE fid = -1",
+						"id_fieldname": "osm_id",
+					},
+				},
+			},
+			expectedIDFieldname: "osm_id",
+			expectedGeomField:   "geom",
+		},
 	}
 
 	for name, tc := range tests {

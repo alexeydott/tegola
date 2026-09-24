@@ -401,6 +401,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 		}
 
+		geomFieldname := DefaultGeomFieldName
+		geomFieldname, err = layerConf.String(ConfigKeyGeomField, &geomFieldname)
+		if err != nil {
+			return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
+		}
+
 		tagFieldnames, err := layerConf.StringSlice(ConfigKeyFields)
 		if err != nil { // empty slices are okay
 			return nil, fmt.Errorf("for layer (%v) %v, %q field had the following error: %v", i, layerName, ConfigKeyFields, err)
@@ -410,7 +416,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		layer := Layer{
 			name:          layerName,
 			idFieldname:   idFieldname,
-			geomFieldname: DefaultGeomFieldName,
+			geomFieldname: geomFieldname,
 		}
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
@@ -499,7 +505,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
 
 			// Get geometry type & srid from geometry of first row.
-			qtext := fmt.Sprintf("SELECT geom FROM (%v) WHERE geom IS NOT NULL LIMIT 1;", inspectionSQL)
+			qtext := fmt.Sprintf("SELECT %[1]v FROM (%v) WHERE %[1]v IS NOT NULL LIMIT 1;", layer.geomFieldname, inspectionSQL)
 
 			log.Debugf("qtext: %v", qtext)
 
@@ -546,8 +552,8 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 				layer.geomType = geo
 				layer.srid = uint64(lsrid)
-				layer.geomFieldname = DefaultGeomFieldName
-				layer.idFieldname = DefaultIDFieldName
+				// keep the configured (or default) id/geometry field names set
+				// at layer creation; only fill in the inferred geometry type.
 			}
 		}
 

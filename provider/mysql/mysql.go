@@ -66,7 +66,6 @@ const (
 	ConfigKeyGeometryFormat = "geometry_format"
 	ConfigKeyMOSPrecision   = "mos_precision"
 	ConfigKeyMOSUnits       = "mos_units"
-	ConfigKeyProj4          = "proj4"
 	ConfigKeyLayers         = "layers"
 	ConfigKeyLayerName      = "name"
 	ConfigKeyTableName      = "tablename"

@@ -34,6 +34,7 @@ const (
 	ConfigKeyTableName   = "tablename"
 	ConfigKeySQL         = "sql"
 	ConfigKeyGeomIDField = "id_fieldname"
+	ConfigKeyGeomField   = "geometry_fieldname"
 	ConfigKeyFields      = "fields"
 )
 

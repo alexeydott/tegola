@@ -66,10 +66,14 @@ const (
 	ConfigKeyDefaultTransactionReadOnly = "default_transaction_read_only"
 	ConfigKeyPoolMinConns               = "pool_min_conns"
 	ConfigKeyPoolMinIdleConns           = "pool_min_idle_conns"
+	ConfigKeyPoolMaxConns               = "pool_max_conns"
 	ConfigKeyPoolMaxConnLifeTime        = "pool_max_conn_lifetime"
-	ConfigKeyPoolMaxConnIdleTime        = "pool_max_conn_idletime"
-	ConfigKeyPoolHealthCheckPeriod      = "pool_health_check_period"
-	ConfigKeyPoolMaxConnLifeTimeJitter  = "pool_max_conn_lifetime_jitter"
+	// canonical spelling; ConfigKeyPoolMaxConnIdleTime (missing the
+	// separating underscore) is kept as a deprecated alias
+	ConfigKeyPoolMaxConnIdleTimeCanonical = "pool_max_conn_idle_time"
+	ConfigKeyPoolMaxConnIdleTime          = "pool_max_conn_idletime"
+	ConfigKeyPoolHealthCheckPeriod        = "pool_health_check_period"
+	ConfigKeyPoolMaxConnLifeTimeJitter    = "pool_max_conn_lifetime_jitter"
 )
 
 var (
@@ -838,12 +842,13 @@ func CreateProvider(
 		}
 
 		if tblName != lName && sql != "" {
-			log.Debugf(
-				"both %v and %v field are specified for layer (%v) %v, using only %[2]v field.",
+			return nil, fmt.Errorf(
+				"for %v layer (%v) %v: only one of %v or %v can be specified",
+				providerType,
+				lName,
+				i,
 				ConfigKeyTablename,
 				ConfigKeySQL,
-				i,
-				lName,
 			)
 		}
 
