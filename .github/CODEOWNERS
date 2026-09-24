@@ -1,2 +1,9 @@
-# Owners of this fork.
-*       @alexeydott
+
+# The main owners and contributes of this project.
+*       @gdey @ARolek
+
+# Maintainer of the gpkg package:
+/provider/gpkg @gdey
+/ui @ARolek @mapl
+# Maintainer of the HANA database provider:
+/provider/hana @mrylov
