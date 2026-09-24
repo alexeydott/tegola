@@ -22,6 +22,7 @@ import (
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -53,6 +54,13 @@ func (c connectionPoolCollector) QueryContext(ctx context.Context, query string)
 }
 
 func (c connectionPoolCollector) QueryContextWithBBox(ctx context.Context, query string, extent *geom.Extent, srid uint64, hasTileBounds bool) (*sql.Rows, error) {
+	// A synthetic SRID (crs_defn) exists only on the client side: the SQL
+	// was generated with a 1=1 placeholder instead of spatial predicates,
+	// so no bbox parameters are bound.
+	if isSyntheticCRS(srid) {
+		return c.pool.QueryContext(ctx, query)
+	}
+
 	ll, ur, err := getBBoxCoordinates(extent, srid)
 	if err != nil {
 		return nil, err
@@ -431,10 +439,13 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		return nil, fmt.Errorf("MVT provider is only available in HANA Cloud")
 	}
 
-	srid := -1
-	if srid, err = config.Int(ConfigKeySRID, &srid); err != nil {
-		return nil, err
+	// provider-level srid/crs_defn via the shared CRS contract; -1 keeps the
+	// legacy "auto-detect from the geometry column" behavior.
+	pcrs, perr := crsconfig.ResolveProvider(config, -1)
+	if perr != nil {
+		return nil, perr
 	}
+	srid := pcrs.SRID
 
 	// provider-level geometry format / MOS settings, shared by all layers
 	// that do not override them (same contract as the other providers).
@@ -537,10 +548,13 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			log.Debugf("both %v and %v field are specified for layer (%v) %v, using only %[2]v field.", ConfigKeyTablename, ConfigKeySQL, i, lName)
 		}
 
-		var lsrid = srid
-		if lsrid, err = layer.Int(ConfigKeySRID, &lsrid); err != nil {
-			return nil, err
+		// layer-level srid/crs_defn via the shared CRS contract; a layer
+		// crs_defn wins over any numeric srid on the same level.
+		lcrs, lerr := crsconfig.ResolveLayer(layer, srid)
+		if lerr != nil {
+			return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, lerr)
 		}
+		lsrid := lcrs.SRID
 
 		if lsrid < 0 {
 			// we try to auto detect SRID if it is not specified neither
@@ -556,7 +570,25 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			}
 		}
 
-		if isSrsRoundEarth(p.pool, uint64(lsrid)) {
+		switch {
+		case isSyntheticCRS(uint64(lsrid)):
+			// A synthetic SRID registered from crs_defn exists only on the
+			// client side: HANA spatial predicates and MVT generation need a
+			// database-side SRS, so !BBOX! degrades to 1=1 (see getBBoxFilter)
+			// and filtering happens in memory on a raw geometry format.
+			if providerType == MVTProviderType {
+				return nil, fmt.Errorf(
+					"for layer (%v) %v: %v (synthetic SRID) is not supported for MVT providers",
+					i, lName, crsconfig.KeyCRSDefn,
+				)
+			}
+			if providerGeometryFormat == "" {
+				return nil, fmt.Errorf(
+					"for layer (%v) %v: %v (synthetic SRID) requires %v = %q or %q; native HANA ST_Geometry columns use a database-side SRS",
+					i, lName, crsconfig.KeyCRSDefn, codec.ConfigKeyGeometryFormat, codec.FormatWKB, codec.FormatWKT,
+				)
+			}
+		case isSrsRoundEarth(p.pool, uint64(lsrid)):
 			if !hasSrsPlanarEquivalent(p.pool, uint64(lsrid)) {
 				return nil, fmt.Errorf("unable to find a planar equivalent for srid %v in layer: %v", lsrid, lName)
 			}
@@ -1094,9 +1126,11 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		}
 
 		// Exact in-memory bbox filter. Mandatory for raw formats (wkb/wkt/
-		// mos) whose SQL cannot use native spatial predicates; harmless for
-		// native geometry already filtered via !BBOX!.
-		if plyr.geometryFormat == codec.FormatMOS && !codec.GeometryIntersectsExtent(geometry, tileBBox) {
+		// mos) and synthetic CRS layers whose SQL cannot use native spatial
+		// predicates; harmless for native geometry already filtered via
+		// !BBOX!.
+		if (plyr.geometryFormat == codec.FormatMOS || isSyntheticCRS(tileSRID)) &&
+			!codec.GeometryIntersectsExtent(geometry, tileBBox) {
 			continue
 		}
 

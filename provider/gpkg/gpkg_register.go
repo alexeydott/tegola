@@ -23,6 +23,7 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
 )
 
 var colFinder *regexp.Regexp
@@ -44,36 +45,10 @@ func customSQLNeedsDeferredInspection(sqlText string) bool {
 	return false
 }
 
-func configuredLayerSRID(layerConf dict.Dicter, fallback uint64) (uint64, error) {
-	lsrid := int(fallback)
-	var err error
-	if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
-		return 0, err
-	}
-	if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
-		return 0, err
-	}
-	return uint64(lsrid), nil
-}
-
-// applyLayerCRSDefn resolves a layer-level crs_defn (full PROJ.4 definition)
-// into the layer SRID, overriding a numeric srid when present.
-func applyLayerCRSDefn(layerConf dict.Dicter, lsrid *int) error {
-	defnDefault := ""
-	defn, err := layerConf.String(ConfigKeyCRSDefn, &defnDefault)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(defn) == "" {
-		return nil
-	}
-	code, err := basic.RegisterProj4Defn(defn)
-	if err != nil {
-		return err
-	}
-	*lsrid = int(code)
-	return nil
-}
+// configuredLayerSRID and applyLayerCRSDefn were replaced by the shared
+// provider/crsconfig resolver, which implements the same provider/layer
+// crs_defn > srid > fallback precedence together with explicit-flag
+// tracking for every standard provider.
 
 func init() {
 	provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
@@ -314,35 +289,19 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 
-	// track whether the user explicitly configured a provider-level SRID. When they did,
-	// that value must take precedence over any SRID inferred from the GPKG itself
-	// (gpkg_contents.srs_id or the per-row WKB header), since that inferred data is not
-	// always reliable (e.g. GPKGs produced by third-party conversion tools such as DWG
-	// exporters commonly leave those fields at 0 or set them to a non-standard code).
-	_, providerSRIDExplicit := config.Interface(ConfigKeySRID)
+	// provider-level srid/crs_defn via the shared CRS contract. An explicit
+	// value must take precedence over any SRID inferred from the GPKG itself
+	// (gpkg_contents.srs_id or the per-row WKB header), since that inferred
+	// data is not always reliable (e.g. GPKGs produced by third-party
+	// conversion tools such as DWG exporters commonly leave those fields at 0
+	// or set them to a non-standard code).
+	pcrs, perr := crsconfig.ResolveProvider(config, DefaultSRID)
+	if perr != nil {
+		return nil, perr
+	}
+	srid := pcrs.SRID
+	providerSRIDExplicit := pcrs.Explicit
 
-	srid := DefaultSRID
-	if srid, err = config.Int(ConfigKeySRID, &srid); err != nil {
-		return nil, err
-	}
-
-	// crs_defn: a full PROJ.4 definition used instead of a numeric SRID. When
-	// present it wins over srid and is registered under a synthetic SRID that
-	// flows through the regular reprojection path.
-	crsDefnDefault := ""
-	var crsDefn string
-	if crsDefn, err = config.String(ConfigKeyCRSDefn, &crsDefnDefault); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(crsDefn) != "" {
-		defnSRID, rerr := basic.RegisterProj4Defn(crsDefn)
-		if rerr != nil {
-			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyCRSDefn, rerr)
-		}
-		srid = int(defnSRID)
-		providerSRIDExplicit = true
-		log.Infof("registered %v as synthetic srid %v", ConfigKeyCRSDefn, defnSRID)
-	}
 	// Register the same common projected SRIDs supported by the other SQL
 	// providers. GeoPackages frequently carry UTM or Gauss-Kruger metadata;
 	// without this registration a valid numeric layer SRID cannot be used for
@@ -512,12 +471,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layerSRID = d.srid
 			}
 
-			var lsrid int = int(layerSRID)
-			if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
-				return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
-			}
-			if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
-				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, err)
+			lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
+			if rerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 			}
 
 			layer.tablename = tablename
@@ -525,7 +481,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			layer.geomFieldname = d.geomFieldname
 			layer.geomType = d.geomType
 			layer.idFieldname = idFieldname
-			layer.srid = uint64(lsrid)
+			layer.srid = uint64(lcrs.SRID)
 			layer.bbox = *d.bbox
 
 		} else { // layerConf[ConfigKeySQL] exists
@@ -537,11 +493,11 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			layer.sql = customSQL
 
 			if customSQLNeedsDeferredInspection(customSQL) {
-				lsrid, rerr := configuredLayerSRID(layerConf, p.srid)
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(p.srid))
 				if rerr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 				}
-				layer.srid = lsrid
+				layer.srid = uint64(lcrs.SRID)
 				log.Warnf("layer '%v' uses tile-dependent custom SQL; deferring startup geometry inspection", layerName)
 				p.layers[layer.name] = layer
 				continue
@@ -590,11 +546,11 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// The layer's custom SQL currently returns no rows. Keep a
 				// placeholder layer so map registration can succeed; a later
 				// tile request can still execute the SQL when data appears.
-				lsrid, rerr := configuredLayerSRID(layerConf, p.srid)
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(p.srid))
 				if rerr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 				}
-				layer.srid = lsrid
+				layer.srid = uint64(lcrs.SRID)
 				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; registering it without an inferred geometry type: %v", layerName, customSQL)
 				p.layers[layer.name] = layer
 				continue
@@ -616,16 +572,13 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					layerSRID = uint64(h.SRSId())
 				}
 
-				var lsrid int = int(layerSRID)
-				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
-					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
-				}
-				if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
-					return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, err)
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 				}
 
 				layer.geomType = geo
-				layer.srid = uint64(lsrid)
+				layer.srid = uint64(lcrs.SRID)
 				// keep the configured (or default) id/geometry field names set
 				// at layer creation; only fill in the inferred geometry type.
 			}

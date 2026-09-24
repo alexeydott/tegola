@@ -254,6 +254,14 @@ func isPlanarEquivalentSrid(srid uint64) bool {
 	return srid >= PLANAR_SRID_OFFSET
 }
 
+// isSyntheticCRS reports whether srid is a Tegola-only synthetic SRID
+// (crs_defn) rather than a planar-equivalent round-earth SRS or a real
+// database SRS. The planar-equivalent offset (1e9) sits inside the numeric
+// synthetic range, so it must be excluded explicitly.
+func isSyntheticCRS(srid uint64) bool {
+	return basic.IsSyntheticSRID(srid) && !isPlanarEquivalentSrid(srid)
+}
+
 func toPlanarEquivalenSrid(srid uint64) uint64 {
 	return PLANAR_SRID_OFFSET + srid
 }
@@ -282,6 +290,11 @@ func getBBoxCoordinates(extent *geom.Extent, srid uint64) (geom.Point, geom.Poin
 }
 
 func getBBoxFilter(dbVersion uint, geomField string, srid uint64) string {
+	// Synthetic SRIDs (crs_defn) are not known to the database: degrade the
+	// spatial predicate to a no-op; filtering happens client-side.
+	if isSyntheticCRS(srid) {
+		return "1=1"
+	}
 	if dbVersion == 1 {
 		if isPlanarEquivalentSrid(srid) {
 			return fmt.Sprintf("%v.ST_SRID($3).ST_IntersectsRect(NEW ST_POINT($1, $3), NEW ST_POINT($2, $3)) = 1", quoteIdentifier(geomField))

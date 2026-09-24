@@ -774,7 +774,7 @@ func TestApplySystemInfo(t *testing.T) {
 
 	t.Run("units factor applied", func(t *testing.T) {
 		layer := Layer{name: "l", geometryFormat: GeometryFormatAuto, mosConfig: codec.DefaultMOSConfig()}
-		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
+		if err := applySystemInfo(&layer, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.mosConfig.UnitFactor != 0.001 {
@@ -787,7 +787,7 @@ func TestApplySystemInfo(t *testing.T) {
 
 	t.Run("precision applied when not explicit", func(t *testing.T) {
 		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig()}
-		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
+		if err := applySystemInfo(&layer, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.mosConfig.Precision != 2 {
@@ -797,8 +797,7 @@ func TestApplySystemInfo(t *testing.T) {
 
 	t.Run("explicit precision wins", func(t *testing.T) {
 		layer := Layer{name: "l", mosConfig: codec.MOSConfig{Precision: 4, UnitFactor: 1, PrecisionSet: true}}
-		conf := dict.Dict{"mos_precision": 4.0}
-		if err := applySystemInfo(&layer, conf, sysInfo, true); err != nil {
+		if err := applySystemInfo(&layer, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.mosConfig.Precision != 4 {
@@ -808,7 +807,7 @@ func TestApplySystemInfo(t *testing.T) {
 
 	t.Run("explicit zero precision wins", func(t *testing.T) {
 		layer := Layer{name: "l", mosConfig: codec.MOSConfig{Precision: 0, UnitFactor: 1, PrecisionSet: true}}
-		if err := applySystemInfo(&layer, dict.Dict{"mos_precision": 0.0}, sysInfo, true); err != nil {
+		if err := applySystemInfo(&layer, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.mosConfig.Precision != 0 {
@@ -818,7 +817,7 @@ func TestApplySystemInfo(t *testing.T) {
 
 	t.Run("explicit units wins", func(t *testing.T) {
 		layer := Layer{name: "l", mosConfig: codec.MOSConfig{Precision: 0, UnitFactor: 1000, UnitsSet: true}}
-		if err := applySystemInfo(&layer, dict.Dict{"mos_units": "km"}, sysInfo, true); err != nil {
+		if err := applySystemInfo(&layer, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.mosConfig.UnitFactor != 1000 {
@@ -828,7 +827,7 @@ func TestApplySystemInfo(t *testing.T) {
 
 	t.Run("projection applied when srid not explicit", func(t *testing.T) {
 		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig()}
-		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, false); err != nil {
+		if err := applySystemInfo(&layer, sysInfo, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.srid == 0 {
@@ -845,7 +844,7 @@ func TestApplySystemInfo(t *testing.T) {
 
 	t.Run("projection not applied when srid explicit", func(t *testing.T) {
 		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig(), srid: 3857}
-		if err := applySystemInfo(&layer, dict.Dict{}, sysInfo, true); err != nil {
+		if err := applySystemInfo(&layer, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.srid != 3857 {
@@ -854,8 +853,8 @@ func TestApplySystemInfo(t *testing.T) {
 	})
 
 	t.Run("layer srid suppresses system projection", func(t *testing.T) {
-		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig(), srid: 32637}
-		if err := applySystemInfo(&layer, dict.Dict{ConfigKeySRID: 32637}, sysInfo, false); err != nil {
+		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig(), srid: 32637, crsExplicit: true}
+		if err := applySystemInfo(&layer, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.srid != 32637 {
@@ -868,8 +867,8 @@ func TestApplySystemInfo(t *testing.T) {
 		if err != nil {
 			t.Fatalf("registering layer CRS: %v", err)
 		}
-		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig(), srid: layerSRID}
-		if err := applySystemInfo(&layer, dict.Dict{ConfigKeyCRSDefn: projDefn}, sysInfo, false); err != nil {
+		layer := Layer{name: "l", mosConfig: codec.DefaultMOSConfig(), srid: layerSRID, crsExplicit: true}
+		if err := applySystemInfo(&layer, sysInfo, true); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.srid != layerSRID {
@@ -879,7 +878,7 @@ func TestApplySystemInfo(t *testing.T) {
 
 	t.Run("nil sysinfo is a no-op", func(t *testing.T) {
 		layer := Layer{name: "l", mosConfig: codec.MOSConfig{Precision: 3, UnitFactor: 1}, srid: 3395}
-		if err := applySystemInfo(&layer, dict.Dict{}, nil, false); err != nil {
+		if err := applySystemInfo(&layer, nil, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if layer.mosConfig.Precision != 3 || layer.srid != 3395 {

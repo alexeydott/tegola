@@ -25,7 +25,8 @@ const (
 // 	database (string): [Required] postgis database name
 // 	user (string): [Required] postgis database user
 // 	password (string): [Required] postgis database password
-// 	srid (int): [Optional] The default SRID for the provider. Defaults to WebMercator (3857) but also supports WGS84 (4326)
+// 	srid (int): [Optional] The default SRID for the provider. Defaults to WebMercator (3857). Any numeric SRID known to PostGIS is supported, as well as a synthetic SRID registered via crs_defn.
+// 	crs_defn (string): [Optional] A PROJ.4 definition of the layer's coordinate reference system, registered internally under a synthetic SRID. Wins over srid on the same level.
 // 	max_connections : [Optional] The max connections to maintain in the connection pool. Default is 100. 0 means no max.
 // 	layers (map[string]struct{})  — This is map of layers keyed by the layer name. supports the following properties
 //
@@ -34,7 +35,8 @@ const (
 // 		geometry_fieldname (string): [Optional] the name of the filed which contains the geometry for the feature. defaults to geom
 // 		id_fieldname (string): [Optional] the name of the feature id field. defaults to gid
 // 		fields ([]string): [Optional] a list of fields to include alongside the feature. Can be used if sql is not defined.
-// 		srid (int): [Optional] the SRID of the layer. Supports 3857 (WebMercator) or 4326 (WGS84).
+// 		srid (int): [Optional] the SRID of the layer. Any numeric SRID known to PostGIS is supported, as well as a synthetic SRID registered via crs_defn.
+// 		crs_defn (string): [Optional] A PROJ.4 definition of the layer's coordinate reference system, registered internally under a synthetic SRID. Wins over srid on the same level.
 // 		sql (string): [*Required] custom SQL to use use. Required if tablename is not defined. Supports the following tokens:
 //
 // 			!BBOX! - [Required] will be replaced with the bounding box of the tile before the query is sent to the database.

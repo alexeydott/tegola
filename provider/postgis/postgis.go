@@ -23,6 +23,7 @@ import (
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
 )
 
@@ -869,26 +870,12 @@ func CreateProvider(
 	// generation converts WebMercator extents into source-CRS bounds.
 	basic.RegisterBuiltinProj4SRIDs()
 
-	srid := DefaultSRID
-	if srid, err = config.Int(ConfigKeySRID, &srid); err != nil {
-		return nil, err
+	// provider-level srid/crs_defn via the shared CRS contract.
+	pcrs, perr := crsconfig.ResolveProvider(config, DefaultSRID)
+	if perr != nil {
+		return nil, perr
 	}
-
-	// crs_defn: a full PROJ.4 definition used instead of a numeric SRID. When
-	// present it wins over srid and is registered under a synthetic SRID that
-	// flows through the regular reprojection path.
-	crsDefnDefault := ""
-	var crsDefn string
-	if crsDefn, err = config.String(ConfigKeyCRSDefn, &crsDefnDefault); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(crsDefn) != "" {
-		defnSRID, rerr := basic.RegisterProj4Defn(crsDefn)
-		if rerr != nil {
-			return nil, fmt.Errorf("invalid %v: %w", ConfigKeyCRSDefn, rerr)
-		}
-		srid = int(defnSRID)
-	}
+	srid := pcrs.SRID
 
 	// provider-level geometry format / MOS settings, shared by all layers
 	// that do not override them (same contract as the other providers).
@@ -1034,23 +1021,13 @@ func CreateProvider(
 			)
 		}
 
-		lsrid := srid
-		if lsrid, err = layer.Int(ConfigKeySRID, &lsrid); err != nil {
-			return nil, err
-		}
-		// a layer-level crs_defn wins over any numeric srid
-		crsDefnDefault := ""
-		var lcrsDefn string
-		if lcrsDefn, err = layer.String(ConfigKeyCRSDefn, &crsDefnDefault); err != nil {
+		// layer-level srid/crs_defn via the shared CRS contract; a layer
+		// crs_defn wins over any numeric srid on the same level.
+		lcrs, err := crsconfig.ResolveLayer(layer, srid)
+		if err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, err)
 		}
-		if strings.TrimSpace(lcrsDefn) != "" {
-			defnSRID, rerr := basic.RegisterProj4Defn(lcrsDefn)
-			if rerr != nil {
-				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %w", i, lName, ConfigKeyCRSDefn, rerr)
-			}
-			lsrid = int(defnSRID)
-		}
+		lsrid := lcrs.SRID
 
 		l := Layer{
 			name:           lName,

@@ -17,6 +17,7 @@ import (
 	"github.com/go-spatial/tegola/mos"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
 )
 
 // ErrMissingLayerName is returned when a layer config is missing the 'name' key
@@ -78,18 +79,6 @@ func customSQLNeedsDeferredInspection(sqlText string) bool {
 		}
 	}
 	return false
-}
-
-func configuredLayerSRID(layerConf dict.Dicter, fallback int) (int, error) {
-	lsrid := fallback
-	var err error
-	if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
-		return 0, err
-	}
-	if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
-		return 0, err
-	}
-	return lsrid, nil
 }
 
 func sampleGeometryQuery(qtext string) string {
@@ -205,32 +194,15 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, err
 	}
 
-	// check if the user explicitly configured a provider-level SRID. When they
-	// did, that value takes precedence over any SRID decoded from geometry
-	// headers, which can be 0 or carry MariaDB axis-order flags.
-	_, sridExplicit := config.Interface(ConfigKeySRID)
-	srid := DefaultSRID
-	if srid, err = config.Int(ConfigKeySRID, &srid); err != nil {
-		return nil, err
+	// provider-level srid/crs_defn via the shared CRS contract. An explicit
+	// value takes precedence over any SRID decoded from geometry headers,
+	// which can be 0 or carry MariaDB axis-order flags.
+	pcrs, perr := crsconfig.ResolveProvider(config, DefaultSRID)
+	if perr != nil {
+		return nil, perr
 	}
-
-	// crs_defn: a full PROJ.4 definition used instead of a numeric SRID. When
-	// present it wins over srid and is registered under a synthetic SRID that
-	// flows through the regular reprojection path.
-	crsDefnDefault := ""
-	var crsDefn string
-	if crsDefn, err = config.String(ConfigKeyCRSDefn, &crsDefnDefault); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(crsDefn) != "" {
-		defnSRID, rerr := basic.RegisterProj4Defn(crsDefn)
-		if rerr != nil {
-			return nil, fmt.Errorf("invalid %v: %v", ConfigKeyCRSDefn, rerr)
-		}
-		srid = int(defnSRID)
-		sridExplicit = true
-		log.Infof("registered %v as synthetic srid %v", ConfigKeyCRSDefn, defnSRID)
-	}
+	srid := pcrs.SRID
+	sridExplicit := pcrs.Explicit
 
 	geometryFormat := GeometryFormatAuto
 	if geometryFormat, err = config.String(ConfigKeyGeometryFormat, &geometryFormat); err != nil {
@@ -375,24 +347,23 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 		}
 
+		// layer-level srid/crs_defn via the shared CRS contract. The
+		// provider-level value is the fallback until source metadata
+		// (header SRID / system info) is inspected in the branches below.
+		lcrs, cerr := crsconfig.ResolveLayer(layerConf, srid)
+		if cerr != nil {
+			return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, cerr)
+		}
+
 		// layer container. will be added to the provider after it's configured
 		layer := Layer{
 			name:           layerName,
 			idFieldname:    idFieldname,
 			geomFieldname:  geomFieldname,
+			srid:           uint64(lcrs.SRID),
 			geometryFormat: geometryFormat,
-			crsExplicit:    sridExplicit,
+			crsExplicit:    sridExplicit || lcrs.Explicit,
 			mosConfig:      mosCfg,
-		}
-		if _, explicit := layerConf.Interface(ConfigKeySRID); explicit {
-			layer.crsExplicit = true
-		}
-		if raw, ok := layerConf.Interface(ConfigKeyCRSDefn); ok && raw != nil {
-			defn, derr := layerConf.String(ConfigKeyCRSDefn, nil)
-			if derr != nil {
-				return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, derr)
-			}
-			layer.crsExplicit = layer.crsExplicit || strings.TrimSpace(defn) != ""
 		}
 
 		// layer-level mos_precision/mos_units override the provider-level
@@ -422,11 +393,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, inspectionSQL, geometryFormat, serverFlavor, layer.mosConfig)
 			switch {
 			case err == sql.ErrNoRows:
-				lsrid, rerr := configuredLayerSRID(layerConf, srid)
-				if rerr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
-				}
-				layer.srid = uint64(lsrid)
 				layer.deferredInspection = true
 				log.Warnf("layer '%v' (table %v) currently returns 0 rows; registering it without an inferred geometry type", layerName, tablename)
 				layer.tablename = tablename
@@ -445,13 +411,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					layerSRID = int(headerSRID)
 				}
 
-				var lsrid int = layerSRID
-				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
-					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, layerSRID)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 				}
-				if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
-					return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, err)
-				}
+				lsrid := lcrs.SRID
+				layer.crsExplicit = sridExplicit || lcrs.Explicit
 
 				layer.tablename = tablename
 				layer.tagFieldnames = tagFieldnames
@@ -461,7 +426,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// apply layer self-description from a TLayerSystemInfoRec blob:
 				// precision and PROJ.4 projection. Explicit config values
 				// (mos_precision / mos_units / srid / crs_defn) always win.
-				if err := applySystemInfo(&layer, layerConf, sysInfo, sridExplicit); err != nil {
+				if err := applySystemInfo(&layer, sysInfo, sridExplicit || lcrs.Explicit); err != nil {
 					return nil, fmt.Errorf("layer '%v' (table %v): %v", layerName, tablename, err)
 				}
 			}
@@ -478,11 +443,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			// against !ZOOM! with a permissive IN list and !BBOX! with 1=1 for
 			// the inspection query, mirroring the gpkg provider.
 			if customSQLNeedsDeferredInspection(customSQL) {
-				lsrid, rerr := configuredLayerSRID(layerConf, srid)
-				if rerr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
-				}
-				layer.srid = uint64(lsrid)
 				layer.deferredInspection = true
 				log.Warnf("layer '%v' uses tile-dependent custom SQL; deferring startup geometry inspection", layerName)
 				p.layers[layer.name] = layer
@@ -526,11 +486,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, qtext, geometryFormat, serverFlavor, layer.mosConfig)
 			switch {
 			case err == sql.ErrNoRows:
-				lsrid, rerr := configuredLayerSRID(layerConf, srid)
-				if rerr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %v", i, layerName, rerr)
-				}
-				layer.srid = uint64(lsrid)
 				layer.deferredInspection = true
 				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; registering it without an inferred geometry type: %v", layerName, customSQL)
 				p.layers[layer.name] = layer
@@ -547,13 +502,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					layerSRID = int(headerSRID)
 				}
 
-				var lsrid int = layerSRID
-				if lsrid, err = layerConf.Int(ConfigKeySRID, &lsrid); err != nil {
-					return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
+				lcrs, rerr := crsconfig.ResolveLayer(layerConf, layerSRID)
+				if rerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 				}
-				if err = applyLayerCRSDefn(layerConf, &lsrid); err != nil {
-					return nil, fmt.Errorf("for layer (%v) %v invalid %v: %v", i, layerName, ConfigKeyCRSDefn, err)
-				}
+				lsrid := lcrs.SRID
+				layer.crsExplicit = sridExplicit || lcrs.Explicit
 
 				layer.geomType = geo
 				layer.srid = uint64(lsrid)
@@ -562,7 +516,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// apply layer self-description from a TLayerSystemInfoRec blob:
 				// precision and PROJ.4 projection. Explicit config values
 				// (mos_precision / mos_units / srid / crs_defn) always win.
-				if err := applySystemInfo(&layer, layerConf, sysInfo, sridExplicit); err != nil {
+				if err := applySystemInfo(&layer, sysInfo, sridExplicit || lcrs.Explicit); err != nil {
 					return nil, fmt.Errorf("layer '%v' (custom SQL): %v", layerName, err)
 				}
 			}
@@ -585,13 +539,14 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 // explicitly configured take effect:
 //   - precision: used when neither provider- nor layer-level mos_precision
 //     is set;
-//   - units: used when neither provider- nor layer-level mos_units is set;
+//   - units: used when neither provider- or layer-level mos_units is set;
 //   - projection: registered as a synthetic SRID when no srid/crs_defn is
-//     set at provider or layer level (sridExplicit covers both).
+//     set at provider or layer level (crsExplicit covers both).
 //
-// layerConf is checked with Interface to detect explicit layer-level keys;
-// nil sysInfo (no system info blob in the table) is a no-op.
-func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInfo, sridExplicit bool) error {
+// crsExplicit is the combined provider- and layer-level CRS explicit flag
+// from provider/crsconfig resolution. nil sysInfo (no system info blob in
+// the table) is a no-op.
+func applySystemInfo(layer *Layer, sysInfo *mos.SystemInfo, crsExplicit bool) error {
 	if sysInfo == nil {
 		return nil
 	}
@@ -603,23 +558,7 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 		return err
 	}
 
-	// A layer-level CRS must also suppress system-info projection. The
-	// provider-level flag alone is insufficient because layer config is
-	// intentionally allowed to override provider defaults.
-	crsExplicit := sridExplicit
-	if layerConf != nil {
-		if _, ok := layerConf.Interface(ConfigKeySRID); ok {
-			crsExplicit = true
-		}
-		layer.crsExplicit = crsExplicit
-		if raw, ok := layerConf.Interface(ConfigKeyCRSDefn); ok && raw != nil {
-			defn, err := layerConf.String(ConfigKeyCRSDefn, nil)
-			if err != nil {
-				return fmt.Errorf("invalid %v: %v", ConfigKeyCRSDefn, err)
-			}
-			crsExplicit = crsExplicit || strings.TrimSpace(defn) != ""
-		}
-	}
+	layer.crsExplicit = crsExplicit
 
 	// projection: register the blob's PROJ.4 definition as the layer SRID
 	// when no provider- or layer-level CRS was selected.
@@ -642,24 +581,9 @@ func applySystemInfo(layer *Layer, layerConf dict.Dicter, sysInfo *mos.SystemInf
 	return nil
 }
 
-// applyLayerCRSDefn resolves a layer-level crs_defn (full PROJ.4 definition)
-// into the layer SRID, overriding a numeric srid when present.
-func applyLayerCRSDefn(layerConf dict.Dicter, lsrid *int) error {
-	defnDefault := ""
-	defn, err := layerConf.String(ConfigKeyCRSDefn, &defnDefault)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(defn) == "" {
-		return nil
-	}
-	code, err := basic.RegisterProj4Defn(defn)
-	if err != nil {
-		return err
-	}
-	*lsrid = int(code)
-	return nil
-}
+// applyLayerCRSDefn was replaced by the shared provider/crsconfig resolver,
+// which implements the same crs_defn > srid > fallback precedence together
+// with explicit-flag tracking for every standard provider.
 
 // parseProj4ConfigValue was removed along with the public "proj4" config
 // key: custom CRS definitions are supplied via srid/crs_defn, matching the
