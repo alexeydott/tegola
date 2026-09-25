@@ -107,8 +107,7 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 		w.Header().Add("Tegola-Cache", "HIT")
 		w.Header().Add("Content-Length", fmt.Sprintf("%d", len(cachedTile)))
 
-		w.Write(cachedTile)
-		return
+		_, _ = w.Write(cachedTile)
 	})
 }
 

@@ -1,16 +1,35 @@
 version: "2"
 
-# Skip _test.go files: the legacy test suite relies on unkeyed struct literals
-# which we do not want to mass-rewrite. Non-test code is fully vetted.
 run:
+  timeout: 5m
+  # legacy tests rely on unkeyed struct literals and lock-copying helpers;
+  # linting them is tracked as follow-up debt
   tests: false
 
 linters:
+  # correctness-oriented set; keep conservative to stay meaningful on legacy code
   default: none
   enable:
-    - govet
-
-formatters:
-  default: none
-  enable:
-    - gofmt
+  - govet
+  - errcheck
+  - staticcheck
+  settings:
+    staticcheck:
+      checks:
+      - all
+      # ST* are style-only churn on legacy code;
+      # QF* are editor quickfix suggestions, not correctness checks
+      - -ST*
+      - -QF*
+      # SA1019 (deprecated API usage: github.com/golang/protobuf, io/ioutil)
+      # is a cross-cutting migration tracked separately
+      - -SA1019
+    errcheck:
+      # deferred Close on read-only paths is an accepted legacy pattern;
+      # new code should check Close explicitly
+      exclude-functions:
+      - (io.Closer).Close
+  exclusions:
+    paths:
+    # vendored Go helper inside the npm package, not part of the module builds
+    - ui/node_modules/

@@ -275,7 +275,7 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encodeCtx := context.WithValue(r.Context(), observability.ObserveVarMapName, m.Name)
+	encodeCtx := context.WithValue(r.Context(), observability.ObserveCtxKey(observability.ObserveVarMapName), m.Name)
 	pbyte, err := m.Encode(encodeCtx, tile, params)
 
 	if err != nil {
@@ -410,7 +410,7 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 	unlock := tileUpdateLocks.acquire(metatileKey)
 	defer unlock()
 
-	ctx := context.WithValue(r.Context(), observability.ObserveVarMapName, m.Name)
+	ctx := context.WithValue(r.Context(), observability.ObserveCtxKey(observability.ObserveVarMapName), m.Name)
 	maxXY := uint(maths.Exp2(uint64(tile.Z)) - 1)
 	baseX := (tile.X / metatileSize) * metatileSize
 	baseY := (tile.Y / metatileSize) * metatileSize
@@ -491,7 +491,7 @@ func minUint(a, b uint) uint {
 
 func extractParameters(m atlas.Map, r *http.Request) (provider.Params, error) {
 	var params provider.Params
-	if m.Params != nil && len(m.Params) > 0 {
+	if len(m.Params) > 0 {
 		params = make(provider.Params)
 		err := r.ParseForm()
 		if err != nil {

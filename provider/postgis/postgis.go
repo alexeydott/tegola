@@ -226,7 +226,7 @@ func (p Provider) TileFeatures(
 ) error {
 	var mapName string
 	{
-		mapNameVal := ctx.Value(observability.ObserveVarMapName)
+		mapNameVal := ctx.Value(observability.ObserveCtxKey(observability.ObserveVarMapName))
 		if mapNameVal != nil {
 			// if it's not convertible to a string, we will ignore it.
 			mapName, _ = mapNameVal.(string)
@@ -640,7 +640,7 @@ func (p Provider) MVTForLayers(
 	)
 
 	{
-		mapNameVal := ctx.Value(observability.ObserveVarMapName)
+		mapNameVal := ctx.Value(observability.ObserveCtxKey(observability.ObserveVarMapName))
 		if mapNameVal != nil {
 			// if it's not convertible to a string, we will ignore it.
 			mapName, _ = mapNameVal.(string)

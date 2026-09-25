@@ -41,7 +41,7 @@ var (
 )
 
 func init() {
-	cache.Register(CacheType, New)
+	_ = cache.Register(CacheType, New)
 }
 
 // TODO @iwpnd: deprecate connection with Addr

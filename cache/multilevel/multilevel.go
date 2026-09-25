@@ -25,7 +25,7 @@ var (
 )
 
 func init() {
-	cache.Register(CacheType, New)
+	_ = cache.Register(CacheType, New)
 }
 
 // New creates a two-level cache. The memory backend is the L1 cache and the

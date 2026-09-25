@@ -20,6 +20,10 @@ const (
 	ObserveVarTileZ     = ":z"
 )
 
+// ObserveCtxKey is the typed key used to pass observe variable values through
+// a context; plain string context keys are flagged by staticcheck (SA1029).
+type ObserveCtxKey string
+
 type Collector = prometheus.Collector
 
 // ErrObserverAlreadyExists is returned if an observer try to register to an observer type that has already registered

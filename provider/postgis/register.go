@@ -6,8 +6,8 @@ import (
 )
 
 func init() {
-	provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
-	provider.MVTRegister(provider.TypeMvt.Prefix()+Name, NewMVTTileProvider, Cleanup)
+	_ = provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
+	_ = provider.MVTRegister(provider.TypeMvt.Prefix()+Name, NewMVTTileProvider, Cleanup)
 }
 
 const (

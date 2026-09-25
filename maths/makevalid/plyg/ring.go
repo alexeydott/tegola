@@ -202,7 +202,6 @@ func (rc *RingCol) searchY1(y float64, fn func(idx int, ptIdx int, l maths.Label
 		}
 		return
 	}
-	return
 }
 func (rc *RingCol) searchY2(y float64, fn func(idx int, ptIdx int, l maths.Label) bool) {
 	if rc == nil {
@@ -222,7 +221,6 @@ func (rc *RingCol) searchY2(y float64, fn func(idx int, ptIdx int, l maths.Label
 		}
 		return
 	}
-	return
 }
 
 func (rc *RingCol) searchEdge(edge []YEdge, y1, y2 float64, fn func(idx int, ptIdx int, l maths.Label) bool) {
@@ -945,9 +943,7 @@ func GenerateMultiPolygon(cols []RingCol) (plys [][][]maths.Pt) {
 			wcol := MergeCols(cols[i[0]:i[1]])
 			wply := wcol.MultiPolygon()
 			lock.Lock()
-			for i := range wply {
-				plys = append(plys, wply[i])
-			}
+			plys = append(plys, wply...)
 			lock.Unlock()
 		}
 		wg.Done()
@@ -991,7 +987,7 @@ func writeOutSVG(fn string, cols []RingCol, onlyRings [][2]int) {
 	if err != nil {
 		panic(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	canvas := svg.New(f)
 	canvas.Startview(786, 1024, int(cols[0].X1)-10, 2000, int(cols[1].X2)+10, 2200)
 	defer canvas.End()

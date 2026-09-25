@@ -43,7 +43,7 @@ type connectionPoolCollector struct {
 }
 
 func (c connectionPoolCollector) Close() {
-	c.pool.Close()
+	_ = c.pool.Close()
 }
 
 func (c connectionPoolCollector) QueryRow(query string, args ...any) *sql.Row {
@@ -879,7 +879,7 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 		return err
 	}
 
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	columns, err := rows.ColumnTypes()
 	if err != nil {
@@ -953,7 +953,7 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	columns, err := rows.ColumnTypes()
 	if err != nil {
@@ -1054,7 +1054,7 @@ func (p Provider) applyMOSSourceCRS(l *Layer, explicit bool, layerSQL string, tb
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	columns, err := rows.ColumnTypes()
 	if err != nil {
@@ -1155,7 +1155,7 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 
 	var mapName string
 	{
-		mapNameVal := ctx.Value(observability.ObserveVarMapName)
+		mapNameVal := ctx.Value(observability.ObserveCtxKey(observability.ObserveVarMapName))
 		if mapNameVal != nil {
 			// if it's not convertible to a string, we will ignore it.
 			mapName, _ = mapNameVal.(string)
@@ -1218,12 +1218,12 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		}
 		p.queryHistogramSeconds.With(lbls).Observe(time.Since(now).Seconds())
 	}
-	// when using ctxErr, it's import to make sure the defer rows.Close()
+	// when using ctxErr, it's import to make sure the defer func() { _ = rows.Close() }()
 	// statement happens before the error check. The context may have been
 	// canceled, but rows were also returned. If we don't close the rows
 	// the the provider can't clean up the pool and the process will hang
 	// trying to clean itself up.
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	if err := ctxErr(ctx, err); err != nil {
 		return fmt.Errorf("error running layer (%v) SQL (%v): %w", layer, sqlQuery, err)
@@ -1317,7 +1317,7 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 	var mapName string
 
 	{
-		mapNameVal := ctx.Value(observability.ObserveVarMapName)
+		mapNameVal := ctx.Value(observability.ObserveCtxKey(observability.ObserveVarMapName))
 		if mapNameVal != nil {
 			// if it's not convertible to a string, we will ignore it.
 			mapName, _ = mapNameVal.(string)
@@ -1363,7 +1363,7 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 			return []byte{}, err
 		}
 
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		if err := ctxErr(ctx, err); err != nil {
 			return []byte{}, err

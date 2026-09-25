@@ -368,7 +368,6 @@ func (tg *TriangleGraph) Rings() (rings [][]Line) {
 
 	if tg == nil {
 		panic("TG nil!")
-		return rings
 	}
 
 	//log.Println("Starting TriangleGraph Rings")
@@ -614,7 +613,6 @@ func (nl aNodeList) AddTriangleForPts(pt1, pt2, pt3 Pt, fnIsConstrained func(pt1
 				// return an error
 				//log.Printf("More then two triangles are sharing an edge. \n\t%+v\n\t%v\n\t%+v\n\t %v %v %v", node, k, node.Neighbors[k].Node, pt1, pt2, pt3)
 				panic("More then two triangles are sharing an edge.")
-				return nil, fmt.Errorf("More then two triangles are sharing an edge. \n\t%+v\n\t%v\n\t%+v\n\t %v %v %v", node, k, node.Neighbors[k].Node, pt1, pt2, pt3)
 			}
 			// Assign ourself to the Neighbor's correct slot.
 			node.Neighbors[k].Node = tri

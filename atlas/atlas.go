@@ -125,7 +125,7 @@ func (a *Atlas) SeedMapTile(ctx context.Context, m Map, z, x, y uint) error {
 		return nil
 	}
 
-	ctx = context.WithValue(ctx, observability.ObserveVarMapName, m.Name)
+	ctx = context.WithValue(ctx, observability.ObserveCtxKey(observability.ObserveVarMapName), m.Name)
 	// confirm we have a cache backend
 	if a.cacher == nil {
 		return ErrMissingCache

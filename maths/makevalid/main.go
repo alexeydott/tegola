@@ -102,7 +102,7 @@ func logOutBuildRings(pt2maxy map[maths.Pt]int64, xs []float64, x2pts map[float6
 		output = fmt.Sprintf("xs := %#v\n", xs)
 		output += fmt.Sprintf("x2pts := %#v\n", x2pts)
 		output += fmt.Sprintf("Pt2MaxY := %#v\n", pt2maxy)
-		output += fmt.Sprintf("Cols := []struct{ idx int,  col1 []maths.Pt, col2 []maths.Pt}{")
+		output += "Cols := []struct{ idx int,  col1 []maths.Pt, col2 []maths.Pt}{"
 		for i := 0; i < len(xs)-1; i++ {
 			output += fmt.Sprintf("{idx: %[1]v, col1: %v, col2: %v}, ", i, x2pts[xs[i]], x2pts[xs[i+1]])
 		}

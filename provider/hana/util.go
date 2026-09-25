@@ -426,19 +426,14 @@ func getFieldDescriptions(layerName, geomFieldname, idFieldname string, columns 
 		switch column.DatabaseTypeName() {
 		case "BOOLEAN":
 			dataType = DtBoolean
-			break
 		case "TINYINT":
 			dataType = DtTinyint
-			break
 		case "SMALLINT":
 			dataType = DtSmallint
-			break
 		case "INTEGER":
 			dataType = DtInteger
-			break
 		case "BIGINT":
 			dataType = DtBigint
-			break
 		case "DECIMAL", "FIXED8", "FIXED12", "FIXED16":
 			precision, _, _ := column.DecimalSize()
 			if precision <= 16 {
@@ -446,70 +441,48 @@ func getFieldDescriptions(layerName, geomFieldname, idFieldname string, columns 
 			} else {
 				dataType = DtDecimal
 			}
-			break
 		case "SMALLDECIMAL":
 			dataType = DtSmalldecimal
-			break
 		case "REAL":
 			dataType = DtReal
-			break
 		case "DOUBLE":
 			dataType = DtDouble
-			break
 		case "CHAR":
 			dataType = DtChar
-			break
 		case "VARCHAR":
 			dataType = DtVarchar
-			break
 		case "NCHAR":
 			dataType = DtNChar
-			break
 		case "NVARCHAR":
 			dataType = DtNVarchar
-			break
 		case "SHORTTEXT":
 			dataType = DtShorttext
-			break
 		case "ALPHANUM":
 			dataType = DtAlphanum
-			break
 		case "BINARY":
 			dataType = DtBinary
-			break
 		case "VARBINARY":
 			dataType = DtVarbinary
-			break
 		case "DATE", "DAYDATE":
 			dataType = DtDate
-			break
 		case "TIME", "SECONDTIME":
 			dataType = DtTime
-			break
 		case "TIMESTAMP", "LONGDATE":
 			dataType = DtTimestamp
-			break
 		case "SECONDDATE":
 			dataType = DtSeconddate
-			break
 		case "BLOB":
 			dataType = DtBlob
-			break
 		case "CLOB":
 			dataType = DtClob
-			break
 		case "NCLOB":
 			dataType = DtNClob
-			break
 		case "TEXT":
 			dataType = DtText
-			break
 		case "STGEOMETRY":
 			dataType = DtSTGeometry
-			break
 		case "STPOINT":
 			dataType = DtSTPoint
-			break
 		default:
 			dataType = DtUnknown
 		}
@@ -548,43 +521,30 @@ func setupRowValues(descriptions []FieldDescription, rowValues []interface{}) {
 		switch descriptions[i].dataType {
 		case DtBoolean:
 			rowValues[i] = new(sql.NullBool)
-			break
 		case DtTinyint:
 			rowValues[i] = new(sql.NullByte)
-			break
 		case DtSmallint:
 			rowValues[i] = new(sql.NullInt16)
-			break
 		case DtInteger:
 			rowValues[i] = new(sql.NullInt32)
-			break
 		case DtBigint:
 			rowValues[i] = new(sql.NullInt64)
-			break
 		case DtDecimal, DtSmalldecimal:
 			rowValues[i] = &driver.NullDecimal{Decimal: new(driver.Decimal)}
-			break
 		case DtReal, DtDouble:
 			rowValues[i] = new(sql.NullFloat64)
-			break
 		case DtDate, DtTime, DtTimestamp, DtSeconddate:
 			rowValues[i] = new(sql.NullTime)
-			break
 		case DtBinary, DtVarbinary:
 			rowValues[i] = new(driver.NullBytes)
-			break
 		case DtBlob, DtClob, DtNClob, DtText:
 			rowValues[i] = &driver.NullLob{Lob: new(driver.Lob).SetWriter(new(bytes.Buffer))}
-			break
 		case DtChar, DtNChar, DtNVarchar, DtVarchar, DtShorttext, DtAlphanum:
 			rowValues[i] = new(sql.NullString)
-			break
 		case DtSTGeometry, DtSTPoint:
 			rowValues[i] = new(sql.NullString)
-			break
 		default:
 			rowValues[i] = new(interface{})
-			break
 		}
 	}
 }
@@ -613,31 +573,26 @@ func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValu
 			if boolValue.Valid {
 				tags[fieldName] = boolValue.Bool
 			}
-			break
 		case DtTinyint:
 			byteValue := *(rowValues[i].(*sql.NullByte))
 			if byteValue.Valid {
 				tags[fieldName] = byteValue.Byte
 			}
-			break
 		case DtSmallint:
 			int16Value := *(rowValues[i].(*sql.NullInt16))
 			if int16Value.Valid {
 				tags[fieldName] = int16Value.Int16
 			}
-			break
 		case DtInteger:
 			int32Value := *(rowValues[i].(*sql.NullInt32))
 			if int32Value.Valid {
 				tags[fieldName] = int32Value.Int32
 			}
-			break
 		case DtBigint:
 			int64Value := *(rowValues[i].(*sql.NullInt64))
 			if int64Value.Valid {
 				tags[fieldName] = int64Value.Int64
 			}
-			break
 		case DtDecimal:
 			decimalValue := *(rowValues[i].(*driver.NullDecimal))
 			if decimalValue.Valid {
@@ -645,7 +600,6 @@ func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValu
 				f, _ := r.Float64()
 				tags[fieldName] = f
 			}
-			break
 		case DtSmalldecimal:
 			decimalValue := *(rowValues[i].(*driver.NullDecimal))
 			if decimalValue.Valid {
@@ -653,7 +607,6 @@ func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValu
 				f, _ := r.Float32()
 				tags[fieldName] = f
 			}
-			break
 		case DtReal, DtDouble:
 			float64Value := *(rowValues[i].(*sql.NullFloat64))
 			if float64Value.Valid {
@@ -663,26 +616,20 @@ func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValu
 					tags[fieldName] = float64Value.Float64
 				}
 			}
-			break
 		case DtDate, DtTime, DtTimestamp, DtSeconddate:
 			timeValue := *(rowValues[i].(*sql.NullTime))
 			if timeValue.Valid {
 				switch desc.dataType {
 				case DtDate:
 					tags[fieldName] = timeValue.Time.Format("2006-01-02")
-					break
 				case DtTime:
 					tags[fieldName] = timeValue.Time.Format("15:04:05")
-					break
 				case DtTimestamp:
 					tags[fieldName] = timeValue.Time.Format("2006-01-02T15:04:05.000")
-					break
 				case DtSeconddate:
 					tags[fieldName] = timeValue.Time.Format("2006-01-02T15:04:05")
-					break
 				}
 			}
-			break
 		case DtNVarchar, DtVarchar, DtShorttext, DtAlphanum, DtChar, DtNChar:
 			strValue := *(rowValues[i].(*sql.NullString))
 			if strValue.Valid {
@@ -692,18 +639,15 @@ func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValu
 						return 0, nil, nil, err
 					}
 					idFieldParsed = true
-					break
 				} else {
 					tags[fieldName] = strValue.String
 				}
 			}
-			break
 		case DtBinary, DtVarbinary:
 			binValue := *(rowValues[i].(*driver.NullBytes))
 			if binValue.Valid {
 				tags[fieldName] = hex.EncodeToString(binValue.Bytes[:])
 			}
-			break
 		case DtBlob, DtClob, DtNClob, DtText:
 			lobValue := *(rowValues[i].(*driver.NullLob))
 			if lobValue.Valid {
@@ -723,7 +667,6 @@ func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValu
 					}
 				}
 			}
-			break
 		case DtSTGeometry, DtSTPoint:
 			strValue := *(rowValues[i].(*sql.NullString))
 			if strValue.Valid {
@@ -736,7 +679,6 @@ func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValu
 					tags[fieldName] = strValue.String
 				}
 			}
-			break
 		default:
 			return 0, nil, nil, fmt.Errorf("data type is unsupported in field '%v'", fieldName)
 		}

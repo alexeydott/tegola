@@ -33,7 +33,7 @@ const (
 var testData = []byte{0x1f, 0x8b, 0x8, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xff, 0x2a, 0xce, 0xcc, 0x49, 0x2c, 0x6, 0x4, 0x0, 0x0, 0xff, 0xff, 0xaf, 0x9d, 0x59, 0xca, 0x5, 0x0, 0x0, 0x0}
 
 func init() {
-	cache.Register(CacheType, New)
+	_ = cache.Register(CacheType, New)
 }
 
 func New(config dict.Dicter) (cache.Interface, error) {
@@ -87,7 +87,7 @@ func New(config dict.Dicter) (cache.Interface, error) {
 	}
 
 	// read the test file
-	_, hit, err := gcsCache.Get(ctx, &key)
+	_, _, err = gcsCache.Get(ctx, &key)
 	if err != nil {
 		e := cache.ErrGettingFromCache{
 			CacheType: CacheType,
@@ -95,9 +95,6 @@ func New(config dict.Dicter) (cache.Interface, error) {
 		}
 
 		return nil, e
-	}
-	if !hit {
-		// return an error?
 	}
 
 	// purge the test file
@@ -142,7 +139,7 @@ func (gcsCache *GCSCache) Get(ctx context.Context, key *cache.Key) ([]byte, bool
 	if err != nil {
 		return nil, false, nil
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	val, err := io.ReadAll(r)
 	if err != nil {

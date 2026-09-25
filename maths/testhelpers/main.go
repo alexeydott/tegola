@@ -90,7 +90,7 @@ func LoadLinesFromFile(filename string) []maths.Line {
 	if err != nil {
 		panic(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return LoadLines(file)
 
 }

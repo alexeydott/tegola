@@ -49,7 +49,6 @@ func (l Line) GoStringTypeDecorated(withType bool, indent int, lineComment strin
 	}
 	if len(byteString) > 0 {
 		bytestr = append(bytestr, []rune(fmt.Sprintf(pointLineFormat, indentString, string(byteString), lastI+1, len(l)-1))...)
-		byteString = byteString[:0] // truncate string.
 	}
 
 	return fmt.Sprintf(lineFormat, indentString, typeName, len(l), l.Direction(), lineComment, string(bytestr), indentString)

@@ -340,7 +340,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 		}
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	cols, err := rows.Columns()
 	if err != nil {

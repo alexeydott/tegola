@@ -60,7 +60,7 @@ const (
 var testData = []byte{0x1f, 0x8b, 0x8, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xff, 0x2a, 0xce, 0xcc, 0x49, 0x2c, 0x6, 0x4, 0x0, 0x0, 0xff, 0xff, 0xaf, 0x9d, 0x59, 0xca, 0x5, 0x0, 0x0, 0x0}
 
 func init() {
-	cache.Register(CacheType, New)
+	_ = cache.Register(CacheType, New)
 }
 
 // New instantiates a S3 cache. The config expects the following params:
@@ -248,7 +248,7 @@ func New(config dict.Dicter) (cache.Interface, error) {
 	}
 
 	// read the test file
-	_, hit, err := s3cache.Get(ctx, &key)
+	_, _, err = s3cache.Get(ctx, &key)
 	if err != nil {
 		e := cache.ErrGettingFromCache{
 			CacheType: CacheType,
@@ -256,9 +256,6 @@ func New(config dict.Dicter) (cache.Interface, error) {
 		}
 
 		return nil, e
-	}
-	if !hit {
-		// return an error?
 	}
 
 	// purge the test file

@@ -21,8 +21,6 @@ import (
 type HandleMapStyle struct {
 	// required
 	mapName string
-	// the requests extension defaults to "json"
-	extension string
 }
 
 // returns details about a map according to the
@@ -41,12 +39,6 @@ func (req HandleMapStyle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mapNameParts := strings.Split(mapName, ".")
 
 	req.mapName = mapNameParts[0]
-	// check if we have a provided extension
-	if len(mapNameParts) > 2 {
-		req.extension = mapNameParts[len(mapNameParts)-1]
-	} else {
-		req.extension = "json"
-	}
 
 	// lookup our Map
 	m, err := atlas.GetMap(req.mapName)

@@ -143,16 +143,12 @@ func CloneGeometry(geometry geom.Geometry) (geom.Geometry, error) {
 
 	case geom.MultiPoint:
 		pts := make(geom.MultiPoint, len(geo))
-		for i, pt := range geo {
-			pts[i] = pt
-		}
+		copy(pts, geo)
 		return pts, nil
 
 	case geom.LineString:
 		line := make(geom.LineString, len(geo))
-		for i, pt := range geo {
-			line[i] = pt
-		}
+		copy(line, geo)
 		return line, nil
 
 	case geom.MultiLineString:

@@ -2,8 +2,34 @@ name: On push
 on: [push, pull_request]
 
 jobs:
+  build_ui:
+    name: Build embedded UI
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Check out code
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Set up Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version-file: 'go.mod'
+        check-latest: true
+
+    - name: Build embedded UI
+      run: |
+        pushd ${GITHUB_WORKSPACE}/server
+        go generate ./...
+        popd
+
+    - name: Upload embedded UI artifact
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ui-dist
+        path: ui/dist
+
   test:
     name: Test on Ubuntu (cgo=${{ matrix.cgo }})
+    needs: [build_ui]
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -12,13 +38,19 @@ jobs:
 
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version-file: 'go.mod'
         check-latest: true
+
+    - name: Download embedded UI artifact
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: ui-dist
+        path: ui/dist
 
     - name: Env Debug
       run: |
@@ -57,11 +89,19 @@ jobs:
         # PostGIS tests (services are started via docker compose)
         RUN_POSTGIS_TESTS: yes
         PGURI: postgres://postgres:postgres@localhost:5432/tegola
-        PGURI_NO_ACCESS: postgres://postgres:postgres@localhost:5432/tegola
+        # tegola_no_access is created by testdata/postgis/migration.sh and
+        # must keep its restricted grants: this URI exercises the
+        # no-permission regression from go-spatial/tegola#538.
+        PGURI_NO_ACCESS: postgres://tegola_no_access:postgres@localhost:5432/tegola
         PGSSLMODE: disable
         PGSSLKEY: ""
         PGSSLCERT: ""
         PGSSLROOTCERT: ""
+
+        # MySQL tests (service is started via docker compose). The live
+        # construction test in provider/mysql connects with host=localhost,
+        # database=test, user=u, password=p.
+        RUN_MYSQL_TESTS: yes
 
         # HANA tests: only run when the connection string is provided as a repo secret.
         # The credentials were hardcoded in upstream CI (go-spatial/tegola#893) and must
@@ -72,30 +112,35 @@ jobs:
         go test -mod vendor -covermode atomic -coverprofile=profile.cov ./...
 
     - name: Send coverage report to Coveralls
+      if: matrix.cgo == '1'
       env:
         COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         go install github.com/mattn/goveralls@v0.0.5
         $(go env GOPATH)/bin/goveralls -coverprofile=profile.cov -service=github
 
-    - name: Build embedded UI
-      run: |
-        pushd ${GITHUB_WORKSPACE}/server
-        go generate ./...
-        popd
-
     - name: Tear down test environment
       run: docker compose down
+
+  docker-build:
+    name: Docker image build
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Check out code
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Build docker image
+      run: docker build -t tegola-ci:${{ github.sha }} .
 
   lint:
     name: Lint (gofmt + golangci-lint)
     runs-on: ubuntu-22.04
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version-file: 'go.mod'
         check-latest: true
@@ -117,10 +162,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version-file: 'go.mod'
         check-latest: true

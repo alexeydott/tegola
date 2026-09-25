@@ -41,7 +41,7 @@ const (
 const testMsg = "\x41\x74\x6c\x61\x73\x20\x54\x65\x6c\x61\x6d\x6f\x6e"
 
 func init() {
-	cache.Register(CacheType, New)
+	_ = cache.Register(CacheType, New)
 }
 
 func New(config dict.Dicter) (cache.Interface, error) {

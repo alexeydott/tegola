@@ -58,15 +58,15 @@ func drawGrid(canvas *Canvas, mm *MinMax, n int, label bool, id, style, pointsty
 }
 
 func (canvas *Canvas) Comment(s string) *Canvas {
-	fmt.Fprint(canvas.Writer, "<!-- \n")
+	_, _ = fmt.Fprint(canvas.Writer, "<!-- \n")
 	xml.Escape(canvas.Writer, []byte(s))
-	fmt.Fprint(canvas.Writer, "\n -->")
+	_, _ = fmt.Fprint(canvas.Writer, "\n -->")
 	return canvas
 }
 func (canvas *Canvas) Commentf(format string, a ...interface{}) *Canvas {
-	fmt.Fprint(canvas.Writer, "<!-- \n")
+	_, _ = fmt.Fprint(canvas.Writer, "<!-- \n")
 	xml.Escape(canvas.Writer, []byte(fmt.Sprintf(format, a...)))
-	fmt.Fprint(canvas.Writer, "\n -->")
+	_, _ = fmt.Fprint(canvas.Writer, "\n -->")
 	return canvas
 }
 
@@ -87,7 +87,6 @@ func (canvas *Canvas) DrawRegion(withGrid bool) {
 }
 
 func (canvas *Canvas) DrawPolygon(p tegola.Polygon, id string, style string, pointStyle string, drawPoints bool) int {
-	var points []maths.Pt
 	canvas.Group(`id="`+id+`"`, `style="opacity:1"`)
 	canvas.Gid("polygon_path")
 	path := ""
@@ -106,7 +105,6 @@ func (canvas *Canvas) DrawPolygon(p tegola.Polygon, id string, style string, poi
 			continue
 		}
 		for i, pt := range pts[:idx] {
-			points = append(points, maths.Pt{X: pt.X(), Y: pt.Y()})
 			if i == 0 {
 				path += "M "
 			} else {

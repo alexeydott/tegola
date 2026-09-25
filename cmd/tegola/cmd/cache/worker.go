@@ -90,7 +90,7 @@ func seedWorker(overwrite bool, logThresholdMs int64) func(ctx context.Context, 
 		//	https://github.com/golang/go/issues/14045 - should be addressed in Go 1.11
 		runtime.GC()
 
-		durationMs := time.Now().Sub(t).Nanoseconds() / 1000000
+		durationMs := time.Since(t).Nanoseconds() / 1000000
 		if durationMs >= logThresholdMs {
 			log.Infof("seeding map (%v) tile (%v/%v/%v) took: %dms", mt.MapName, z, x, y, durationMs)
 		}

@@ -23,7 +23,7 @@ var (
 )
 
 func init() {
-	cache.Register(CacheType, New)
+	_ = cache.Register(CacheType, New)
 }
 
 func New(config dict.Dicter) (cache.Interface, error) {

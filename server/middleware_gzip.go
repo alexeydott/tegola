@@ -147,7 +147,7 @@ func (w *gzipDecompressResponseWriter) Write(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	_, err = io.Copy(w.resp, r)
 	if err != nil {

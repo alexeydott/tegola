@@ -24,7 +24,7 @@ import (
 var ErrMissingLayerName = errors.New("mysql: layer is missing 'name'")
 
 func init() {
-	provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
+	_ = provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
 }
 
 // ProviderType is the config type name for this provider. The same driver
@@ -111,7 +111,7 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var lastErr error
 	var values []interface{}

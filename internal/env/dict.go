@@ -58,9 +58,9 @@ func (d Dict) StringSlice(key string) (v []string, err error) {
 		return v, nil
 	}
 
-	switch val.(type) {
+	switch val := val.(type) {
 	case string:
-		v, err = ParseStringSlice(val.(string))
+		v, err = ParseStringSlice(val)
 		if err != nil {
 			switch err.(type) {
 			case ErrEnvVar:
@@ -71,16 +71,11 @@ func (d Dict) StringSlice(key string) (v []string, err error) {
 		}
 
 	case []string:
-		v = val.([]string)
+		v = val
 	case []interface{}:
 		// It's possible that the value is of type []interface and not of our type, so we need to convert each element to the appropriate
 		// type first, and then into the this type.
-		var iv []interface{}
-		if iv, ok = val.([]interface{}); !ok {
-			// Could not convert to the generic type, so we don't have the correct thing.
-			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(iv)}
-		}
-
+		iv := val
 		v = make([]string, len(iv))
 		for k := range iv {
 			if iv[k] == nil {
@@ -137,9 +132,9 @@ func (d Dict) BoolSlice(key string) (v []bool, err error) {
 		return v, nil
 	}
 
-	switch val.(type) {
+	switch val := val.(type) {
 	case string:
-		v, err = ParseBoolSlice(val.(string))
+		v, err = ParseBoolSlice(val)
 		if err != nil {
 			switch err.(type) {
 			case ErrEnvVar:
@@ -149,16 +144,11 @@ func (d Dict) BoolSlice(key string) (v []bool, err error) {
 			}
 		}
 	case []bool:
-		v = val.([]bool)
+		v = val
 	case []interface{}:
 		// It's possible that the value is of type []interface and not of our type, so we need to convert each element to the appropriate
 		// type first, and then into the this type.
-		var iv []interface{}
-		if iv, ok = val.([]interface{}); !ok {
-			// Could not convert to the generic type, so we don't have the correct thing.
-			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(iv)}
-		}
-
+		iv := val
 		v = make([]bool, len(iv))
 		for k := range iv {
 			if iv[k] == nil {
@@ -213,9 +203,9 @@ func (d Dict) IntSlice(key string) (v []int, err error) {
 		return v, nil
 	}
 
-	switch val.(type) {
+	switch val := val.(type) {
 	case string:
-		v, err = ParseIntSlice(val.(string))
+		v, err = ParseIntSlice(val)
 		if err != nil {
 			switch err.(type) {
 			case ErrEnvVar:
@@ -225,15 +215,11 @@ func (d Dict) IntSlice(key string) (v []int, err error) {
 			}
 		}
 	case []int:
-		v = val.([]int)
+		v = val
 	case []interface{}:
 		// It's possible that the value is of type []interface and not of our type, so we need to convert each element to the appropriate
 		// type first, and then into the this type.
-		var iv []interface{}
-		if iv, ok = val.([]interface{}); !ok {
-			// Could not convert to the generic type, so we don't have the correct thing.
-			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(iv)}
-		}
+		iv := val
 		v = make([]int, len(iv))
 		for k := range iv {
 			if iv[k] == nil {
@@ -289,9 +275,9 @@ func (d Dict) UintSlice(key string) (v []uint, err error) {
 		return v, nil
 	}
 
-	switch val.(type) {
+	switch val := val.(type) {
 	case string:
-		v, err = ParseUintSlice(val.(string))
+		v, err = ParseUintSlice(val)
 		if err != nil {
 			switch err.(type) {
 			case ErrEnvVar:
@@ -301,15 +287,11 @@ func (d Dict) UintSlice(key string) (v []uint, err error) {
 			}
 		}
 	case []uint:
-		v = val.([]uint)
+		v = val
 	case []interface{}:
 		// It's possible that the value is of type []interface and not of our type, so we need to convert each element to the appropriate
 		// type first, and then into the this type.
-		var iv []interface{}
-		if iv, ok = val.([]interface{}); !ok {
-			// Could not convert to the generic type, so we don't have the correct thing.
-			return v, &ErrType{val}
-		}
+		iv := val
 		v = make([]uint, len(iv))
 		for k := range iv {
 			if iv[k] == nil {
@@ -363,9 +345,9 @@ func (d Dict) FloatSlice(key string) (v []float64, err error) {
 		return v, nil
 	}
 
-	switch val.(type) {
+	switch val := val.(type) {
 	case string:
-		v, err = ParseFloatSlice(val.(string))
+		v, err = ParseFloatSlice(val)
 		if err != nil {
 			switch err.(type) {
 			case ErrEnvVar:
@@ -375,15 +357,11 @@ func (d Dict) FloatSlice(key string) (v []float64, err error) {
 			}
 		}
 	case []float64:
-		v = val.([]float64)
+		v = val
 	case []interface{}:
 		// It's possible that the value is of type []interface and not of our type, so we need to convert each element to the appropriate
 		// type first, and then into the this type.
-		var iv []interface{}
-		if iv, ok = val.([]interface{}); !ok {
-			// Could not convert to the generic type, so we don't have the correct thing.
-			return v, &ErrType{val}
-		}
+		iv := val
 		v = make([]float64, len(iv))
 		for k := range iv {
 			if iv[k] == nil {

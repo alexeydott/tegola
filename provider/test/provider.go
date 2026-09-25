@@ -3,7 +3,7 @@ package test
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"sync"
 
@@ -23,8 +23,8 @@ var (
 )
 
 func init() {
-	provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
-	provider.MVTRegister(provider.TypeMvt.Prefix()+Name, NewMVTTileProvider, Cleanup)
+	_ = provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
+	_ = provider.MVTRegister(provider.TypeMvt.Prefix()+Name, NewMVTTileProvider, Cleanup)
 }
 
 // NewTileProvider setups a test provider. there are not currently any config params supported
@@ -51,7 +51,7 @@ func NewMVTTileProvider(config dict.Dicter, maps []provider.Map) (provider.MVTTi
 		if err != nil {
 			return nil, fmt.Errorf("failed to open test_file: %w", err)
 		}
-		mvtTile, err = ioutil.ReadAll(file)
+		mvtTile, err = io.ReadAll(file)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read test_file: %w", err)
 		}

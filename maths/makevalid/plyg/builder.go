@@ -48,10 +48,7 @@ func (b *Builder) CurrentRing() (ring Ring, x1 float64, y1s []YPart, x2 float64,
 	// we want (0,2), (1,2),(1,4),(1,5),(0,5),(0,4),(0,3)
 
 	ring.Points = []maths.Pt{pts[len(pts)-1]}
-
-	for i := range b.parts[1] {
-		ring.Points = append(ring.Points, b.parts[1][i])
-	}
+	ring.Points = append(ring.Points, b.parts[1]...)
 	ring.Points = append(ring.Points, pts[:len(pts)-1]...)
 
 	plen := len(ring.Points)

@@ -85,7 +85,7 @@ func tileListCommand(cmd *cobra.Command, args []string) (err error) {
 	var in io.Reader = os.Stdin
 	if tileListFile != nil {
 		in = tileListFile
-		defer tileListFile.Close()
+		defer func() { _ = tileListFile.Close() }()
 	}
 
 	log.Info("zoom list: ", zooms)
