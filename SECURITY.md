@@ -10,10 +10,13 @@ are running an up-to-date build before reporting.
 
 Please do **not** open a public issue for security-sensitive reports.
 
-Contact the fork maintainer directly:
+**Preferred channel:** use [GitHub Private Vulnerability
+Reporting](https://github.com/alexeydott/tegola/security/advisories/new) —
+reports filed this way stay private until a fix is published, and the
+maintainer receives a notification without needing a public email address.
 
-* GitHub: [@alexeydott](https://github.com/alexeydott)
-* Email: alexeydott@users.noreply.github.com
+If private reporting is unavailable, contact the fork maintainer directly
+via GitHub: [@alexeydott](https://github.com/alexeydott).
 
 Include a description of the issue, the affected version/commit, and — if
 possible — a minimal reproducer (configuration file and data set). You can

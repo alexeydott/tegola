@@ -39,7 +39,7 @@ id_fieldname = "fid"
 - `geometry_fieldname` (string): [Optional] the name of the geometry field. defaults to `geom`. Note: for layers backed by a GeoPackage `tablename` (native `gpkg` format), the geometry column is taken from `gpkg_geometry_columns` and this setting is ignored. Use a custom `sql` layer (or a raw `geometry_format`) if you need to point at a different geometry column.
 - `sql` (string): [*Required] custom SQL to use. Required if `tablename` is not defined. Supports the following WHERE-clause tokens:
   - !BBOX! - [Required] will be replaced with the bounding box of the tile before the query is sent to the database.  To support this token, your custom SQL must do a couple of things. 
-    - You must join your feature table to the spatial index table: i.e. `JOIN feature_table ft JOIN rtree_feature_table_geom si ON ft.fid = si.id`
+    - You must join your feature table to the spatial index table: i.e. `FROM feature_table ft JOIN rtree_feature_table_geom si ON ft.fid = si.id`
 	- Include the following fields in your SELECT clause: si.minx, si.miny, si.maxx, si.maxy
 	- Note that the id field for your feature table may be something other than `fid`
   - `!ZOOM!` - [Optional] will be replaced with the "Z" (zoom) value of the requested tile.
@@ -96,23 +96,24 @@ work correctly.
 ### Common geometry / CRS options
 
 The GPKG provider implements the common geometry contract documented in
-[docs/provider-contract.md](../../docs/provider-contract.md). The keys below
-are valid at provider level (defaults for all layers) and at layer level
-(overrides), exactly as described there:
+[docs/provider-contract.md](../../docs/provider-contract.md):
 
-- `geometry_type` (string): [Optional] explicit layer geometry type
+- `geometry_type` (string): [Optional, **layer level only**] explicit layer
+  geometry type
   (`Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`,
   `MultiPolygon`, `GeometryCollection`). Skips startup type inspection;
   mixed content is permitted with a one-time warning.
 - `geometry_format` (string): [Optional] `gpkg` (GeoPackage native binary,
-  the default), `wkb`, `wkt` or `mos`. With `gpkg` the GeoPackage binary
-  header is parsed and the embedded WKB body is decoded; with `mos` the
-  header is skipped and the raw MOS payload is used directly.
+  the default), `wkb`, `wkt` or `mos`. Valid at provider level (defaults for
+  all layers) and at layer level (overrides). With `gpkg` the GeoPackage
+  binary header is parsed and the embedded WKB body is decoded; with `mos`
+  the header is skipped and the raw MOS payload is used directly.
 - `mos_precision` (int): [Optional] decimal digits carried by MOS
   coordinates. Only applies when the effective geometry format is `mos`.
+  Valid at provider and layer level.
 - `mos_units` (string): [Optional] packed linear unit of MOS coordinates
   (`mm`, `cm`, `dm`, `m` or `km`). Only applies when the effective geometry
-  format is `mos`.
+  format is `mos`. Valid at provider and layer level.
 
 ```toml
 [[providers]]
@@ -134,19 +135,43 @@ geometry_type = "LineString"
 A layer with `geometry_format` set to a raw format (`wkb`, `wkt` or `mos`) or
 a raw table that has no `gpkg_contents` / `gpkg_geometry_columns` metadata
 does not need GeoPackage metadata at all: the table is registered from
-`PRAGMA table_info` and the RTree spatial index is **not** used. The `!BBOX!`
+`PRAGMA table_info` and the RTree spatial index is **not** used. Note that a
+table which is missing from the GeoPackage metadata **requires** an explicit
+raw `geometry_format` — without one registration fails with a
+`table does not exist` error, because the native `gpkg` path looks the table
+up in `gpkg_geometry_columns` and will not find it. The `!BBOX!`
 token still works, but rows are filtered in memory, so performance depends on
 table size.
 
 **Performance warning:** without an RTree join every query scans the table
 and decodes all candidate geometries. For large tables prefer the native
-`gpkg` format (which joins `rtree_<table>_<geom>`), or declare per-row bounds
+`gpkg` format (which joins the RTree index table named `rtree_` + table name
++ `_` + geometry column name, e.g. `rtree_land_polygons_geom` for table
+`land_polygons` with geometry column `geom`), or declare per-row bounds
 columns so the coarse `!BBOX!` filter can be applied by SQLite.
 
 If the table has numeric bounds columns named (case-insensitively)
-`minx`, `maxx`, `miny` and `maxy`, holding the geometry bounds in the layer
-CRS, the provider detects them and applies a coarse SQL-level `!BBOX!` filter
-before in-memory refinement:
+`minx`, `maxx`, `miny` and `maxy`, the provider detects them and applies a
+coarse SQL-level `!BBOX!` filter before in-memory refinement. The units of
+the stored bounds values must match what the provider compares against:
+
+* for `wkb` / `wkt` layers the bounds columns hold plain layer-CRS
+  coordinates (the same units as the decoded geometries);
+* for `mos` layers the bounds columns hold the quantized raw MOS values as
+  stored in the database (`raw value = coordinate * 10^mos_precision /
+  unitFactor`, e.g. millimetres with `mos_precision = 0` and
+  `mos_units = "mm"`), because the extent is scaled by `rawScale` before the
+  comparison.
+
+Example table layout for a `wkb` layer:
+
+```sql
+CREATE TABLE land_polygons (
+  fid INTEGER PRIMARY KEY,
+  geom BLOB,
+  minx REAL, maxx REAL, miny REAL, maxy REAL
+)
+```
 
 ```toml
 [[providers.layers]]
@@ -157,8 +182,9 @@ geometry_format = "wkb"
 ```
 
 For raw custom-SQL layers `geometry_fieldname` and `id_fieldname` must point
-at existing columns; misconfiguration is rejected at startup with a warning
-and a fallback to the table primary key.
+at existing columns; if the configured `id_fieldname` does not exist the
+table primary key is used as the id field with a warning, while a missing
+geometry column is a startup error.
 
 ### Empty layers
 

@@ -18,8 +18,6 @@ Breaking changes
 * MySQL provider: the `proj4` config key was removed in favour of `srid` / `crs_defn`.
 * PostGIS provider: `tablename` and `sql` are strictly mutually exclusive (startup error).
 * PostGIS provider: `pool_*` connection-pool keys were introduced/renamed; review your `[[providers]]` blocks.
-* GPKG provider: unknown config keys are rejected at startup.
-
 ## 0.17.0 (2023-07-27)
 
 Features

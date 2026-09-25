@@ -52,11 +52,15 @@ CGO_ENABLED=0 go test ./...
 ```
 
 Integration tests only run when the corresponding environment variables are
-set:
+set to `yes`:
 
-* `RUN_POSTGIS_TESTS=1` with `PGURI` (e.g. `postgres://postgres:postgres@127.0.0.1:5432/tegola`)
-* `RUN_MYSQL_TESTS=1` with `MYSQLURI`
-* `RUN_HANA_TESTS=1` with `HANAURI`
+* `RUN_POSTGIS_TESTS=yes` with `PGURI` (e.g. a PostGIS URI);
+  `PGURI_NO_ACCESS` optionally exercises permission errors
+* `RUN_MYSQL_TESTS=yes`; the live construction test in `provider/mysql`
+  connects to `localhost:3306`, database `test`, user `u`, password `p` -
+  the same credentials the `mysql` service in `docker-compose.yml` creates
+* `RUN_HANA_TESTS=yes` with `HANA_CONNECTION_STRING` (a SAP HANA DSN,
+  usually provided as a CI secret)
 
 The easiest way to get a PostGIS instance for the integration tests is the
 compose file in the repository:
@@ -65,7 +69,7 @@ compose file in the repository:
 docker compose up -d
 ```
 
-(Then create the test tables and set `RUN_POSTGIS_TESTS=1` as above.)
+(Then create the test tables and set `RUN_POSTGIS_TESTS=yes` as above.)
 
 ## Dependencies and `third_party/`
 
