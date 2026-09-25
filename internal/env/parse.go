@@ -1,6 +1,8 @@
 package env
 
 import (
+	"errors"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -307,20 +309,74 @@ func ParseDict(v interface{}) (*Dict, error) {
 	return &d, nil
 }
 
+// ParseURL parses a webserver hostname from its TOML representation. The value
+// must be either a bare host[:port] (e.g. "example.com", "cdn.example.com:443")
+// or a URL with a scheme (e.g. "https://example.com"). A bare host[:port] is
+// normalized to a URL with only the Host component set.
+//
+// This is intentionally strict: a malformed webserver.hostname is reported as a
+// fatal configuration error rather than being silently ignored. In particular,
+// values such as "cdn.example.com:443" must not fall through to net/url's
+// scheme:opaque parsing (which would leave Host empty and quietly drop the
+// setting).
 func ParseURL(v any) (*url.URL, error) {
 	if v == nil {
 		return nil, nil
 	}
 
-	switch val := v.(type) {
-	case string:
-		val, err := replaceEnvVar(val)
-		if err != nil {
-			return nil, err
-		}
-
-		return url.Parse(val)
-	default:
+	val, ok := v.(string)
+	if !ok {
 		return nil, ErrType{v}
 	}
+
+	val, err := replaceEnvVar(val)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseHostName(val)
+}
+
+// parseHostName validates a hostname of the form host[:port], or a URL with a
+// scheme, and returns the equivalent *url.URL. It rejects anything that is
+// neither so callers get a clear error instead of a silently dropped value.
+func parseHostName(s string) (*url.URL, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, errors.New("hostname: value is empty")
+	}
+	if strings.ContainsAny(s, " \t\r\n") {
+		return nil, fmt.Errorf("hostname %q: contains whitespace", s)
+	}
+
+	// A value carrying "://" is unambiguously a URL with a scheme; parse it with
+	// the standard parser and require a host component.
+	if strings.Contains(s, "://") {
+		u, err := url.Parse(s)
+		if err != nil {
+			return nil, fmt.Errorf("hostname %q: %w", s, err)
+		}
+		if u.Host == "" {
+			return nil, fmt.Errorf("hostname %q: URL has no host", s)
+		}
+		return u, nil
+	}
+
+	// Otherwise the value must be a bare host[:port]. Reject anything carrying
+	// URL-only delimiters (path/query/fragment/userinfo) that cannot appear in a
+	// bare host.
+	if strings.ContainsAny(s, "/?#@") {
+		return nil, fmt.Errorf("hostname %q: expected host[:port] or a URL with a scheme", s)
+	}
+
+	// Delegate host/port validation to net/url by parsing a synthetic authority.
+	u, err := url.Parse("//" + s)
+	if err != nil {
+		return nil, fmt.Errorf("hostname %q: %w", s, err)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("hostname %q: expected host[:port]", s)
+	}
+	// Keep only the host (and port); discard anything else url.Parse inferred.
+	return &url.URL{Host: u.Host}, nil
 }

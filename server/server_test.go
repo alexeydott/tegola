@@ -3,7 +3,9 @@ package server_test
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -233,13 +235,28 @@ func TestURLRoot(t *testing.T) {
 	}
 }
 
+// waitForPort dials addr until it accepts a TCP connection or the timeout
+// elapses. It lets tests wait for a listener to become ready instead of
+// relying on a fixed sleep.
+func waitForPort(addr string) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for %s", addr)
+}
+
 func TestHTTPS(t *testing.T) {
 	server.SSLCert = serverCert
 	server.SSLKey = serverKey
 
 	// start server
 	srv := server.Start(nil, ":8123")
-	time.Sleep(time.Second)
 
 	// set de-secure the tls client
 	hc := &http.Client{
@@ -255,6 +272,13 @@ func TestHTTPS(t *testing.T) {
 		srv.Shutdown(context.Background())
 	}()
 
+	// Routes are registered synchronously inside Start before the listener is
+	// started, so once the listener accepts connections the routes are ready.
+	// Wait for readiness instead of a fixed sleep so assertions are deterministic.
+	if err := waitForPort("localhost:8123"); err != nil {
+		t.Fatalf("server did not start: %v", err)
+	}
+
 	type tcase struct {
 		url  string
 		code int
@@ -262,17 +286,16 @@ func TestHTTPS(t *testing.T) {
 
 	fn := func(tc tcase) func(t *testing.T) {
 		return func(t *testing.T) {
-			_, err := hc.Get(tc.url)
+			res, err := hc.Get(tc.url)
 			if err != nil {
 				t.Errorf("unexpected error %v", err)
 				return
 			}
+			defer res.Body.Close()
 
-			// TODO(ear7h): there seems to be a race condition on setting the
-			// routes so this is not tested
-			//if res.StatusCode != tc.code {
-			//	t.Errorf("incorrect status code %v, expected %v", res.StatusCode, tc.code)
-			//}
+			if res.StatusCode != tc.code {
+				t.Errorf("incorrect status code %v, expected %v", res.StatusCode, tc.code)
+			}
 		}
 	}
 

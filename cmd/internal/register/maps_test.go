@@ -20,7 +20,7 @@ func TestMaps(t *testing.T) {
 		expectedErr error
 	}
 
-	fn := func(tc tcase) func(*testing.T) {
+	fn := func(tc *tcase) func(*testing.T) {
 		return func(t *testing.T) {
 			var err error
 
@@ -43,7 +43,7 @@ func TestMaps(t *testing.T) {
 		}
 	}
 
-	tests := map[string]tcase{
+	tests := map[string]*tcase{
 		"provider layer invalid": {
 			maps: []provider.Map{
 				{

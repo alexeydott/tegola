@@ -34,7 +34,10 @@ const (
 var (
 	// Version is the version of the software, this should be set by the main program, before starting up.
 	// It is used by various Middleware to determine the version.
-	Version string = "version not set"
+	// Version is the running server version reported to clients (e.g. via the
+	// capabilities endpoint). cmd/server overrides it from the ldflags-injected
+	// build.Version at startup; this default is the fallback (e.g. for tests).
+	Version string = "v0.17.0-fork.1"
 
 	// HostName is the name of the host to use for construction of URLS.
 	// configurable via the tegola config.toml file (set in main.go)
@@ -119,7 +122,11 @@ func Start(a *atlas.Atlas, port string) *http.Server {
 	// notify the user the server is starting
 	log.Infof("starting tegola server (%v) on port %v", build.Version, port)
 
-	srv := &http.Server{Addr: port, Handler: NewRouter(a)}
+	// Register all routes before the listener starts so there is no window in
+	// which a request can arrive before the routes are wired up.
+	router := NewRouter(a)
+
+	srv := &http.Server{Addr: port, Handler: router}
 
 	// start our server
 	go func() {

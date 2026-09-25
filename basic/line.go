@@ -9,7 +9,11 @@ import (
 
 // Line is a basic line type which is made up of two or more points that don't
 // intersect.
-// TODO: We don't really check to make sure the points don't intersect.
+// TODO: We don't really check to make sure the points don't intersect. This is a
+// known upstream correctness gap ("malformed geoprocessing with providers of type
+// not mvt_postgis", noted in upstream v0.21.0), tracked in UPSTREAM.md as
+// deferred debt (3.6). Geometry behavior is intentionally left unchanged here
+// until a test corpus exists to validate a fix against.
 type Line []Point
 
 // Just to make basic collection only usable with basic types.

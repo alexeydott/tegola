@@ -45,7 +45,7 @@ func Providers(providers []dict.Dicter, maps []provider.Map) (map[string]provide
 			switch err.(type) {
 			case dict.ErrKeyRequired:
 				return registeredProviders, ErrProviderNameMissing
-			case dict.ErrKeyType:
+			case dict.ErrType:
 				return registeredProviders, ErrProviderNameInvalid
 			default:
 				return registeredProviders, err
@@ -64,7 +64,7 @@ func Providers(providers []dict.Dicter, maps []provider.Map) (map[string]provide
 			switch err.(type) {
 			case dict.ErrKeyRequired:
 				return registeredProviders, ErrProviderTypeMissing(pname)
-			case dict.ErrKeyType:
+			case dict.ErrType:
 				return registeredProviders, ErrProviderTypeInvalid(pname)
 			default:
 				return registeredProviders, err

@@ -33,7 +33,7 @@ func init() {
 		"set log level to: DEBUG, INFO, WARN, ERROR or SILENT")
 
 	// server
-	serverCmd.Flags().StringVarP(&serverPort, "port", "p", ":8080", "port to bind tile server to")
+	serverCmd.Flags().StringVarP(&serverPort, "port", "p", defaultHTTPPort, "port to bind tile server to")
 	serverCmd.Flags().BoolVarP(&serverNoCache, "no-cache", "n", false, "turn off the cache")
 
 	RootCmd.AddCommand(serverCmd)

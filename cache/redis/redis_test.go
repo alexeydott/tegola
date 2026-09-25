@@ -125,7 +125,7 @@ func TestCreateOptions(t *testing.T) {
 				"password": "test",
 				"db":       0,
 			},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "addr",
 				Value: 2,
 				T:     reflect.TypeOf(""),
@@ -165,7 +165,7 @@ func TestCreateOptions(t *testing.T) {
 				"address": "127.0.0.1:6379",
 				"db":      "fails",
 			},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "db",
 				Value: "fails",
 				T:     reflect.TypeOf(1),
@@ -178,7 +178,7 @@ func TestCreateOptions(t *testing.T) {
 				"address":  "127.0.0.1:6379",
 				"password": 0,
 			},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "password",
 				Value: 0,
 				T:     reflect.TypeOf(""),
@@ -190,7 +190,7 @@ func TestCreateOptions(t *testing.T) {
 				"network": 0,
 				"address": "127.0.0.1:6379",
 			},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "network",
 				Value: 0,
 				T:     reflect.TypeOf(1),
@@ -203,7 +203,7 @@ func TestCreateOptions(t *testing.T) {
 				"address": "127.0.0.1:6379",
 				"ssl":     0,
 			},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "ssl",
 				Value: 0,
 				T:     reflect.TypeOf(true),
@@ -309,7 +309,7 @@ func TestNew(t *testing.T) {
 		},
 		"bad config address": {
 			config: map[string]any{"address": 0},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "address",
 				Value: 0,
 				T:     reflect.TypeOf(""),
@@ -317,7 +317,7 @@ func TestNew(t *testing.T) {
 		},
 		"bad config uri": {
 			config: map[string]any{"uri": 1},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "uri",
 				Value: 1,
 				T:     reflect.TypeOf(""),
@@ -325,7 +325,7 @@ func TestNew(t *testing.T) {
 		},
 		"bad config ttl": {
 			config: map[string]any{"ttl": "fails"},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "ttl",
 				Value: "fails",
 				T:     reflect.TypeOf(1),
@@ -351,7 +351,7 @@ func TestNew(t *testing.T) {
 			config: map[string]any{
 				"max_zoom": "2",
 			},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "max_zoom",
 				Value: "2",
 				T:     reflect.TypeOf(uint(0)),
@@ -361,7 +361,7 @@ func TestNew(t *testing.T) {
 			config: map[string]any{
 				"max_zoom": -2,
 			},
-			expectedErr: dict.ErrKeyType{
+			expectedErr: dict.ErrType{
 				Key:   "max_zoom",
 				Value: -2,
 				T:     reflect.TypeOf(uint(0)),

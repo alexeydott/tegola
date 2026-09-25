@@ -147,10 +147,17 @@ func (req *HandleMapLayerZXY) parseURI(r *http.Request) error {
 	req.y = uint(placeholder)
 
 	// check if we have a file extension
-	if len(yParts) > 2 {
+	if len(yParts) > 1 && yParts[len(yParts)-1] != "" {
 		req.extension = yParts[len(yParts)-1]
 	} else {
 		req.extension = "pbf"
+	}
+
+	// Only MVT ("pbf") tile output is implemented. Other extensions (e.g. "json")
+	// are not supported and are served as pbf; warn so the fallback is not silent.
+	// Wiring real extension-aware output is tracked as deferred debt (UPSTREAM.md).
+	if req.extension != "pbf" {
+		log.Warnf("unsupported tile extension %q; serving tile as pbf (mvt)", req.extension)
 	}
 
 	// check for debug request
@@ -231,7 +238,7 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		ext4326 := &geom.Extent{}
 		copy(ext4326[:], points4326)
-		if _, intersect := m.Bounds.Intersect(ext4326); !intersect {
+		if !extentsIntersect(m.Bounds, ext4326) {
 			msg := fmt.Sprintf("map (%v -- %v) does not contains tile at %v/%v/%v -- %v", req.mapName, m.Bounds, req.z, req.x, req.y, ext4326)
 			log.Debug(msg)
 			http.Error(w, msg, http.StatusNotFound)
@@ -281,11 +288,10 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
-			// TODO: add debug logs
-			// do nothing
+			log.Debugf("tile encode canceled for map %v z:%v x:%v y:%v", req.mapName, req.z, req.x, req.y)
 			return
 		case strings.Contains(err.Error(), "operation was canceled"):
-			// do nothing
+			log.Debugf("tile encode canceled for map %v z:%v x:%v y:%v", req.mapName, req.z, req.x, req.y)
 			return
 		default:
 			errMsg := fmt.Sprintf("error marshalling tile: %v", err)
@@ -480,6 +486,15 @@ func metatileLockKeyForCacheKey(key *cache.Key) string {
 	baseX := (key.X / metatileSize) * metatileSize
 	baseY := (key.Y / metatileSize) * metatileSize
 	return fmt.Sprintf("%s/%s/%d/%d/%d", key.MapName, key.LayerName, key.Z, baseX, baseY)
+}
+
+// extentsIntersect reports whether a and b overlap. It matches the boolean
+// result of geom.Extent.Intersect (edge-touching counts as no overlap) but
+// without allocating a result extent. A nil extent is treated as the universe,
+// matching the geom accessors.
+func extentsIntersect(a, b *geom.Extent) bool {
+	return !(a.MinX() >= b.MaxX() || b.MinX() >= a.MaxX() ||
+		a.MinY() >= b.MaxY() || b.MinY() >= a.MaxY())
 }
 
 func minUint(a, b uint) uint {

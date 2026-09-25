@@ -34,11 +34,12 @@ var serverCmd = &cobra.Command{
 		gdcmd.OnComplete(provider.Cleanup)
 		gdcmd.OnComplete(observability.Cleanup)
 
-		// check config for server port setting
-		// if you set the port via the command line it will override the port setting in the config
-		if serverPort == defaultHTTPPort && conf.Webserver.Port != "" {
-			serverPort = string(conf.Webserver.Port)
-		}
+		// Resolve the listen port. An explicitly-passed --port flag always
+		// overrides the config value; when the flag is not set we fall back to the
+		// config value, then to the flag default. (Comparing against the default
+		// string is not enough because an explicit ":8080" is indistinguishable
+		// from unset, so use the flag's IsSet semantics instead.)
+		serverPort = resolveServerPort(cmd.Flags().Changed("port"), serverPort, string(conf.Webserver.Port))
 
 		if conf.Webserver.HostName.Host != "" {
 			u := url.URL(conf.Webserver.HostName)
@@ -94,6 +95,20 @@ var serverCmd = &cobra.Command{
 		<-gdcmd.Cancelled()
 		gdcmd.Complete()
 	},
+}
+
+// resolveServerPort returns the port the HTTP server should bind to. An
+// explicitly-set CLI --port (flagSet true) always overrides the config value;
+// otherwise the config value is used when present, falling back to flagPort
+// (the flag's value or its default).
+func resolveServerPort(flagSet bool, flagPort, configPort string) string {
+	if flagSet {
+		return flagPort
+	}
+	if configPort != "" {
+		return configPort
+	}
+	return flagPort
 }
 
 func shutdown(srv *http.Server) {

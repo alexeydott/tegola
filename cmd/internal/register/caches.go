@@ -19,7 +19,7 @@ func Cache(config dict.Dicter) (cache.Interface, error) {
 		switch err.(type) {
 		case dict.ErrKeyRequired:
 			return nil, ErrCacheTypeMissing
-		case dict.ErrKeyType:
+		case dict.ErrType:
 			return nil, ErrCacheTypeInvalid
 		default:
 			return nil, err

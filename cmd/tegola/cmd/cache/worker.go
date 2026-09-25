@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"time"
 
 	"github.com/go-spatial/geom/slippy"
@@ -86,10 +85,11 @@ func seedWorker(overwrite bool, logThresholdMs int64) func(ctx context.Context, 
 			}
 		}
 
-		//	TODO: this is a hack to get around large arrays not being garbage collected
-		//	https://github.com/golang/go/issues/14045 - should be addressed in Go 1.11
-		runtime.GC()
-
+		// The previous per-tile runtime.GC() workaround for golang/go#14045 (large
+		// arrays not collected) is gone: that issue was fixed in Go 1.11, so the
+		// forced GC only added needless overhead. The large encode buffers live in
+		// atlas (Map.Encode), outside this package, so buffer pooling is not
+		// applicable here. Seeding behavior is unchanged.
 		durationMs := time.Since(t).Nanoseconds() / 1000000
 		if durationMs >= logThresholdMs {
 			log.Infof("seeding map (%v) tile (%v/%v/%v) took: %dms", mt.MapName, z, x, y, durationMs)

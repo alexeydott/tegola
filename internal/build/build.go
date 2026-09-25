@@ -8,7 +8,11 @@ import (
 )
 
 var (
-	Version              = "version not set"
+	// Version is the build version. It is normally injected at build time via
+	// ldflags (-X github.com/go-spatial/tegola/internal/build.Version=...). The
+	// value below is only the fallback used when the binary is built without that
+	// injection (e.g. a plain `go build`). Keep it in sync with server.Version.
+	Version              = "v0.17.0-fork.1"
 	GitRevision          = "not set"
 	GitBranch            = "not set"
 	uiVersionDefaultText = "viewer not built"

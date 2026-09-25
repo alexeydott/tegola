@@ -129,15 +129,38 @@ type GCSCache struct {
 
 	// bucket holds a reference to the bucket handle.
 	Bucket *storage.BucketHandle
+
+	// newReader opens the object identified by key and returns a reader over its
+	// contents. When nil, readers are opened from Bucket. It exists as a field so
+	// tests can substitute a fake backend (to exercise cache misses and transient
+	// backend failures) without a live GCS connection.
+	newReader func(ctx context.Context, key string) (io.ReadCloser, error)
+}
+
+// openReader opens the object named k and returns a reader over its contents. A
+// missing object is reported as storage.ErrObjectNotExist (mapped to a clean
+// cache miss by Get); any other error is a backend failure and is surfaced to
+// callers rather than being swallowed as a miss.
+func (gcsCache *GCSCache) openReader(ctx context.Context, k string) (io.ReadCloser, error) {
+	if gcsCache.newReader != nil {
+		return gcsCache.newReader(ctx, k)
+	}
+	return gcsCache.Bucket.Object(k).NewReader(ctx)
 }
 
 func (gcsCache *GCSCache) Get(ctx context.Context, key *cache.Key) ([]byte, bool, error) {
 	k := filepath.Join(gcsCache.Basepath, key.String())
-	obj := gcsCache.Bucket.Object(k)
 
-	r, err := obj.NewReader(ctx)
-	if err != nil {
+	r, err := gcsCache.openReader(ctx, k)
+	switch {
+	case errors.Is(err, storage.ErrObjectNotExist):
+		// the object is not in the bucket: a clean cache miss.
 		return nil, false, nil
+	case err != nil:
+		// a backend/read failure is not a miss: surface the error so callers can
+		// distinguish "nothing cached" from "cache backend unavailable".
+		// (ported from upstream go-spatial/tegola#938)
+		return nil, false, err
 	}
 	defer func() { _ = r.Close() }()
 

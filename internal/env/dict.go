@@ -10,6 +10,9 @@ import (
 	"github.com/go-spatial/tegola/dict"
 )
 
+// Dict is a decoded configuration map. Config values are parsed from TOML via
+// UnmarshalTOML only (see types.go); the env types are TOML-only and do not
+// support JSON decoding.
 type Dict map[string]interface{}
 
 // Dict is to obtain a map[string]interface{} that has already been cast to a M type.
@@ -22,7 +25,7 @@ func (d Dict) Dict(key string) (v Dict, err error) {
 	}
 
 	if dv, ok = val.(Dict); !ok {
-		return v, dict.ErrKeyType{Key: key, Value: val, T:reflect.TypeOf(v)}
+		return v, dict.ErrType{Key: key, Value: val, T:reflect.TypeOf(v)}
 	}
 	return dv, nil
 }
@@ -45,7 +48,7 @@ func (d Dict) String(key string, def *string) (v string, err error) {
 		case ErrEnvVar:
 			return v, err
 		default:
-			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+			return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 		}
 	}
 	return *ptr, nil
@@ -66,7 +69,7 @@ func (d Dict) StringSlice(key string) (v []string, err error) {
 			case ErrEnvVar:
 				return v, err
 			default:
-				return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+				return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 			}
 		}
 
@@ -88,7 +91,7 @@ func (d Dict) StringSlice(key string) (v []string, err error) {
 					case ErrEnvVar:
 						return v, err
 					default:
-						return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+						return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 					}
 				}
 
@@ -118,7 +121,7 @@ func (d Dict) Bool(key string, def *bool) (v bool, err error) {
 		case ErrEnvVar:
 			return v, err
 		default:
-			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+			return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 		}
 	}
 
@@ -140,7 +143,7 @@ func (d Dict) BoolSlice(key string) (v []bool, err error) {
 			case ErrEnvVar:
 				return v, err
 			default:
-				return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+				return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 			}
 		}
 	case []bool:
@@ -160,7 +163,7 @@ func (d Dict) BoolSlice(key string) (v []bool, err error) {
 					case ErrEnvVar:
 						return v, err
 					default:
-						return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+						return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 					}
 				}
 
@@ -189,7 +192,7 @@ func (d Dict) Int(key string, def *int) (v int, err error) {
 		case ErrEnvVar:
 			return v, err
 		default:
-			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+			return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 		}
 	}
 
@@ -211,7 +214,7 @@ func (d Dict) IntSlice(key string) (v []int, err error) {
 			case ErrEnvVar:
 				return v, err
 			default:
-				return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+				return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 			}
 		}
 	case []int:
@@ -231,7 +234,7 @@ func (d Dict) IntSlice(key string) (v []int, err error) {
 					case ErrEnvVar:
 						return v, err
 					default:
-						return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+						return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 					}
 				}
 
@@ -261,7 +264,7 @@ func (d Dict) Uint(key string, def *uint) (v uint, err error) {
 		case ErrEnvVar:
 			return v, err
 		default:
-			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+			return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 		}
 	}
 
@@ -283,7 +286,7 @@ func (d Dict) UintSlice(key string) (v []uint, err error) {
 			case ErrEnvVar:
 				return v, err
 			default:
-				return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+				return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 			}
 		}
 	case []uint:
@@ -303,7 +306,7 @@ func (d Dict) UintSlice(key string) (v []uint, err error) {
 					case ErrEnvVar:
 						return v, err
 					default:
-						return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+						return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 					}
 				}
 
@@ -332,7 +335,7 @@ func (d Dict) Float(key string, def *float64) (v float64, err error) {
 		case ErrEnvVar:
 			return v, err
 		default:
-			return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+			return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 		}
 	}
 
@@ -353,7 +356,7 @@ func (d Dict) FloatSlice(key string) (v []float64, err error) {
 			case ErrEnvVar:
 				return v, err
 			default:
-				return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+				return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 			}
 		}
 	case []float64:
@@ -373,7 +376,7 @@ func (d Dict) FloatSlice(key string) (v []float64, err error) {
 					case ErrEnvVar:
 						return v, err
 					default:
-						return v, dict.ErrKeyType{Key: key, Value: val, T: reflect.TypeOf(v)}
+						return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 					}
 				}
 
@@ -398,7 +401,7 @@ func (d Dict) Map(key string) (r dict.Dicter, err error) {
 		case ErrEnvVar:
 			return r, err
 		default:
-			return r, dict.ErrKeyType{Key: key, Value: r, T: reflect.TypeOf(v)}
+			return r, dict.ErrType{Key: key, Value: r, T: reflect.TypeOf(v)}
 		}
 	}
 
@@ -414,7 +417,7 @@ func (d Dict) MapSlice(key string) (r []dict.Dicter, err error) {
 
 	arr, ok := v.([]map[string]interface{})
 	if !ok {
-		return r, dict.ErrKeyType{Key: key, Value: v, T: reflect.TypeOf(arr)}
+		return r, dict.ErrType{Key: key, Value: v, T: reflect.TypeOf(arr)}
 	}
 
 	r = make([]dict.Dicter, len(arr))
