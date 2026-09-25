@@ -26,6 +26,8 @@ import (
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/mapplgis"
+	"github.com/jackc/pgx/v5"
 )
 
 const Name = "postgis"
@@ -447,6 +449,215 @@ func inferTableSRID(ctx context.Context, pool *connectionPoolCollector, schema, 
 		return 0, fmt.Errorf("Find_SRID returned invalid SRID %v", srid)
 	}
 	return uint64(srid), nil
+}
+
+// collectMapplGISMeta gathers the schema metadata required by the canonical
+// MapplGIS table contract (provider/mapplgis) from the PostgreSQL catalogs:
+//   - information_schema.columns supplies the DDL column list;
+//   - pg_constraint (contype = 'p') supplies the primary key columns in
+//     key order;
+//   - pg_index/pg_attribute supplies every index with its ordered column
+//     list.
+//
+// The OKEY = 1 row's LINE value is parsed by the returned fetcher. All
+// identifiers are matched case-insensitively downstream (mapplgis.Detect).
+func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, schema, table string) (mapplgis.TableMeta, mapplgis.SystemInfoFetcher, error) {
+	var meta mapplgis.TableMeta
+
+	// DDL columns.
+	colRows, err := pool.Query(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2
+		ORDER BY ordinal_position`, schema, table)
+	if err != nil {
+		return meta, nil, fmt.Errorf("unable to list columns of table %v.%v: %w", schema, table, err)
+	}
+	for colRows.Next() {
+		var name string
+		if serr := colRows.Scan(&name); serr != nil {
+			colRows.Close()
+			return meta, nil, fmt.Errorf("unable to scan columns of table %v.%v: %w", schema, table, serr)
+		}
+		meta.Columns = append(meta.Columns, name)
+	}
+	if err := colRows.Err(); err != nil {
+		colRows.Close()
+		return meta, nil, fmt.Errorf("error iterating columns of table %v.%v: %w", schema, table, err)
+	}
+	colRows.Close()
+	if len(meta.Columns) == 0 {
+		return meta, nil, fmt.Errorf("table %v.%v does not exist", schema, table)
+	}
+
+	// Primary key columns in key order. pg_index.indkey is an int2vector:
+	// cast to text and split in Go so the query stays compatible with old
+	// Postgres versions that lack unnest(...) WITH ORDINALITY in joins.
+	pkRows, err := pool.Query(ctx, `
+		SELECT i.indkey::text
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary`, schema, table)
+	if err != nil {
+		return meta, nil, fmt.Errorf("unable to list primary key of table %v.%v: %w", schema, table, err)
+	}
+	for pkRows.Next() {
+		var indkey string
+		if serr := pkRows.Scan(&indkey); serr != nil {
+			pkRows.Close()
+			return meta, nil, fmt.Errorf("unable to scan primary key of table %v.%v: %w", schema, table, serr)
+		}
+		names, nerr := indexColumnNames(ctx, pool, schema, table, indkey)
+		if nerr != nil {
+			pkRows.Close()
+			return meta, nil, nerr
+		}
+		meta.PrimaryKeyColumns = append(meta.PrimaryKeyColumns, names...)
+	}
+	if err := pkRows.Err(); err != nil {
+		pkRows.Close()
+		return meta, nil, fmt.Errorf("error iterating primary key of table %v.%v: %w", schema, table, err)
+	}
+	pkRows.Close()
+
+	// Every index with its ordered column list.
+	idxRows, err := pool.Query(ctx, `
+		SELECT c2.relname, i.indkey::text
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN pg_class c2 ON c2.oid = i.indexrelid
+		WHERE n.nspname = $1 AND c.relname = $2
+		ORDER BY c2.relname`, schema, table)
+	if err != nil {
+		return meta, nil, fmt.Errorf("unable to list indexes of table %v.%v: %w", schema, table, err)
+	}
+	indexes := make(map[string]*mapplgis.IndexMeta)
+	var order []string
+	for idxRows.Next() {
+		var idxName, indkey string
+		if serr := idxRows.Scan(&idxName, &indkey); serr != nil {
+			idxRows.Close()
+			return meta, nil, fmt.Errorf("unable to scan indexes of table %v.%v: %w", schema, table, serr)
+		}
+		names, nerr := indexColumnNames(ctx, pool, schema, table, indkey)
+		if nerr != nil {
+			idxRows.Close()
+			return meta, nil, nerr
+		}
+		idx, ok := indexes[idxName]
+		if !ok {
+			idx = &mapplgis.IndexMeta{Name: idxName}
+			indexes[idxName] = idx
+			order = append(order, idxName)
+		}
+		idx.Columns = append(idx.Columns, names...)
+	}
+	if err := idxRows.Err(); err != nil {
+		idxRows.Close()
+		return meta, nil, fmt.Errorf("error iterating indexes of table %v.%v: %w", schema, table, err)
+	}
+	idxRows.Close()
+	for _, name := range order {
+		meta.Indexes = append(meta.Indexes, *indexes[name])
+	}
+
+	fetch := func() (*mos.SystemInfo, error) {
+		var blob []byte
+		err := pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT "%v" FROM %v."%v" WHERE "OKEY" = 1 AND "%v" IS NOT NULL LIMIT 1`,
+			mapplgis.GeometryField, schema, table, mapplgis.GeometryField,
+		)).Scan(&blob)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if len(blob) == 0 {
+			return nil, nil
+		}
+		si, perr := mos.ParseSystemInfo(blob)
+		if perr != nil {
+			return nil, perr
+		}
+		return &si, nil
+	}
+
+	return meta, fetch, nil
+}
+
+// indexColumnNames resolves a pg_index.indkey int2vector (its text form,
+// e.g. "1 4") to the ordered column names of the table. Expression keys
+// (0 entries) are skipped — they never match the plain-column MapplGIS
+// contract.
+func indexColumnNames(ctx context.Context, pool *connectionPoolCollector, schema, table, indkey string) ([]string, error) {
+	var names []string
+	for _, part := range strings.Fields(indkey) {
+		attnum, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("table %v.%v: malformed index key %q: %w", schema, table, indkey, err)
+		}
+		if attnum <= 0 {
+			continue
+		}
+		var name string
+		err = pool.QueryRow(ctx, `
+			SELECT a.attname
+			FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = $3
+			WHERE n.nspname = $1 AND c.relname = $2`, schema, table, attnum).Scan(&name)
+		if err != nil {
+			return nil, fmt.Errorf("table %v.%v: unable to resolve index column %v: %w", schema, table, attnum, err)
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// detectMapplGIS applies the canonical MapplGIS table contract to a
+// tablename layer (audit A06). On detection the effective geometry format
+// is authoritative MOS (A04): unset/auto resolve to MOS and an explicit
+// non-MOS format is a startup conflict error. The MOS system-info is
+// applied to the layer; the projection becomes the layer SRID unless the
+// config was explicit.
+func detectMapplGIS(ctx context.Context, pool *connectionPoolCollector, l *Layer, schema, table string) (bool, error) {
+	meta, fetch, err := collectMapplGISMeta(ctx, pool, schema, table)
+	if err != nil {
+		return false, err
+	}
+	info, err := mapplgis.Detect(meta, fetch)
+	if err != nil {
+		return false, fmt.Errorf("table %v.%v: %w", schema, table, err)
+	}
+	if !info.IsMapplGIS {
+		return false, nil
+	}
+
+	switch l.geometryFormat {
+	case "", codec.FormatMOS:
+		l.geometryFormat = codec.FormatMOS
+	default:
+		return false, fmt.Errorf(
+			"table %v.%v is detected as a MapplGIS layer (MOS storage), but geometry_format is explicitly %q; remove the setting or use %q",
+			schema, table, l.geometryFormat, codec.FormatMOS,
+		)
+	}
+
+	if aerr := l.mosConfig.ApplySystemInfo(&info.SystemInfo); aerr != nil {
+		return false, fmt.Errorf("table %v.%v apply MOS system info: %v", schema, table, aerr)
+	}
+	l.isMapplGIS = true
+	l.mapplSysInfo = info.SystemInfo
+	if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(l.srid), l.crsExplicit, info.SystemInfo.Projection); aerr != nil {
+		return false, fmt.Errorf("table %v.%v apply MOS projection: %v", schema, table, aerr)
+	} else if applied {
+		l.srid = uint64(srid)
+		l.crsExplicit = true
+	}
+	return true, nil
 }
 
 // inspectMOSLayerGeomType samples the first rows of the layer's SQL and
@@ -1164,6 +1375,33 @@ func CreateProvider(
 				)
 			}
 			l.srid = detected
+		}
+
+		// A02: id_fieldname explicit tracking. A detected MapplGIS table
+		// overrides the default ID field with the contract primary key
+		// (OKEY); an explicit value is honored.
+		idFieldExplicit := idfld != ""
+		var tblSchema, tblTable string
+		if tblPresent && !sqlPresent {
+			tblSchema, tblTable = splitTableName(tblName)
+		}
+
+		// A06: canonical MapplGIS detection runs for every tablename layer
+		// before the sql/tbl branch: a MapplGIS table is not a PostGIS
+		// spatial table, so a layer pointing at one must be discovered here
+		// and served via the MOS path. Custom SQL is never auto-detected.
+		if tblSchema != "" {
+			isMappl, derr := detectMapplGIS(context.Background(), p.pool, &l, tblSchema, tblTable)
+			if derr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %v", i, lName, derr)
+			}
+			if isMappl {
+				if !idFieldExplicit {
+					idfld = mapplgis.PrimaryKey
+					l.idField = idfld
+				}
+				log.Debugf("layer (%v): table %v.%v detected as MapplGIS", lName, tblSchema, tblTable)
+			}
 		}
 
 		if sql != "" {

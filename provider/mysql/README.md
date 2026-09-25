@@ -50,9 +50,11 @@ in [docs/provider-contract.md](../../docs/provider-contract.md). Alongside the
 format keys above, the common `geometry_type` layer key is supported: an
 explicit value (`Point`, `LineString`, `Polygon`, `MultiPoint`,
 `MultiLineString`, `MultiPolygon`, `GeometryCollection`) fixes the layer
-geometry type before any data is read and skips startup type inspection
-(including system-info auto-configuration for table layers). Mixed content is
-permitted with a one-time warning.
+geometry type before any data is read and skips startup **type** inspection.
+It is orthogonal to MapplGIS table detection: a `tablename` layer is still
+checked for the MapplGIS signature and still receives system-info
+configuration when detected. Mixed content is permitted with a one-time
+warning.
 
 ```toml
 [[providers.layers]]
@@ -118,7 +120,7 @@ system info configures the layer:
 - `Projection` — the layer's full PROJ.4 definition. Registered as a synthetic SRID (≥ 340000001, same mechanism as `crs_defn`) and used as the layer SRID when no `srid`/`crs_defn` is configured at provider or layer level. Explicit config values always win.
 - `MapUnits` / `flMapUnitsDefined` — when `mos_units` is not configured, the declared unit is converted to a metres factor and applied after dequantization. Supported units are millimetres (`muMm`), centimetres (`muSm`), decimetres (`muDm`), metres (`muM`) and kilometres (`muKm`). Unsupported angular/undefined units are rejected.
 
-In practice this means a MapplGIS table needs no `mos_precision`/`mos_units`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides.
+In practice this means a MapplGIS table needs no `mos_precision`/`mos_units`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides. The effective geometry format of a detected table is authoritative `mos`: an explicit non-MOS `geometry_format` on the same layer is a startup conflict error. A detected table also replaces the default `id_fieldname = "fid"` with the contract primary key `OKEY`; an explicitly configured `id_fieldname` is honored.
 
 Custom `sql` layers are **never** auto-detected and never apply
 `LayerSystemInfo` from result rows: an explicit `geometry_format = "mos"` SQL

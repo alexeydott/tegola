@@ -1378,3 +1378,229 @@ func TestExplicitGeometryTypeMixedContentPermitted(t *testing.T) {
 		t.Fatalf("expected geom.Point, got %T", got[0].Geometry)
 	}
 }
+
+// rowsStubDriver emulates SHOW INDEX results: every query returns the same
+// column names and rows, so parseShowIndexRows can be exercised against
+// real sql.Rows across server versions (audit A08).
+type rowsStubDriver struct {
+	columns []string
+	rows    [][]driver.Value
+}
+
+func (d *rowsStubDriver) Open(string) (driver.Conn, error) {
+	return &rowsStubConn{columns: d.columns, rows: d.rows}, nil
+}
+
+type rowsStubConn struct {
+	columns []string
+	rows    [][]driver.Value
+}
+
+func (c *rowsStubConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("not supported") }
+func (c *rowsStubConn) Close() error                        { return nil }
+func (c *rowsStubConn) Begin() (driver.Tx, error)           { return nil, errors.New("not supported") }
+func (c *rowsStubConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return &rowsStubRows{columns: c.columns, rows: c.rows}, nil
+}
+
+type rowsStubRows struct {
+	columns []string
+	rows    [][]driver.Value
+	next    int
+}
+
+func (r *rowsStubRows) Columns() []string         { return r.columns }
+func (r *rowsStubRows) Close() error              { return nil }
+func (r *rowsStubRows) Next(dest []driver.Value) error {
+	if r.next >= len(r.rows) {
+		return io.EOF
+	}
+	copy(dest, r.rows[r.next])
+	r.next++
+	return nil
+}
+
+var showIndexDriverSeq uint64
+
+func openShowIndexStub(t *testing.T, columns []string, rows [][]driver.Value) *sql.DB {
+	t.Helper()
+	driverName := "tegola_mysql_show_index_test_" + strconv.FormatUint(atomic.AddUint64(&showIndexDriverSeq, 1), 10)
+	sql.Register(driverName, &rowsStubDriver{columns: columns, rows: rows})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// TestParseShowIndexRows covers the version-sensitive SHOW INDEX parsing
+// (audit A01/A08): MySQL 5.7 (13 columns), MySQL 8.0 (15 columns), future
+// servers with extra trailing columns, and rows shorter than the fixed
+// legacy layout, which was the old scanner's failure mode.
+func TestParseShowIndexRows(t *testing.T) {
+	t.Run("mysql 5.7 thirteen columns", func(t *testing.T) {
+		columns := []string{
+			"Table", "Non_unique", "Key_name", "Seq_in_index", "Column_name",
+			"Collation", "Cardinality", "Sub_part", "Packed", "Null",
+			"Index_type", "Comment", "Index_comment",
+		}
+		rows := [][]driver.Value{
+			{"t", int64(0), "PRIMARY", int64(1), "OKEY", "A", int64(1), nil, nil, "", "BTREE", "", ""},
+			{"t", int64(1), "MINX_IDX", int64(1), "MINX", "A", int64(1), nil, nil, "YES", "BTREE", "", ""},
+			{"t", int64(1), "MINX_IDX", int64(2), "MUID", "A", int64(1), nil, nil, "YES", "BTREE", "", ""},
+		}
+		db := openShowIndexStub(t, columns, rows)
+		rs, err := db.Query("SHOW INDEX FROM t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rs.Close()
+		got, err := parseShowIndexRows(rs)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("expected 3 rows, got %d: %+v", len(got), got)
+		}
+		if got[0].keyName != "PRIMARY" || got[0].seqInIndex != 1 || got[0].columnName != "OKEY" {
+			t.Errorf("row 0 = %+v", got[0])
+		}
+		if got[1].keyName != "MINX_IDX" || got[1].seqInIndex != 1 || got[1].columnName != "MINX" {
+			t.Errorf("row 1 = %+v", got[1])
+		}
+		if got[2].seqInIndex != 2 || got[2].columnName != "MUID" {
+			t.Errorf("row 2 = %+v", got[2])
+		}
+	})
+
+	t.Run("mysql 8 fifteen columns", func(t *testing.T) {
+		columns := []string{
+			"Table", "Non_unique", "Key_name", "Seq_in_index", "Column_name",
+			"Collation", "Cardinality", "Sub_part", "Packed", "Null",
+			"Index_type", "Comment", "Index_comment", "Visible", "Expression",
+		}
+		rows := [][]driver.Value{
+			{"t", int64(0), "PRIMARY", int64(1), "OKEY", "A", int64(1), nil, nil, "", "BTREE", "", "", "YES", nil},
+		}
+		db := openShowIndexStub(t, columns, rows)
+		rs, err := db.Query("SHOW INDEX FROM t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rs.Close()
+		got, err := parseShowIndexRows(rs)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0].columnName != "OKEY" || got[0].seqInIndex != 1 {
+			t.Fatalf("unexpected rows: %+v", got)
+		}
+	})
+
+	t.Run("future server extra columns", func(t *testing.T) {
+		// A server newer than the ones we know appends columns; the
+		// scanner must keep working by name.
+		columns := []string{
+			"Table", "Non_unique", "Key_name", "Seq_in_index", "Column_name",
+			"Collation", "Cardinality", "Sub_part", "Packed", "Null",
+			"Index_type", "Comment", "Index_comment", "Visible", "Expression",
+			"Future_Col_1", "Future_Col_2",
+		}
+		rows := [][]driver.Value{
+			{"t", int64(0), "PRIMARY", int64(1), "OKEY", "A", int64(1), nil, nil, "", "BTREE", "", "", "YES", nil, "x", "y"},
+		}
+		db := openShowIndexStub(t, columns, rows)
+		rs, err := db.Query("SHOW INDEX FROM t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rs.Close()
+		got, err := parseShowIndexRows(rs)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0].columnName != "OKEY" {
+			t.Fatalf("unexpected rows: %+v", got)
+		}
+	})
+
+	t.Run("malformed seq_in_index value", func(t *testing.T) {
+		// A non-numeric Seq_in_index must fail loudly instead of silently
+		// mis-grouping the index layout (the old fixed-position scanner
+		// misparsed cross-version output this way).
+		columns := []string{
+			"Table", "Non_unique", "Key_name", "Seq_in_index", "Column_name",
+			"Collation", "Cardinality", "Sub_part", "Packed", "Null",
+			"Index_type", "Comment", "Index_comment",
+		}
+		rows := [][]driver.Value{
+			{"t", int64(0), "PRIMARY", "not-a-number", "OKEY", "A", int64(1), nil, nil, "", "BTREE", "", ""},
+		}
+		db := openShowIndexStub(t, columns, rows)
+		rs, err := db.Query("SHOW INDEX FROM t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rs.Close()
+		if _, err := parseShowIndexRows(rs); err == nil {
+			t.Fatal("expected an error parsing a malformed Seq_in_index, got nil")
+		}
+	})
+
+	t.Run("missing required column", func(t *testing.T) {
+		columns := []string{"Table", "Non_unique", "Key_name", "Seq_in_index"}
+		rows := [][]driver.Value{{"t", int64(0), "PRIMARY", int64(1)}}
+		db := openShowIndexStub(t, columns, rows)
+		rs, err := db.Query("SHOW INDEX FROM t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rs.Close()
+		if _, err := parseShowIndexRows(rs); err == nil {
+			t.Fatal("expected an error for a result without Column_name, got nil")
+		}
+	})
+
+	t.Run("null values", func(t *testing.T) {
+		columns := []string{"Table", "Non_unique", "Key_name", "Seq_in_index", "Column_name"}
+		rows := [][]driver.Value{
+			{nil, nil, "PRIMARY", "1", "OKEY"},
+		}
+		db := openShowIndexStub(t, columns, rows)
+		rs, err := db.Query("SHOW INDEX FROM t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rs.Close()
+		got, err := parseShowIndexRows(rs)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0].keyName != "PRIMARY" || got[0].columnName != "OKEY" || got[0].seqInIndex != 1 {
+			t.Fatalf("unexpected rows: %+v", got)
+		}
+	})
+}
+
+// TestMapplGISFormatAuthority verifies the audit A04 contract: a detected
+// MapplGIS layer is authoritative about its storage format, so only
+// unset/auto/mos are accepted and any explicit raw format is a startup
+// conflict error.
+func TestMapplGISFormatAuthority(t *testing.T) {
+	for _, ok := range []string{"", GeometryFormatAuto, GeometryFormatMOS} {
+		if err := mapplGISFormatAuthority("l", ok); err != nil {
+			t.Errorf("format %q should be accepted, got error: %v", ok, err)
+		}
+	}
+	for _, conflict := range []string{GeometryFormatMySQL, GeometryFormatMariaDB, GeometryFormatWKB, GeometryFormatWKT} {
+		err := mapplGISFormatAuthority("l", conflict)
+		if err == nil {
+			t.Errorf("format %q must be rejected for a detected MapplGIS layer", conflict)
+			continue
+		}
+		if !strings.Contains(err.Error(), "MapplGIS") || !strings.Contains(err.Error(), conflict) {
+			t.Errorf("error for %q should mention the conflict, got: %v", conflict, err)
+		}
+	}
+}

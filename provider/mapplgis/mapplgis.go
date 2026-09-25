@@ -5,9 +5,14 @@
 // hold (checked case-insensitively):
 //
 //  1. Its DDL contains the columns OKEY, MUID, MINX, MAXX, MINY, MAXY,
-//     ObjectStyle, ObjectType and LINE, and OKEY is the primary key.
-//  2. Indexes exist on MUID, MINX, MAXX, MINY, MAXY and ObjectType.
-//  3. The row OKEY = 1 carries a non-empty LINE value that parses as a
+//     ObjectStyle, ObjectType and LINE.
+//  2. OKEY is the primary key — the primary key consists of exactly one
+//     column, and that column is OKEY.
+//  3. Each of MUID, MINX, MAXX, MINY, MAXY and ObjectType is covered by a
+//     dedicated single-column index (an index whose column list is exactly
+//     that one column). Composite indexes do not satisfy the contract, and
+//     a column at position two or later of any index does not count.
+//  4. The row OKEY = 1 carries a non-empty LINE value that parses as a
 //     MapplGIS LayerSystemInfo blob.
 //
 // Detection runs once per tablename layer at provider registration; tile
@@ -24,15 +29,27 @@ import (
 // GeometryField is the geometry column of a detected MapplGIS table.
 const GeometryField = "LINE"
 
+// PrimaryKey is the single primary key column of a detected MapplGIS table.
+const PrimaryKey = "OKEY"
+
 // requiredColumns lists the DDL columns a MapplGIS table must carry.
 var requiredColumns = []string{
 	"OKEY", "MUID", "MINX", "MAXX", "MINY", "MAXY",
 	"OBJECTSTYLE", "OBJECTTYPE", "LINE",
 }
 
-// requiredIndexes lists the columns that must be covered by an index.
+// requiredIndexes lists the columns that must each be covered by a
+// dedicated single-column index.
 var requiredIndexes = []string{
 	"MUID", "MINX", "MAXX", "MINY", "MAXY", "OBJECTTYPE",
+}
+
+// IndexMeta describes one table index.
+type IndexMeta struct {
+	// Name is the index name in its stored case.
+	Name string
+	// Columns holds the indexed columns in index-position order.
+	Columns []string
 }
 
 // TableMeta is the backend-collected schema metadata fed to Detect. Each
@@ -40,10 +57,11 @@ var requiredIndexes = []string{
 type TableMeta struct {
 	// Columns holds every column name of the table in its stored case.
 	Columns []string
-	// PKColumn is the primary key column name, empty when the table has none.
-	PKColumn string
-	// IndexedColumns holds every column covered by at least one index.
-	IndexedColumns []string
+	// PrimaryKeyColumns holds the primary key columns in key order. A
+	// table without a primary key leaves it empty.
+	PrimaryKeyColumns []string
+	// Indexes describes every index of the table.
+	Indexes []IndexMeta
 }
 
 // SystemInfoFetcher reads the OKEY = 1 metadata row and parses its LINE
@@ -76,16 +94,23 @@ func Detect(meta TableMeta, fetch SystemInfoFetcher) (Info, error) {
 		}
 	}
 
-	if !strings.EqualFold(meta.PKColumn, "OKEY") {
+	// The primary key must be exactly [OKEY]: a composite (OKEY, MUID)
+	// key or a single non-OKEY key both fail.
+	if len(meta.PrimaryKeyColumns) != 1 || !strings.EqualFold(meta.PrimaryKeyColumns[0], PrimaryKey) {
 		return Info{}, nil
 	}
 
-	indexed := make(map[string]struct{}, len(meta.IndexedColumns))
-	for _, c := range meta.IndexedColumns {
-		indexed[strings.ToLower(c)] = struct{}{}
+	// Each required field needs a dedicated single-column index. A
+	// composite index covering the field does not count, and a field
+	// at index position two or later of any index does not count.
+	single := make(map[string]struct{}, len(meta.Indexes))
+	for _, idx := range meta.Indexes {
+		if len(idx.Columns) == 1 {
+			single[strings.ToLower(idx.Columns[0])] = struct{}{}
+		}
 	}
 	for _, req := range requiredIndexes {
-		if _, ok := indexed[strings.ToLower(req)]; !ok {
+		if _, ok := single[strings.ToLower(req)]; !ok {
 			return Info{}, nil
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -315,9 +316,18 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			return nil, errors.New("'tablename' or 'sql' is required for a feature's config")
 		}
 
-		idFieldname := DefaultIDFieldName
+		// A02: track whether id_fieldname was explicitly configured. A
+		// detected MapplGIS table overrides the default ID field with the
+		// contract primary key (OKEY); an explicit value is honored.
+		const idFieldDefault = "\x00tegola:default"
+		var idFieldname string
+		idFieldname = idFieldDefault
 		if idFieldname, err = layerConf.String(ConfigKeyGeomIDField, &idFieldname); err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
+		}
+		idFieldExplicit := idFieldname != idFieldDefault
+		if !idFieldExplicit {
+			idFieldname = DefaultIDFieldName
 		}
 
 		tagFieldnames, err := layerConf.StringSlice(ConfigKeyFields)
@@ -402,6 +412,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.isMapplGIS = true
 				layer.mapplSysInfo = mInfo.SystemInfo
 				layer.geomFieldname = mapplgis.GeometryField
+				// A02: the MapplGIS contract fixes the ID field to the
+				// table's primary key column; only an explicit id_fieldname
+				// keeps a custom value.
+				if !idFieldExplicit {
+					idFieldname = mapplgis.PrimaryKey
+				}
 			}
 
 			if gtypeExplicit {
@@ -613,11 +629,72 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	return &p, nil
 }
 
+// showIndexRow is one parsed row of SHOW INDEX output.
+type showIndexRow struct {
+	keyName     string
+	seqInIndex  int
+	columnName  string
+}
+
+// parseShowIndexRows scans arbitrary SHOW INDEX result rows (the column set
+// varies by server: MySQL 5.7 emits 13 columns, MySQL 8.0 adds Expression
+// and Visible for 15, MariaDB adds others) and resolves the required
+// Key_name / Seq_in_index / Column_name columns by name. It is split from
+// detectMapplGIS so version-sensitive parsing can be regression tested
+// without a live server (audit A08).
+func parseShowIndexRows(rows *sql.Rows) ([]showIndexRow, error) {
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("reading SHOW INDEX column names: %v", err)
+	}
+	keyIdx, seqIdx, colIdx := -1, -1, -1
+	for i, name := range columns {
+		switch name {
+		case "Key_name":
+			keyIdx = i
+		case "Seq_in_index":
+			seqIdx = i
+		case "Column_name":
+			colIdx = i
+		}
+	}
+	if keyIdx < 0 || seqIdx < 0 || colIdx < 0 {
+		return nil, fmt.Errorf("SHOW INDEX result misses required columns (Key_name, Seq_in_index, Column_name); got %v", columns)
+	}
+
+	// scan every reported column so any server version works
+	dest := make([]any, len(columns))
+	for i := range dest {
+		dest[i] = new(sql.NullString)
+	}
+
+	var parsed []showIndexRow
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return nil, fmt.Errorf("scanning SHOW INDEX row: %v", err)
+		}
+		keyName := dest[keyIdx].(*sql.NullString).String
+		seqStr := dest[seqIdx].(*sql.NullString).String
+		colName := dest[colIdx].(*sql.NullString).String
+		seq, cerr := strconv.Atoi(seqStr)
+		if cerr != nil {
+			return nil, fmt.Errorf("parsing Seq_in_index %q: %v", seqStr, cerr)
+		}
+		parsed = append(parsed, showIndexRow{keyName: keyName, seqInIndex: seq, columnName: colName})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating SHOW INDEX rows: %v", err)
+	}
+	return parsed, nil
+}
+
 // detectMapplGIS collects the schema metadata required by the canonical
 // MapplGIS table contract (provider/mapplgis) for the given table and runs
 // the one-time detection:
 //   - SHOW COLUMNS supplies the DDL column list;
-//   - SHOW INDEX supplies the primary key and indexed columns;
+//   - SHOW INDEX supplies the primary key columns and every index with its
+//     ordered column list (the column set of SHOW INDEX varies by server
+//     version, so the required columns are resolved by name);
 //   - the OKEY = 1 row's LINE value is parsed as the layer
 //     self-description blob.
 //
@@ -639,48 +716,50 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 			return mapplgis.Info{}, fmt.Errorf("unable to scan columns of table %v: %v", tablename, err)
 		}
 		meta.Columns = append(meta.Columns, field)
-		if err := colRows.Err(); err != nil {
-			return mapplgis.Info{}, fmt.Errorf("error iterating columns of table %v: %v", tablename, err)
-		}
 	}
 	if err := colRows.Err(); err != nil {
 		return mapplgis.Info{}, fmt.Errorf("error iterating columns of table %v: %v", tablename, err)
 	}
+	_ = colRows.Close()
 
-	// SHOW INDEX column count varies by server version (MySQL 8.0 returns
-	// the legacy 13 columns plus `expression` and `visible`), so scan the
-	// legacy prefix and discard any trailing columns dynamically.
 	idxRows, err := db.Query(fmt.Sprintf("SHOW INDEX FROM %v", quoteIdentifier(tablename)))
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list indexes of table %v: %v", tablename, err)
 	}
-	defer idxRows.Close()
-	indexed := make(map[string]struct{})
-	for idxRows.Next() {
-		vals := make([]any, 15)
-		for i := range vals {
-			vals[i] = new(sql.NullString)
-		}
-		if err := idxRows.Scan(vals...); err != nil {
-			return mapplgis.Info{}, fmt.Errorf("unable to scan indexes of table %v: %v", tablename, err)
-		}
-		keyName := vals[2].(*sql.NullString).String
-		seqInIndexStr := vals[3].(*sql.NullString).String
-		columnName := vals[4].(*sql.NullString).String
-		seqInIndex, err := strconv.Atoi(seqInIndexStr)
-		if err != nil {
-			return mapplgis.Info{}, fmt.Errorf("unable to parse seq_in_index of table %v: %v", tablename, err)
-		}
-		if keyName == "PRIMARY" && seqInIndex == 1 {
-			meta.PKColumn = columnName
-		}
-		indexed[columnName] = struct{}{}
+	parsed, perr := parseShowIndexRows(idxRows)
+	if perr != nil {
+		_ = idxRows.Close()
+		return mapplgis.Info{}, fmt.Errorf("table %v: %v", tablename, perr)
 	}
 	if err := idxRows.Err(); err != nil {
+		_ = idxRows.Close()
 		return mapplgis.Info{}, fmt.Errorf("error iterating indexes of table %v: %v", tablename, err)
 	}
-	for column := range indexed {
-		meta.IndexedColumns = append(meta.IndexedColumns, column)
+	_ = idxRows.Close()
+
+	indexes := make(map[string]*mapplgis.IndexMeta)
+	for _, row := range parsed {
+		idx, ok := indexes[row.keyName]
+		if !ok {
+			idx = &mapplgis.IndexMeta{Name: row.keyName}
+			indexes[row.keyName] = idx
+		}
+		idx.Columns = append(idx.Columns, row.columnName)
+	}
+	// keep PK rows ordered by Seq_in_index and store every PK column so
+	// composite primary keys are represented exactly.
+	var pkRows []showIndexRow
+	for _, row := range parsed {
+		if strings.EqualFold(row.keyName, "PRIMARY") {
+			pkRows = append(pkRows, row)
+		}
+	}
+	sort.Slice(pkRows, func(a, b int) bool { return pkRows[a].seqInIndex < pkRows[b].seqInIndex })
+	for _, row := range pkRows {
+		meta.PrimaryKeyColumns = append(meta.PrimaryKeyColumns, row.columnName)
+	}
+	for _, idx := range indexes {
+		meta.Indexes = append(meta.Indexes, *idx)
 	}
 
 	// The OKEY = 1 metadata row: LINE is the required geometry column
@@ -710,6 +789,34 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 	return mapplgis.Detect(meta, fetch)
 }
 
+// mapplGISFormatAuthority enforces the audit A04 contract: a successful
+// MapplGIS detection is authoritative about the storage format. The
+// effective geometry format becomes MOS unless the user explicitly chose a
+// conflicting raw format, which is a startup error instead of a silent
+// runtime decoder mismatch.
+func mapplGISFormatAuthority(layerName string, format string) error {
+	switch format {
+	case "", GeometryFormatAuto, GeometryFormatMOS:
+		return nil
+	default:
+		return fmt.Errorf(
+			"layer '%v': table is detected as a MapplGIS layer (MOS storage), but geometry_format is explicitly %q; remove the setting or use %q",
+			layerName, format, GeometryFormatMOS,
+		)
+	}
+}
+
+// resolveMapplGISGeometryFormat applies the audit A04 format authority: a
+// detected MapplGIS table stores MOS blobs, so unset/auto formats switch to
+// MOS and an explicit non-MOS format is a startup conflict error.
+func resolveMapplGISGeometryFormat(layerName, format string) string {
+	if err := mapplGISFormatAuthority(layerName, format); err != nil {
+		// callers run mapplGISFormatAuthority first; this is a defensive
+		// fallback that keeps the MOS format rather than a wrong decoder
+		log.Warnf("%v", err)
+	}
+	return GeometryFormatMOS
+}
 
 // MapplGIS LayerInfo blob to the layer being registered. Only values not
 // explicitly configured take effect:
@@ -726,9 +833,14 @@ func applySystemInfo(layer *Layer, sysInfo *mos.SystemInfo, crsExplicit bool) er
 	if sysInfo == nil {
 		return nil
 	}
-	if layer.geometryFormat == GeometryFormatAuto {
-		layer.geometryFormat = GeometryFormatMOS
+	// A detected MapplGIS table is authoritative about its storage format
+	// (audit A04): unset/auto resolve to MOS; an explicitly configured
+	// non-MOS format conflicts with the table contract and must fail at
+	// startup rather than decode MOS blobs with the wrong reader.
+	if err := mapplGISFormatAuthority(layer.name, layer.geometryFormat); err != nil {
+		return err
 	}
+	layer.geometryFormat = GeometryFormatMOS
 
 	if err := layer.mosConfig.ApplySystemInfo(sysInfo); err != nil {
 		return err

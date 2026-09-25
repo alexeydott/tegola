@@ -135,9 +135,14 @@ geometry_type = "LineString"
 A layer with `geometry_format` set to a raw format (`wkb`, `wkt` or `mos`) or
 a raw table that has no `gpkg_contents` / `gpkg_geometry_columns` metadata
 does not need GeoPackage metadata at all: the table is registered from
-`PRAGMA table_info` and the RTree spatial index is **not** used. Note that a
-table which is missing from the GeoPackage metadata **requires** an explicit
-raw `geometry_format` — without one registration fails with a
+`PRAGMA table_info` and the RTree spatial index is **not** used. Every
+`tablename` layer — including raw tables missing from the GeoPackage
+metadata — is first checked against the shared structural MapplGIS contract
+(see [docs/provider-contract.md](../../docs/provider-contract.md)); a
+detected MapplGIS table is served via the `mos` format automatically, with
+no explicit `geometry_format` needed. A plain raw table (not detected as
+MapplGIS) that is missing from the GeoPackage metadata **requires** an
+explicit raw `geometry_format` — without one registration fails with a
 `table does not exist` error, because the native `gpkg` path looks the table
 up in `gpkg_geometry_columns` and will not find it. The `!BBOX!`
 token still works, but rows are filtered in memory, so performance depends on

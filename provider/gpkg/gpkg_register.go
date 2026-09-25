@@ -104,13 +104,13 @@ func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 }
 
 // tableColumnsAndPK returns the column names (sorted for consistent output)
-// and the primary key column of a table, read via PRAGMA table_info. This
-// replaces the previous CREATE TABLE text parser, which could not handle
-// comments or quoted commas.
-func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, string, error) {
+// and the primary key columns of a table, read via PRAGMA table_info, in
+// primary-key order. This replaces the previous CREATE TABLE text parser,
+// which could not handle comments or quoted commas.
+func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, []string, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%v);", quoteIdent(tablename)))
 	if err != nil {
-		return nil, "", fmt.Errorf("table %q column lookup: %v", tablename, err)
+		return nil, nil, fmt.Errorf("table %q column lookup: %v", tablename, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -126,23 +126,30 @@ func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, string, error) {
 		var dfltValue sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
-			return nil, "", fmt.Errorf("table %q column scan: %v", tablename, err)
+			return nil, nil, fmt.Errorf("table %q column scan: %v", tablename, err)
 		}
 		cols = append(cols, columnInfo{name: name, pk: pk})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", fmt.Errorf("table %q column rows: %v", tablename, err)
+		return nil, nil, fmt.Errorf("table %q column rows: %v", tablename, err)
 	}
 	if len(cols) == 0 {
-		return nil, "", fmt.Errorf("table %q does not exist or has no columns", tablename)
+		return nil, nil, fmt.Errorf("table %q does not exist or has no columns", tablename)
 	}
 
-	// The first column (in declaration order) participating in the primary
-	// key is used as the id field.
-	var pkCol string
-	for _, col := range cols {
-		if col.pk > 0 {
-			pkCol = col.name
+	// Composite primary keys return every participating column in pk order
+	// (pk is the 1-based position within the key).
+	var pkColumns []string
+	for pos := 1; ; pos++ {
+		found := false
+		for _, col := range cols {
+			if col.pk == pos {
+				pkColumns = append(pkColumns, col.name)
+				found = true
+				break
+			}
+		}
+		if !found {
 			break
 		}
 	}
@@ -153,13 +160,14 @@ func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, string, error) {
 	}
 	sort.Strings(colNames)
 
-	return colNames, pkCol, nil
+	return colNames, pkColumns, nil
 }
 
-// tableIndexedColumns returns every column covered by at least one table
-// index, read via PRAGMA index_list / PRAGMA index_info, lowercased for
-// contract comparisons.
-func tableIndexedColumns(db *sql.DB, tablename string) ([]string, error) {
+// tableIndexedColumns returns one IndexMeta per table index with its
+// columns in index-position order, read via PRAGMA index_list /
+// PRAGMA index_info. Names are returned in their stored case; the MapplGIS
+// contract comparison is case-insensitive.
+func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, error) {
 	indexRows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%v);", quoteIdent(tablename)))
 	if err != nil {
 		return nil, fmt.Errorf("table %q index lookup: %v", tablename, err)
@@ -188,8 +196,9 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]string, error) {
 		return nil, fmt.Errorf("table %q index close: %v", tablename, err)
 	}
 
-	indexed := make(map[string]struct{})
+	var result []mapplgis.IndexMeta
 	for _, idx := range indexes {
+		meta := mapplgis.IndexMeta{Name: idx.name}
 		infoRows, err := db.Query(fmt.Sprintf("PRAGMA index_info(%v);", quoteIdent(idx.name)))
 		if err != nil {
 			return nil, fmt.Errorf("table %q index_info %q: %v", tablename, idx.name, err)
@@ -202,7 +211,7 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]string, error) {
 				return nil, fmt.Errorf("table %q index_info %q scan: %v", tablename, idx.name, err)
 			}
 			if name.Valid && name.String != "" {
-				indexed[strings.ToLower(name.String)] = struct{}{}
+				meta.Columns = append(meta.Columns, name.String)
 			}
 		}
 		if err := infoRows.Err(); err != nil {
@@ -212,35 +221,33 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]string, error) {
 		if err := infoRows.Close(); err != nil {
 			return nil, fmt.Errorf("table %q index_info %q close: %v", tablename, idx.name, err)
 		}
+		result = append(result, meta)
 	}
-
-	cols := make([]string, 0, len(indexed))
-	for c := range indexed {
-		cols = append(cols, c)
-	}
-	sort.Strings(cols)
-	return cols, nil
+	return result, nil
 }
 
-// detectMapplGIS applies the canonical MapplGIS table contract to a raw
-// gpkg table (audit A-00/A-06): DDL + PK + required indexes + the OKEY=1
-// LINE blob, checked once at registration. On a detected layer the MOS
-// system-info is applied to the layer (format stays as configured; the
-// projection becomes the layer SRID unless the config was explicit).
+// detectMapplGIS applies the canonical MapplGIS table contract to a
+// tablename layer (audit A-00/A-06/A03): DDL + PK + required indexes + the
+// OKEY=1 LINE blob, checked once at registration regardless of the
+// configured geometry format. On a detected layer the storage format is
+// authoritative MOS: unset/auto resolve to MOS and an explicit non-MOS
+// format is a startup conflict error (A04). The MOS system-info is applied
+// to the layer; the projection becomes the layer SRID unless the config
+// was explicit.
 func detectMapplGIS(db *sql.DB, tablename string, layer *Layer) (bool, error) {
-	colNames, pkCol, err := tableColumnsAndPK(db, tablename)
+	colNames, pkColumns, err := tableColumnsAndPK(db, tablename)
 	if err != nil {
 		return false, err
 	}
-	indexed, err := tableIndexedColumns(db, tablename)
+	indexes, err := tableIndexedColumns(db, tablename)
 	if err != nil {
 		return false, err
 	}
 
 	info, err := mapplgis.Detect(mapplgis.TableMeta{
-		Columns:        colNames,
-		PKColumn:       pkCol,
-		IndexedColumns: indexed,
+		Columns:            colNames,
+		PrimaryKeyColumns:  pkColumns,
+		Indexes:            indexes,
 	}, func() (*mos.SystemInfo, error) {
 		const fetchQuery = "SELECT LINE FROM %v WHERE OKEY = 1 AND LINE IS NOT NULL LIMIT 1;"
 		rows, qerr := db.Query(fmt.Sprintf(fetchQuery, quoteIdent(tablename)))
@@ -269,6 +276,19 @@ func detectMapplGIS(db *sql.DB, tablename string, layer *Layer) (bool, error) {
 	}
 	if !info.IsMapplGIS {
 		return false, nil
+	}
+
+	// Format authority (audit A04): a detected MapplGIS table stores MOS
+	// blobs. Unset/auto resolve to MOS; an explicit non-MOS format cannot
+	// decode them and fails at startup instead of serving broken tiles.
+	switch layer.geometryFormat {
+	case "", GeometryFormatMOS:
+		layer.geometryFormat = GeometryFormatMOS
+	default:
+		return false, fmt.Errorf(
+			"table %q is detected as a MapplGIS layer (MOS storage), but geometry_format is explicitly %q; remove the setting or use %q",
+			tablename, layer.geometryFormat, GeometryFormatMOS,
+		)
 	}
 
 	if aerr := layer.mosConfig.ApplySystemInfo(&info.SystemInfo); aerr != nil {
@@ -355,13 +375,17 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 			sridVal = uint64(srid.Int64)
 		}
 
-		colNames, pkCol, cerr := tableColumnsAndPK(gpkg, tablename.String)
+		colNames, pkColumns, cerr := tableColumnsAndPK(gpkg, tablename.String)
 		if cerr != nil {
 			// An orphaned gpkg_contents entry (table dropped or unreadable)
 			// must not abort registration of every other table; skip it and
 			// warn so the remaining layers are still served (R3).
 			log.Warnf("table %q listed in gpkg_contents but unreadable, skipping: %v", tablename.String, cerr)
 			continue
+		}
+		pkCol := ""
+		if len(pkColumns) > 0 {
+			pkCol = pkColumns[0]
 		}
 
 		geomTableDetails[tablename.String] = featureTableDetails{
@@ -647,6 +671,17 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			layer.tagFieldnames = tagFieldnames
 			layer.idFieldname = idFieldname
 
+			// A03: canonical MapplGIS detection runs for every tablename
+			// layer, before the native/raw branch: a MapplGIS table is not
+			// registered in gpkg_geometry_columns, so a native-format layer
+			// pointing at one must still be discovered here and served via
+			// the MOS path. On detection the format is authoritative MOS
+			// (A04) and an explicit non-MOS format is a startup error.
+			isMappl, derr := detectMapplGIS(db, tablename, &layer)
+			if derr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, derr)
+			}
+
 			if codec.IsRawFormat(layer.geometryFormat) {
 				// Raw geometry formats (wkb/wkt/mos) are read from plain
 				// SQLite tables that need not be registered in
@@ -654,7 +689,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// required nor consulted and there is no RTree index, so
 				// TileFeatures filters in memory (or via raw bounds
 				// columns when the table carries them).
-				colNames, pkCol, cerr := tableColumnsAndPK(db, tablename)
+				colNames, pkColumns, cerr := tableColumnsAndPK(db, tablename)
 				if cerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, cerr)
 				}
@@ -666,12 +701,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					return nil, fmt.Errorf("for layer (%v) %v: table %q has no geometry column %q", i, layerName, tablename, layer.geomFieldname)
 				}
 				if _, ok := colSet[layer.idFieldname]; !ok {
-					if pkCol == "" {
+					if len(pkColumns) == 0 {
 						return nil, fmt.Errorf("for layer (%v) %v: table %q has no id column %q", i, layerName, tablename, layer.idFieldname)
 					}
 					log.Warnf("layer (%v): table %q has no column %q; using primary key %q as id field",
-						layerName, tablename, layer.idFieldname, pkCol)
-					layer.idFieldname = pkCol
+						layerName, tablename, layer.idFieldname, pkColumns[0])
+					layer.idFieldname = pkColumns[0]
 				}
 				layer.boundFieldnames = detectBoundColumns(colNames)
 				if layer.boundFieldnames != nil {
@@ -687,15 +722,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				layer.srid = uint64(lcrs.SRID)
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
-
-				// Canonical MapplGIS detection runs once at registration,
-				// before geometry sampling (audit A-00/A-06): the detected
-				// system-info fixes MOS decode parameters and the layer
-				// SRID for the whole row stream.
-				isMappl, derr := detectMapplGIS(db, tablename, &layer)
-				if derr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, derr)
-				}
 
 				if gerr := sampleRawTableLayer(db, &layer); gerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, gerr)

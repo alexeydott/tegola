@@ -35,8 +35,12 @@ func fullColumns() []string {
 	return []string{"OKEY", "MUID", "MINX", "MAXX", "MINY", "MAXY", "ObjectStyle", "ObjectType", "LINE"}
 }
 
-func fullIndexes() []string {
-	return []string{"MUID", "MINX", "MAXX", "MINY", "MAXY", "ObjectType"}
+func fullIndexes() []IndexMeta {
+	idx := make([]IndexMeta, 0, len(requiredIndexes))
+	for _, c := range requiredIndexes {
+		idx = append(idx, IndexMeta{Name: "I_" + strings.ToUpper(c), Columns: []string{c}})
+	}
+	return idx
 }
 
 func validFetcher() SystemInfoFetcher {
@@ -52,7 +56,7 @@ func validFetcher() SystemInfoFetcher {
 
 func TestDetect(t *testing.T) {
 	t.Run("full contract passes", func(t *testing.T) {
-		info, err := Detect(TableMeta{Columns: fullColumns(), PKColumn: "OKEY", IndexedColumns: fullIndexes()}, validFetcher())
+		info, err := Detect(TableMeta{Columns: fullColumns(), PrimaryKeyColumns: []string{"OKEY"}, Indexes: fullIndexes()}, validFetcher())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -66,7 +70,14 @@ func TestDetect(t *testing.T) {
 
 	t.Run("case-insensitive names", func(t *testing.T) {
 		cols := []string{"okey", "muid", "minx", "maxx", "miny", "maxy", "objectstyle", "objecttype", "line"}
-		meta := TableMeta{Columns: cols, PKColumn: "Okey", IndexedColumns: []string{"muid", "MinX", "maxx", "MiNy", "MAXY", "objecttype"}}
+		meta := TableMeta{Columns: cols, PrimaryKeyColumns: []string{"Okey"}, Indexes: []IndexMeta{
+			{Name: "i1", Columns: []string{"muid"}},
+			{Name: "i2", Columns: []string{"MinX"}},
+			{Name: "i3", Columns: []string{"maxx"}},
+			{Name: "i4", Columns: []string{"MiNy"}},
+			{Name: "i5", Columns: []string{"MAXY"}},
+			{Name: "i6", Columns: []string{"objecttype"}},
+		}}
 		info, err := Detect(meta, validFetcher())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -84,7 +95,7 @@ func TestDetect(t *testing.T) {
 					cols = append(cols, c)
 				}
 			}
-			meta := TableMeta{Columns: cols, PKColumn: "OKEY", IndexedColumns: fullIndexes()}
+			meta := TableMeta{Columns: cols, PrimaryKeyColumns: []string{"OKEY"}, Indexes: fullIndexes()}
 			info, err := Detect(meta, func() (*mos.SystemInfo, error) {
 				t.Fatalf("OKEY=1 query must not run when a required column is missing")
 				return nil, nil
@@ -99,15 +110,26 @@ func TestDetect(t *testing.T) {
 	})
 
 	t.Run("OKEY not primary key", func(t *testing.T) {
-		meta := TableMeta{Columns: fullColumns(), PKColumn: "MUID", IndexedColumns: fullIndexes()}
+		meta := TableMeta{Columns: fullColumns(), PrimaryKeyColumns: []string{"MUID"}, Indexes: fullIndexes()}
 		info, err := Detect(meta, validFetcher())
 		if err != nil || info.IsMapplGIS {
 			t.Errorf("expected not-detected with non-OKEY PK (info=%v err=%v)", info, err)
 		}
 	})
 
+	t.Run("composite primary key fails", func(t *testing.T) {
+		meta := TableMeta{Columns: fullColumns(), PrimaryKeyColumns: []string{"OKEY", "MUID"}, Indexes: fullIndexes()}
+		info, err := Detect(meta, validFetcher())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if info.IsMapplGIS {
+			t.Error("expected IsMapplGIS=false with composite PK (OKEY, MUID)")
+		}
+	})
+
 	t.Run("no primary key", func(t *testing.T) {
-		meta := TableMeta{Columns: fullColumns(), PKColumn: "", IndexedColumns: fullIndexes()}
+		meta := TableMeta{Columns: fullColumns(), PrimaryKeyColumns: nil, Indexes: fullIndexes()}
 		info, err := Detect(meta, validFetcher())
 		if err != nil || info.IsMapplGIS {
 			t.Errorf("expected not-detected without PK (info=%v err=%v)", info, err)
@@ -116,13 +138,13 @@ func TestDetect(t *testing.T) {
 
 	t.Run("each required index dropped", func(t *testing.T) {
 		for _, drop := range requiredIndexes {
-			var idx []string
+			var idx []IndexMeta
 			for _, c := range fullIndexes() {
-				if !strings.EqualFold(c, drop) {
+				if !strings.EqualFold(c.Columns[0], drop) {
 					idx = append(idx, c)
 				}
 			}
-			meta := TableMeta{Columns: fullColumns(), PKColumn: "OKEY", IndexedColumns: idx}
+			meta := TableMeta{Columns: fullColumns(), PrimaryKeyColumns: []string{"OKEY"}, Indexes: idx}
 			info, err := Detect(meta, validFetcher())
 			if err != nil {
 				t.Fatalf("unexpected error dropping index %v: %v", drop, err)
@@ -133,8 +155,46 @@ func TestDetect(t *testing.T) {
 		}
 	})
 
+	t.Run("composite index does not cover its columns", func(t *testing.T) {
+		// All required fields indexed, but MINX/MAXX/MINY/MAXY share one
+		// composite index instead of dedicated single-column indexes.
+		idx := []IndexMeta{
+			{Name: "i_muid", Columns: []string{"MUID"}},
+			{Name: "i_bbox", Columns: []string{"MINX", "MAXX", "MINY", "MAXY"}},
+			{Name: "i_otype", Columns: []string{"OBJECTTYPE"}},
+		}
+		meta := TableMeta{Columns: fullColumns(), PrimaryKeyColumns: []string{"OKEY"}, Indexes: idx}
+		info, err := Detect(meta, validFetcher())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if info.IsMapplGIS {
+			t.Error("expected IsMapplGIS=false when bbox fields share one composite index")
+		}
+	})
+
+	t.Run("field at second index position does not count", func(t *testing.T) {
+		// MUID only appears at position two of a composite index.
+		idx := []IndexMeta{
+			{Name: "i_c", Columns: []string{"OBJECTSTYLE", "MUID"}},
+			{Name: "i2", Columns: []string{"MINX"}},
+			{Name: "i3", Columns: []string{"MAXX"}},
+			{Name: "i4", Columns: []string{"MINY"}},
+			{Name: "i5", Columns: []string{"MAXY"}},
+			{Name: "i6", Columns: []string{"OBJECTTYPE"}},
+		}
+		meta := TableMeta{Columns: fullColumns(), PrimaryKeyColumns: []string{"OKEY"}, Indexes: idx}
+		info, err := Detect(meta, validFetcher())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if info.IsMapplGIS {
+			t.Error("expected IsMapplGIS=false when MUID is only the second index column")
+		}
+	})
+
 	t.Run("OKEY=1 row missing", func(t *testing.T) {
-		meta := TableMeta{Columns: fullColumns(), PKColumn: "OKEY", IndexedColumns: fullIndexes()}
+		meta := TableMeta{Columns: fullColumns(), PrimaryKeyColumns: []string{"OKEY"}, Indexes: fullIndexes()}
 		info, err := Detect(meta, func() (*mos.SystemInfo, error) {
 			return nil, nil
 		})
@@ -147,7 +207,7 @@ func TestDetect(t *testing.T) {
 	})
 
 	t.Run("invalid LINE blob is a controlled error", func(t *testing.T) {
-		meta := TableMeta{Columns: fullColumns(), PKColumn: "OKEY", IndexedColumns: fullIndexes()}
+		meta := TableMeta{Columns: fullColumns(), PrimaryKeyColumns: []string{"OKEY"}, Indexes: fullIndexes()}
 		_, err := Detect(meta, func() (*mos.SystemInfo, error) {
 			return nil, fmt.Errorf("not a system info blob")
 		})
@@ -167,4 +227,13 @@ func TestRequiredColumnListMatchesGeometryField(t *testing.T) {
 	if !found {
 		t.Errorf("GeometryField %v must be among the required columns", GeometryField)
 	}
+}
+
+func TestPrimaryKeyConstant(t *testing.T) {
+	for _, c := range requiredColumns {
+		if strings.EqualFold(c, PrimaryKey) {
+			return
+		}
+	}
+	t.Errorf("PrimaryKey %v must be among the required columns", PrimaryKey)
 }

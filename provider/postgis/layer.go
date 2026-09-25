@@ -3,6 +3,7 @@ package postgis
 import (
 	"github.com/go-spatial/geom"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/mos"
 )
 
 // layer holds information about a query.
@@ -31,6 +32,13 @@ type Layer struct {
 	// (via srid or crs_defn at the provider or layer level). When false, a
 	// source-provided projection (MOS system-info blob) may override srid.
 	crsExplicit bool
+	// isMapplGIS reports that the backing table satisfied the canonical
+	// MapplGIS table contract at registration (provider/mapplgis). Only
+	// set for tablename layers; custom SQL is never auto-detected.
+	isMapplGIS bool
+	// mapplSysInfo is the parsed layer self-description of a detected
+	// MapplGIS table. Valid only when isMapplGIS is true.
+	mapplSysInfo mos.SystemInfo
 }
 
 func (l Layer) Name() string {

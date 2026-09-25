@@ -132,6 +132,21 @@ orthogonal to detection: an explicit `geometry_type` does not skip MapplGIS
 table detection (it only fixes the layer's geometry type), and a detected
 MapplGIS table still applies its system info even with `geometry_type` set.
 
+The detector is implemented per provider against the backend's own catalog:
+MySQL/MariaDB via `SHOW COLUMNS` / `SHOW INDEX` (version-safe parsing of the
+5.7/8.0/MariaDB row shapes), GPKG via `PRAGMA table_info` /
+`sqlite_master`, PostGIS via `information_schema.columns` /
+`pg_index` / `pg_attribute`, HANA via `SYS.TABLE_COLUMNS` /
+`SYS.INDEXES` / `SYS.INDEX_COLUMNS`. Detection runs for every `tablename`
+layer of every standard provider; custom `sql` layers are never detected.
+
+When a table is detected as MapplGIS, the effective geometry format is
+authoritative `mos`: an unset or `auto` format resolves to `mos`, and an
+explicit non-MOS `geometry_format` on the same layer is a startup conflict
+error. A detected table also replaces an unset (default) `id_fieldname` with
+the contract primary key `OKEY`; an explicitly configured id field is
+honored.
+
 Startup type inspection (as opposed to MapplGIS detection) still samples the
 same uniform window of up to `codec.InspectionSampleLimit` (16) rows to
 infer the layer geometry type from the first decodable geometry — but this

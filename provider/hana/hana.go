@@ -25,6 +25,7 @@ import (
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/mapplgis"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -637,18 +638,41 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		l.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
 		codec.WarnAndResetMOSParams(l.geometryFormat, &l.mosConfig, lName)
 
+		// A06: canonical MapplGIS detection runs for every tablename layer
+		// before the SRID resolution: a MapplGIS table is not a spatial
+		// table, so a layer pointing at one must be discovered here and
+		// served via the MOS path with the self-described projection.
+		// Custom SQL is never auto-detected.
+		if tblPresent {
+			isMappl, derr := detectMapplGIS(context.Background(), p.pool, &l, tblName)
+			if derr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %v", i, lName, derr)
+			}
+			if isMappl {
+				// A02: an explicitly configured ID field is honored; the
+				// contract primary key (OKEY) replaces the empty default.
+				if idfld == "" {
+					idfld = mapplgis.PrimaryKey
+					l.idField = idfld
+				}
+				lsrid = int(l.srid)
+				log.Debugf("layer (%v): table %v detected as MapplGIS", lName, tblName)
+			}
+		}
+
 		if lsrid < 0 {
 			// we try to auto detect SRID if it is not specified neither
 			// for the provider nor for the layer. Native HANA ST_Geometry
 			// columns can report their SRS via ST_SRID(); raw formats cannot:
-			// MOS layers self-describe through a system-info blob, while
-			// plain WKB/WKT columns carry no CRS information at all.
+			// MOS layers self-describe through the canonical structural
+			// MapplGIS detector (registration-time only), while plain WKB/WKT
+			// columns carry no CRS information at all.
 			switch {
 			case l.geometryFormat == codec.FormatMOS:
-				if aerr := p.applyMOSSourceCRS(&l, lcrs.Explicit, sql, tblName); aerr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, aerr)
-				}
-				lsrid = int(l.srid)
+				return nil, fmt.Errorf(
+					"for layer (%v) %v: source CRS unresolved; MOS columns carry no CRS metadata, specify %v or %v",
+					i, lName, crsconfig.KeySRID, crsconfig.KeyCRSDefn,
+				)
 			case codec.IsRawFormat(l.geometryFormat):
 				// wkb/wkt
 				return nil, fmt.Errorf(
@@ -1009,105 +1033,6 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	return nil
 }
 
-// applyMOSSourceCRS resolves the source CRS for a MOS layer whose srid was
-// not configured: it samples the first rows of the layer's SQL, applies any
-// MapplGIS LayerInfo blob to the MOS config, and registers the recorded
-// projection as the layer SRID. When the CRS was configured explicitly (via
-// srid or crs_defn at either level) the source projection is ignored, which
-// is also why an explicit crs_defn never appears here as a negative lsrid.
-func (p Provider) applyMOSSourceCRS(l *Layer, explicit bool, layerSQL string, tblName string) error {
-	sqlQuery := layerSQL
-	if sqlQuery == "" {
-		if tblName == "" {
-			return fmt.Errorf("unable to determine source SQL for layer (%v): neither %v nor %v specified",
-				l.name, crsconfig.KeySRID, crsconfig.KeyCRSDefn,
-			)
-		}
-		sqlQuery = fmt.Sprintf(`(SELECT * FROM %v)`, quoteTableName(tblName))
-	}
-
-	sqlQuery = strings.Replace(sqlQuery, "!ZOOM!", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24", 1)
-	// neutralize the spatial predicate: MOS blobs cannot use it and it
-	// could filter out all rows during inspection
-	sqlQuery = strings.Replace(sqlQuery, bboxToken, "1=1", -1)
-
-	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
-	sqlQuery, err := replaceTokens(p.dbVersion, sqlQuery, l.IDFieldName(), l.GeomFieldName(), l.GeomType(), l.SRID(), tile, true)
-	if err != nil {
-		return err
-	}
-
-	sqlQuery = provider.ParameterTokenRegexp.ReplaceAllString(sqlQuery, "")
-
-	// Cap the inspection at the shared sample window (docs/provider-contract.md)
-	sqlQuery = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sqlQuery), ";"))
-	sqlQuery = fmt.Sprintf("SELECT TOP %v * FROM (%v) AS mos_inspection", codec.InspectionSampleLimit, sqlQuery)
-
-	rows, err := p.pool.QueryContext(context.Background(), sqlQuery)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rows.Close() }()
-
-	columns, err := rows.ColumnTypes()
-	if err != nil {
-		return err
-	}
-
-	fields, err := getFieldDescriptions(l.Name(), l.GeomFieldName(), l.IDFieldName(), columns, false)
-	if err != nil {
-		return err
-	}
-
-	rowValues := make([]interface{}, len(fields))
-
-	// The whole window is scanned: feature rows are skipped and every
-	// system-info blob found is applied, so a LayerInfo stored after the
-	// first geometry still resolves the source CRS.
-	for rows.Next() {
-		setupRowValues(fields, rowValues)
-
-		if err := rows.Scan(rowValues...); err != nil {
-			return fmt.Errorf("error running layer (%v) SQL (%v): %w", l.name, sqlQuery, err)
-		}
-
-		for i := range rowValues {
-			if rowValues[i] == nil || fields[i].name != l.GeomFieldName() {
-				continue
-			}
-
-			raw, ok := blobBytes(rowValues[i])
-			if !ok {
-				return fmt.Errorf("layer (%v): unexpected MOS column type %T", l.name, rowValues[i])
-			}
-
-			// system info rows carry the layer's source projection
-			if mos.IsSystemInfoBlob(raw) {
-				sysInfo, serr := mos.ParseSystemInfo(raw)
-				if serr != nil {
-					return fmt.Errorf("layer (%v): invalid MOS system info: %w", l.name, serr)
-				}
-				if aerr := l.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-					return fmt.Errorf("layer (%v): %w", l.name, aerr)
-				}
-				projection := sysInfo.Projection
-				srid, _, aerr := crsconfig.ApplySystemInfoCRS(int(l.srid), explicit, projection)
-				if aerr != nil {
-					return fmt.Errorf("layer (%v): %w", l.name, aerr)
-				}
-				l.srid = uint64(srid)
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	return fmt.Errorf(
-		"layer (%v): source CRS unresolved; MOS column carries no system info, specify %v or %v",
-		l.name, crsconfig.KeySRID, crsconfig.KeyCRSDefn,
-	)
-}
-
 // blobBytes normalizes driver values that may arrive as []byte or string.
 func blobBytes(v interface{}) ([]byte, bool) {
 	switch val := v.(type) {
@@ -1400,6 +1325,203 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 
 // Close will close the Provider's database connectio
 func (p *Provider) Close() { p.pool.Close() }
+
+// collectMapplGISMeta gathers the schema metadata required by the canonical
+// MapplGIS table contract (provider/mapplgis) from the HANA catalog views:
+//   - SYS.TABLE_COLUMNS supplies the DDL column list;
+//   - SYS.REFERENCES_/SYS.INDEX_COLUMNS supplies the primary key and index
+//     columns in key order.
+//
+// The OKEY = 1 row's LINE value is parsed by the returned fetcher. All
+// identifiers are matched case-insensitively downstream (mapplgis.Detect).
+func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tblName string) (mapplgis.TableMeta, mapplgis.SystemInfoFetcher, error) {
+	var meta mapplgis.TableMeta
+
+	qtn := quoteTableName(tblName)
+	// HANA catalog views are scoped by schema name; derive it from the
+	// (already quoted) table name. Unqualified tables resolve against the
+	// connection's CURRENT SCHEMA and are matched accordingly.
+	var schemaName string
+	if parts := strings.Split(tblName, "."); len(parts) == 2 {
+		schemaName = strings.Trim(parts[0], `"`)
+	}
+
+	// DDL columns.
+	schemaPred := "1=1"
+	args := []interface{}{}
+	if schemaName != "" {
+		schemaPred = `SCHEMA_NAME = ?`
+		args = append(args, schemaName)
+	}
+	args = append(args, strings.Trim(tblName, `"`))
+
+	colRows, err := pool.pool.QueryContext(ctx, fmt.Sprintf(`
+		SELECT COLUMN_NAME
+		FROM SYS.TABLE_COLUMNS
+		WHERE %v AND TABLE_NAME = ?
+		ORDER BY POSITION`, schemaPred), args...)
+	if err != nil {
+		return meta, nil, fmt.Errorf("unable to list columns of table %v: %w", qtn, err)
+	}
+	for colRows.Next() {
+		var name string
+		if serr := colRows.Scan(&name); serr != nil {
+			colRows.Close()
+			return meta, nil, fmt.Errorf("unable to scan columns of table %v: %w", qtn, serr)
+		}
+		meta.Columns = append(meta.Columns, name)
+	}
+	if err := colRows.Err(); err != nil {
+		colRows.Close()
+		return meta, nil, fmt.Errorf("error iterating columns of table %v: %w", qtn, err)
+	}
+	colRows.Close()
+	if len(meta.Columns) == 0 {
+		return meta, nil, fmt.Errorf("table %v does not exist", qtn)
+	}
+
+	// Primary key columns in key order.
+	pkArgs := []interface{}{}
+	pkSchemaPred := "TABLE_SCHEMA = CURRENT_SCHEMA"
+	if schemaName != "" {
+		pkSchemaPred = "TABLE_SCHEMA = ?"
+		pkArgs = append(pkArgs, schemaName)
+	}
+	pkArgs = append(pkArgs, strings.Trim(tblName, `"`))
+	pkRows, err := pool.pool.QueryContext(ctx, fmt.Sprintf(`
+		SELECT ic.COLUMN_NAME
+		FROM SYS.INDEX_COLUMNS ic
+		JOIN SYS.INDEXES i
+			ON i.SCHEMA_NAME = ic.INDEX_SCHEMA AND i.INDEX_NAME = ic.INDEX_NAME
+		WHERE %v AND ic.TABLE_NAME = ? AND i.CONSTRAINT = 'PRIMARY KEY'
+		ORDER BY ic.POSITION`, pkSchemaPred), pkArgs...)
+	if err != nil {
+		return meta, nil, fmt.Errorf("unable to list primary key of table %v: %w", qtn, err)
+	}
+	for pkRows.Next() {
+		var name string
+		if serr := pkRows.Scan(&name); serr != nil {
+			pkRows.Close()
+			return meta, nil, fmt.Errorf("unable to scan primary key of table %v: %w", qtn, serr)
+		}
+		meta.PrimaryKeyColumns = append(meta.PrimaryKeyColumns, name)
+	}
+	if err := pkRows.Err(); err != nil {
+		pkRows.Close()
+		return meta, nil, fmt.Errorf("error iterating primary key of table %v: %w", qtn, err)
+	}
+	pkRows.Close()
+
+	// Every index with its ordered column list.
+	idxArgs := []interface{}{}
+	idxSchemaPred := "i.TABLE_SCHEMA = CURRENT_SCHEMA"
+	if schemaName != "" {
+		idxSchemaPred = "i.TABLE_SCHEMA = ?"
+		idxArgs = append(idxArgs, schemaName)
+	}
+	idxArgs = append(idxArgs, strings.Trim(tblName, `"`))
+	idxRows, err := pool.pool.QueryContext(ctx, fmt.Sprintf(`
+		SELECT i.INDEX_NAME, ic.COLUMN_NAME
+		FROM SYS.INDEXES i
+		JOIN SYS.INDEX_COLUMNS ic
+			ON ic.INDEX_SCHEMA = i.SCHEMA_NAME AND ic.INDEX_NAME = i.INDEX_NAME AND ic.TABLE_NAME = i.TABLE_NAME
+		WHERE %v AND i.TABLE_NAME = ?
+		ORDER BY i.INDEX_NAME, ic.POSITION`, idxSchemaPred), idxArgs...)
+	if err != nil {
+		return meta, nil, fmt.Errorf("unable to list indexes of table %v: %w", qtn, err)
+	}
+	indexes := make(map[string]*mapplgis.IndexMeta)
+	var order []string
+	for idxRows.Next() {
+		var idxName, colName string
+		if serr := idxRows.Scan(&idxName, &colName); serr != nil {
+			idxRows.Close()
+			return meta, nil, fmt.Errorf("unable to scan indexes of table %v: %w", qtn, serr)
+		}
+		idx, ok := indexes[idxName]
+		if !ok {
+			idx = &mapplgis.IndexMeta{Name: idxName}
+			indexes[idxName] = idx
+			order = append(order, idxName)
+		}
+		idx.Columns = append(idx.Columns, colName)
+	}
+	if err := idxRows.Err(); err != nil {
+		idxRows.Close()
+		return meta, nil, fmt.Errorf("error iterating indexes of table %v: %w", qtn, err)
+	}
+	idxRows.Close()
+	for _, name := range order {
+		meta.Indexes = append(meta.Indexes, *indexes[name])
+	}
+
+	fetch := func() (*mos.SystemInfo, error) {
+		var blob []byte
+		err := pool.pool.QueryRowContext(ctx, fmt.Sprintf(
+			`SELECT %v FROM %v WHERE %v = 1 AND %v IS NOT NULL LIMIT 1`,
+			quoteIdentifier(mapplgis.GeometryField), qtn,
+			quoteIdentifier(mapplgis.PrimaryKey), quoteIdentifier(mapplgis.GeometryField),
+		)).Scan(&blob)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if len(blob) == 0 {
+			return nil, nil
+		}
+		si, perr := mos.ParseSystemInfo(blob)
+		if perr != nil {
+			return nil, perr
+		}
+		return &si, nil
+	}
+
+	return meta, fetch, nil
+}
+
+// detectMapplGIS applies the canonical MapplGIS table contract to a
+// tablename layer (audit A06). On detection the effective geometry format
+// is authoritative MOS (A04): unset/auto resolve to MOS and an explicit
+// non-MOS format is a startup conflict error. The MOS system-info applies
+// the self-described projection to the layer unless the CRS config was
+// explicit, so the subsequent SRID resolution sees a resolved value.
+func detectMapplGIS(ctx context.Context, pool *connectionPoolCollector, l *Layer, tblName string) (bool, error) {
+	meta, fetch, err := collectMapplGISMeta(ctx, pool, tblName)
+	if err != nil {
+		return false, err
+	}
+	info, err := mapplgis.Detect(meta, fetch)
+	if err != nil {
+		return false, fmt.Errorf("table %v: %w", tblName, err)
+	}
+	if !info.IsMapplGIS {
+		return false, nil
+	}
+
+	switch l.geometryFormat {
+	case "", codec.FormatMOS:
+		l.geometryFormat = codec.FormatMOS
+	default:
+		return false, fmt.Errorf(
+			"table %v is detected as a MapplGIS layer (MOS storage), but geometry_format is explicitly %q; remove the setting or use %q",
+			tblName, l.geometryFormat, codec.FormatMOS,
+		)
+	}
+
+	if aerr := l.mosConfig.ApplySystemInfo(&info.SystemInfo); aerr != nil {
+		return false, fmt.Errorf("table %v apply MOS system info: %v", tblName, aerr)
+	}
+	l.isMapplGIS = true
+	l.mapplSysInfo = info.SystemInfo
+	if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(l.srid), false, info.SystemInfo.Projection); aerr != nil {
+		return false, fmt.Errorf("table %v apply MOS projection: %v", tblName, aerr)
+	} else if applied {
+		l.srid = uint64(srid)
+	}
+	return true, nil
+}
 
 // reference to all instantiated providers
 var providers []Provider
