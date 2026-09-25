@@ -72,4 +72,4 @@ The following items were identified in the fork-vs-upstream audit but are intent
 | 2.6 | SQL token lexer for GPKG custom SQL (replace string-interpolation-based query assembly). |
 | 3.6 | `basic/line.go` simplification correctness: line simplification does not check point intersection ("malformed geoprocessing with providers of type not mvt_postgis", an open upstream bug noted in v0.21.0). Geometry behavior is left unchanged until a test corpus exists. |
 | part10 A15 | External dependency portability - `third_party` `replace` directives complicate out-of-tree consumption. |
-| part10 A16 | CI green-status verification for the fork's full matrix. |
+| part10 A16 | CI green-status runs are unavailable for this fork (no GitHub Actions quota), so the standing policy is local re-verification on the exact pushed SHA: `go test -mod vendor -count=1 ./...` with `CGO_ENABLED=0` and `CGO_ENABLED=1`, plus `golangci-lint run ./...`. |
