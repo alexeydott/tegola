@@ -9,6 +9,7 @@ package geometrycodec
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -79,6 +80,9 @@ const (
 // and layer configs. Resolution is per-field: a layer-level value overrides
 // the provider-level value for that field only, so partial overrides are
 // supported. Unset at both levels falls back to the documented defaults.
+// Configured values are TrimSpace'd; whitespace-only or empty values,
+// duplicates (case-insensitively), and anything that is not a simple SQL
+// identifier (e.g. qualified names like t.MINX) are registration errors.
 // layer may be nil; layerName is used for error context.
 func ResolveBBoxFields(provider, layer dict.Dicter, layerName string) (BBoxFields, error) {
 	keys := []struct {
@@ -105,7 +109,7 @@ func ResolveBBoxFields(provider, layer dict.Dicter, layerName string) (BBoxField
 				if strings.TrimSpace(v) == "" {
 					return fields, fmt.Errorf("for layer (%v) invalid %v: empty value; provide a non-empty column name or omit the key to use the default %v", layerName, k.key, k.def)
 				}
-				fields[k.idx] = v
+				fields[k.idx] = strings.TrimSpace(v)
 			}
 		}
 		if layer != nil {
@@ -117,12 +121,39 @@ func ResolveBBoxFields(provider, layer dict.Dicter, layerName string) (BBoxField
 				if strings.TrimSpace(v) == "" {
 					return fields, fmt.Errorf("for layer (%v) invalid %v: empty value; provide a non-empty column name or omit the key to use the default %v", layerName, k.key, k.def)
 				}
-				fields[k.idx] = v
+				fields[k.idx] = strings.TrimSpace(v)
 			}
 		}
 	}
+	if err := fields.validate(layerName); err != nil {
+		return fields, err
+	}
 	return fields, nil
 }
+
+// validate rejects duplicate bounds field names (case-insensitively) and
+// names that are not simple SQL identifiers (e.g. qualified names like
+// t.MINX), which must not reach the generated predicates unquoted.
+func (f BBoxFields) validate(layerName string) error {
+	seen := make(map[string]string, len(f))
+	for i, name := range f {
+		key := strings.ToLower(name)
+		if first, dup := seen[key]; dup {
+			return fmt.Errorf("for layer (%v) bounds field name %q (bbox_%v_fieldname) duplicates %q; bounds field names must be unique (case-insensitive)",
+				layerName, name, [...]string{"minx", "maxx", "miny", "maxy"}[i], first)
+		}
+		seen[key] = name
+		if !simpleIdentifierRegexp.MatchString(name) {
+			return fmt.Errorf("for layer (%v) bounds field name %q is not a simple SQL identifier; use a bare column name (e.g. MINX), not a qualified name like t.MINX",
+				layerName, name)
+		}
+	}
+	return nil
+}
+
+// simpleIdentifierRegexp matches bare SQL identifiers: a letter or
+// underscore followed by letters, digits or underscores.
+var simpleIdentifierRegexp = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // IsBBoxField reports whether name matches any resolved bounds field name
 // (case-insensitive, mirroring SQL column-name semantics). Providers use it
@@ -203,13 +234,25 @@ func BuildBoundsPredicate(fields BBoxFields, extent *geom.Extent, mode BoundsPre
 }
 
 // SQLGeometryContract is the outcome of the registration-time
-// InspectSQLGeometryContract probe for a bounds-backed MOS custom-SQL layer.
+// InspectSQLGeometryContract probe for a bounds-backed custom-SQL layer.
 type SQLGeometryContract struct {
 	// BoundsFields are the actual (database-reported) bounds column names
 	// discovered in the sample, resolved case-insensitively against the
-	// configured names. Empty when no bounds columns were found.
+	// configured names. Empty when no bounds columns were found. Providers
+	// must persist these actual names (layer.bboxFields), never the
+	// configured spellings: PostGIS runtime predicates quote identifiers
+	// case-sensitively.
 	BoundsFields BBoxFields
-	// ValidMOSRows counts sample rows carrying a decodable MOS geometry.
+	// GeometryField is the actual (database-reported) geometry column name
+	// matched in the sample, resolved case-insensitively against the
+	// configured geometry field (or the last result column when the
+	// geometry field is not configured). Empty when unmatched.
+	GeometryField string
+	// ValidRows counts sample rows carrying a decodable geometry with at
+	// least one coordinate point, in any supported storage format.
+	ValidRows int
+	// ValidMOSRows counts the ValidRows subset carrying a decodable MOS
+	// geometry with a positive MOS signature.
 	ValidMOSRows int
 	// HasBounds reports whether all four bounds columns were found.
 	HasBounds bool
@@ -217,31 +260,37 @@ type SQLGeometryContract struct {
 
 // MinValidMOSRows is the minimum number of decodable MOS rows the SQL sample
 // probe requires before a custom-SQL layer is treated as bounds-backed
-// MapplGIS SQL.
+// MapplGIS SQL and switched to the MOS storage format. It is an inference
+// evidence bar only: layers with an explicit geometry type skip the
+// >=3-sample-row requirement, and row-count evidence never substitutes for
+// the structural contract.
 const MinValidMOSRows = 3
 
 // InspectSQLGeometryContract runs a registration-time probe over a sample of
-// the layer's custom SQL result set and reports the bounds-backed MOS
-// contract: presence of the four bounds columns and at least MinValidMOSRows
-// decodable MOS geometries carrying at least one coordinate point.
-// sampleQuery must return the bounds fields plus the geometry column and be
-// already token-expanded (all-zoom / no spatial filter). decode decodes a
-// raw geometry value (returning an error for non-decodable values); callers
-// pass their provider's decodeGeometryValue. findBoundsColumns maps the
-// sample's column names to the [4]string bounds order (minx, maxx, miny,
-// maxy); nil when they are absent.
+// the layer's custom SQL result set and reports the storage-format
+// contract: presence of the four bounds columns (as ACTUAL result-column
+// names), the matched geometry column name, and the number of decodable
+// rows (any format and the MOS subset).
 //
-// The probe reads at most InspectionSampleLimit rows (with an early stop
-// once enough valid MOS rows are counted), verifies that the geometry field
-// is present in the result set, and is deliberately provider-independent: it
-// only requires a rows-like iterator, so each provider feeds it from its
-// own driver.
+// Row source: next returns the next scanned result-row values, ok=false at
+// end of rows, or an error. Providers MUST feed real scanned values (e.g.
+// database/sql rows.Scan into []interface{}), never placeholders — the
+// contract inspects the actual geometry column value of each row. The
+// sample window is at most InspectionSampleLimit rows; the caller prepares
+// the query through PrepareProbeSQL/WrapProbeSQL so the probe always
+// executes the SQL without a spatial filter.
+//
+// decode is the provider's row decoder (MOSRowDecode / AutoRowDecode):
+// rows whose decode errors, or whose geometry is empty or carries no
+// coordinates, are skipped and never counted; SystemInfo/layerinfo rows are
+// always skipped, never applied. A next() error is returned to the caller
+// (fail-closed). Row-level decode errors are not probe failures.
 func InspectSQLGeometryContract(
-	rows func(scan func(dest ...interface{}) error) (bool, error),
+	next func() ([]interface{}, bool, error),
 	columnNames []string,
 	geometryField string,
 	bboxFields BBoxFields,
-	decode func(value interface{}) (geom.Geometry, error),
+	decode RowDecode,
 ) (SQLGeometryContract, error) {
 	var contract SQLGeometryContract
 
@@ -256,51 +305,46 @@ func InspectSQLGeometryContract(
 	geomIdx := -1
 	if geometryField == "" {
 		// geometry assumed to be the last selected column
-		geomIdx = len(columnNames) - 1
+		if len(columnNames) > 0 {
+			geomIdx = len(columnNames) - 1
+			contract.GeometryField = columnNames[geomIdx]
+		}
 	} else {
 		for i, name := range columnNames {
 			if strings.EqualFold(name, geometryField) {
 				geomIdx = i
+				contract.GeometryField = columnNames[i]
 				break
 			}
 		}
 	}
 
-	for {
-		more, err := rows(func(dest ...interface{}) error {
-			if geomIdx < 0 {
-				return nil
-			}
-			geomValue := dest[geomIdx]
-			// driver-backed iterators scan into *interface{} placeholders;
-			// unwrap so decode receives the actual value, mirroring the
-			// value-per-row contract of the unit-test iterators.
-			if p, ok := geomValue.(*interface{}); ok {
-				geomValue = *p
-			}
-			if geomValue == nil {
-				return nil
-			}
-			geo, derr := decode(geomValue)
-			if derr != nil || geo == nil {
-				return nil
-			}
-			if !hasGeometryCoordinates(geo) {
-				return nil
-			}
-			contract.ValidMOSRows++
-			return nil
-		})
+	for read := 0; read < InspectionSampleLimit; read++ {
+		row, ok, err := next()
 		if err != nil {
 			return contract, err
 		}
-		if !more {
+		if !ok {
 			break
 		}
-		if contract.ValidMOSRows >= MinValidMOSRows {
-			// enough evidence for the bounds-backed contract; stop early so
-			// the sample window stays bounded even for huge result sets
-			break
+		if geomIdx < 0 || geomIdx >= len(row) {
+			continue
+		}
+		value := row[geomIdx]
+		if value == nil {
+			continue
+		}
+		geo, isMOS, derr := decode(value)
+		if derr != nil || geo == nil {
+			// row-level decode errors are skipped, never probe failures
+			continue
+		}
+		if !hasGeometryCoordinates(geo) {
+			continue
+		}
+		contract.ValidRows++
+		if isMOS {
+			contract.ValidMOSRows++
 		}
 	}
 	return contract, nil

@@ -127,14 +127,14 @@ func TestValidateRawCustomSQL(t *testing.T) {
 func TestRequireBBoxCustomSQL(t *testing.T) {
 	type tcase struct {
 		layerName   string
-		format      string
+		boundsBacked bool
 		sql         string
 		expectedErr []string
 	}
 
 	fn := func(tc tcase) func(*testing.T) {
 		return func(t *testing.T) {
-			err := geometrycodec.RequireBBoxCustomSQL(tc.layerName, tc.format, tc.sql, "!BBOX!", "!BOX!")
+			err := geometrycodec.RequireBBoxCustomSQL(tc.layerName, tc.boundsBacked, tc.sql, "!BBOX!", "!BOX!")
 			if len(tc.expectedErr) == 0 {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -153,31 +153,34 @@ func TestRequireBBoxCustomSQL(t *testing.T) {
 	}
 
 	tests := map[string]tcase{
-		"mos with bbox ok": {
-			layerName: "mos_layer",
-			format:    geometrycodec.FormatMOS,
-			sql:       "SELECT id, geom FROM t WHERE MAXX >= !BBOX!",
+		"bounds-backed with bbox ok": {
+			layerName:    "mos_layer",
+			boundsBacked: true,
+			sql:          "SELECT id, geom FROM t WHERE MAXX >= !BBOX!",
 		},
-		"mos with box alias ok": {
-			layerName: "mos_layer",
-			format:    geometrycodec.FormatMOS,
-			sql:       "SELECT id, geom FROM t WHERE MAXX >= !BOX!",
+		"bounds-backed with box alias ok": {
+			layerName:    "mos_layer",
+			boundsBacked: true,
+			sql:          "SELECT id, geom FROM t WHERE MAXX >= !BOX!",
 		},
-		"mos without bbox rejected": {
-			layerName:   "mos_layer",
-			format:      geometrycodec.FormatMOS,
-			sql:         "SELECT id, geom FROM t",
-			expectedErr: []string{"mos_layer", "mos", "must use !BBOX!"},
+		"bounds-backed without bbox rejected": {
+			layerName:    "mos_layer",
+			boundsBacked: true,
+			sql:          "SELECT id, geom FROM t",
+			expectedErr:  []string{"mos_layer", "bounds-backed", "must use !BBOX!"},
 		},
-		"native without bbox ok": {
+		"not bounds-backed without bbox ok": {
 			layerName: "native_layer",
-			format:    "",
 			sql:       "SELECT id, geom FROM t",
 		},
-		"wkb without bbox ok": {
+		"not bounds-backed wkb without bbox ok": {
 			layerName: "wkb_layer",
-			format:    geometrycodec.FormatWKB,
 			sql:       "SELECT id, geom FROM t",
+		},
+		"bounds-backed empty sql ok": {
+			layerName:    "mos_layer",
+			boundsBacked: true,
+			sql:          "",
 		},
 	}
 
@@ -249,6 +252,26 @@ func TestResolveBBoxFields(t *testing.T) {
 		"empty layer value errors": {
 			layer:      map[string]interface{}{"bbox_maxy_fieldname": ""},
 			layerName:  "l6",
+			expectedEr: true,
+		},
+		"value is trimmed": {
+			layer:     map[string]interface{}{"bbox_minx_fieldname": "  xmin  "},
+			layerName: "l7",
+			expected:  [4]string{"xmin", "MAXX", "MINY", "MAXY"},
+		},
+		"case-insensitive duplicate errors": {
+			layer:      map[string]interface{}{"bbox_minx_fieldname": "minx", "bbox_maxx_fieldname": "MINX"},
+			layerName:  "l8",
+			expectedEr: true,
+		},
+		"duplicate against default errors": {
+			layer:      map[string]interface{}{"bbox_maxx_fieldname": "MINX"},
+			layerName:  "l9",
+			expectedEr: true,
+		},
+		"qualified name errors": {
+			layer:      map[string]interface{}{"bbox_minx_fieldname": "t.MINX"},
+			layerName:  "l10",
 			expectedEr: true,
 		},
 	}
@@ -363,7 +386,8 @@ func TestInspectSQLGeometryContract(t *testing.T) {
 		name         string
 		columns      []string
 		rows         [][]interface{}
-		geometryFeed []interface{} // one per row: value passed to decode
+		geometryFeed []interface{} // one per row: geometry returned by decode; nil = decode error
+		mosFeed      []bool        // one per row: isMOS flag returned by decode
 		bboxFields   geometrycodec.BBoxFields
 		expected     geometrycodec.SQLGeometryContract
 	}
@@ -371,36 +395,40 @@ func TestInspectSQLGeometryContract(t *testing.T) {
 	fn := func(tc tcase) func(*testing.T) {
 		return func(t *testing.T) {
 			rowIdx := 0
-			rows := func(scan func(dest ...interface{}) error) (bool, error) {
+			next := func() ([]interface{}, bool, error) {
 				if rowIdx >= len(tc.rows) {
-					return false, nil
+					return nil, false, nil
 				}
 				row := tc.rows[rowIdx]
 				rowIdx++
-				if err := scan(row...); err != nil {
-					return false, err
-				}
-				return true, nil
+				return row, true, nil
 			}
 			decodeIdx := 0
-			decode := func(value interface{}) (geom.Geometry, error) {
+			decode := geometrycodec.RowDecode(func(value interface{}) (geom.Geometry, bool, error) {
+				var isMOS bool
+				if tc.mosFeed != nil && decodeIdx < len(tc.mosFeed) {
+					isMOS = tc.mosFeed[decodeIdx]
+				}
 				if tc.geometryFeed != nil && decodeIdx < len(tc.geometryFeed) {
 					v := tc.geometryFeed[decodeIdx]
 					decodeIdx++
 					if v == nil {
-						return nil, fmt.Errorf("undecodable")
+						return nil, false, fmt.Errorf("undecodable")
 					}
-					return v, nil
+					return v, isMOS, nil
 				}
 				decodeIdx++
 				if value == nil {
-					return nil, fmt.Errorf("undecodable")
+					return nil, false, fmt.Errorf("undecodable")
 				}
-				return geom.Point{1, 2}, nil
-			}
-			contract, err := geometrycodec.InspectSQLGeometryContract(rows, tc.columns, "geom", tc.bboxFields, decode)
+				return geom.Point{1, 2}, isMOS, nil
+			})
+			contract, err := geometrycodec.InspectSQLGeometryContract(next, tc.columns, "geom", tc.bboxFields, decode)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+			if contract.ValidRows != tc.expected.ValidRows {
+				t.Errorf("ValidRows = %v, expected %v", contract.ValidRows, tc.expected.ValidRows)
 			}
 			if contract.ValidMOSRows != tc.expected.ValidMOSRows {
 				t.Errorf("ValidMOSRows = %v, expected %v", contract.ValidMOSRows, tc.expected.ValidMOSRows)
@@ -411,13 +439,16 @@ func TestInspectSQLGeometryContract(t *testing.T) {
 			if contract.BoundsFields != tc.expected.BoundsFields {
 				t.Errorf("BoundsFields = %v, expected %v", contract.BoundsFields, tc.expected.BoundsFields)
 			}
+			if contract.GeometryField != tc.expected.GeometryField {
+				t.Errorf("GeometryField = %q, expected %q", contract.GeometryField, tc.expected.GeometryField)
+			}
 		}
 	}
 
 	bbox := geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"}
 
 	tests := map[string]tcase{
-		"bounds columns detected, valid rows counted": {
+		"bounds columns detected, valid MOS rows counted": {
 			name:    "valid contract",
 			columns: []string{"OKEY", "MINX", "MAXX", "MINY", "MAXY", "geom"},
 			rows: [][]interface{}{
@@ -425,33 +456,97 @@ func TestInspectSQLGeometryContract(t *testing.T) {
 				{2, 5, 15, 5, 15, "geom2"},
 				{3, 9, 19, 9, 19, "geom3"},
 			},
+			mosFeed:    []bool{true, true, true},
 			bboxFields: bbox,
 			expected: geometrycodec.SQLGeometryContract{
-				BoundsFields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
-				ValidMOSRows: 3,
-				HasBounds:    true,
+				BoundsFields:  geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+				GeometryField: "geom",
+				ValidRows:     3,
+				ValidMOSRows:  3,
+				HasBounds:     true,
+			},
+		},
+		"native rows never count as MOS rows": {
+			name:    "native rows",
+			columns: []string{"MINX", "MAXX", "MINY", "MAXY", "geom"},
+			rows: [][]interface{}{
+				{0, 10, 0, 10, "g1"},
+				{0, 10, 0, 10, "g2"},
+				{0, 10, 0, 10, "g3"},
+			},
+			mosFeed:    []bool{false, false, false},
+			bboxFields: bbox,
+			expected: geometrycodec.SQLGeometryContract{
+				BoundsFields:  geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+				GeometryField: "geom",
+				ValidRows:     3,
+				ValidMOSRows:  0,
+				HasBounds:     true,
+			},
+		},
+		"undecodable rows are skipped, never counted": {
+			name:    "malformed rows",
+			columns: []string{"MINX", "MAXX", "MINY", "MAXY", "geom"},
+			rows: [][]interface{}{
+				{0, 10, 0, 10, "bad"},
+				{0, 10, 0, 10, "good1"},
+				{0, 10, 0, 10, "good2"},
+				{0, 10, 0, 10, "good3"},
+				{0, 10, 0, 10, "good4"},
+			},
+			geometryFeed: []interface{}{
+				nil, geom.Point{1, 1}, geom.Point{1, 2}, geom.Point{1, 3}, geom.Point{1, 4},
+			},
+			mosFeed:    []bool{false, true, true, true, true},
+			bboxFields: bbox,
+			expected: geometrycodec.SQLGeometryContract{
+				BoundsFields:  geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+				GeometryField: "geom",
+				ValidRows:     4,
+				ValidMOSRows:  4,
+				HasBounds:     true,
 			},
 		},
 		"missing bounds columns": {
 			name:       "no bounds",
 			columns:    []string{"OKEY", "geom"},
 			rows:       [][]interface{}{{1, "g1"}, {2, "g2"}},
+			mosFeed:    []bool{true, true},
 			bboxFields: bbox,
 			expected: geometrycodec.SQLGeometryContract{
-				BoundsFields: geometrycodec.BBoxFields{},
-				ValidMOSRows: 2,
-				HasBounds:    false,
+				BoundsFields:  geometrycodec.BBoxFields{},
+				GeometryField: "geom",
+				ValidRows:     2,
+				ValidMOSRows:  2,
+				HasBounds:     false,
 			},
 		},
-		"case-insensitive bounds match": {
+		"case-insensitive bounds match persists actual names": {
 			name:       "case insensitive",
 			columns:    []string{"minx", "MaxX", "MINY", "maxy", "geom"},
 			rows:       [][]interface{}{{0, 10, 0, 10, "g1"}},
+			mosFeed:    []bool{true},
 			bboxFields: bbox,
 			expected: geometrycodec.SQLGeometryContract{
-				BoundsFields: geometrycodec.BBoxFields{"minx", "MaxX", "MINY", "maxy"},
-				ValidMOSRows: 1,
-				HasBounds:    true,
+				BoundsFields:  geometrycodec.BBoxFields{"minx", "MaxX", "MINY", "maxy"},
+				GeometryField: "geom",
+				ValidRows:     1,
+				ValidMOSRows:  1,
+				HasBounds:     true,
+			},
+		},
+		"case-insensitive geometry match persists actual name": {
+			name:       "geometry name case insensitive",
+			columns:    []string{"MINX", "MAXX", "MINY", "MAXY", "GEOM"},
+			rows:       [][]interface{}{{0, 10, 0, 10, "g1"}},
+			mosFeed:    []bool{true},
+			bboxFields: bbox,
+			expected: geometrycodec.SQLGeometryContract{
+				BoundsFields:  geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+				GeometryField: "GEOM",
+				ValidRows:     1,
+				ValidMOSRows:  1,
+				HasBounds:     true,
 			},
 		},
 		"empty geometry rows do not count": {
@@ -466,11 +561,14 @@ func TestInspectSQLGeometryContract(t *testing.T) {
 			geometryFeed: []interface{}{
 				geom.LineString{}, geom.LineString{}, geom.LineString{},
 			},
+			mosFeed:    []bool{true, true, true},
 			bboxFields: bbox,
 			expected: geometrycodec.SQLGeometryContract{
-				BoundsFields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
-				ValidMOSRows: 0,
-				HasBounds:    true,
+				BoundsFields:  geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+				GeometryField: "geom",
+				ValidRows:     0,
+				ValidMOSRows:  0,
+				HasBounds:     true,
 			},
 		},
 	}
@@ -1107,5 +1205,100 @@ func TestWarnOnceGeometryTypeMismatch(t *testing.T) {
 	}
 	if geometrycodec.WarnOnceGeometryTypeMismatch("mismatch-layer-test", nil, geom.Point{}) {
 		t.Fatal("nil declared type must not warn")
+	}
+}
+
+// TestPrepareProbeSQLNeutralization pins the shared probe preparation
+// contract (audit part11 7.1.2): one documented substitution order, the
+// probe always executes the SQL without a spatial filter, tile-dependent
+// tokens become permissive values, and trailing clauses such as ORDER BY
+// are preserved.
+func TestPrepareProbeSQLNeutralization(t *testing.T) {
+	custom := "SELECT * FROM t WHERE kind = 'road' AND z = !ZOOM! AND !BBOX! AND owner != 'x' ORDER BY id DESC;"
+
+	out := geometrycodec.PrepareProbeSQL(custom, "geom", "okey", "Point")
+	upper := strings.ToUpper(out)
+
+	if !strings.Contains(out, "ORDER BY id DESC") {
+		t.Fatalf("ORDER BY must be preserved verbatim: %q", out)
+	}
+	for _, tok := range []string{"!BBOX!", "!BOX!", "!ZOOM!", "!Z!", "!X!", "!Y!",
+		"!SCALE_DENOMINATOR!", "!PIXEL_WIDTH!", "!PIXEL_HEIGHT!",
+		"!ID_FIELD!", "!GEOM_FIELD!", "!GEOM_TYPE!"} {
+		if strings.Contains(upper, tok) {
+			t.Errorf("token %s left in probe SQL: %q", tok, out)
+		}
+	}
+	// !BBOX! is neutralized to the permissive 1=1: the probe always
+	// executes the SQL without a spatial filter
+	if !strings.Contains(out, "1=1") {
+		t.Errorf("!BBOX! must be neutralized to 1=1: %q", out)
+	}
+	// zoom comparisons expand to the permissive full zoom range
+	if !strings.Contains(out, "IN (0,1,2,") {
+		t.Errorf("zoom comparison must expand to the full zoom range: %q", out)
+	}
+	// trailing semicolon trimmed so the SQL can be wrapped
+	if strings.HasSuffix(strings.TrimSpace(out), ";") {
+		t.Errorf("trailing semicolon must be trimmed: %q", out)
+	}
+
+	wrapped := geometrycodec.WrapProbeSQL(out)
+	limit := fmt.Sprintf("LIMIT %d", geometrycodec.InspectionSampleLimit)
+	if !strings.HasPrefix(wrapped, "SELECT * FROM (") || !strings.Contains(wrapped, limit) {
+		t.Errorf("probe must wrap the SQL with the sample limit, got %q", wrapped)
+	}
+	if !strings.Contains(wrapped, "ORDER BY id DESC") {
+		t.Errorf("wrapping must preserve the trailing clauses: %q", wrapped)
+	}
+	top := geometrycodec.WrapProbeSQLTopStyle(out)
+	if !strings.Contains(top, fmt.Sprintf("TOP %d", geometrycodec.InspectionSampleLimit)) {
+		t.Errorf("TOP-style probe must carry the sample limit, got %q", top)
+	}
+}
+
+// TestValidateBoundsSQLContract pins the fail-closed structural contract
+// (audit A02): missing !BBOX!, missing geometry column and missing bounds
+// columns are errors, never warnings.
+func TestValidateBoundsSQLContract(t *testing.T) {
+	ok := geometrycodec.SQLGeometryContract{
+		BoundsFields:  geometrycodec.DefaultBBoxFields(),
+		GeometryField: "geom",
+		HasBounds:     true,
+	}
+	if err := geometrycodec.ValidateBoundsSQLContract("l", "SELECT * FROM t WHERE !BBOX!", "geom", ok); err != nil {
+		t.Fatalf("valid contract rejected: %v", err)
+	}
+
+	if err := geometrycodec.ValidateBoundsSQLContract("l", "SELECT * FROM t", "geom", ok); err == nil {
+		t.Fatal("missing !BBOX! must be an error")
+	}
+	noGeom := ok
+	noGeom.GeometryField = ""
+	if err := geometrycodec.ValidateBoundsSQLContract("l", "SELECT * FROM t WHERE !BBOX!", "geom", noGeom); err == nil {
+		t.Fatal("missing geometry column must be an error")
+	}
+	noBounds := ok
+	noBounds.HasBounds = false
+	if err := geometrycodec.ValidateBoundsSQLContract("l", "SELECT * FROM t WHERE !BBOX!", "geom", noBounds); err == nil {
+		t.Fatal("missing bounds columns must be an error")
+	}
+}
+
+// TestWarnNonMetricScaleTokens pins the warn-only item 1.3 code policy: the
+// scale-denominator/pixel-size tokens are Web Mercator metres regardless of
+// the layer CRS; non-metric (degrees) layer CRSs get a startup warning, and
+// token values are left unchanged.
+func TestWarnNonMetricScaleTokens(t *testing.T) {
+	sql := "SELECT * FROM t WHERE !BBOX! AND z = !ZOOM! ORDER BY !SCALE_DENOMINATOR! DESC"
+
+	if !geometrycodec.WarnNonMetricScaleTokens("l", sql, 4326, nil, nil) {
+		t.Fatal("expected warning for degrees CRS using scale tokens")
+	}
+	if geometrycodec.WarnNonMetricScaleTokens("l", sql, 3857, nil, nil) {
+		t.Fatal("metric CRS must not warn")
+	}
+	if geometrycodec.WarnNonMetricScaleTokens("l", "SELECT * FROM t WHERE !BBOX!", 4326, nil, nil) {
+		t.Fatal("SQL without scale tokens must not warn")
 	}
 }

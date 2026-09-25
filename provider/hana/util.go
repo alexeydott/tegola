@@ -569,6 +569,74 @@ func setupRowValues(descriptions []FieldDescription, rowValues []interface{}) {
 	}
 }
 
+// probeRawValues unwraps typed scan targets created by setupRowValues into
+// raw row values so the shared SQL-contract probe inspects REAL values.
+func probeRawValues(rowValues []interface{}) []interface{} {
+	vals := make([]interface{}, len(rowValues))
+	for i, v := range rowValues {
+		vals[i] = probeRawValue(v)
+	}
+	return vals
+}
+
+func probeRawValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case *sql.NullBool:
+		if val.Valid {
+			return val.Bool
+		}
+	case *sql.NullByte:
+		if val.Valid {
+			return val.Byte
+		}
+	case *sql.NullInt16:
+		if val.Valid {
+			return val.Int16
+		}
+	case *sql.NullInt32:
+		if val.Valid {
+			return val.Int32
+		}
+	case *sql.NullInt64:
+		if val.Valid {
+			return val.Int64
+		}
+	case *sql.NullFloat64:
+		if val.Valid {
+			return val.Float64
+		}
+	case *sql.NullTime:
+		if val.Valid {
+			return val.Time
+		}
+	case *sql.NullString:
+		if val.Valid {
+			return val.String
+		}
+	case *driver.NullBytes:
+		if val.Valid {
+			return append([]byte(nil), val.Bytes...)
+		}
+	case *driver.NullDecimal:
+		if val.Valid {
+			r := (*big.Rat)(val.Decimal)
+			f, _ := r.Float64()
+			return f
+		}
+	case *driver.NullLob:
+		if val.Valid {
+			if w, ok := val.Lob.Writer().(*bytes.Buffer); ok {
+				return append([]byte(nil), w.Bytes()...)
+			}
+		}
+	case *interface{}:
+		return probeRawValue(*val)
+	}
+	// plain driver values (int64, float64, bool, string, []byte, ...)
+	// pass through unchanged for the geometry contract probe
+	return v
+}
+
 func readRowValues(ctx context.Context, l *Layer, descriptions []FieldDescription, rowValues []interface{}) (gid uint64, geom []byte, tags map[string]interface{}, err error) {
 	var idFieldParsed bool
 	tags = make(map[string]interface{})

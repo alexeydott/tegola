@@ -114,24 +114,34 @@ func ValidateRawCustomSQL(layerName, geometryFormat, customSQL string, bboxToken
 	return nil
 }
 
-// RequireBBoxCustomSQL reports whether customSQL for a bounds-backed MOS
-// layer is missing the required !BBOX! token (or its !BOX! alias). The
-// bounds predicate is the only server-side selectivity a raw MOS column can
-// support, so bounds-backed MOS custom SQL must carry the token. sqlHasBBox
-// is the provider's existing token check (e.g. strings.Contains on the
-// uppercase-normalized SQL).
-func RequireBBoxCustomSQL(layerName, geometryFormat, customSQL string, bboxTokens ...string) error {
-	if geometryFormat != FormatMOS || customSQL == "" {
-		return nil
-	}
+// SQLHasBBoxToken reports whether customSQL carries any of the given
+// bounds-predicate tokens (!BBOX! / !BOX!), case-insensitively.
+func SQLHasBBoxToken(customSQL string, bboxTokens ...string) bool {
 	for _, tok := range bboxTokens {
 		if strings.Contains(strings.ToLower(customSQL), strings.ToLower(tok)) {
-			return nil
+			return true
 		}
 	}
+	return false
+}
+
+// RequireBBoxCustomSQL reports whether customSQL for a bounds-backed layer
+// is missing the required !BBOX! token (or its !BOX! alias). boundsBacked
+// is the caller's bounds-backed mode flag: bounds-backed custom SQL (MOS
+// custom SQL in all providers, custom gpkg SQL) relies on the bounds
+// predicate over the configured bounds fields as its server-side
+// selectivity, so the token is mandatory and its absence is a registration
+// error.
+func RequireBBoxCustomSQL(layerName string, boundsBacked bool, customSQL string, bboxTokens ...string) error {
+	if !boundsBacked || customSQL == "" {
+		return nil
+	}
+	if SQLHasBBoxToken(customSQL, bboxTokens...) {
+		return nil
+	}
 	return fmt.Errorf(
-		"layer (%v): custom SQL with geometry_format=%q must use %v: the bounds predicate over the configured bounds fields (bbox_minx_fieldname etc.) is the only server-side filter a raw MOS column supports",
-		layerName, geometryFormat, bboxTokens[0],
+		"layer (%v): bounds-backed custom SQL must use %v: the bounds predicate over the configured bounds fields (bbox_minx_fieldname etc.) is the only server-side filter such SQL supports",
+		layerName, bboxTokens[0],
 	)
 }
 

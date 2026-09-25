@@ -534,6 +534,8 @@ func TestRawFormatTableLayer(t *testing.T) {
 					"name":            "raw_layer",
 					"sql":             "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE !BBOX!",
 					"geometry_format": "mos",
+					// MOS custom SQL requires an explicit CRS (A11)
+					"srid": 3857,
 				},
 			},
 		}
@@ -585,6 +587,8 @@ func TestRawFormatTableLayer(t *testing.T) {
 					"name":            "raw_layer",
 					"sql":             "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE !BBOX!",
 					"geometry_format": "mos",
+					// MOS custom SQL requires an explicit CRS (A11)
+					"srid": 3857,
 				},
 			},
 		}
@@ -640,6 +644,8 @@ func TestRawFormatTableLayer(t *testing.T) {
 					"name":            "raw_layer",
 					"sql":             "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE id = -1 AND !BBOX!",
 					"geometry_format": "mos",
+					// MOS custom SQL requires an explicit CRS (A11)
+					"srid": 3857,
 				},
 			},
 		}
@@ -743,6 +749,8 @@ func TestMOSDeferredCustomSQLPreQuery(t *testing.T) {
 			{
 				"name":            "mos_layer",
 				"geometry_format": "mos",
+				// MOS custom SQL requires an explicit CRS (A11)
+				"srid": 3857,
 				// tile-dependent SQL exercising the position tokens plus
 				// the bounds-backed !BBOX! required for MOS custom SQL
 				"sql": "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE !ZOOM! >= 0 AND !X! >= 0 AND !Y! >= 0 AND !BBOX!",
@@ -884,6 +892,9 @@ func TestMOSLayerInfoPositionInvariant(t *testing.T) {
 				}
 				if mode == "custom sql" {
 					layerConf["sql"] = "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE !BBOX!"
+					// MOS custom SQL requires an explicit CRS (A11); the
+					// system-info projection must never fill it in
+					layerConf["srid"] = 3857
 				} else {
 					layerConf["tablename"] = "mos_layer"
 				}

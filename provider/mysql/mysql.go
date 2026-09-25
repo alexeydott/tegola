@@ -322,10 +322,18 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 
 		qtext = fmt.Sprintf("%v FROM %v WHERE %v IS NOT NULL AND !BBOX!", selectClause, quoteIdentifier(pLayer.tablename), quoteIdentifier(pLayer.geomFieldname))
 
-		qtext = replaceTokens(qtext, &pLayer, tile, tileBBox)
+		expanded, terr := replaceTokens(qtext, &pLayer, tile, tileBBox)
+		if terr != nil {
+			return fmt.Errorf("layer (%v): %v", pLayer.name, terr)
+		}
+		qtext = expanded
 	} else {
 		// If layer was specified via "sql" in config, collect it
-		qtext = replaceTokens(pLayer.sql, &pLayer, tile, tileBBox)
+		expanded, terr := replaceTokens(pLayer.sql, &pLayer, tile, tileBBox)
+		if terr != nil {
+			return fmt.Errorf("layer (%v): %v", pLayer.name, terr)
+		}
+		qtext = expanded
 		qtext = queryParams.ReplaceParams(qtext, &args)
 	}
 

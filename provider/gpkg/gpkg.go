@@ -234,6 +234,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 	}
 
 	var qtext string
+	var err error
 	args := make([]interface{}, 0)
 
 	if pLayer.tablename != "" {
@@ -270,11 +271,19 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			// rows (stable MVT output).
 			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.%v = si.id WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
 
-			qtext = replaceTokens(qtext, pLayer, tile, tileBBox)
+			// bounds predicate build errors are fail-closed (A12): surface
+			// them instead of silently running unfiltered SQL.
+			qtext, err = replaceTokens(qtext, pLayer, tile, tileBBox)
+			if err != nil {
+				return err
+			}
 		}
 	} else {
 		// If layer was specified via "sql" in config, collect it
-		qtext = replaceTokens(pLayer.sql, pLayer, tile, tileBBox)
+		qtext, err = replaceTokens(pLayer.sql, pLayer, tile, tileBBox)
+		if err != nil {
+			return err
+		}
 		qtext = queryParams.ReplaceParams(qtext, &args)
 	}
 

@@ -8,7 +8,6 @@ import (
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/internal/log"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 )
@@ -19,42 +18,21 @@ import (
 // source SRID. Pixel dimensions and scale denominator are intentionally
 // calculated from the tile's unbuffered Web Mercator extent, matching the
 // PostGIS and GPKG providers.
-func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) string {
-	// WKT geometry columns hold text, so ST_Intersects(col, ...) fails; wrap
-	// the column in ST_GeomFromText so MariaDB/MySQL can intersect it with
-	// the tile bbox polygon. WKB columns hold BLOBs: ST_GeomFromWKB is the
-	// documented constructor, avoiding implicit BLOB->geometry coercion.
-	geomRef := quoteIdentifier(layer.geomFieldname)
-	switch layer.geometryFormat {
-	case GeometryFormatWKT:
-		geomRef = geomFromTextSQL(geomRef, layer.srid)
-	case GeometryFormatWKB:
-		geomRef = geomFromWKBSQL(geomRef, layer.srid)
-	}
+//
+// The bounds predicate is built lazily: only queries that actually carry a
+// bbox token pay for it. Predicate build errors are fail-closed in
+// bounds-backed modes (MOS custom SQL) and for the native spatial filter:
+// they are returned to the caller instead of silently degrading to 1=1.
+func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) (string, error) {
+	qtext = uppercaseTokens(qtext)
 
+	// only build a bounds predicate when the query carries a bbox token
 	bboxSQL := "1=1"
-	if layer.geometryFormat != GeometryFormatMOS && !layer.deferredInspection && !basic.IsSyntheticSRID(layer.srid) {
-		bboxSQL = fmt.Sprintf(
-			"ST_Intersects(%v, %v)",
-			geomRef,
-			geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid),
-		)
-	}
-
-	// MOS blobs are opaque proprietary binaries: the server has no geometry
-	// functions over them. EGKO MOS tables nevertheless expose indexed raw
-	// bounds (MINX/MAXX/MINY/MAXY by default; configurable via the common
-	// bbox_*_fieldname keys), so use those as a coarse SQL filter and keep
-	// the exact decoded-geometry check in TileFeatures. When the bounds
-	// predicate cannot be built (invalid quantization, nil extent), the
-	// filter degrades to 1=1 and TileFeatures' in-memory check stays
-	// authoritative.
-	if layer.geometryFormat == GeometryFormatMOS {
-		mosSQL, merr := mosBoundsSQL(layer, bboxExtent)
-		if merr != nil {
-			log.Errorf("layer (%v): %v; falling back to in-memory filtering", layer.name, merr)
-		} else {
-			bboxSQL = mosSQL
+	if strings.Contains(qtext, config.BboxToken) || strings.Contains(qtext, "!BOX!") {
+		var err error
+		bboxSQL, err = boundsSQLForLayer(layer, bboxExtent)
+		if err != nil {
+			return "", err
 		}
 	}
 
@@ -84,7 +62,42 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		config.GeomTypeToken, geomType,
 	)
 
-	return tokenReplacer.Replace(uppercaseTokens(qtext))
+	return tokenReplacer.Replace(qtext), nil
+}
+
+// boundsSQLForLayer builds the !BBOX! replacement for a layer. MOS blobs are
+// opaque proprietary binaries: the server has no geometry functions over
+// them, so the filter is the raw-bounds predicate over the configured
+// bounds columns. Native spatial formats filter via ST_Intersects; raw
+// deferred/synthetic layers fall back to the in-memory check (1=1). Build
+// errors are returned (fail-closed), never logged-and-continued.
+func boundsSQLForLayer(layer *Layer, bboxExtent *geom.Extent) (string, error) {
+	if layer.geometryFormat == GeometryFormatMOS {
+		return mosBoundsSQL(layer, bboxExtent)
+	}
+	if !layer.deferredInspection && !basic.IsSyntheticSRID(layer.srid) {
+		if bboxExtent == nil {
+			return "", fmt.Errorf("layer (%v): nil tile extent for bounds predicate", layer.name)
+		}
+		// WKT geometry columns hold text, so ST_Intersects(col, ...) fails;
+		// wrap the column in ST_GeomFromText so MariaDB/MySQL can intersect
+		// it with the tile bbox polygon. WKB columns hold BLOBs:
+		// ST_GeomFromWKB is the documented constructor, avoiding implicit
+		// BLOB->geometry coercion.
+		geomRef := quoteIdentifier(layer.geomFieldname)
+		switch layer.geometryFormat {
+		case GeometryFormatWKT:
+			geomRef = geomFromTextSQL(geomRef, layer.srid)
+		case GeometryFormatWKB:
+			geomRef = geomFromWKBSQL(geomRef, layer.srid)
+		}
+		return fmt.Sprintf(
+			"ST_Intersects(%v, %v)",
+			geomRef,
+			geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid),
+		), nil
+	}
+	return "1=1", nil
 }
 
 // geomFromTextSQL creates a geometry expression with the layer SRID when one

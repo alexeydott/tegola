@@ -6,7 +6,6 @@ import (
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
@@ -25,38 +24,25 @@ func sqliteQuoteIdent(name string) string {
 // source SRID. Pixel dimensions and scale denominator are intentionally
 // calculated from the tile's unbuffered Web Mercator extent, matching the
 // PostGIS provider.
-func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) string {
-	// For custom-SQL native gpkg geometry layers the !BBOX! token expands
-	// to the bounds predicate over the resolved bounds fields (source CRS,
-	// no MOS scaling); when no fields were resolved the legacy unquoted
-	// lowercase names are kept so hand-rolled fixtures still work.
-	bboxPredicate := func() string {
-		fields := layer.bboxFields
-		if fields == (codec.BBoxFields{}) {
-			fields = codec.BBoxFields{"minx", "maxx", "miny", "maxy"}
-		}
-		predicate, err := codec.BuildBoundsPredicate(
-			fields, bboxExtent, codec.BoundsSourceCRS, layer.mosConfig, sqliteQuoteIdent,
-		)
-		if err != nil {
-			log.Errorf("layer (%v): %v; spatial filter disabled", layer.name, err)
-			return "1=1"
-		}
-		return predicate
-	}
-	if layer.tablename == "" && layer.geometryFormat == codec.FormatMOS {
-		predicate, err := codec.BuildBoundsPredicate(
-			layer.bboxFields, bboxExtent, codec.BoundsMOSRaw, layer.mosConfig, sqliteQuoteIdent,
-		)
-		if err != nil {
-			log.Errorf("layer (%v): %v; spatial filter disabled", layer.name, err)
-			predicate = "1=1"
-		}
-		bboxSQL := predicate
-		bboxPredicate = func() string { return bboxSQL }
-	}
+//
+// Bounds-backed custom SQL (!BBOX! expanding into the configured bounds
+// fields predicate) is fail-closed (A12): a predicate build error is
+// returned to the caller instead of silently substituting "1=1". The
+// predicate is built lazily — only when the query actually carries the
+// !BBOX!/!BOX! token.
+func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) (string, error) {
+	qtext = uppercaseTokens(qtext)
 
-	bboxSQL := bboxPredicate()
+	// only build the bounds predicate when the query actually uses it;
+	// build errors are fail-closed (A12).
+	bboxSQL := ""
+	if strings.Contains(qtext, config.BboxToken) || strings.Contains(qtext, "!BOX!") {
+		var err error
+		bboxSQL, err = buildBBoxPredicate(layer, bboxExtent)
+		if err != nil {
+			return "", err
+		}
+	}
 
 	extent, _ := tile.Extent()
 	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
@@ -84,41 +70,31 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		config.GeomTypeToken, geomType,
 	)
 
-	return tokenReplacer.Replace(uppercaseTokens(qtext))
+	return tokenReplacer.Replace(qtext), nil
+}
+
+// buildBBoxPredicate builds the !BBOX! expansion for the layer. Custom MOS
+// SQL filters over bounds columns quantized to raw MOS integers
+// (BoundsMOSRaw); every other bounds-backed use (custom gpkg SQL, the
+// native GeoPackage RTree path) filters in the source CRS over the resolved
+// bounds fields (layer > provider > defaults MINX/MAXX/MINY/MAXY; SQLite
+// identifiers are case-insensitive).
+func buildBBoxPredicate(layer *Layer, bboxExtent *geom.Extent) (string, error) {
+	fields := layer.bboxFields
+	if fields == (codec.BBoxFields{}) {
+		// registration resolves the names (layer > provider > defaults);
+		// fall back to the defaults for bare layers.
+		fields = codec.DefaultBBoxFields()
+	}
+	if layer.tablename == "" && layer.geometryFormat == codec.FormatMOS {
+		return codec.BuildBoundsPredicate(fields, bboxExtent, codec.BoundsMOSRaw, layer.mosConfig, sqliteQuoteIdent)
+	}
+	return codec.BuildBoundsPredicate(fields, bboxExtent, codec.BoundsSourceCRS, layer.mosConfig, sqliteQuoteIdent)
 }
 
 // uppercaseTokens makes SQL tokens case-insensitive, matching PostGIS.
 func uppercaseTokens(str string) string {
 	return provider.ParameterTokenRegexp.ReplaceAllStringFunc(str, strings.ToUpper)
-}
-
-// permissiveTokenReplacer replaces zoom comparisons with an all-zoom list
-// and spatial filters with an always-true expression, for inspection queries
-// built from custom SQL that must return rows regardless of the requested
-// tile.
-func permissiveTokenReplacer() *strings.Replacer {
-	const allZoomsSQL = "IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24)"
-	return strings.NewReplacer(
-		">= "+config.ZoomToken, allZoomsSQL,
-		">="+config.ZoomToken, allZoomsSQL,
-		"=> "+config.ZoomToken, allZoomsSQL,
-		"=>"+config.ZoomToken, allZoomsSQL,
-		"=< "+config.ZoomToken, allZoomsSQL,
-		"=<"+config.ZoomToken, allZoomsSQL,
-		"<= "+config.ZoomToken, allZoomsSQL,
-		"<="+config.ZoomToken, allZoomsSQL,
-		"!= "+config.ZoomToken, allZoomsSQL,
-		"!="+config.ZoomToken, allZoomsSQL,
-		"= "+config.ZoomToken, allZoomsSQL,
-		"="+config.ZoomToken, allZoomsSQL,
-		"> "+config.ZoomToken, allZoomsSQL,
-		">"+config.ZoomToken, allZoomsSQL,
-		"< "+config.ZoomToken, allZoomsSQL,
-		"<"+config.ZoomToken, allZoomsSQL,
-		config.BboxToken, "1=1",
-		"!BOX!", "1=1",
-		"!bbox!", "1=1",
-	)
 }
 
 func trimTrailingSemicolon(sqlText string) string {

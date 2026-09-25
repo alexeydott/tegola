@@ -405,7 +405,7 @@ func TestCustomSQLLayerFieldnames(t *testing.T) {
 				"layers": []map[string]interface{}{
 					{
 						"name":         "a_points",
-						"sql":          "SELECT osm_id, geom, amenity FROM amenities_points WHERE !BBOX! AND !ZOOM! >= 0",
+						"sql":          "SELECT osm_id, geom, amenity FROM amenities_points WHERE !ZOOM! >= 0",
 						"id_fieldname": "osm_id",
 					},
 				},
@@ -837,7 +837,7 @@ func TestSRIDConfigAndFeatureSRID(t *testing.T) {
 			},
 			{
 				"name": "a_points_sql",
-				"sql":  "SELECT fid, geom, amenity FROM amenities_points WHERE !BBOX!",
+				"sql":  "SELECT fid, geom, amenity FROM amenities_points WHERE fid = 515",
 				"srid": 4326,
 			},
 		},

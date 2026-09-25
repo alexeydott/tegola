@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/go-spatial/tegola/internal/env"
@@ -32,9 +31,7 @@ func (ml MapLayer) ProviderLayerName() (provider, layer string, err error) {
 	// split the provider layer (syntax is provider.layer)
 	plParts := strings.Split(string(ml.ProviderLayer), ".")
 	if len(plParts) != 2 {
-		// TODO (beymak): Properly handle the error
-		return "", "", fmt.Errorf("config: invalid provider layer name (%v)", ml.ProviderLayer)
-		// return "", "", ErrInvalidProviderLayerName{ProviderLayerName: string(ml.ProviderLayer)}
+		return "", "", ErrInvalidProviderLayerName{ProviderLayerName: string(ml.ProviderLayer)}
 	}
 	return plParts[0], plParts[1], nil
 }

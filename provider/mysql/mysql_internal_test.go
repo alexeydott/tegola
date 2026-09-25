@@ -68,6 +68,18 @@ func TestSampleGeometryQueryRemovesTrailingLimitAndSemicolon(t *testing.T) {
 	}
 }
 
+// mustReplaceTokens runs the fail-closed replaceTokens (A12: predicate build
+// errors surface to the caller instead of silently falling back to 1=1) and
+// fails the test on error.
+func mustReplaceTokens(t *testing.T, sql string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) string {
+	t.Helper()
+	got, err := replaceTokens(sql, layer, tile, bboxExtent)
+	if err != nil {
+		t.Fatalf("replaceTokens(%q) error: %v", sql, err)
+	}
+	return got
+}
+
 func TestMySQLBBoxUsesConfiguredSRID(t *testing.T) {
 	layer := &Layer{
 		geomFieldname:  "geom",
@@ -77,7 +89,7 @@ func TestMySQLBBoxUsesConfiguredSRID(t *testing.T) {
 	tile := provider.NewTile(0, 0, 0, 0, 4326)
 	extent, _ := tile.BufferedExtent()
 
-	query := replaceTokens("WHERE !BBOX!", layer, tile, extent)
+	query := mustReplaceTokens(t, "WHERE !BBOX!", layer, tile, extent)
 	if !strings.Contains(query, "ST_GeomFromText(`geom`, 4326)") {
 		t.Fatalf("WKT geometry expression does not carry SRID: %q", query)
 	}
@@ -89,7 +101,7 @@ func TestMySQLBBoxUsesConfiguredSRID(t *testing.T) {
 	}
 
 	layer.srid = 0
-	query = replaceTokens("WHERE !BBOX!", layer, tile, extent)
+	query = mustReplaceTokens(t, "WHERE !BBOX!", layer, tile, extent)
 	if strings.Contains(query, ", 4326)") {
 		t.Fatalf("SRID leaked into zero-SRID query: %q", query)
 	}
@@ -104,13 +116,13 @@ func TestMySQLBBoxWKBUsesGeomFromWKB(t *testing.T) {
 	tile := provider.NewTile(0, 0, 0, 0, 4326)
 	extent, _ := tile.BufferedExtent()
 
-	query := replaceTokens("WHERE !BBOX!", layer, tile, extent)
+	query := mustReplaceTokens(t, "WHERE !BBOX!", layer, tile, extent)
 	if !strings.Contains(query, "ST_GeomFromWKB(`geom`, 4326)") {
 		t.Fatalf("WKB geometry expression does not use ST_GeomFromWKB with SRID: %q", query)
 	}
 
 	layer.srid = 0
-	query = replaceTokens("WHERE !BBOX!", layer, tile, extent)
+	query = mustReplaceTokens(t, "WHERE !BBOX!", layer, tile, extent)
 	if !strings.Contains(query, "ST_GeomFromWKB(`geom`)") {
 		t.Fatalf("zero-SRID WKB expression must omit the SRID argument: %q", query)
 	}
@@ -128,7 +140,7 @@ func TestMySQLBBoxSyntheticSRIDDisablesDatabaseSpatialPredicate(t *testing.T) {
 	layer := &Layer{geomFieldname: "geom", srid: srid}
 	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
 	extent, _ := tile.BufferedExtent()
-	if got := replaceTokens("WHERE !BBOX!", layer, tile, extent); got != "WHERE 1=1" {
+	if got := mustReplaceTokens(t, "WHERE !BBOX!", layer, tile, extent); got != "WHERE 1=1" {
 		t.Fatalf("synthetic CRS bbox = %q, want database-safe 1=1", got)
 	}
 }
@@ -142,7 +154,7 @@ func TestMySQLDeferredAutoBBoxUsesInMemoryFiltering(t *testing.T) {
 	}
 	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
 	extent, _ := tile.BufferedExtent()
-	if got := replaceTokens("WHERE !BBOX!", layer, tile, extent); got != "WHERE 1=1" {
+	if got := mustReplaceTokens(t, "WHERE !BBOX!", layer, tile, extent); got != "WHERE 1=1" {
 		t.Fatalf("deferred auto bbox = %q, want in-memory filtering", got)
 	}
 }
@@ -211,6 +223,7 @@ func TestMySQLMOSBoundsSQL(t *testing.T) {
 		bbox        *geom.Extent
 		sql         string
 		wantBBoxSQL string
+		wantErr     bool // A12: predicate build errors fail closed, never 1=1
 	}
 
 	fn := func(tc tcase) func(t *testing.T) {
@@ -224,7 +237,16 @@ func TestMySQLMOSBoundsSQL(t *testing.T) {
 			}
 			tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
 			extent := tc.bbox
-			got := replaceTokens(tc.sql, layer, tile, extent)
+			got, err := replaceTokens(tc.sql, layer, tile, extent)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("replaceTokens(%q) = %q, want error", tc.sql, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("replaceTokens(%q) error: %v", tc.sql, err)
+			}
 			want := "WHERE " + tc.wantBBoxSQL
 			if got != want {
 				t.Fatalf("MOS bbox = %q, want %q", got, want)
@@ -251,19 +273,19 @@ func TestMySQLMOSBoundsSQL(t *testing.T) {
 			sql:         "WHERE !BBOX!",
 			wantBBoxSQL: "`MAXX` >= 0 AND `MINX` <= 0 AND `MAXY` >= 0 AND `MINY` <= 0",
 		},
-		"invalid mos config falls back to 1=1": {
-			bboxFields:  defaults,
-			mosConfig:   codec.MOSConfig{Precision: 2, UnitFactor: 0},
-			bbox:        geom.NewExtent(geom.Point{-10, -10}, geom.Point{10, 10}),
-			sql:         "WHERE !BBOX!",
-			wantBBoxSQL: "1=1",
+		"invalid mos config fails closed (A12)": {
+			bboxFields: defaults,
+			mosConfig:  codec.MOSConfig{Precision: 2, UnitFactor: 0},
+			bbox:       geom.NewExtent(geom.Point{-10, -10}, geom.Point{10, 10}),
+			sql:        "WHERE !BBOX!",
+			wantErr:    true,
 		},
-		"nil extent falls back to 1=1": {
-			bboxFields:  defaults,
-			mosConfig:   metreUnits,
-			bbox:        nil,
-			sql:         "WHERE !BBOX!",
-			wantBBoxSQL: "1=1",
+		"nil extent fails closed (A12)": {
+			bboxFields: defaults,
+			mosConfig:  metreUnits,
+			bbox:       nil,
+			sql:        "WHERE !BBOX!",
+			wantErr:    true,
 		},
 		"custom bounds fields and ORDER BY survive": {
 			bboxFields:  codec.BBoxFields{"t.XMIN", "t.XMAX", "t.YMIN", "t.YMAX"},
@@ -904,7 +926,7 @@ func TestReplaceTokens(t *testing.T) {
 	tile := provider.NewTile(6, 13, 22, 0, 3857)
 	ext, _ := tile.BufferedExtent()
 
-	got := replaceTokens("!BBOX!", layer, tile, ext)
+	got := mustReplaceTokens(t, "!BBOX!", layer, tile, ext)
 	if !strings.Contains(got, "ST_Intersects(`geom`") {
 		t.Errorf("expected ST_Intersects on geom field, got: %v", got)
 	}
@@ -919,35 +941,35 @@ func TestReplaceTokens(t *testing.T) {
 		bboxFields:     codec.DefaultBBoxFields(),
 	}
 	mosExtent := geom.NewExtent(geom.Point{1.25, -2.5}, geom.Point{3.75, 4.5})
-	got = replaceTokens("SELECT * FROM buildings WHERE !BBOX!", mosLayer, tile, mosExtent)
+	got = mustReplaceTokens(t, "SELECT * FROM buildings WHERE !BBOX!", mosLayer, tile, mosExtent)
 	if want := "`MAXX` >= 1250 AND `MINX` <= 3750 AND `MAXY` >= -2500 AND `MINY` <= 4500"; !strings.Contains(got, want) {
 		t.Errorf("expected indexed MOS bounds %q, got: %v", want, got)
 	}
 
-	got = replaceTokens("!ZOOM!-!Z!-!X!-!Y!", layer, tile, ext)
+	got = mustReplaceTokens(t, "!ZOOM!-!Z!-!X!-!Y!", layer, tile, ext)
 	if got != "6-6-13-22" {
 		t.Errorf("expected 6-6-13-22, got: %v", got)
 	}
 
-	got = replaceTokens("!ID_FIELD!-!GEOM_FIELD!", layer, tile, ext)
+	got = mustReplaceTokens(t, "!ID_FIELD!-!GEOM_FIELD!", layer, tile, ext)
 	if got != "fid-geom" {
 		t.Errorf("expected fid-geom, got: %v", got)
 	}
 
-	got = replaceTokens("!GEOM_TYPE!", layer, tile, ext)
+	got = mustReplaceTokens(t, "!GEOM_TYPE!", layer, tile, ext)
 	if got != "" {
 		t.Errorf("expected empty geom type for nil layer geom, got: %v", got)
 	}
 
 	// tokens are case-insensitive
-	got = replaceTokens("!zoom!-!Zoom!", layer, tile, ext)
+	got = mustReplaceTokens(t, "!zoom!-!Zoom!", layer, tile, ext)
 	if got != "6-6" {
 		t.Errorf("expected case-insensitive zoom tokens (6-6), got: %v", got)
 	}
 
 	// numeric tokens must be valid floats
 	for _, tok := range []string{config.ScaleDenominatorToken, config.PixelWidthToken, config.PixelHeightToken} {
-		got = replaceTokens(tok, layer, tile, ext)
+		got = mustReplaceTokens(t, tok, layer, tile, ext)
 		if _, err := strconv.ParseFloat(got, 64); err != nil {
 			t.Errorf("%v: expected a float, got %q", tok, got)
 		}
