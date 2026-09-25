@@ -12,7 +12,9 @@ var (
 	// ldflags (-X github.com/go-spatial/tegola/internal/build.Version=...). The
 	// value below is only the fallback used when the binary is built without that
 	// injection (e.g. a plain `go build`). Keep it in sync with server.Version.
-	Version              = "v0.17.0-fork.1"
+	// Fork scheme is v0.21.0-fork.N (upstream base = upstream master post-v0.21.0);
+	// see UPSTREAM.md for provenance.
+	Version              = "v0.21.0-fork.1"
 	GitRevision          = "not set"
 	GitBranch            = "not set"
 	uiVersionDefaultText = "viewer not built"

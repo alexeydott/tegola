@@ -37,7 +37,8 @@ var (
 	// Version is the running server version reported to clients (e.g. via the
 	// capabilities endpoint). cmd/server overrides it from the ldflags-injected
 	// build.Version at startup; this default is the fallback (e.g. for tests).
-	Version string = "v0.17.0-fork.1"
+	// Fork scheme is v0.21.0-fork.N; keep in sync with internal/build.Version (UPSTREAM.md).
+	Version string = "v0.21.0-fork.1"
 
 	// HostName is the name of the host to use for construction of URLS.
 	// configurable via the tegola config.toml file (set in main.go)

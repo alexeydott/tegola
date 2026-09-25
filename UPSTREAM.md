@@ -1,26 +1,61 @@
-# Upstream provenance and deferred debt
+# Upstream provenance, fork fixes, and deferred debt
 
-This fork tracks the upstream [go-spatial/tegola](https://github.com/go-spatial/tegola)
-project. This file records what has been back-ported from upstream, the deliberate
-change to the versioning scheme, and the technical debt that has been deferred to a
-later wave.
+This fork is built on the upstream [go-spatial/tegola](https://github.com/go-spatial/tegola)
+project. It was forked from upstream `master` after the v0.21.0 release (2024-12-19):
+the fork base is upstream `master` post-v0.21.0, and releases use the version scheme
+`v0.21.0-fork.N`. (Upstream does not maintain a CHANGELOG past 0.17.0 - see
+[Sync methodology](#sync-methodology).)
+This file records upstream provenance, the bugs fixed in the fork that are candidates for
+upstream PRs, the versioning scheme, the sync methodology, and the technical debt deferred
+to a later wave.
 
 ## Version scheme
 
-Fork releases use `v0.17.0-fork.N` where `0.17.0` is the upstream base version this
-fork is built on and `N` is a monotonically increasing fork revision. The compiled-in
-defaults (`internal/build.Version` and `server.Version`) carry the fallback string
-`v0.17.0-fork.1`; production builds continue to override `build.Version` via
+Fork releases use the scheme `v0.21.0-fork.N`, where the base is upstream `master`
+post-v0.21.0 (2024-12-19) and `N` is a monotonically increasing fork revision. The
+compiled-in fallbacks (`internal/build.Version` and `server.Version`) carry the string
+`v0.21.0-fork.1`; production builds continue to override `build.Version` via
 `-ldflags "-X .../internal/build.Version=..."` at release time (see
 `.github/workflows/on_release_publish.yml`). Only the fallback value and comments
-were changed — the ldflags injection is preserved.
+changed - the ldflags injection is preserved. Nothing here claims "0.17.0 is the upstream
+base"; that older label was inaccurate and has been removed.
 
-## Ported from upstream
+## Upstream bugs fixed in this fork
 
-| Upstream change | PR / source | Ported on | Status |
+Both items below are live bugs on upstream `master` today - identical on the `v0.21.0`
+tag and on current `master`. The fork inherited them from `master`; each is fixed here and
+is a candidate for an upstream pull request. A minimal reproducing regression test ships
+in-tree for each.
+
+| Bug (present on upstream master + v0.21.0 tag) | Minimal repro (in-tree test) | Fork status | Upstream status |
 | --- | --- | --- | --- |
-| `cache/gcs`: `Get()` dropped read errors and reported every failure as a cache miss (`nil, false, nil`). Fixed to return backend errors, treating `storage.ErrObjectNotExist` as a clean miss. | [go-spatial/tegola#938](https://github.com/go-spatial/tegola/pull/938) (released upstream in v0.18 / v0.19) | 2026-09-25 | Ported (this wave). Regression covered by `cache/gcs/gcs_test.go`. |
-| `webserver.HostName` malformed values were silently ignored because `url.Parse` soft-parses inputs such as `cdn.example.com:443`. Fixed with strict `host[:port]` / URL validation that fails startup on a bad value. | upstream `malformed webserver.HostName handling` fix (v0.21) | 2026-09-25 | Ported (this wave). Regression covered by `internal/env/parse_test.go`. |
+| `cache/gcs.Get()` reports every read failure as a cache miss (`return nil, false, nil`), swallowing backend errors. PR [#938](https://github.com/go-spatial/tegola/pull/938) fixed this (merged 2023-08-03) but the fix **regressed on `master`** - the bug is live on `master` today. | `cache/gcs/gcs_test.go`: transient backend error -> `(nil, false, err)`; missing object -> clean miss. | Fixed in fork. | Candidate for upstream PR (repro test included). Do **not** record this as "released in upstream v0.18/v0.19": the fix was merged, then regressed on `master`. |
+| `webserver.HostName` with a malformed value is silently ignored because `url.Parse` soft-parses scheme-less inputs such as `cdn.example.com:443` (parsed as scheme=`cdn.example.com`, Host empty). Present on both the `v0.21.0` tag and `master`. | `internal/env/parse_test.go`: scheme-less `cdn.example.com:443` and a garbage value are rejected at startup. | Fixed in fork. | Candidate for upstream PR (repro test included). |
+
+## Sync methodology
+
+Compare the fork against upstream `master` using the git graph:
+
+- `git merge-base HEAD upstream/master` to find the fork point,
+- `git log upstream/master..HEAD` (and `git log HEAD..upstream/master`) to see what the
+  fork carries and what upstream has added since.
+
+Upstream does **not** maintain a `CHANGELOG` since 0.17.0; the authoritative sources for
+release chronology are **GitHub Releases** and **tags**.
+
+## Linting (CI)
+
+`govet`, `errcheck`, and `staticcheck` are enabled in `.golangci.yml`; CI runs
+golangci-lint v2.13.2 via the `lint` job in `.github/workflows/on_pr_push.yml`. One
+targeted `errcheck` exclusion is recorded here: `(*database/sql.Rows).Close` is excluded
+(same rationale as the pre-existing `(io.Closer).Close` exclusion). The remaining
+unchecked `Rows.Close` calls live in `provider/hana` and `provider/mysql`, which are out
+of scope for this wave and are deliberately left un-refactored rather than edited.
+
+Honest limitation: `errcheck` only catches *ignored* (unchecked) errors. It does **not**
+catch the "error is checked, then deliberately swallowed as a cache miss" bug class (the
+`cache/gcs` pattern). That class is caught by regression tests such as
+`cache/gcs/gcs_test.go`, not by lint.
 
 ## Fork-specific deferred debt (wave 2)
 
@@ -29,12 +64,12 @@ The following items were identified in the fork-vs-upstream audit but are intent
 
 | Audit ID | Description |
 | --- | --- |
-| 2.1 | Async metatile regeneration — metatile regeneration currently blocks the HTTP tile request; it should be moved off the request path. |
+| 2.1 | Async metatile regeneration - metatile regeneration currently blocks the HTTP tile request; it should be moved off the request path. |
 | 2.2 | Redis cache: move to URI-only configuration and migrate `go-redis` to v9. |
 | 2.3 | Migrate cloud SDK usage to AWS SDK v2 and the current Azure SDK. |
-| 2.4 | Common provider test harness — consolidate duplicated provider test setup (`provider/test/provider.go` TODO). |
+| 2.4 | Common provider test harness - consolidate duplicated provider test setup (`provider/test/provider.go` TODO). |
 | 2.5 | Logging consolidation on `log/slog`. |
 | 2.6 | SQL token lexer for GPKG custom SQL (replace string-interpolation-based query assembly). |
 | 3.6 | `basic/line.go` simplification correctness: line simplification does not check point intersection ("malformed geoprocessing with providers of type not mvt_postgis", an open upstream bug noted in v0.21.0). Geometry behavior is left unchanged until a test corpus exists. |
-| part10 A15 | External dependency portability — `third_party` `replace` directives complicate out-of-tree consumption. |
+| part10 A15 | External dependency portability - `third_party` `replace` directives complicate out-of-tree consumption. |
 | part10 A16 | CI green-status verification for the fork's full matrix. |
