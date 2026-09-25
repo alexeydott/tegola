@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/storage v1.65.0
 	github.com/Azure/azure-storage-blob-go v0.0.0-20180706173141-f0a732ea9441
 	github.com/BurntSushi/toml v1.5.0
-	github.com/SAP/go-hdb v1.18.10
+	github.com/SAP/go-hdb v0.111.9
 	github.com/ajstarks/svgo v0.0.0-20170507103333-2489f1e6d405
 	github.com/akrylysov/algnhsa v1.0.0
 	github.com/aws/aws-sdk-go v1.34.0
@@ -87,6 +87,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/exp v0.0.0-20230116083435-1de6713980de // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect

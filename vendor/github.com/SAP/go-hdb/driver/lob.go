@@ -2,21 +2,16 @@ package driver
 
 import (
 	"database/sql/driver"
+	"fmt"
 	"io"
+
+	p "github.com/SAP/go-hdb/driver/internal/protocol"
 )
-
-// byteSliceWriter implements io.Writer by appending to a byte slice.
-type byteSliceWriter []byte
-
-func (w *byteSliceWriter) Write(p []byte) (int, error) {
-	*w = append(*w, p...)
-	return len(p), nil
-}
 
 // A Lob is the driver representation of a database large object field.
 // A Lob object uses an io.Reader object as source for writing content to a database lob field.
 // A Lob object uses an io.Writer object as destination for reading content from a database lob field.
-// A Lob can be created by constructor method NewLob with io.Reader and io.Writer as parameters or
+// A Lob can be created by contructor method NewLob with io.Reader and io.Writer as parameters or
 // created by new, setting io.Reader and io.Writer by SetReader and SetWriter methods.
 type Lob struct {
 	rd io.Reader
@@ -34,7 +29,7 @@ func (l Lob) Reader() io.Reader {
 }
 
 // SetReader sets the io.Reader source for a lob field to be written to database
-// and returns *Lob, to enable simple call chaining.
+// and return *Lob, to enable simple call chaining.
 func (l *Lob) SetReader(rd io.Reader) *Lob {
 	l.rd = rd
 	return l
@@ -46,10 +41,32 @@ func (l Lob) Writer() io.Writer {
 }
 
 // SetWriter sets the io.Writer destination for a lob field to be read from database
-// and returns *Lob, to enable simple call chaining.
+// and return *Lob, to enable simple call chaining.
 func (l *Lob) SetWriter(wr io.Writer) *Lob {
 	l.wr = wr
 	return l
+}
+
+// Scan implements the database/sql/Scanner interface.
+func (l *Lob) Scan(src any) error {
+	if l.wr == nil {
+		return fmt.Errorf("lob error: initial writer %[1]T %[1]v", l)
+	}
+
+	scanner, ok := src.(p.LobScanner)
+	if !ok {
+		return fmt.Errorf("lob: invalid scan type %T", src)
+	}
+
+	if err := scanner.Scan(l.wr); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Value implements the database/sql/Valuer interface.
+func (l Lob) Value() (driver.Value, error) {
+	return l.rd, nil
 }
 
 // NullLob represents an Lob that may be null.
@@ -61,39 +78,22 @@ type NullLob struct {
 }
 
 // Scan implements the database/sql/Scanner interface.
-func (n *NullLob) Scan(value any) error {
-	/*
-		starting with go1.27 fallback method only
-	*/
-	/*
-		In contrast to the Null[T] Scan implementation we do not
-		create a new lob instance in case of value == nil to
-		enable reuse of n.Lob.
-
-		func (n *Null[T]) Scan(value any) error {
-			if value == nil {
-				n.V, n.Valid = *new(T), false
-				return nil
-			}
-			n.Valid = true
-			return convertAssign(&n.V, value)
-		}
-	*/
-	if value == nil {
-		n.Valid = false
+func (l *NullLob) Scan(src any) error {
+	if src == nil {
+		l.Valid = false
 		return nil
 	}
-	if n.Lob == nil {
-		n.Lob = new(Lob)
+	if err := l.Lob.Scan(src); err != nil {
+		return err
 	}
-	n.Valid = true
-	return n.Lob.Scan(value)
+	l.Valid = true
+	return nil
 }
 
 // Value implements the database/sql/Valuer interface.
-func (n NullLob) Value() (driver.Value, error) {
-	if !n.Valid {
+func (l NullLob) Value() (driver.Value, error) {
+	if !l.Valid {
 		return nil, nil
 	}
-	return n.Lob, nil
+	return l.Lob.rd, nil
 }

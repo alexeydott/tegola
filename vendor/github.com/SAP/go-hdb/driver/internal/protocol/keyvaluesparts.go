@@ -9,36 +9,41 @@ import (
 type clientInfo map[string]string
 
 func (c clientInfo) String() string { return fmt.Sprintf("%v", map[string]string(c)) }
-func (c clientInfo) numArg() int    { return len(c) }
-func (c *clientInfo) decode(dec *encoding.Decoder, header *PartHeader, attrs *ReaderAttrs) error {
+
+func (c clientInfo) size() int {
+	size := 0
+	for k, v := range c {
+		size += cesu8Type.prmSize(k)
+		size += cesu8Type.prmSize(v)
+	}
+	return size
+}
+
+func (c clientInfo) numArg() int { return len(c) }
+
+func (c *clientInfo) decode(dec *encoding.Decoder, ph *PartHeader) error {
 	*c = clientInfo{} // no reuse of maps - create new one
 
-	for range header.numArg() {
-		k, err := dec.Cesu8Field()
+	for i := 0; i < ph.numArg(); i++ {
+		k, err := cesu8Type.decodeRes(dec)
 		if err != nil {
 			return err
 		}
-		v, err := dec.Cesu8Field()
+		v, err := cesu8Type.decodeRes(dec)
 		if err != nil {
 			return err
 		}
-		// Cesu8Field returns untyped nil for a null field (see decode.go). A null key
-		// has no meaning as a map key, so skip the entry; a null value becomes "".
-		kb, ok := k.([]byte)
-		if !ok {
-			continue
-		}
-		vb, _ := v.([]byte)
-		(*c)[string(kb)] = string(vb)
+		(*c)[string(k.([]byte))] = string(v.([]byte)) // set key value
 	}
-	return nil
+	return dec.Error()
 }
+
 func (c clientInfo) encode(enc *encoding.Encoder) error {
 	for k, v := range c {
-		if err := enc.Cesu8Field(k); err != nil {
+		if err := cesu8Type.encodePrm(enc, k); err != nil {
 			return err
 		}
-		if err := enc.Cesu8Field(v); err != nil {
+		if err := cesu8Type.encodePrm(enc, v); err != nil {
 			return err
 		}
 	}

@@ -4,8 +4,6 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"math/big"
-
-	"github.com/SAP/go-hdb/driver/internal/protocol/encoding"
 )
 
 // A Decimal is the driver representation of a database decimal field value as big.Rat.
@@ -13,11 +11,11 @@ type Decimal big.Rat
 
 // Scan implements the database/sql/Scanner interface.
 func (d *Decimal) Scan(src any) error {
-	dec, ok := src.(encoding.Decimal)
+	r, ok := src.(*big.Rat)
 	if !ok {
 		return fmt.Errorf("decimal: invalid data type %T", src)
 	}
-	dec.AsRat((*big.Rat)(d))
+	(*big.Rat)(d).Set(r)
 	return nil
 }
 
@@ -40,15 +38,15 @@ func (n *NullDecimal) Scan(value any) error {
 		n.Valid = false
 		return nil
 	}
-	dec, ok := value.(encoding.Decimal)
+	r, ok := value.(*big.Rat)
 	if !ok {
 		return fmt.Errorf("decimal: invalid data type %T", value)
 	}
-	n.Valid = true
 	if n.Decimal == nil {
-		n.Decimal = &Decimal{}
+		return fmt.Errorf("invalid decimal value %v", n.Decimal)
 	}
-	dec.AsRat((*big.Rat)(n.Decimal))
+	n.Valid = true
+	(*big.Rat)(n.Decimal).Set(r)
 	return nil
 }
 

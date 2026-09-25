@@ -74,20 +74,19 @@ github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric
 # github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.57.0
 ## explicit; go 1.25.0
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping
-# github.com/SAP/go-hdb v1.18.10
-## explicit; go 1.26.0
+# github.com/SAP/go-hdb v0.111.9
+## explicit; go 1.19
 github.com/SAP/go-hdb/driver
-github.com/SAP/go-hdb/driver/compress
 github.com/SAP/go-hdb/driver/dial
-github.com/SAP/go-hdb/driver/internal/profile
+github.com/SAP/go-hdb/driver/internal/errors
+github.com/SAP/go-hdb/driver/internal/logflag
 github.com/SAP/go-hdb/driver/internal/protocol
 github.com/SAP/go-hdb/driver/internal/protocol/auth
 github.com/SAP/go-hdb/driver/internal/protocol/encoding
 github.com/SAP/go-hdb/driver/internal/protocol/julian
-github.com/SAP/go-hdb/driver/internal/protocol/levenshtein
-github.com/SAP/go-hdb/driver/internal/rand/alphanum
-github.com/SAP/go-hdb/driver/internal/trace
-github.com/SAP/go-hdb/driver/internal/unsafe
+github.com/SAP/go-hdb/driver/internal/protocol/scanner
+github.com/SAP/go-hdb/driver/internal/protocol/x509
+github.com/SAP/go-hdb/driver/sqltrace
 github.com/SAP/go-hdb/driver/unicode/cesu8
 # github.com/ajstarks/svgo v0.0.0-20170507103333-2489f1e6d405
 ## explicit
@@ -480,6 +479,12 @@ golang.org/x/crypto/cryptobyte/asn1
 golang.org/x/crypto/hkdf
 golang.org/x/crypto/internal/alias
 golang.org/x/crypto/internal/poly1305
+golang.org/x/crypto/pbkdf2
+# golang.org/x/exp v0.0.0-20230116083435-1de6713980de
+## explicit; go 1.18
+golang.org/x/exp/constraints
+golang.org/x/exp/maps
+golang.org/x/exp/slices
 # golang.org/x/net v0.57.0
 ## explicit; go 1.25.0
 golang.org/x/net/http/httpguts

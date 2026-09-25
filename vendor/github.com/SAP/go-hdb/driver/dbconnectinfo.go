@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-// DBConnectInfo represents the connection information attributes returned by hdb.
+// DBConnectInfo defines the connection information attributes returned by hdb.
 type DBConnectInfo struct {
 	DatabaseName string
 	Host         string

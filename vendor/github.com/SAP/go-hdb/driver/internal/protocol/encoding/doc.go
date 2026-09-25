@@ -1,2 +1,2 @@
-// Package encoding implements hdb field type encodings and decodings.
+// Package encoding implements hdb field type en,- and decodings.
 package encoding
