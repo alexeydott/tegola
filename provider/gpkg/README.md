@@ -53,11 +53,13 @@ id_fieldname = "fid"
   - `!GEOM_FIELD!` - [Optional] the geometry field name.
   - `!GEOM_TYPE!` - [Optional] the geometry type if known, otherwise an empty string.
 
-  Custom SQL containing tile-dependent tokens (`!X!`, `!Y!`, `!Z!`,
-  `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, or `!PIXEL_HEIGHT!`) is not executed
-  during provider startup for geometry-type inspection. The layer is registered
-  with its configured CRS and geometry type remains unknown until the query is
-  served. This avoids inspecting a different tile from the one requested.
+  The registration probe always executes custom SQL without a spatial filter:
+  `!BBOX!` is neutralized to `1=1`, position / zoom tokens (`!X!`, `!Y!`,
+  `!Z!`, `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, `!PIXEL_HEIGHT!`) are
+  permissive, and the probe is capped at 16 sample rows. The layer is
+  registered with its configured CRS. Note that the scale tokens are computed
+  in Web Mercator meters and are meaningful only for metric CRSs (see
+  [docs/crs.md](../../docs/crs.md)).
 
   `*Required`: either the `tablename` or `sql` must be defined, but not both.
 
@@ -101,8 +103,10 @@ The GPKG provider implements the common geometry contract documented in
 - `geometry_type` (string): [Optional, **layer level only**] explicit layer
   geometry type
   (`Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`,
-  `MultiPolygon`, `GeometryCollection`). Skips startup type inspection;
-  mixed content is permitted with a one-time warning.
+  `MultiPolygon`, `GeometryCollection`). Skips geometry-class inference and
+  the >=3-sample-row requirement (empty data is allowed); structural
+  validation of custom SQL still runs. Mixed content is permitted with a
+  one-time warning.
 - `geometry_format` (string): [Optional] `gpkg` (GeoPackage native binary,
   the default), `wkb`, `wkt` or `mos`. Valid at provider level (defaults for
   all layers) and at layer level (overrides). With `gpkg` the GeoPackage
@@ -180,7 +184,9 @@ configured bounds fields (with MOS raw scaling); the provider verifies at
 registration that the token is present. Custom SQL with the native `gpkg`
 binary format may use `!BBOX!` as a source-CRS bounds comparison over the
 same columns (no MOS scaling). Bounds-backed MOS custom SQL must configure
-`srid`/`crs_defn`, `mos_precision` and `mos_units` explicitly.
+`srid` or `crs_defn` explicitly (a missing CRS is a startup error);
+`mos_precision` and `mos_units` are optional with the normative paired
+defaults.
 
 Example table layout for a `wkb` layer:
 

@@ -32,13 +32,13 @@ raw geometry format / MOS parts of this contract.
 | `name` | string | Layer name used by map layers. Required. |
 | `tablename` | string | Table to query. Mutually exclusive with `sql`. |
 | `sql` | string | Custom SQL. Mutually exclusive with `tablename`. Supports `!BBOX!`, `!ZOOM!`, `!X!`, `!Y!`, `!Z!`, `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, `!PIXEL_HEIGHT!`, `!ID_FIELD!`, `!GEOM_FIELD!`, `!GEOM_TYPE!` (token support varies slightly per provider; unknown tokens are rejected). |
-| `geometry_fieldname` | string | Geometry column. Defaults to `geom` for generated table SQL. For custom SQL the column must be present in the result set. |
+| `geometry_fieldname` | string | Geometry column. Defaults to `geom` for generated table SQL. For custom SQL the column must be present in the result set; an empty `geometry_fieldname` means the geometry column is the last column of the result set. |
 | `id_fieldname` | string | Feature id column. Defaults: `fid` for `mysql`/`gpkg`, empty for `postgis`/`hana`. |
-| `geometry_type` | string | Explicit layer geometry type, valid for every standard provider: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`. An explicit value fixes the layer geometry type and skips startup type inspection. It is orthogonal to MapplGIS table detection: a `tablename` layer is still checked for the MapplGIS signature and still receives system-info configuration when detected. Mixed content is permitted: features whose decoded type differs from the declared value are rendered, and the mismatch is logged once per layer. |
+| `geometry_type` | string | Explicit layer geometry type, valid for every standard provider: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`. An explicit value fixes the layer geometry type and skips geometry-class inference and the >=3-sample-row requirement (empty data is allowed); structural validation of custom SQL still runs. It is orthogonal to MapplGIS table detection: a `tablename` layer is still checked for the MapplGIS signature and still receives system-info configuration when detected. Mixed content is permitted: features whose decoded type differs from the declared value are rendered, and the mismatch is logged once per layer. |
 | `srid` / `crs_defn` | int / string | Layer CRS override; see [crs.md](crs.md). |
 | `geometry_format` | string | Layer-level geometry format override. |
 | `mos_precision` / `mos_units` | int / string | Layer-level MOS overrides (only with `mos`). |
-| `bbox_*_fieldname` | string | Layer-level bounds column overrides (`bbox_minx_fieldname`, `bbox_maxx_fieldname`, `bbox_miny_fieldname`, `bbox_maxy_fieldname`). Resolution is per field: layer > provider > defaults (`MINX`/`MAXX`/`MINY`/`MAXY`). Resolved columns are excluded from feature tags. Only used by bounds-backed MOS SQL (see [geometry-formats.md](geometry-formats.md)). |
+| `bbox_*_fieldname` | string | Layer-level bounds column overrides (`bbox_minx_fieldname`, `bbox_maxx_fieldname`, `bbox_miny_fieldname`, `bbox_maxy_fieldname`). Values must be simple identifiers: trimmed, qualified names like `t.MINX` rejected, duplicates rejected case-insensitively. Resolution is per field: layer > provider > defaults (`MINX`/`MAXX`/`MINY`/`MAXY`); for joins use a CTE or derived table with unambiguous bounds column names. Resolved columns are excluded from feature tags. Only used by bounds-backed MOS SQL (see [geometry-formats.md](geometry-formats.md)). |
 | `fields` | []string | Additional fields to include for generated table SQL. Semantics of an absent or empty `fields` differ per provider and cannot be mixed freely (see matrix below). |
 
 ## CRS
@@ -70,18 +70,24 @@ still detected.
 
 ## Startup inspection and deferred layers
 
-At registration every layer is inspected to resolve its geometry type and,
-where possible, its SRID:
+At registration every layer is structurally validated and inspected to
+resolve its geometry type and, where possible, its SRID. Structural
+validation for custom SQL always runs at registration and failing it is a
+startup error (see [geometry-formats.md](geometry-formats.md)): `mos`
+requires the geometry column, the four configured bounds columns and the
+`!BBOX!` token; custom `geometry_format = "gpkg"` carries the same contract
+with the bounds-source-CRS predicate; `wkb` / `wkt` forbid `!BBOX!` and
+bounds columns. An explicit `geometry_type` never skips structural
+validation — it skips only geometry-class inference and the
+>=3-sample-row requirement (explicitly typed layers may have empty data).
 
 - **Table layers** are inspected via database metadata / a sample query.
-- **Custom SQL** is sampled with a token-normalized variant of the query
-  (`!BBOX!` widened, `!ZOOM!` replaced with all zooms). If the query currently
-  returns no rows, the layer is still registered (without an inferred
-  geometry type) so the server can start; it begins serving once the query
-  returns data.
-- **Tile-dependent SQL** (SQL whose shape changes with the tile, e.g. an
-  embedded `!BBOX!` that cannot be normalized) defers inspection with a
-  warning.
+- **Custom SQL** is sampled by the registration probe, which always executes
+  the SQL without a spatial filter: `!BBOX!` is neutralized to `1=1`,
+  position / zoom tokens are permissive, and the probe is capped at 16
+  sample rows. If the query currently returns no rows, the layer is still
+  registered (without an inferred geometry type) so the server can start;
+  it begins serving once the query returns data.
 
 ## `!BBOX!` semantics
 
@@ -99,8 +105,10 @@ filter, the data and the MVT encoding agree on one CRS (see
 MapplGIS detection distinguishes how a layer was identified: `table-canonical`
 (structural DDL + PK + indexes + probe row, guarantees system info) vs
 `sql-sample` (custom SQL whose sample carries the four bounds columns and
-decodable MOS rows — no system info guarantee). Custom `sql` MOS layers must
-still configure `srid`/`crs_defn`, `mos_precision` and `mos_units` explicitly.
+decodable MOS rows — no system info guarantee). MOS custom SQL requires an
+explicit `srid` or `crs_defn` (a missing CRS is a startup error);
+`mos_precision` and `mos_units` are optional with the normative paired
+defaults (see [geometry-formats.md](geometry-formats.md#mos-quantization)).
 
 ## System info auto-configuration (MapplGIS tables only)
 
@@ -130,12 +138,15 @@ provider reads:
 
 Explicit configuration always wins over system info.
 
-**Custom `sql` layers never auto-detect MapplGIS and never apply
-`LayerSystemInfo` from result rows.** A SQL layer that uses
-`geometry_format = "mos"` must provide `srid`/`crs_defn`, `mos_precision` and
-`mos_units` explicitly in its config; a decodable blob that happens to appear
-in its result set is ignored (the row is still rendered as a feature if its
-geometry decodes, otherwise it is skipped).
+**Table-canonical MapplGIS detection never applies to custom `sql` layers,
+and `LayerSystemInfo` is never applied from result rows.** Custom `sql`
+layers are still subject to `sql-sample` storage detection (above), which
+tags the layer `MapplGIS` without system info. A SQL layer that uses
+`geometry_format = "mos"` must configure `srid` or `crs_defn` explicitly in
+its config (a missing CRS is a startup error); `mos_precision` and
+`mos_units` are optional with the normative paired defaults. A decodable
+blob that happens to appear in the result set is ignored (the row is still
+rendered as a feature if its geometry decodes, otherwise it is skipped).
 
 Because detection happens once at registration, tile requests do not repeat
 it: after `NewTileProvider` returns, the layer's MapplGIS identity and MOS
@@ -150,7 +161,8 @@ MySQL/MariaDB via `SHOW COLUMNS` / `SHOW INDEX` (version-safe parsing of the
 `sqlite_master`, PostGIS via `information_schema.columns` /
 `pg_index` / `pg_attribute`, HANA via `SYS.TABLE_COLUMNS` /
 `SYS.INDEXES` / `SYS.INDEX_COLUMNS`. Detection runs for every `tablename`
-layer of every standard provider; custom `sql` layers are never detected.
+layer of every standard provider; custom `sql` layers are subject only to
+`sql-sample` storage detection (above), which never applies system info.
 
 When a table is detected as MapplGIS, the effective geometry format is
 authoritative `mos`: an unset or `auto` format resolves to `mos`, and an

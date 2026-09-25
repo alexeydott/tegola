@@ -155,3 +155,131 @@ func TestProviderReadmesReferenceCommonContract(t *testing.T) {
 		}
 	}
 }
+
+// TestProviderDocsAvoidStaleContractClaims guards the binding contract
+// decisions against documentation drift. Structural validation of custom SQL
+// always runs at registration (failure is a startup error), an explicit
+// geometry_type never skips it, SQL-sample storage detection tags MapplGIS
+// without system info, MOS custom SQL requires an explicit CRS while
+// mos_precision/mos_units are optional with normative paired defaults, and
+// the registration probe executes the SQL without a spatial filter. Phrases
+// that previously encoded the opposite behavior must not reappear.
+func TestProviderDocsAvoidStaleContractClaims(t *testing.T) {
+	docPaths := []string{
+		"../docs/provider-contract.md",
+		"../docs/geometry-formats.md",
+		"../docs/crs.md",
+		"../provider/mysql/README.md",
+		"../provider/gpkg/README.md",
+		"../provider/postgis/README.md",
+		"../provider/hana/README.md",
+		"../README.md",
+		"../CHANGELOG.md",
+	}
+
+	// normalize strips markup and collapses whitespace so wrapped phrases
+	// and emphasis do not hide stale claims.
+	normalize := func(s string) string {
+		s = strings.ReplaceAll(s, "\r\n", "\n")
+		s = strings.ReplaceAll(s, "*", "")
+		s = strings.ReplaceAll(s, "`", "")
+		s = strings.ToLower(s)
+		return strings.Join(strings.Fields(s), " ")
+	}
+
+	// whole-document banned phrases (normalized): claims that contradict the
+	// binding contract decisions.
+	banned := []string{
+		// A14/7.1.1: MapplGIS SQL-sample storage detection exists; the
+		// table-canonical path is what never applies to custom SQL.
+		"never auto-detect mapplgis",
+		"custom sql layers are never auto-detected",
+		"custom sql layers are never detected",
+		"sql layers are never detected",
+		"never by scanning sample rows and never for custom",
+		// A11: mos_precision/mos_units are optional with paired defaults;
+		// only the CRS is mandatory for MOS custom SQL.
+		"must provide srid/crs_defn, mos_precision and mos_units",
+		"must set srid/crs_defn, mos_precision and mos_units",
+		"must configure srid/crs_defn, mos_precision and mos_units",
+		"mos_precision and mos_units explicitly",
+		"must set its crs and mos settings explicitly",
+		// A13: the bounds overlap predicate (BuildBoundsPredicate) is
+		// <maxx> >= tile.minx AND <minx> <= tile.maxx AND <maxy> >= tile.miny
+		// AND <miny> <= tile.maxy.
+		"<maxx> >= tile.maxx and <minx> <= tile.minx and <maxy> >= tile.maxy and <miny> <= tile.miny",
+	}
+
+	contents := map[string]string{}
+	raws := map[string]string{}
+	for _, path := range docPaths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Skipf("%s not readable from this working dir: %v", path, err)
+		}
+		raws[path] = strings.ReplaceAll(string(raw), "\r\n", "\n")
+		contents[path] = normalize(raws[path])
+	}
+
+	for _, path := range docPaths {
+		content := contents[path]
+		for _, phrase := range banned {
+			if strings.Contains(content, phrase) {
+				t.Errorf("%s contains stale contract claim %q; see the binding contract decisions (table-canonical vs sql-sample MapplGIS detection, optional mos_precision/mos_units with paired defaults, correct bounds overlap predicate)", path, phrase)
+			}
+		}
+
+		// paragraphs mixing MapplGIS with a "never auto-detect"/"never
+		// detected" claim must qualify which detection path they mean.
+		for _, para := range strings.Split(raws[path], "\n\n") {
+			p := normalize(para)
+			if strings.Contains(p, "mapplgis") && (strings.Contains(p, "never auto-detect") || strings.Contains(p, "never detected")) {
+				if !strings.Contains(p, "table-canonical") && !strings.Contains(p, "sql-sample") {
+					t.Errorf("%s paragraph %q mixes MapplGIS with an unqualified 'never auto-detect'/'never detected' claim; qualify it as table-canonical MapplGIS detection or sql-sample storage detection", path, p)
+				}
+			}
+		}
+	}
+
+	// positive markers: the corrected claims must be present so the banned
+	// list cannot go green by deleting the documentation entirely.
+	must := func(path, phrase string) {
+		if !strings.Contains(contents[path], normalize(phrase)) {
+			t.Errorf("%s does not document %q", path, phrase)
+		}
+	}
+
+	contract := "../docs/provider-contract.md"
+	must(contract, "table-canonical")
+	must(contract, "sql-sample")
+	must(contract, "last column of the result set")
+	must(contract, "`mos_precision` and `mos_units` are optional")
+	must(contract, "explicit `srid` or `crs_defn`")
+
+	formats := "../docs/geometry-formats.md"
+	must(formats, "DefaultMOSPrecisionForUnits")
+	must(formats, "sql-sample")
+	must(formats, "<maxx> >= tile.minx AND <minx> <= tile.maxx AND <maxy> >= tile.miny AND <miny> <= tile.maxy")
+
+	crs := "../docs/crs.md"
+	must(crs, "sql-sample")
+	must(crs, "!SCALE_DENOMINATOR!")
+	must(crs, "!PIXEL_WIDTH!")
+	must(crs, "!PIXEL_HEIGHT!")
+	must(crs, "Web Mercator")
+
+	readme := "../README.md"
+	must(readme, "v0.17.0-fork.1")
+	must(readme, "fork of go-spatial/tegola, based on 0.17.0, see CHANGELOG")
+	if strings.Contains(contents[readme], "v0.21.0") {
+		t.Error("README.md claims version v0.21.0; the fork version is v0.17.0-fork.1")
+	}
+
+	changelog := "../CHANGELOG.md"
+	must(changelog, "v0.17.0-fork.1")
+	must(changelog, "based on upstream 0.17.0")
+
+	mysqlReadme := "../provider/mysql/README.md"
+	must(mysqlReadme, "SQL-sample storage detection")
+	must(mysqlReadme, "`mos_precision` and `mos_units` are optional")
+}

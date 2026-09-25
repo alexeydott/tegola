@@ -1,6 +1,6 @@
 ## Unreleased
 
-Fork-specific changes on top of upstream 0.17.0 (2023-07-27).
+Fork of go-spatial/tegola, based on upstream 0.17.0 (2023-07-27). Fork releases follow the version scheme `v0.17.0-fork.N`; the first fork release is `v0.17.0-fork.1`.
 
 Features
 

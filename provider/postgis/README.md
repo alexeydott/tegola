@@ -175,8 +175,10 @@ are valid at provider level (defaults for all layers) and at layer level
 
 - `geometry_type` (string): [Optional] explicit layer geometry type
   (`Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`,
-  `MultiPolygon`, `GeometryCollection`). Skips startup type inspection;
-  mixed content is permitted with a one-time warning.
+  `MultiPolygon`, `GeometryCollection`). Skips geometry-class inference and
+  the >=3-sample-row requirement (empty data is allowed); structural
+  validation of custom SQL still runs. Mixed content is permitted with a
+  one-time warning.
 - `geometry_format` (string): [Optional] `wkb`, `wkt` or `mos`. Empty/unset
   uses the PostGIS native geometry handling. With a raw format the column is
   read as bytes/text (e.g. `ST_AsBinary(geom)`) instead of using the native

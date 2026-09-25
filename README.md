@@ -5,6 +5,8 @@
 
 Tegola is a vector tile server delivering [Mapbox Vector Tiles](https://github.com/mapbox/vector-tile-spec) with support for [PostGIS](provider/postgis), [GeoPackage](provider/gpkg), [MySQL/MariaDB](provider/mysql) and [SAP HANA Spatial](https://www.sap.com/products/technology-platform/hana/what-is-sap-hana.html) data providers. User documentation can be found at [tegola.io](https://tegola.io)
 
+fork of go-spatial/tegola, based on 0.17.0, see CHANGELOG
+
 ## Features
 
 - Native geometry processing (simplification, clipping, make valid, intersection, contains, scaling, translation)
@@ -25,7 +27,7 @@ Tegola is a vector tile server delivering [Mapbox Vector Tiles](https://github.c
 
 ```
 tegola is a vector tile server
-Version: v0.21.0
+Version: v0.17.0-fork.1
 
 Usage:
   tegola [command]

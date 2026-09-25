@@ -50,7 +50,9 @@ in [docs/provider-contract.md](../../docs/provider-contract.md). Alongside the
 format keys above, the common `geometry_type` layer key is supported: an
 explicit value (`Point`, `LineString`, `Polygon`, `MultiPoint`,
 `MultiLineString`, `MultiPolygon`, `GeometryCollection`) fixes the layer
-geometry type before any data is read and skips startup **type** inspection.
+geometry type before any data is read and skips geometry-class inference and
+the >=3-sample-row requirement (empty data is allowed); structural validation
+of custom SQL still runs.
 It is orthogonal to MapplGIS table detection: a `tablename` layer is still
 checked for the MapplGIS signature and still receives system-info
 configuration when detected. Mixed content is permitted with a one-time
@@ -82,7 +84,7 @@ same value set:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; set `mos_precision` to the number of decimal digits they carry and `mos_units` to their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`; the default `mos_precision` is paired with the units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`, `km`→`5`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
+- `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; `mos_precision` (optional) is the number of decimal digits they carry and `mos_units` (optional) their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`, default `m`; the default `mos_precision` is paired with the units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`, `km`→`5` via `DefaultMOSPrecisionForUnits`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
 
 ## MOS geometry format
 
@@ -100,10 +102,12 @@ optional `uint16` flags word before the subobject counts. Real coordinates are
 
 ### MapplGIS table detection (auto-configuration)
 
-MapplGIS tables are detected once, at registration, by their **structure** —
-never by scanning sample rows and never for custom `sql` layers. A
-`tablename` layer is recognized as a MapplGIS table only when all of the
-following hold (matched case-insensitively):
+MapplGIS tables are detected once, at registration, by their **structure**
+(table-canonical MapplGIS detection). This path never scans sample rows and
+applies only to `tablename` layers; custom `sql` layers instead use the
+separate SQL-sample storage detection (see below). A `tablename` layer is
+recognized as a MapplGIS table only when all of the following hold (matched
+case-insensitively):
 
 - the table has all nine required columns: `OKEY`, `MUID`, `MINX`, `MAXX`,
   `MINY`, `MAXY`, `ObjectStyle`, `ObjectType`, `LINE`;
@@ -122,10 +126,14 @@ system info configures the layer:
 
 In practice this means a MapplGIS table needs no `mos_precision`/`mos_units`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides. The effective geometry format of a detected table is authoritative `mos`: an explicit non-MOS `geometry_format` on the same layer is a startup conflict error. A detected table also replaces the default `id_fieldname = "fid"` with the contract primary key `OKEY`; an explicitly configured `id_fieldname` is honored.
 
-Custom `sql` layers are **never** auto-detected and never apply
-`LayerSystemInfo` from result rows: an explicit `geometry_format = "mos"` SQL
-layer must set `srid`/`crs_defn`, `mos_precision` and `mos_units` in its
-config.
+Table-canonical MapplGIS detection never applies to custom `sql` layers, and
+`LayerSystemInfo` is never applied from result rows. Custom `sql` layers are
+still subject to SQL-sample storage detection: a `mos` (or `auto`) SQL layer
+whose registration probe reports the MapplGIS signature is tagged `MapplGIS`
+without system info and without applying any projection from the sample. A
+MOS custom SQL layer must configure `srid` or `crs_defn` explicitly (a
+missing CRS is a startup error); `mos_precision` and `mos_units` are
+optional with the normative paired defaults.
 
 ## SRID handling
 
@@ -208,16 +216,19 @@ The following tokens are supported in custom `sql` (case-insensitive) and behave
 - `!GEOM_FIELD!` — the layer's geometry field name.
 - `!GEOM_TYPE!` — the layer's geometry type name (POINT, LINESTRING, ...).
 
-Custom SQL containing tile-dependent tokens (`!X!`, `!Y!`, `!Z!`,
-`!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, or `!PIXEL_HEIGHT!`) is not executed
-during provider startup for geometry-type inspection. The layer is registered
-with its configured CRS and inspected when a tile is requested. For such a
-layer, `!BBOX!` is deliberately replaced with `1=1` when the geometry format
-is `auto`; Tegola decodes the returned geometries and applies the tile
-intersection check in memory. This avoids applying MySQL spatial functions to
-an unknown format (including MOS). Custom SQL layers never auto-detect
-MapplGIS and never apply a system-info record from result rows: a MOS SQL
-layer must set its CRS and MOS settings explicitly in the config.
+The registration probe always executes custom SQL without a spatial filter:
+`!BBOX!` is neutralized to `1=1`, position / zoom tokens (`!X!`, `!Y!`,
+`!Z!`, `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, `!PIXEL_HEIGHT!`) are
+permissive, and the probe is capped at 16 sample rows. Tegola decodes the
+returned geometries and applies the tile intersection check in memory,
+avoiding MySQL spatial functions on an unknown format (including MOS); the
+layer is registered with its configured CRS. Note that the scale tokens are
+computed in Web Mercator meters and are meaningful only for metric CRSs (see
+[docs/crs.md](../../docs/crs.md)). Table-canonical MapplGIS detection never
+applies to custom `sql` layers, and no system-info record is applied from
+result rows: a MOS custom SQL layer must configure `srid` or `crs_defn`
+explicitly (a missing CRS is a startup error), while `mos_precision` /
+`mos_units` are optional with the normative paired defaults.
 
 ## Empty layers
 
@@ -225,7 +236,8 @@ Layers (table or custom SQL) that currently return 0 rows produce a warning
 and remain registered without an inferred geometry type. They are queried
 normally when a later request returns data; an empty layer does not prevent the
 provider from starting. Until the first decodable geometry is seen, the layer
-uses the same safe in-memory filtering path as deferred custom SQL so a later
+uses the same safe in-memory filtering path as custom SQL whose geometry type
+is not yet resolved so a later
 geometry header can establish the source CRS without an incorrect startup
 assumption.
 

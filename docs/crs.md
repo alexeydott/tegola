@@ -57,15 +57,18 @@ providers (not just MySQL):
 Bounds-backed MOS custom SQL builds its `!BBOX!` predicate in the layer's
 source CRS and then converts the tile extent into the quantized raw MOS
 units (floor/ceil scaling by `10^precision / unit factor`). Unlike a
-MapplGIS table, SQL sample detection never decodes a
-`MapplGIS LayerInfo projection`, so a `mos` custom-SQL layer must configure
-its source CRS (`srid` or `crs_defn`) explicitly.
+MapplGIS table, `sql-sample` storage detection never decodes a
+`MapplGIS LayerInfo projection`, so a `mos` custom-SQL layer requires an
+explicit `srid` or `crs_defn` and fails at startup without one.
+`mos_precision` / `mos_units` are optional and fall back to the normative
+paired defaults (see [geometry-formats.md](geometry-formats.md#mos-quantization)).
 
 The `MapplGIS LayerInfo projection` blob is the shared source-derived CRS for
 layers of **every** standard provider whose table was identified as a
-MapplGIS table at registration (structural detection: DDL + primary key +
-required indexes + an `OKEY = 1` probe row; custom `sql` layers are never
-auto-detected and never apply system info from result rows). When no explicit
+MapplGIS table at registration (table-canonical structural detection: DDL +
+primary key + required indexes + an `OKEY = 1` probe row; custom `sql`
+layers are subject only to `sql-sample` storage detection, which never
+applies system info from result rows). When no explicit
 `srid`/`crs_defn` is configured, the projection is registered
 as a synthetic SRID through the same mechanism as `crs_defn` (see
 [`provider/crsconfig.ApplySystemInfoCRS`](../provider/crsconfig/crsconfig.go)).
@@ -104,6 +107,13 @@ The `!BBOX!` token is always evaluated **in the layer's source CRS**:
 - providers/geometry formats that cannot (MOS blobs, raw WKB/WKT columns,
   synthetic CRSs on HANA) replace `!BBOX!` with a no-op and apply an exact
   in-memory bbox filter after decoding.
+
+## Scale token limitations
+
+The `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!` and `!PIXEL_HEIGHT!` tokens are
+computed in Web Mercator meters and are meaningful only for metric CRSs. For
+a geographic CRS (for example `srid = 4326`) their values are not
+degrees-consistent and the server logs a startup warning for such layers.
 
 ## Provider support matrix
 

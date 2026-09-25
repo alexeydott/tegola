@@ -29,7 +29,10 @@ digits) and `mos_units` (`mm`, `cm`, `dm`, `m`, `km`; default `m`) define the
 scale factor applied when converting to metres. The default `mos_precision` is
 paired with the effective units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`,
 `km`→`5`. An explicitly set `mos_precision` overrides the units-paired default.
-Explicitly set
+`mos_precision` and `mos_units` are optional with these normative paired
+defaults (`DefaultMOSPrecisionForUnits`); the mandatory part of a MOS
+configuration is the CRS: MOS custom SQL requires an explicit `srid` or
+`crs_defn` and fails at startup without one. Explicitly set
 `mos_precision`/`mos_units` always win over values detected from a
 `MapplGIS LayerInfo` metadata blob during registration-time MapplGIS table
 detection (see
@@ -67,7 +70,7 @@ are the only server-side filter a raw MOS column can support: for `mos`
 layers the `!BBOX!` token (and `!BOX!`) expands into the bounds predicate
 
 ```
-<maxx> >= tile.maxx AND <minx> <= tile.minx AND <maxy> >= tile.maxy AND <miny> <= tile.miny
+<maxx> >= tile.minx AND <minx> <= tile.maxx AND <maxy> >= tile.miny AND <miny> <= tile.maxy
 ```
 
 scaled from the tile metres by the layer's MOS quantization
@@ -82,20 +85,34 @@ overrides provider level, per field):
 - `bbox_miny_fieldname` (default `MINY`)
 - `bbox_maxy_fieldname` (default `MAXY`)
 
+Each value must be a simple identifier: values are trimmed, qualified names
+such as `t.MINX` are rejected, and two keys may not name the same column
+(duplicates are rejected case-insensitively). For join queries use a CTE or
+derived table that exposes unambiguous bounds column names.
+
 Columns resolved this way are excluded from the feature tags: they are
 implementation details of the bounds contract, not feature attributes.
 
 ### Raw formats and custom SQL
 
-Custom SQL (`sql` key) with a raw `geometry_format`:
+Custom SQL (`sql` key) with a raw `geometry_format`. In custom SQL an empty
+`geometry_fieldname` means the geometry column is the last column of the
+result set. Structural validation always runs at registration and failing it
+is a startup error naming the layer:
 
 - `mos` **must** use `!BBOX!` (or `!BOX!`): the bounds predicate over the
   configured bounds fields is the only server-side selectivity a raw MOS
-  column supports. Providers reject bounds-backed MOS custom SQL without the
-  token at startup with an error naming the layer. As a registration-time
-  sanity probe, providers additionally sample the custom SQL result and warn
-  when the four bounds columns or decodable MOS rows are missing
-  (`MapplGISSource` = `sql-sample`).
+  column supports. The `mos` structural contract requires the geometry
+  column, the four configured bounds columns and the `!BBOX!` token. An
+  explicit `geometry_type` never skips this structural validation — it
+  skips only geometry-class inference and the >=3-sample-row requirement
+  (explicitly typed layers may have empty data). With
+  `geometry_type = "auto"`, the effective format switches to `mos` only on
+  a positive MOS signature, at least three decodable MOS rows with
+  coordinates and a structurally valid `mos` contract (the `MapplGISSource` =
+  `sql-sample` probe); native / WKB / WKT rows never count as MOS. SQL-sample
+  storage detection tags the layer `MapplGIS` without ever applying
+  `SystemInfo` or a projection from sample rows.
 - `wkb`/`wkt` must **not** use `!BBOX!` (nor its `!BOX!` alias): its
   expansion assumes a native spatial column (e.g. `geom && ST_MakeEnvelope(...)`
   or a `minx`/`maxx` column predicate), which a raw BLOB/TEXT column does not
@@ -104,9 +121,12 @@ Custom SQL (`sql` key) with a raw `geometry_format`:
   in-memory bounding-box filter is always applied for raw formats. Custom SQL
   without `!BBOX!` works for raw formats in every provider, so the same
   configuration behaves identically across `postgis`, `hana`, `gpkg`, and
-  `mysql`. The `auto` format of `mysql` is exempt from the startup check because
-  runtime inspection may resolve the column to a native spatial type for which
-  `!BBOX!` is valid.
+  `mysql`. No bounds columns apply to `wkb`/`wkt`. With
+  `geometry_format = "auto"` (`mysql`), structural validation runs against
+  the effective format resolved at registration: a layer that resolves to
+  `mos` must satisfy the `mos` contract above, `wkb`/`wkt` resolutions must
+  satisfy the raw contract, and a resolved native geometry column may use
+  `!BBOX!`.
 
 ## GeometryCollection behaviour
 
