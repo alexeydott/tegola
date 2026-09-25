@@ -208,7 +208,7 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 	// MOS layers never reach the !BBOX! path (raw sqlTmpl has no token).
 	if lyr.geometryFormat == codec.FormatMOS {
 		predicate, perr := codec.BuildBoundsPredicate(
-			lyr.bboxFields, sourceExtent, codec.BoundsMOSRaw, lyr.mosConfig, nil,
+			lyr.bboxFields, sourceExtent, codec.BoundsMOSRaw, lyr.mosConfig, pgQuoteIdent,
 		)
 		if perr != nil {
 			return "", fmt.Errorf("layer (%v): %w", lyr.name, perr)
@@ -245,6 +245,12 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 	uppercaseTokenSQL := uppercaseTokens(sql)
 
 	return tokenReplacer.Replace(uppercaseTokenSQL), nil
+}
+
+// pgQuoteIdent wraps a PostgreSQL identifier in double quotes, doubling any
+// embedded quotes (SQL standard identifier escaping).
+func pgQuoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // extractQueryParamValues finds default values for SQL tokens and constructs query parameter values out of them

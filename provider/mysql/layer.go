@@ -66,6 +66,6 @@ func (l Layer) GeomFieldName() string   { return l.geomFieldname }
 // registration time (either table canonical or SQL sample).
 func (l Layer) IsMapplGIS() bool { return l.isMapplGIS }
 
-// MapplGISource reports the detection source. SystemInfo is only guaranteed
+// MapplGISSource reports the detection source. SystemInfo is only guaranteed
 // for MapplGISTableCanonical.
-func (l Layer) MapplGISource() codec.MapplGISSource { return l.mapplSource }
+func (l Layer) MapplGISSource() codec.MapplGISSource { return l.mapplSource }

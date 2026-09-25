@@ -18,9 +18,11 @@ import (
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/crsconfig"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/mapplgis"
 )
 
 func customSQLNeedsDeferredInspection(sqlText string) bool {
@@ -245,9 +247,9 @@ func detectMapplGIS(db *sql.DB, tablename string, layer *Layer) (bool, error) {
 	}
 
 	info, err := mapplgis.Detect(mapplgis.TableMeta{
-		Columns:            colNames,
-		PrimaryKeyColumns:  pkColumns,
-		Indexes:            indexes,
+		Columns:           colNames,
+		PrimaryKeyColumns: pkColumns,
+		Indexes:           indexes,
 	}, func() (*mos.SystemInfo, error) {
 		const fetchQuery = "SELECT LINE FROM %v WHERE OKEY = 1 AND LINE IS NOT NULL LIMIT 1;"
 		rows, qerr := db.Query(fmt.Sprintf(fetchQuery, quoteIdent(tablename)))
@@ -451,8 +453,24 @@ func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 		}
 
 		if layer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(value) {
-			// MapplGIS LayerInfo blob: metadata, never a feature. The
-			// detection contract already applied its parameters.
+			// MapplGIS LayerInfo blob: metadata, never a feature. Apply its
+			// parameters once — precision/units feed the bounds quantization
+			// and the CRS projection pins the layer SRID (unless the config
+			// already declared one explicitly), matching detectMapplGIS.
+			var info mos.SystemInfo
+			info, perr := codec.ParseSystemInfoValue(value)
+			if perr != nil {
+				return fmt.Errorf("table %q parse system info: %v", layer.tablename, perr)
+			}
+			if aerr := layer.mosConfig.ApplySystemInfo(&info); aerr != nil {
+				return fmt.Errorf("table %q apply system info: %v", layer.tablename, aerr)
+			}
+			if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, info.Projection); aerr != nil {
+				return fmt.Errorf("table %q apply system info CRS: %v", layer.tablename, aerr)
+			} else if applied {
+				layer.srid = uint64(srid)
+				layer.crsExplicit = true
+			}
 			continue
 		}
 
@@ -712,6 +730,19 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				if layer.boundFieldnames != nil {
 					log.Debugf("layer (%v): table %q carries raw bounds columns; enabling SQL bounds filter", layerName, tablename)
 				}
+				// bboxFields mirrors the detected (or resolved) bounds
+				// columns so tag exclusion and the predicate builder share
+				// one contract; configured bbox_*_fieldname values win when
+				// the table carries the named columns.
+				bboxFields, berr := codec.ResolveBBoxFields(config, layerConf, layerName)
+				if berr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, berr)
+				}
+				if layer.boundFieldnames != nil {
+					layer.bboxFields = codec.BBoxFields(*layer.boundFieldnames)
+				} else {
+					layer.bboxFields = bboxFields
+				}
 
 				// Raw tables carry no SRID metadata, so the SRID comes from
 				// explicit config or the provider default. A MOS system-info
@@ -777,8 +808,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 
 			// Raw custom-SQL contract: native gpkg geometry still cannot use
-			// the native-spatial !BBOX! token; raw formats are allowed (MOS
-			// is required to use it) with the bounds-backed predicate builder.
+			// the native-spatial !BBOX! token; of the raw formats only MOS
+			// may appear in custom SQL (via RequireBBoxCustomSQL) and it
+			// must carry the !BBOX! token backed by the bounds predicate
+			// builder.
 			if verr := codec.ValidateRawCustomSQL(layerName, layer.geometryFormat, customSQL, conf.BboxToken, "!BOX!"); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, verr)
 			}
@@ -807,7 +840,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				layer.srid = uint64(lcrs.SRID)
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
-				layer.deferredInspection = true
 				log.Warnf("layer '%v' uses tile-dependent custom SQL; deferring startup geometry inspection", layerName)
 				p.layers[layer.name] = &layer
 				continue
@@ -822,6 +854,31 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			inspectionTile := provider.NewTile(0, 0, 0, 0, uint(p.srid))
 			inspectionExtent, _ := inspectionTile.BufferedExtent()
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
+
+			// Bounds-backed MOS contract probe (mapplgis SQL-sample source):
+			// for explicit MOS custom SQL, sample the permissive inspection
+			// query and verify the bounds columns plus enough decodable MOS
+			// rows. On success the layer is tagged MapplGISSQLSample (never
+			// SystemInfo-backed). No projection is ever applied from the
+			// sample: SQL layers must configure srid/crs_defn explicitly.
+			if layer.geometryFormat == codec.FormatMOS {
+				contract, perr := probeMOSCustomSQLContract(db, &layer, inspectionSQL)
+				if perr != nil {
+					return nil, fmt.Errorf("layer '%v' problem probing bounds-backed MOS custom SQL: %v", layerName, perr)
+				}
+				if contract.HasBounds && contract.ValidMOSRows >= codec.MinValidMOSRows {
+					layer.isMapplGIS = true
+					layer.mapplSource = codec.MapplGISSQLSample
+					log.Infof("layer '%v': bounds-backed MOS custom SQL contract detected (source %v, %v valid MOS sample rows)", layerName, layer.mapplSource, contract.ValidMOSRows)
+				} else {
+					if !contract.HasBounds {
+						log.Warnf("layer '%v': bounds-backed MOS custom SQL did not expose the configured bounds columns %v; the !BBOX! predicate will filter on missing columns", layerName, layer.bboxFields)
+					}
+					if contract.ValidMOSRows < codec.MinValidMOSRows {
+						log.Warnf("layer '%v': bounds-backed MOS custom SQL sample carried %v decodable MOS rows (need %v)", layerName, contract.ValidMOSRows, codec.MinValidMOSRows)
+					}
+				}
+			}
 
 			// Get geometry type & srid from geometry of first row. For raw
 			// formats the whole sample window is scanned because MOS
@@ -975,4 +1032,57 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 		return nil, nil, false, fmt.Errorf("layer '%v' problem reading custom SQL rows: %v", layerName, rerr)
 	}
 	return firstGeom, firstHeader, sysInfoCRSApplied, nil
+}
+
+// probeMOSCustomSQLContract samples the already token-expanded inspection
+// SQL and runs the common InspectSQLGeometryContract probe over it: bounds
+// columns presence plus at least MinValidMOSRows decodable MOS geometries
+// with coordinates. The sample reads at most codec.InspectionSampleLimit
+// rows. SystemInfo rows are skipped, never applied: SQL-sample detection
+// carries no projection contract.
+func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, inspectionSQL string) (codec.SQLGeometryContract, error) {
+	qtext := fmt.Sprintf("SELECT * FROM (%v) AS __tegola_bounds_probe LIMIT %v;",
+		inspectionSQL, codec.InspectionSampleLimit)
+
+	rows, err := db.Query(qtext)
+	if err != nil {
+		return codec.SQLGeometryContract{}, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return codec.SQLGeometryContract{}, err
+	}
+
+	return codec.InspectSQLGeometryContract(
+		func(scan func(dest ...interface{}) error) (bool, error) {
+			if !rows.Next() {
+				return false, rows.Err()
+			}
+			dest := make([]interface{}, len(columns))
+			for i := range dest {
+				dest[i] = new(interface{})
+			}
+			if err := scan(dest...); err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+		columns,
+		layer.geomFieldname,
+		layer.bboxFields,
+		func(value interface{}) (geom.Geometry, error) {
+			if value == nil {
+				return nil, fmt.Errorf("nil geometry value")
+			}
+			if codec.IsSystemInfoValue(value) {
+				// LayerInfo blob describes the layer, not a geometry:
+				// skip, never decode or apply.
+				return nil, fmt.Errorf("system info blob")
+			}
+			_, decoded, derr := decodeGeometryValue(value, layer.geometryFormat, layer.mosConfig)
+			return decoded, derr
+		},
+	)
 }

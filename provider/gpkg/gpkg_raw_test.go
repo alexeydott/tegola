@@ -515,14 +515,16 @@ func TestRawFormatTableLayer(t *testing.T) {
 
 	t.Run("raw custom sql mos system info first", func(t *testing.T) {
 		// custom SQL against a MOS table where the system-info blob is the
-		// first row of the inspection query: it must be consumed and the
-		// next row decoded.
+		// first row of the probe query: it must be skipped (SQL layers
+		// never apply system info) and the probe must still count the
+		// decodable geometry row. The layer carries bounds columns and the
+		// bounds-backed !BBOX! token per the MOS custom-SQL contract.
 		fx := newRawFixture(t, []string{
-			"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+			"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB, MINX DOUBLE, MAXX DOUBLE, MINY DOUBLE, MAXY DOUBLE)",
 		})
-		insertRows(t, fx.path, "mos_layer", []string{"geom"}, [][]interface{}{
-			{mosSystemInfoBlob(2, "", byte(mos.UnitsMetres), true)},
-			{mosPolylineBlob([][2]int32{{100, 100}, {300, 300}})},
+		insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, [][]interface{}{
+			{mosSystemInfoBlob(2, "", byte(mos.UnitsMetres), true), nil, nil, nil, nil},
+			{mosPolylineBlob([][2]int32{{100, 100}, {300, 300}}), 1.0, 3.0, 1.0, 3.0},
 		})
 
 		conf := dict.Dict{
@@ -530,7 +532,7 @@ func TestRawFormatTableLayer(t *testing.T) {
 			"layers": []map[string]interface{}{
 				{
 					"name":            "raw_layer",
-					"sql":             "SELECT id, geom FROM mos_layer",
+					"sql":             "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE !BBOX!",
 					"geometry_format": "mos",
 				},
 			},
@@ -561,18 +563,19 @@ func TestRawFormatTableLayer(t *testing.T) {
 		}
 	})
 
-	t.Run("raw custom sql mos system info applies projection", func(t *testing.T) {
+	t.Run("raw custom sql mos system info not applied", func(t *testing.T) {
 		// custom SQL against a MOS table where the system-info blob carries
-		// a non-empty projection: it must be consumed, the projection
-		// registered as the layer SRID (ApplySystemInfoCRS), and the next
-		// row decoded.
+		// a non-empty projection: it must be skipped without applying the
+		// projection (SQL layers must configure srid/crs_defn explicitly —
+		// the sample probe never decodes LayerInfo projection), and the
+		// next row decoded.
 		fx := newRawFixture(t, []string{
-			"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+			"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB, MINX DOUBLE, MAXX DOUBLE, MINY DOUBLE, MAXY DOUBLE)",
 		})
 		proj4 := "+proj=merc +lat_ts=56.5 +ellps=clrk66 +type=crs"
-		insertRows(t, fx.path, "mos_layer", []string{"geom"}, [][]interface{}{
-			{mosSystemInfoBlob(2, proj4, byte(mos.UnitsMetres), true)},
-			{mosPolylineBlob([][2]int32{{100, 100}, {300, 300}})},
+		insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, [][]interface{}{
+			{mosSystemInfoBlob(2, proj4, byte(mos.UnitsMetres), true), nil, nil, nil, nil},
+			{mosPolylineBlob([][2]int32{{100, 100}, {300, 300}}), 1.0, 3.0, 1.0, 3.0},
 		})
 
 		conf := dict.Dict{
@@ -580,7 +583,7 @@ func TestRawFormatTableLayer(t *testing.T) {
 			"layers": []map[string]interface{}{
 				{
 					"name":            "raw_layer",
-					"sql":             "SELECT id, geom FROM mos_layer",
+					"sql":             "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE !BBOX!",
 					"geometry_format": "mos",
 				},
 			},
@@ -591,9 +594,8 @@ func TestRawFormatTableLayer(t *testing.T) {
 		}
 		t.Cleanup(gpkg.Cleanup)
 
-		// the non-empty system info projection must be applied: the layer
-		// SRID becomes the synthetic SRID registered from the proj.4 defn
-		// instead of the provider default (3857).
+		// the system info projection must NOT be applied: the layer SRID
+		// stays the provider default (3857)
 		lyrs, lerr := p.Layers()
 		if lerr != nil {
 			t.Fatalf("Layers: %v", lerr)
@@ -601,8 +603,8 @@ func TestRawFormatTableLayer(t *testing.T) {
 		if len(lyrs) != 1 {
 			t.Fatalf("layer count = %v, want 1", len(lyrs))
 		}
-		if srid := lyrs[0].SRID(); srid == 3857 {
-			t.Errorf("layer srid = %v, want the synthetic SRID from the system info projection", srid)
+		if srid := lyrs[0].SRID(); srid != 3857 {
+			t.Errorf("layer srid = %v, want 3857 (system info projection must not be applied to SQL layers)", srid)
 		}
 
 		tile := MockTile{
@@ -629,14 +631,14 @@ func TestRawFormatTableLayer(t *testing.T) {
 		// custom SQL returning no rows must register a placeholder layer
 		// rather than fail startup.
 		fx := newRawFixture(t, []string{
-			"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+			"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB, MINX DOUBLE, MAXX DOUBLE, MINY DOUBLE, MAXY DOUBLE)",
 		})
 		conf := dict.Dict{
 			"filepath": fx.path,
 			"layers": []map[string]interface{}{
 				{
 					"name":            "raw_layer",
-					"sql":             "SELECT id, geom FROM mos_layer WHERE id = -1",
+					"sql":             "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE id = -1 AND !BBOX!",
 					"geometry_format": "mos",
 				},
 			},
@@ -722,17 +724,18 @@ func TestRawFormatTableLayer(t *testing.T) {
 	})
 }
 
-// TestMOSDeferredCustomSQLPreQuery covers the R6 runtime contract for
-// tile-dependent custom-SQL MOS layers: when registration sees an empty
-// table (deferred inspection), system info must be applied by the pre-query
-// before the tile query is built, so features decode with correct
-// scale/offset parameters.
+// TestMOSDeferredCustomSQLPreQuery covers the contract for tile-dependent
+// custom-SQL MOS layers: registration skips startup geometry inspection for
+// statements that cannot be neutralized permissively (position tokens), and
+// the runtime tile query decodes rows with the configured quantization. SQL
+// layers never apply system info, so a runtime system-info blob yields a
+// controlled decode error instead of silently configuring the layer.
 func TestMOSDeferredCustomSQLPreQuery(t *testing.T) {
 	fx := newRawFixture(t, []string{
-		"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+		"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB, MINX DOUBLE, MAXX DOUBLE, MINY DOUBLE, MAXY DOUBLE)",
 	})
-	// the table is empty at registration: the layer is registered with
-	// deferredInspection and without system info
+	// the table is empty at registration: tile-dependent custom SQL defers
+	// startup geometry inspection entirely
 
 	conf := dict.Dict{
 		"filepath": fx.path,
@@ -740,10 +743,9 @@ func TestMOSDeferredCustomSQLPreQuery(t *testing.T) {
 			{
 				"name":            "mos_layer",
 				"geometry_format": "mos",
-				// tile-dependent SQL exercising the position tokens
-				// (!BBOX! is not allowed for raw formats: tegola filters
-				// in memory instead)
-				"sql": "SELECT id, geom FROM mos_layer WHERE !ZOOM! >= 0 AND !X! >= 0 AND !Y! >= 0",
+				// tile-dependent SQL exercising the position tokens plus
+				// the bounds-backed !BBOX! required for MOS custom SQL
+				"sql": "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE !ZOOM! >= 0 AND !X! >= 0 AND !Y! >= 0 AND !BBOX!",
 			},
 		},
 	}
@@ -753,11 +755,14 @@ func TestMOSDeferredCustomSQLPreQuery(t *testing.T) {
 	}
 	t.Cleanup(gpkg.Cleanup)
 
-	// data (and its system-info blob) appears after registration
-	insertRows(t, fx.path, "mos_layer", []string{"geom"}, [][]interface{}{
-		{mosSystemInfoBlob(2, "", byte(mos.UnitsMetres), true)},
-		// quantized (200, 400) => (2, 4) metres with precision 2
-		{mosPointBlob([][2]int32{{200, 400}})},
+	// data appears after registration; the quantized blob decodes with the
+	// default MOS precision for metres (2), no system info is ever applied
+	// to SQL layers
+	insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, [][]interface{}{
+		// quantized (200, 400) with default precision 2 => (2.0, 4.0);
+		// bounds columns cover the tile window so the !BBOX! predicate
+		// selects the row
+		{mosPointBlob([][2]int32{{200, 400}}), 0.0, 10.0, 0.0, 10.0},
 	})
 
 	tile := &deferredTestTile{
@@ -778,8 +783,8 @@ func TestMOSDeferredCustomSQLPreQuery(t *testing.T) {
 			t.Errorf("geometry type = %T, want geom.Point", f.Geometry)
 			return nil
 		}
-		if pt[0] != 2 || pt[1] != 4 {
-			t.Errorf("point = %v, want [2 4] (system info must be applied before tile query)", pt)
+		if pt[0] != 2.0 || pt[1] != 4.0 {
+			t.Errorf("point = %v, want [2 4] (default MOS precision 2 must be used)", pt)
 		}
 		return nil
 	})
@@ -803,7 +808,7 @@ func (t *deferredTestTile) BufferedExtent() (*geom.Extent, uint64) { return t.bu
 func (t *deferredTestTile) ZXY() (slippy.Zoom, uint, uint)         { return t.z, t.x, t.y }
 
 // insertRows inserts rows into the given table with named columns (the id
-// column is autoincrement and is omitted).
+// column is autoincrement and is omitted). nil values become SQL NULL.
 func insertRows(t *testing.T, path, table string, cols []string, rows [][]interface{}) {
 	t.Helper()
 
@@ -814,10 +819,16 @@ func insertRows(t *testing.T, path, table string, cols []string, rows [][]interf
 	defer db.Close()
 
 	for _, row := range rows {
+		if len(row) != len(cols) {
+			t.Fatalf("insert: %v values for %v columns", len(row), len(cols))
+		}
 		ph := make([]string, 0, len(row))
 		args := make([]interface{}, 0, len(row))
 		for _, v := range row {
 			if v == nil {
+				// keep column alignment with a NULL literal: positional
+				// placeholders cannot express a skipped column
+				ph = append(ph, "NULL")
 				continue
 			}
 			ph = append(ph, "?")
@@ -843,8 +854,10 @@ func joinStrings(parts []string, sep string) string {
 
 func TestMOSLayerInfoPositionInvariant(t *testing.T) {
 	// Sampling invariant (docs/provider-contract.md): the MOS system-info
-	// blob must configure the layer identically wherever it sits inside the
-	// shared 16-row sample window — first row, middle or last.
+	// blob must configure a *table* layer identically wherever it sits
+	// inside the shared 16-row sample window — first row, middle or last.
+	// For custom-SQL layers system info is never applied (explicit
+	// srid/crs_defn contract), so the SRID stays the provider default.
 	proj4 := "+proj=merc +lat_ts=56.5 +ellps=clrk66 +type=crs"
 	geomBlob := mosPolylineBlob([][2]int32{{100, 100}, {300, 300}})
 
@@ -853,24 +866,24 @@ func TestMOSLayerInfoPositionInvariant(t *testing.T) {
 			pos, mode := pos, mode
 			t.Run(fmt.Sprintf("%s position %d", mode, pos), func(t *testing.T) {
 				fx := newRawFixture(t, []string{
-					"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+					"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB, MINX DOUBLE, MAXX DOUBLE, MINY DOUBLE, MAXY DOUBLE)",
 				})
 				rows := make([][]interface{}, 0, geometrycodec.InspectionSampleLimit)
 				for i := 1; i <= geometrycodec.InspectionSampleLimit; i++ {
 					if i == pos {
-						rows = append(rows, []interface{}{mosSystemInfoBlob(2, proj4, byte(mos.UnitsMetres), true)})
+						rows = append(rows, []interface{}{mosSystemInfoBlob(2, proj4, byte(mos.UnitsMetres), true), nil, nil, nil, nil})
 						continue
 					}
-					rows = append(rows, []interface{}{geomBlob})
+					rows = append(rows, []interface{}{geomBlob, 1.0, 3.0, 1.0, 3.0})
 				}
-				insertRows(t, fx.path, "mos_layer", []string{"geom"}, rows)
+				insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, rows)
 
 				layerConf := map[string]interface{}{
 					"name":            "raw_layer",
 					"geometry_format": "mos",
 				}
 				if mode == "custom sql" {
-					layerConf["sql"] = "SELECT id, geom FROM mos_layer"
+					layerConf["sql"] = "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM mos_layer WHERE !BBOX!"
 				} else {
 					layerConf["tablename"] = "mos_layer"
 				}
@@ -891,10 +904,16 @@ func TestMOSLayerInfoPositionInvariant(t *testing.T) {
 				if len(lyrs) != 1 {
 					t.Fatalf("layer count = %v, want 1", len(lyrs))
 				}
-				// the projection must register the synthetic SRID in every
-				// position, never the provider default (3857)
-				if srid := lyrs[0].SRID(); srid == 3857 {
-					t.Errorf("layer srid = %v, want the synthetic SRID from the system info projection", srid)
+				if mode == "table" {
+					// the projection must register the synthetic SRID in
+					// every position, never the provider default (3857)
+					if srid := lyrs[0].SRID(); srid == 3857 {
+						t.Errorf("layer srid = %v, want the synthetic SRID from the system info projection", srid)
+					}
+				} else if srid := lyrs[0].SRID(); srid != 3857 {
+					// custom SQL layers never apply system info: the SRID
+					// stays the provider default
+					t.Errorf("layer srid = %v, want 3857 (SQL layers must not apply system info)", srid)
 				}
 
 				tile := MockTile{

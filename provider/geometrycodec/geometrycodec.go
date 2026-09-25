@@ -106,7 +106,7 @@ func ValidateRawCustomSQL(layerName, geometryFormat, customSQL string, bboxToken
 	for _, tok := range bboxTokens {
 		if strings.Contains(strings.ToLower(customSQL), strings.ToLower(tok)) {
 			return fmt.Errorf(
-				"layer (%v): custom SQL cannot use %v with geometry_format=%q: raw formats store geometries as BLOB/TEXT and have no native spatial column for the token's predicate; remove %v from the custom SQL (tegola applies an exact in-memory bbox filter instead)",
+				"layer (%v): custom SQL cannot use %v with geometry_format=%q: raw formats (wkb/wkt) store geometries as BLOB/TEXT and have no native spatial column for the token's predicate; remove %v from the custom SQL (tegola applies an exact in-memory bbox filter instead)",
 				layerName, tok, geometryFormat, tok,
 			)
 		}
@@ -222,13 +222,17 @@ func ResolveMOSConfig(provider, layer dict.Dicter, layerName string) (MOSConfig,
 	if err != nil {
 		return cfg, err
 	}
-	cfg.Precision, cfg.PrecisionSet = precision, precisionSet
+	if precisionSet {
+		cfg.Precision, cfg.PrecisionSet = precision, true
+	}
 
 	unitsFactor, unitsSet, err := resolveMOSUnits(provider, prefix)
 	if err != nil {
 		return cfg, err
 	}
-	cfg.UnitFactor, cfg.UnitsSet = unitsFactor, unitsSet
+	if unitsSet {
+		cfg.UnitFactor, cfg.UnitsSet = unitsFactor, true
+	}
 
 	if layer == nil {
 		return cfg, nil

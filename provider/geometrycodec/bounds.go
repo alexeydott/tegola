@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/geom/cmp"
 	"github.com/go-spatial/tegola/dict"
 )
 
@@ -96,27 +97,27 @@ func ResolveBBoxFields(provider, layer dict.Dicter, layerName string) (BBoxField
 		fields[k.idx] = k.def
 
 		if provider != nil {
-			v := ""
 			if _, explicit := provider.Interface(k.key); explicit {
-				v, err := provider.String(k.key, &v)
+				v, err := provider.String(k.key, nil)
 				if err != nil {
 					return fields, fmt.Errorf("for layer (%v) invalid %v: %v", layerName, k.key, err)
 				}
-				if strings.TrimSpace(v) != "" {
-					fields[k.idx] = v
+				if strings.TrimSpace(v) == "" {
+					return fields, fmt.Errorf("for layer (%v) invalid %v: empty value; provide a non-empty column name or omit the key to use the default %v", layerName, k.key, k.def)
 				}
+				fields[k.idx] = v
 			}
 		}
 		if layer != nil {
-			v := ""
 			if _, explicit := layer.Interface(k.key); explicit {
-				v, err := layer.String(k.key, &v)
+				v, err := layer.String(k.key, nil)
 				if err != nil {
 					return fields, fmt.Errorf("for layer (%v) invalid %v: %v", layerName, k.key, err)
 				}
-				if strings.TrimSpace(v) != "" {
-					fields[k.idx] = v
+				if strings.TrimSpace(v) == "" {
+					return fields, fmt.Errorf("for layer (%v) invalid %v: empty value; provide a non-empty column name or omit the key to use the default %v", layerName, k.key, k.def)
 				}
+				fields[k.idx] = v
 			}
 		}
 	}
@@ -152,7 +153,7 @@ const (
 // used to replace !BBOX! for bounds-backed custom SQL:
 //
 //	<maxx_field> >= tile_minx AND <minx_field> <= tile_maxx
-//	AND <maxy_field> >= tile_miny AND <minx_field> <= tile_maxy (y mirrored)
+//	AND <maxy_field> >= tile_miny AND <miny_field> <= tile_maxy
 //
 // mode=BoundsMOSRaw scales the tile extent into quantized MOS units first
 // (floor/ceil rounding, mirroring the MySQL/GPKG raw bounds filters). An
@@ -222,15 +223,19 @@ const MinValidMOSRows = 3
 // InspectSQLGeometryContract runs a registration-time probe over a sample of
 // the layer's custom SQL result set and reports the bounds-backed MOS
 // contract: presence of the four bounds columns and at least MinValidMOSRows
-// decodable MOS geometries. sampleQuery must return the bounds fields plus
-// the geometry column and be already token-expanded (all-zoom / no spatial
-// filter). decode decodes a raw geometry value (returning an error for
-// non-decodable values); callers pass their provider's decodeGeometryValue.
-// findBoundsColumns maps the sample's column names to the [4]string bounds
-// order (minx, maxx, miny, maxy); nil when they are absent.
+// decodable MOS geometries carrying at least one coordinate point.
+// sampleQuery must return the bounds fields plus the geometry column and be
+// already token-expanded (all-zoom / no spatial filter). decode decodes a
+// raw geometry value (returning an error for non-decodable values); callers
+// pass their provider's decodeGeometryValue. findBoundsColumns maps the
+// sample's column names to the [4]string bounds order (minx, maxx, miny,
+// maxy); nil when they are absent.
 //
-// The probe is deliberately provider-independent: it only requires a
-// rows-like iterator, so each provider feeds it from its own driver.
+// The probe reads at most InspectionSampleLimit rows (with an early stop
+// once enough valid MOS rows are counted), verifies that the geometry field
+// is present in the result set, and is deliberately provider-independent: it
+// only requires a rows-like iterator, so each provider feeds it from its
+// own driver.
 func InspectSQLGeometryContract(
 	rows func(scan func(dest ...interface{}) error) (bool, error),
 	columnNames []string,
@@ -246,25 +251,41 @@ func InspectSQLGeometryContract(
 		contract.HasBounds = true
 	}
 
+	// geometry column index; -1 when the geometry field is absent from the
+	// result set (a bounds-backed contract cannot be verified without it).
+	geomIdx := -1
+	if geometryField == "" {
+		// geometry assumed to be the last selected column
+		geomIdx = len(columnNames) - 1
+	} else {
+		for i, name := range columnNames {
+			if strings.EqualFold(name, geometryField) {
+				geomIdx = i
+				break
+			}
+		}
+	}
+
 	for {
 		more, err := rows(func(dest ...interface{}) error {
-			var geomValue interface{}
-			if geometryField == "" {
-				// geometry assumed to be the last selected column
-				geomValue = dest[len(dest)-1]
-			} else {
-				for i, name := range columnNames {
-					if strings.EqualFold(name, geometryField) {
-						geomValue = dest[i]
-						break
-					}
-				}
+			if geomIdx < 0 {
+				return nil
+			}
+			geomValue := dest[geomIdx]
+			// driver-backed iterators scan into *interface{} placeholders;
+			// unwrap so decode receives the actual value, mirroring the
+			// value-per-row contract of the unit-test iterators.
+			if p, ok := geomValue.(*interface{}); ok {
+				geomValue = *p
 			}
 			if geomValue == nil {
 				return nil
 			}
 			geo, derr := decode(geomValue)
 			if derr != nil || geo == nil {
+				return nil
+			}
+			if !hasGeometryCoordinates(geo) {
 				return nil
 			}
 			contract.ValidMOSRows++
@@ -276,8 +297,27 @@ func InspectSQLGeometryContract(
 		if !more {
 			break
 		}
+		if contract.ValidMOSRows >= MinValidMOSRows {
+			// enough evidence for the bounds-backed contract; stop early so
+			// the sample window stays bounded even for huge result sets
+			break
+		}
 	}
 	return contract, nil
+}
+
+// hasGeometryCoordinates reports whether the geometry carries at least one
+// coordinate point. Empty geometries (e.g. an empty line string) do not
+// satisfy the probe contract. Unknown geometry types are treated as
+// carrying coordinates so the probe stays permissive for future types.
+func hasGeometryCoordinates(geo geom.Geometry) bool {
+	if geo == nil || geom.IsNil(geo) {
+		return false
+	}
+	if cmp.IsEmptyGeo(geo) {
+		return false
+	}
+	return true
 }
 
 // findBoundsColumnsIn maps the sample's column names case-insensitively onto

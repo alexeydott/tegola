@@ -529,7 +529,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			// configured bounds-fields predicate. The auto format is exempt
 			// from both rules: runtime inspection may resolve the column to
 			// a native spatial type for which !BBOX! is valid.
-			if verr := codec.ValidateRawCustomSQL(layerName, layerGeometryFormat, customSQL, conf.BboxToken); verr != nil {
+			if verr := codec.ValidateRawCustomSQL(layerName, layerGeometryFormat, customSQL, conf.BboxToken, "!BOX!"); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, verr)
 			}
 			if rerr := codec.RequireBBoxCustomSQL(layerName, layerGeometryFormat, customSQL, conf.BboxToken, "!BOX!"); rerr != nil {
@@ -589,6 +589,37 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			inspectionExtent, _ := inspectionTile.BufferedExtent()
 			inspectionSQL = replaceTokens(inspectionSQL, &layer, inspectionTile, inspectionExtent)
 
+			// Bounds-backed MOS contract probe (mapplgis SQL-sample source):
+			// for explicit or auto MOS custom SQL, sample the permissive
+			// inspection query and verify the bounds columns plus enough
+			// decodable MOS rows. On success the layer is tagged
+			// MapplGISSQLSample (never SystemInfo-backed), and auto resolves
+			// to the MOS format. No projection is ever applied from the
+			// sample: SQL layers must configure srid/crs_defn explicitly.
+			if layerGeometryFormat == codec.FormatMOS || layerGeometryFormat == GeometryFormatAuto {
+				probeColumns, contract, perr := probeMOSCustomSQLContract(db, &layer, inspectionSQL, layerGeometryFormat, serverFlavor)
+				if perr != nil {
+					return nil, fmt.Errorf("layer '%v' problem probing bounds-backed MOS custom SQL: %v", layerName, perr)
+				}
+				if contract.HasBounds && contract.ValidMOSRows >= codec.MinValidMOSRows {
+					layer.isMapplGIS = true
+					layer.mapplSource = codec.MapplGISSQLSample
+					if layerGeometryFormat == GeometryFormatAuto {
+						layer.geometryFormat = codec.FormatMOS
+						layerGeometryFormat = codec.FormatMOS
+					}
+					log.Infof("layer '%v': bounds-backed MOS custom SQL contract detected (source %v, %v valid MOS sample rows)", layerName, layer.mapplSource, contract.ValidMOSRows)
+				} else if layerGeometryFormat == codec.FormatMOS {
+					if !contract.HasBounds {
+						log.Warnf("layer '%v': bounds-backed MOS custom SQL did not expose the configured bounds columns %v; the !BBOX! predicate will filter on missing columns", layerName, layer.bboxFields)
+					}
+					if contract.ValidMOSRows < codec.MinValidMOSRows {
+						log.Warnf("layer '%v': bounds-backed MOS custom SQL sample carried %v decodable MOS rows (need %v)", layerName, contract.ValidMOSRows, codec.MinValidMOSRows)
+					}
+				}
+				_ = probeColumns
+			}
+
 			// MySQL-derived tables require an alias
 			qtext := fmt.Sprintf("SELECT %v FROM (%v) AS __tegola_inspection LIMIT 1;",
 				quoteIdentifier(geomFieldname), inspectionSQL)
@@ -642,6 +673,65 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	keepDB = true
 
 	return &p, nil
+}
+
+// probeMOSCustomSQLContract samples the permissive inspection query
+// (token-expanded, no spatial filter) and runs the common
+// InspectSQLGeometryContract probe over it: bounds columns presence plus
+// at least MinValidMOSRows decodable MOS geometries with coordinates.
+// The sample reads at most codec.InspectionSampleLimit rows. It returns the
+// sample column names for diagnostics. SystemInfo rows are skipped, never
+// applied: SQL-sample detection carries no projection contract.
+func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, inspectionSQL string, geometryFormat string, serverFlavor string) ([]string, codec.SQLGeometryContract, error) {
+	qtext := fmt.Sprintf("SELECT * FROM (%v) AS __tegola_bounds_probe LIMIT %v;",
+		strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(inspectionSQL), ";")),
+		codec.InspectionSampleLimit)
+
+	rows, err := db.Query(qtext)
+	if err != nil {
+		return nil, codec.SQLGeometryContract{}, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, codec.SQLGeometryContract{}, err
+	}
+
+	contract, err := codec.InspectSQLGeometryContract(
+		func(scan func(dest ...interface{}) error) (bool, error) {
+			if !rows.Next() {
+				return false, rows.Err()
+			}
+			dest := make([]interface{}, len(columns))
+			for i := range dest {
+				dest[i] = new(interface{})
+			}
+			if err := scan(dest...); err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+		columns,
+		layer.geomFieldname,
+		layer.bboxFields,
+		func(value interface{}) (geom.Geometry, error) {
+			if value == nil {
+				return nil, fmt.Errorf("nil geometry value")
+			}
+			if blob, ok := value.([]byte); ok && mos.IsSystemInfoBlob(blob) {
+				// LayerInfo blob describes the layer, not a geometry:
+				// skip, never decode or apply.
+				return nil, fmt.Errorf("system info blob")
+			}
+			_, decoded, derr := decodeGeometry(value, geometryFormat, serverFlavor, layer.mosConfig)
+			return decoded, derr
+		},
+	)
+	if err != nil {
+		return columns, codec.SQLGeometryContract{}, err
+	}
+	return columns, contract, nil
 }
 
 // showIndexRow is one parsed row of SHOW INDEX output.

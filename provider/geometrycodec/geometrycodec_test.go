@@ -241,6 +241,16 @@ func TestResolveBBoxFields(t *testing.T) {
 			layerName:  "l4",
 			expectedEr: true,
 		},
+		"empty provider value errors": {
+			provider:   map[string]interface{}{"bbox_minx_fieldname": "   "},
+			layerName:  "l5",
+			expectedEr: true,
+		},
+		"empty layer value errors": {
+			layer:      map[string]interface{}{"bbox_maxy_fieldname": ""},
+			layerName:  "l6",
+			expectedEr: true,
+		},
 	}
 
 	for name, tc := range tests {
@@ -380,7 +390,7 @@ func TestInspectSQLGeometryContract(t *testing.T) {
 					if v == nil {
 						return nil, fmt.Errorf("undecodable")
 					}
-					return geom.Point{1, 2}, nil
+					return v, nil
 				}
 				decodeIdx++
 				if value == nil {
@@ -441,6 +451,25 @@ func TestInspectSQLGeometryContract(t *testing.T) {
 			expected: geometrycodec.SQLGeometryContract{
 				BoundsFields: geometrycodec.BBoxFields{"minx", "MaxX", "MINY", "maxy"},
 				ValidMOSRows: 1,
+				HasBounds:    true,
+			},
+		},
+		"empty geometry rows do not count": {
+			name:    "empty geometry",
+			columns: []string{"MINX", "MAXX", "MINY", "MAXY", "geom"},
+			rows: [][]interface{}{
+				{0, 10, 0, 10, "empty"},
+				{0, 10, 0, 10, "empty"},
+				{0, 10, 0, 10, "empty"},
+			},
+			// decode succeeds but yields a geometry without coordinates
+			geometryFeed: []interface{}{
+				geom.LineString{}, geom.LineString{}, geom.LineString{},
+			},
+			bboxFields: bbox,
+			expected: geometrycodec.SQLGeometryContract{
+				BoundsFields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+				ValidMOSRows: 0,
 				HasBounds:    true,
 			},
 		},

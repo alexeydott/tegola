@@ -2,8 +2,8 @@ package gpkg
 
 import (
 	"github.com/go-spatial/geom"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/mos"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 type Layer struct {
@@ -34,10 +34,6 @@ type Layer struct {
 	// They act as a coarse SQL filter mirroring the MySQL provider's MOS
 	// bounds filter; nil when the table does not carry them.
 	boundFieldnames *[4]string
-	// systemInfoApplied records that the MOS system-info parameters were
-	// applied at registration (canonical MapplGIS detection or explicit
-	// config); TileFeatures skips re-applying them per tile.
-	systemInfoApplied bool
 	// isMapplGIS records that the table satisfied the canonical MapplGIS
 	// contract (DDL + PK + indexes + OKEY=1 blob) at registration. After
 	// NewTileProvider this state is final; tile requests never re-detect.
@@ -52,11 +48,9 @@ type Layer struct {
 	// bboxFields holds the resolved bounds field names (layer > provider >
 	// defaults) used by the bounds-backed custom-SQL !BBOX! predicate and
 	// excluded from feature tags. For tablename layers with detected bounds
-	// columns boundFieldnames stays authoritative.
+	// columns boundFieldnames stays authoritative; bboxFields mirrors it so
+	// tag exclusion and the predicate builder share one contract.
 	bboxFields codec.BBoxFields
-	// deferredInspection marks tile-dependent custom SQL whose geometry
-	// could not be inspected safely at startup.
-	deferredInspection bool
 	// crsExplicit records whether srid/crs_defn was set explicitly at
 	// provider or layer level, suppressing source-metadata CRS inference.
 	crsExplicit bool
@@ -72,6 +66,6 @@ func (l Layer) GeomFieldName() string   { return l.geomFieldname }
 // registration time (either table canonical or SQL sample).
 func (l Layer) IsMapplGIS() bool { return l.isMapplGIS }
 
-// MapplGISource reports the detection source. SystemInfo is only guaranteed
+// MapplGISSource reports the detection source. SystemInfo is only guaranteed
 // for MapplGISTableCanonical.
-func (l Layer) MapplGISource() codec.MapplGISSource { return l.mapplSource }
+func (l Layer) MapplGISSource() codec.MapplGISSource { return l.mapplSource }

@@ -8,10 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/provider"
-
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -151,41 +147,3 @@ func TestFeatureTableMetaDataSkipsOrphanEntry(t *testing.T) {
 		t.Errorf("len(result) = %v, want 1", len(ftmd))
 	}
 }
-
-// fixesTestTile is a minimal provider.Tile for internal unit tests.
-type fixesTestTile struct {
-	z    slippy.Zoom
-	x, y uint
-	ext  *geom.Extent
-	srid uint64
-}
-
-func (t *fixesTestTile) Extent() (*geom.Extent, uint64)         { return t.ext, t.srid }
-func (t *fixesTestTile) BufferedExtent() (*geom.Extent, uint64) { return t.ext, t.srid }
-func (t *fixesTestTile) ZXY() (slippy.Zoom, uint, uint)         { return t.z, t.x, t.y }
-
-func TestBuildDeferredInspectionSQLReplacesTokens(t *testing.T) {
-	layer := &Layer{
-		name:          "mos_layer",
-		tablename:     "mos_layer",
-		geomFieldname: "geom",
-		sql: `SELECT id, geom FROM mos_layer
-			WHERE !ZOOM! >= 0 AND !BBOX! AND x = !X! AND y = !Y! AND z = !Z!;`,
-	}
-
-	tile := &fixesTestTile{z: 7, x: 68, y: 41, srid: 3857}
-	got := buildDeferredInspectionSQL(layer, tile)
-
-	for _, leftover := range []string{"!ZOOM!", "!BBOX!", "!X!", "!Y!", "!Z!"} {
-		if strings.Contains(got, leftover) {
-			t.Errorf("built SQL still contains token %v: %v", leftover, got)
-		}
-	}
-	for _, want := range []string{" 7 ", " 68 ", " 41 ", "1=1"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("built SQL %q does not contain %q", got, want)
-		}
-	}
-}
-
-var _ provider.Tile = (*fixesTestTile)(nil)

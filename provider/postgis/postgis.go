@@ -930,6 +930,85 @@ func (p Provider) setLayerGeomType(l *Layer, geomType string) error {
 	return nil
 }
 
+// pointerizeVals converts row values into pointers so a scan closure can
+// read them by index, matching the InspectSQLGeometryContract dest contract.
+func pointerizeVals(vals []any) []any {
+	dest := make([]any, len(vals))
+	for i := range vals {
+		v := vals[i]
+		dest[i] = &v
+	}
+	return dest
+}
+
+// probeMOSCustomSQLContract samples the MOS layer's custom SQL (tokens
+// neutralized, no spatial filter) and runs the common
+// InspectSQLGeometryContract probe over it: bounds columns presence plus at
+// least MinValidMOSRows decodable MOS geometries with coordinates. The
+// sample reads at most codec.InspectionSampleLimit rows. SystemInfo rows are
+// skipped, never applied: SQL-sample detection carries no projection
+// contract.
+func (p Provider) probeMOSCustomSQLContract(l *Layer, customSQL string) (codec.SQLGeometryContract, error) {
+	// neutralize tokens that could filter out all rows during inspection
+	allZoomsSQL := "ANY('{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24}')"
+	sql := strings.Replace(customSQL, "!ZOOM!", allZoomsSQL, 1)
+	sql = strings.ReplaceAll(sql, conf.BboxToken, "TRUE")
+
+	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
+	sql, err := replaceTokens(sql, l, tile, true)
+	if err != nil {
+		return codec.SQLGeometryContract{}, err
+	}
+
+	args := make([]any, 0)
+	sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
+
+	sql = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sql), ";"))
+	sql = fmt.Sprintf("SELECT * FROM (%v) AS __tegola_bounds_probe LIMIT %v", sql, codec.InspectionSampleLimit)
+
+	rows, err := p.pool.Query(context.Background(), sql, args...)
+	if err != nil {
+		return codec.SQLGeometryContract{}, err
+	}
+	defer rows.Close()
+
+	fdescs := rows.FieldDescriptions()
+	columns := make([]string, len(fdescs))
+	for i, fd := range fdescs {
+		columns[i] = string(fd.Name)
+	}
+
+	return codec.InspectSQLGeometryContract(
+		func(scan func(dest ...interface{}) error) (bool, error) {
+			if !rows.Next() {
+				return false, rows.Err()
+			}
+			vals, err := rows.Values()
+			if err != nil {
+				return false, err
+			}
+			if err := scan(pointerizeVals(vals)...); err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+		columns,
+		l.geomField,
+		l.bboxFields,
+		func(value interface{}) (geom.Geometry, error) {
+			if value == nil {
+				return nil, fmt.Errorf("nil geometry value")
+			}
+			if codec.IsSystemInfoValue(value) {
+				// LayerInfo blob describes the layer, not a geometry:
+				// skip, never decode or apply.
+				return nil, fmt.Errorf("system info blob")
+			}
+			return decodeGeometryValue(value, codec.FormatMOS, l.mosConfig)
+		},
+	)
+}
+
 // inspectLayerGeomType sets the geomType field on the layer by running the SQL
 // and reading the geom type in the result set
 func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.Map) error {
@@ -1463,14 +1542,39 @@ func CreateProvider(
 			}
 
 			// Raw custom-SQL contract: native PostGIS geometry still uses
-			// the native-spatial !BBOX! envelope; raw formats are allowed
-			// (MOS is required to use it) with the bounds-backed predicate
-			// builder replacing the envelope at query time.
-			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken); verr != nil {
+			// the native-spatial !BBOX! envelope; only MOS raw format is
+			// allowed (and required) to carry it, with the bounds-backed
+			// predicate builder replacing the envelope at query time.
+			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken, "!BOX!"); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
 			}
-			if rerr := codec.RequireBBoxCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken); rerr != nil {
+			if rerr := codec.RequireBBoxCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken, "!BOX!"); rerr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, rerr)
+			}
+
+			// Bounds-backed MOS contract probe (mapplgis SQL-sample source):
+			// for explicit MOS custom SQL, sample the neutralized query and
+			// verify the bounds columns plus enough decodable MOS rows. On
+			// success the layer is tagged MapplGISSQLSample (never
+			// SystemInfo-backed). No projection is ever applied from the
+			// sample: SQL layers must configure srid/crs_defn explicitly.
+			if l.geometryFormat == codec.FormatMOS {
+				contract, perr := p.probeMOSCustomSQLContract(&l, sql)
+				if perr != nil {
+					return nil, fmt.Errorf("layer '%v' problem probing bounds-backed MOS custom SQL: %v", lName, perr)
+				}
+				if contract.HasBounds && contract.ValidMOSRows >= codec.MinValidMOSRows {
+					l.isMapplGIS = true
+					l.mapplSource = codec.MapplGISSQLSample
+					log.Infof("layer '%v': bounds-backed MOS custom SQL contract detected (source %v, %v valid MOS sample rows)", lName, l.mapplSource, contract.ValidMOSRows)
+				} else {
+					if !contract.HasBounds {
+						log.Warnf("layer '%v': bounds-backed MOS custom SQL did not expose the configured bounds columns %v; the !BBOX! predicate will filter on missing columns", lName, l.bboxFields)
+					}
+					if contract.ValidMOSRows < codec.MinValidMOSRows {
+						log.Warnf("layer '%v': bounds-backed MOS custom SQL sample carried %v decodable MOS rows (need %v)", lName, contract.ValidMOSRows, codec.MinValidMOSRows)
+					}
+				}
 			}
 
 			l.sql = sql

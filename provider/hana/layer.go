@@ -67,9 +67,9 @@ func (l Layer) IDFieldName() string {
 	return l.idField
 }
 
-// MapplGISource reports the detection source. SystemInfo is only guaranteed
+// MapplGISSource reports the detection source. SystemInfo is only guaranteed
 // for MapplGISTableCanonical.
-func (l Layer) MapplGISource() codec.MapplGISSource { return l.mapplSource }
+func (l Layer) MapplGISSource() codec.MapplGISSource { return l.mapplSource }
 
 func (l Layer) FieldDescriptions() []FieldDescription {
 	return l.fields

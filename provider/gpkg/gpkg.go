@@ -18,6 +18,7 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+
 )
 
 const (
@@ -371,15 +372,19 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 					codec.WarnOnceGeometryTypeMismatch(pLayer.Name(), pLayer.geomType, geo)
 				}
 				feature.Geometry = geo
-			case "minx", "miny", "maxx", "maxy", "min_zoom", "max_zoom":
-				// Skip these columns used for bounding box and zoom filtering
-				continue
-
 			default:
-				// Bounds fields backing the bounds-backed custom-SQL
-				// !BBOX! predicate are operational columns, not user
-				// attributes: never leak them into feature tags.
+				// Bounds fields backing the SQL bounds filter (detected
+				// raw bounds columns for tablename layers, resolved
+				// bbox_*_fieldname for custom SQL) are operational
+				// columns, not user attributes: never leak them into
+				// feature tags.
 				if pLayer.bboxFields.IsBBoxField(cols[i]) {
+					continue
+				}
+				// Legacy fixed zoom-filter columns keep their exclusion.
+				switch strings.ToLower(cols[i]) {
+				case "minx", "miny", "maxx", "maxy", "min_zoom", "max_zoom":
+					// Skip these columns used for bounding box and zoom filtering
 					continue
 				}
 				// Grab any non-nil, non-id, non-bounding box, & non-geometry column as a tag

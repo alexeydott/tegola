@@ -70,7 +70,7 @@ func TestReplaceTokens(t *testing.T) {
 				FROM
 					ne_110m_land t JOIN rtree_ne_110m_land_geom si ON t.fid = si.id
 				WHERE
-					minx <= 180 AND maxx >= -180 AND miny <= 85.0511 AND maxy >= -85.0511`,
+					` + "`maxx` >= -180 AND `minx` <= 180 AND `maxy` >= -85.0511 AND `miny` <= 85.0511",
 		},
 		"bbox zoom": {
 			qtext: `
@@ -91,7 +91,7 @@ func TestReplaceTokens(t *testing.T) {
 				FROM
 					ne_110m_land t JOIN rtree_ne_110m_land_geom si ON t.fid = si.id
 				WHERE
-					minx <= 180 AND maxx >= -180 AND miny <= 85.0511 AND maxy >= -85.0511 AND min_zoom = 3`,
+					` + "`maxx` >= -180 AND `minx` <= 180 AND `maxy` >= -85.0511 AND `miny` <= 85.0511 AND min_zoom = 3",
 		},
 		"tile coordinates, scale and layer metadata": {
 			qtext: `SELECT !id_field!, !geom_field!, '!geom_type!',

@@ -736,13 +736,13 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		if sql != "" {
 			sql = sanitizeSQL(sql)
 			// Raw custom-SQL contract: native HANA geometry requires the
-			// !BBOX! token; raw formats are allowed (MOS is required to
-			// use it) with the bounds-backed predicate builder replacing
-			// the spatial predicate at query time.
-			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, bboxToken); verr != nil {
+			// !BBOX! token; only MOS raw format is allowed (and required)
+			// to carry it, with the bounds-backed predicate builder
+			// replacing the spatial predicate at query time.
+			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, bboxToken, "!BOX!"); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
 			}
-			if rerr := codec.RequireBBoxCustomSQL(lName, l.geometryFormat, sql, bboxToken); rerr != nil {
+			if rerr := codec.RequireBBoxCustomSQL(lName, l.geometryFormat, sql, bboxToken, "!BOX!"); rerr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, rerr)
 			}
 			if !strings.Contains(sql, "*") {
@@ -758,6 +758,31 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			}
 
 			l.sql = sql
+
+			// Bounds-backed MOS contract probe (mapplgis SQL-sample source):
+			// for explicit MOS custom SQL, sample the neutralized query and
+			// verify the bounds columns plus enough decodable MOS rows. On
+			// success the layer is tagged MapplGISSQLSample (never
+			// SystemInfo-backed). No projection is ever applied from the
+			// sample: SQL layers must configure srid/crs_defn explicitly.
+			if l.geometryFormat == codec.FormatMOS {
+				contract, perr := p.probeMOSCustomSQLContract(&l, l.sql)
+				if perr != nil {
+					return nil, fmt.Errorf("layer '%v' problem probing bounds-backed MOS custom SQL: %v", lName, perr)
+				}
+				if contract.HasBounds && contract.ValidMOSRows >= codec.MinValidMOSRows {
+					l.isMapplGIS = true
+					l.mapplSource = codec.MapplGISSQLSample
+					log.Infof("layer '%v': bounds-backed MOS custom SQL contract detected (source %v, %v valid MOS sample rows)", lName, l.mapplSource, contract.ValidMOSRows)
+				} else {
+					if !contract.HasBounds {
+						log.Warnf("layer '%v': bounds-backed MOS custom SQL did not expose the configured bounds columns %v; the !BBOX! predicate will filter on missing columns", lName, l.bboxFields)
+					}
+					if contract.ValidMOSRows < codec.MinValidMOSRows {
+						log.Warnf("layer '%v': bounds-backed MOS custom SQL sample carried %v decodable MOS rows (need %v)", lName, contract.ValidMOSRows, codec.MinValidMOSRows)
+					}
+				}
+			}
 		} else {
 			// Tablename and Fields will be used to build the query.
 			// We need to do some work. We need to check to see Fields contains the geom and gid fields
@@ -1049,6 +1074,102 @@ func blobBytes(v interface{}) ([]byte, bool) {
 		return []byte(val), true
 	case *sql.NullString:
 		return []byte(val.String), true
+	}
+	return nil, false
+}
+
+// probeMOSCustomSQLContract samples the MOS layer's custom SQL (tokens
+// neutralized, no spatial filter) and runs the common
+// InspectSQLGeometryContract probe over it: bounds columns presence plus at
+// least MinValidMOSRows decodable MOS geometries with coordinates. The
+// sample reads at most codec.InspectionSampleLimit rows. SystemInfo rows are
+// skipped, never applied: SQL-sample detection carries no projection
+// contract.
+func (p Provider) probeMOSCustomSQLContract(l *Layer, customSQL string) (codec.SQLGeometryContract, error) {
+	// neutralize tokens that could filter out all rows during inspection
+	sql := strings.Replace(customSQL, "!ZOOM!", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24", 1)
+	sql = strings.ReplaceAll(sql, bboxToken, "1=1")
+
+	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
+	sql, err := replaceTokens(p.dbVersion, sql, l, l.GeomType(), l.SRID(), tile, true)
+	if err != nil {
+		return codec.SQLGeometryContract{}, err
+	}
+
+	sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
+
+	// Cap the probe at the shared sample window (docs/provider-contract.md)
+	sql = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sql), ";"))
+	sql = fmt.Sprintf("SELECT TOP %v * FROM (%v) AS __tegola_bounds_probe", codec.InspectionSampleLimit, sql)
+
+	rows, err := p.pool.QueryContext(context.Background(), sql)
+	if err != nil {
+		return codec.SQLGeometryContract{}, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	columnTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return codec.SQLGeometryContract{}, err
+	}
+	columns := make([]string, len(columnTypes))
+	for i, ct := range columnTypes {
+		columns[i] = ct.Name()
+	}
+
+	return codec.InspectSQLGeometryContract(
+		func(scan func(dest ...interface{}) error) (bool, error) {
+			if !rows.Next() {
+				return false, rows.Err()
+			}
+			dest := make([]interface{}, len(columns))
+			for i := range dest {
+				dest[i] = new(interface{})
+			}
+			if err := scan(dest...); err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+		columns,
+		l.GeomFieldName(),
+		l.bboxFields,
+		func(value interface{}) (geom.Geometry, error) {
+			if value == nil {
+				return nil, fmt.Errorf("nil geometry value")
+			}
+			// driver rows scanned via *interface{} arrive as the raw
+			// driver value; normalize BLOB-like values to bytes.
+			if raw, ok := mosProbeBytes(value); ok {
+				if mos.IsSystemInfoBlob(raw) {
+					// LayerInfo blob describes the layer, not a geometry:
+					// skip, never decode or apply.
+					return nil, fmt.Errorf("system info blob")
+				}
+				return codec.DecodeMOS(raw, l.mosConfig)
+			}
+			return decodeGeometryValue(value, codec.FormatMOS, l.mosConfig)
+		},
+	)
+}
+
+// mosProbeBytes normalizes values a scanned *interface{} may hold for a MOS
+// BLOB column: []byte, string, driver.Lob payloads or their byte buffers.
+func mosProbeBytes(v interface{}) ([]byte, bool) {
+	switch val := v.(type) {
+	case []byte:
+		return val, true
+	case string:
+		return []byte(val), true
+	case *driver.Lob:
+		if val == nil {
+			return nil, false
+		}
+		if w, ok := val.Writer().(*bytes.Buffer); ok {
+			return w.Bytes(), true
+		}
+	case *bytes.Buffer:
+		return val.Bytes(), true
 	}
 	return nil, false
 }

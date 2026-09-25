@@ -1,15 +1,14 @@
 package gpkg
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/internal/log"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 // sqliteQuoteIdent quotes a SQLite identifier, escaping embedded backticks
@@ -27,18 +26,23 @@ func sqliteQuoteIdent(name string) string {
 // calculated from the tile's unbuffered Web Mercator extent, matching the
 // PostGIS provider.
 func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) string {
-	// For custom-SQL MOS layers the !BBOX! token expands to the bounds
-	// predicate over the configured bounds fields with MOS raw scaling;
-	// for native gpkg geometry and tablename layers the buffered extent
-	// comparison is used as before.
+	// For custom-SQL native gpkg geometry layers the !BBOX! token expands
+	// to the bounds predicate over the resolved bounds fields (source CRS,
+	// no MOS scaling); when no fields were resolved the legacy unquoted
+	// lowercase names are kept so hand-rolled fixtures still work.
 	bboxPredicate := func() string {
-		return fmt.Sprintf(
-			"minx <= %v AND maxx >= %v AND miny <= %v AND maxy >= %v",
-			bboxExtent.MaxX(),
-			bboxExtent.MinX(),
-			bboxExtent.MaxY(),
-			bboxExtent.MinY(),
+		fields := layer.bboxFields
+		if fields == (codec.BBoxFields{}) {
+			fields = codec.BBoxFields{"minx", "maxx", "miny", "maxy"}
+		}
+		predicate, err := codec.BuildBoundsPredicate(
+			fields, bboxExtent, codec.BoundsSourceCRS, layer.mosConfig, sqliteQuoteIdent,
 		)
+		if err != nil {
+			log.Errorf("layer (%v): %v; spatial filter disabled", layer.name, err)
+			return "1=1"
+		}
+		return predicate
 	}
 	if layer.tablename == "" && layer.geometryFormat == codec.FormatMOS {
 		predicate, err := codec.BuildBoundsPredicate(
@@ -115,18 +119,6 @@ func permissiveTokenReplacer() *strings.Replacer {
 		"!BOX!", "1=1",
 		"!bbox!", "1=1",
 	)
-}
-
-// buildDeferredInspectionSQL builds the runtime system-info pre-query for a
-// tile-dependent custom-SQL layer (R6): zoom comparisons cover all zooms and
-// the spatial filter is dropped so the sample window can reach MOS
-// system-info blobs regardless of the requested tile, while tile position
-// tokens are replaced with the current tile's values so the statement is
-// valid SQL.
-func buildDeferredInspectionSQL(layer *Layer, tile provider.Tile) string {
-	qtext := permissiveTokenReplacer().Replace(trimTrailingSemicolon(uppercaseTokens(layer.sql)))
-	inspectionExtent, _ := tile.BufferedExtent()
-	return replaceTokens(qtext, layer, tile, inspectionExtent)
 }
 
 func trimTrailingSemicolon(sqlText string) string {

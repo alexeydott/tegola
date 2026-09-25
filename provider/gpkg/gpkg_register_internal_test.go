@@ -56,7 +56,7 @@ func TestTableColumnsAndPK(t *testing.T) {
 			if !reflect.DeepEqual(cols, tc.expectedCols) {
 				t.Errorf("extract col, expected %v got %v", tc.expectedCols, cols)
 			}
-			if pk != tc.expectedPK {
+			if len(pk) != 1 || pk[0] != tc.expectedPK {
 				t.Errorf("extract PK, expected %v got %v", tc.expectedPK, pk)
 			}
 		}
@@ -105,9 +105,9 @@ func TestTableColumnsAndPK(t *testing.T) {
 			expectedPK: "id",
 		},
 		"missing table": {
-			tableName:  "does_not_exist",
-			createSQL:  `CREATE TABLE tablename3 ( id INTEGER PRIMARY KEY, "geom" BLOB)`,
-			expectErr:  true,
+			tableName: "does_not_exist",
+			createSQL: `CREATE TABLE tablename3 ( id INTEGER PRIMARY KEY, "geom" BLOB)`,
+			expectErr: true,
 		},
 	}
 
