@@ -1,6 +1,7 @@
 package geometrycodec_test
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -86,11 +87,15 @@ func TestValidateRawCustomSQL(t *testing.T) {
 			sql:         "SELECT id, geom FROM t WHERE ST_Intersects(geom, !bbox!)",
 			expectedErr: []string{"wkt_layer", "wkt"},
 		},
-		"raw mos box token rejected": {
-			layerName:   "mos_layer",
-			format:      geometrycodec.FormatMOS,
-			sql:         "SELECT id, geom FROM t WHERE minx <= !BOX!",
-			expectedErr: []string{"mos_layer", "!BOX!", "mos"},
+		"raw mos with bbox accepted": {
+			layerName: "mos_layer",
+			format:    geometrycodec.FormatMOS,
+			sql:       "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM t WHERE MAXX >= !BBOX!",
+		},
+		"raw mos lowercase bbox accepted": {
+			layerName: "mos_layer",
+			format:    geometrycodec.FormatMOS,
+			sql:       "SELECT id, geom FROM t WHERE minx <= !bbox!",
 		},
 		"raw without bbox accepted": {
 			layerName: "roads",
@@ -111,6 +116,333 @@ func TestValidateRawCustomSQL(t *testing.T) {
 			layerName: "roads",
 			format:    geometrycodec.FormatWKB,
 			sql:       "",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
+
+func TestRequireBBoxCustomSQL(t *testing.T) {
+	type tcase struct {
+		layerName   string
+		format      string
+		sql         string
+		expectedErr []string
+	}
+
+	fn := func(tc tcase) func(*testing.T) {
+		return func(t *testing.T) {
+			err := geometrycodec.RequireBBoxCustomSQL(tc.layerName, tc.format, tc.sql, "!BBOX!", "!BOX!")
+			if len(tc.expectedErr) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %v, got nil", tc.expectedErr)
+			}
+			for _, want := range tc.expectedErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q must contain %q", err.Error(), want)
+				}
+			}
+		}
+	}
+
+	tests := map[string]tcase{
+		"mos with bbox ok": {
+			layerName: "mos_layer",
+			format:    geometrycodec.FormatMOS,
+			sql:       "SELECT id, geom FROM t WHERE MAXX >= !BBOX!",
+		},
+		"mos with box alias ok": {
+			layerName: "mos_layer",
+			format:    geometrycodec.FormatMOS,
+			sql:       "SELECT id, geom FROM t WHERE MAXX >= !BOX!",
+		},
+		"mos without bbox rejected": {
+			layerName:   "mos_layer",
+			format:      geometrycodec.FormatMOS,
+			sql:         "SELECT id, geom FROM t",
+			expectedErr: []string{"mos_layer", "mos", "must use !BBOX!"},
+		},
+		"native without bbox ok": {
+			layerName: "native_layer",
+			format:    "",
+			sql:       "SELECT id, geom FROM t",
+		},
+		"wkb without bbox ok": {
+			layerName: "wkb_layer",
+			format:    geometrycodec.FormatWKB,
+			sql:       "SELECT id, geom FROM t",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
+
+func TestResolveBBoxFields(t *testing.T) {
+	type tcase struct {
+		provider   map[string]interface{}
+		layer      map[string]interface{}
+		layerName  string
+		expected   [4]string
+		expectedEr bool
+	}
+
+	fn := func(tc tcase) func(*testing.T) {
+		return func(t *testing.T) {
+			var prov, lay dict.Dicter
+			if tc.provider != nil {
+				prov = dict.Dict(tc.provider)
+			}
+			if tc.layer != nil {
+				lay = dict.Dict(tc.layer)
+			}
+			fields, err := geometrycodec.ResolveBBoxFields(prov, lay, tc.layerName)
+			if tc.expectedEr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if fields != geometrycodec.BBoxFields(tc.expected) {
+				t.Errorf("expected %v, got %v", tc.expected, fields)
+			}
+		}
+	}
+
+	tests := map[string]tcase{
+		"defaults": {
+			layerName: "l1",
+			expected:  [4]string{"MINX", "MAXX", "MINY", "MAXY"},
+		},
+		"provider override": {
+			provider:  map[string]interface{}{"bbox_minx_fieldname": "XMIN"},
+			layerName: "l2",
+			expected:  [4]string{"XMIN", "MAXX", "MINY", "MAXY"},
+		},
+		"layer overrides provider per field": {
+			provider:  map[string]interface{}{"bbox_minx_fieldname": "XMIN", "bbox_maxx_fieldname": "XMAX"},
+			layer:     map[string]interface{}{"bbox_maxx_fieldname": "RIGHT"},
+			layerName: "l3",
+			expected:  [4]string{"XMIN", "RIGHT", "MINY", "MAXY"},
+		},
+		"invalid provider value errors": {
+			provider:   map[string]interface{}{"bbox_minx_fieldname": 42},
+			layerName:  "l4",
+			expectedEr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
+
+func TestBBoxFieldsIsBBoxField(t *testing.T) {
+	fields := geometrycodec.BBoxFields{"minx", "MAXX", "MinY", "maxy"}
+	for _, tc := range []struct {
+		name     string
+		expected bool
+	}{
+		{"MINX", true},
+		{"maxx", true},
+		{" miny ", true},
+		{"MAXY", true},
+		{"okey", false},
+		{"geometry", false},
+		{"", false},
+	} {
+		if got := fields.IsBBoxField(tc.name); got != tc.expected {
+			t.Errorf("IsBBoxField(%q) = %v, expected %v", tc.name, got, tc.expected)
+		}
+	}
+}
+
+func TestBuildBoundsPredicate(t *testing.T) {
+	type tcase struct {
+		name      string
+		fields    geometrycodec.BBoxFields
+		extent    *geom.Extent
+		mode      geometrycodec.BoundsPredicateMode
+		mosConfig geometrycodec.MOSConfig
+		quote     func(string) string
+		expected  string
+		expectErr bool
+	}
+
+	fn := func(tc tcase) func(*testing.T) {
+		return func(t *testing.T) {
+			got, err := geometrycodec.BuildBoundsPredicate(tc.fields, tc.extent, tc.mode, tc.mosConfig, tc.quote)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.expected {
+				t.Errorf("expected %q, got %q", tc.expected, got)
+			}
+		}
+	}
+
+	extent := geom.NewExtent([2]float64{10.0, 20.0}, [2]float64{30.0, 40.0})
+
+	tests := map[string]tcase{
+		"crs mode no scaling": {
+			fields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+			extent: extent,
+			mode:   geometrycodec.BoundsSourceCRS,
+			expected: "MAXX >= 10 AND MINX <= 30 AND MAXY >= 20 AND MINY <= 40",
+		},
+		"mos mode scales and rounds": {
+			fields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+			extent: extent,
+			mode:   geometrycodec.BoundsMOSRaw,
+			mosConfig: geometrycodec.MOSConfig{Precision: 0, UnitFactor: 1},
+			expected: "MAXX >= 10 AND MINX <= 30 AND MAXY >= 20 AND MINY <= 40",
+		},
+		"mos mode fractional precision floors and ceils": {
+			fields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+			extent: geom.NewExtent([2]float64{10.4, 20.4}, [2]float64{30.4, 40.4}),
+			mode:   geometrycodec.BoundsMOSRaw,
+			mosConfig: geometrycodec.MOSConfig{Precision: 1, UnitFactor: 1},
+			expected: "MAXX >= 104 AND MINX <= 304 AND MAXY >= 204 AND MINY <= 404",
+		},
+		"mos mode invalid scale errors": {
+			fields:    geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+			extent:    extent,
+			mode:      geometrycodec.BoundsMOSRaw,
+			mosConfig: geometrycodec.MOSConfig{Precision: 0, UnitFactor: 0},
+			expectErr: true,
+		},
+		"nil extent errors": {
+			fields:    geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+			extent:    nil,
+			mode:      geometrycodec.BoundsSourceCRS,
+			expectErr: true,
+		},
+		"quoting applied": {
+			fields: geometrycodec.BBoxFields{"min x", "max x", "min y", "max y"},
+			extent: extent,
+			mode:   geometrycodec.BoundsSourceCRS,
+			quote:  func(s string) string { return "`" + s + "`" },
+			expected: "`max x` >= 10 AND `min x` <= 30 AND `max y` >= 20 AND `min y` <= 40",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, fn(tc))
+	}
+}
+
+func TestInspectSQLGeometryContract(t *testing.T) {
+	type tcase struct {
+		name         string
+		columns      []string
+		rows         [][]interface{}
+		geometryFeed []interface{} // one per row: value passed to decode
+		bboxFields   geometrycodec.BBoxFields
+		expected     geometrycodec.SQLGeometryContract
+	}
+
+	fn := func(tc tcase) func(*testing.T) {
+		return func(t *testing.T) {
+			rowIdx := 0
+			rows := func(scan func(dest ...interface{}) error) (bool, error) {
+				if rowIdx >= len(tc.rows) {
+					return false, nil
+				}
+				row := tc.rows[rowIdx]
+				rowIdx++
+				if err := scan(row...); err != nil {
+					return false, err
+				}
+				return true, nil
+			}
+			decodeIdx := 0
+			decode := func(value interface{}) (geom.Geometry, error) {
+				if tc.geometryFeed != nil && decodeIdx < len(tc.geometryFeed) {
+					v := tc.geometryFeed[decodeIdx]
+					decodeIdx++
+					if v == nil {
+						return nil, fmt.Errorf("undecodable")
+					}
+					return geom.Point{1, 2}, nil
+				}
+				decodeIdx++
+				if value == nil {
+					return nil, fmt.Errorf("undecodable")
+				}
+				return geom.Point{1, 2}, nil
+			}
+			contract, err := geometrycodec.InspectSQLGeometryContract(rows, tc.columns, "geom", tc.bboxFields, decode)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if contract.ValidMOSRows != tc.expected.ValidMOSRows {
+				t.Errorf("ValidMOSRows = %v, expected %v", contract.ValidMOSRows, tc.expected.ValidMOSRows)
+			}
+			if contract.HasBounds != tc.expected.HasBounds {
+				t.Errorf("HasBounds = %v, expected %v", contract.HasBounds, tc.expected.HasBounds)
+			}
+			if contract.BoundsFields != tc.expected.BoundsFields {
+				t.Errorf("BoundsFields = %v, expected %v", contract.BoundsFields, tc.expected.BoundsFields)
+			}
+		}
+	}
+
+	bbox := geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"}
+
+	tests := map[string]tcase{
+		"bounds columns detected, valid rows counted": {
+			name:    "valid contract",
+			columns: []string{"OKEY", "MINX", "MAXX", "MINY", "MAXY", "geom"},
+			rows: [][]interface{}{
+				{1, 0, 10, 0, 10, "geom1"},
+				{2, 5, 15, 5, 15, "geom2"},
+				{3, 9, 19, 9, 19, "geom3"},
+			},
+			bboxFields: bbox,
+			expected: geometrycodec.SQLGeometryContract{
+				BoundsFields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+				ValidMOSRows: 3,
+				HasBounds:    true,
+			},
+		},
+		"missing bounds columns": {
+			name:       "no bounds",
+			columns:    []string{"OKEY", "geom"},
+			rows:       [][]interface{}{{1, "g1"}, {2, "g2"}},
+			bboxFields: bbox,
+			expected: geometrycodec.SQLGeometryContract{
+				BoundsFields: geometrycodec.BBoxFields{},
+				ValidMOSRows: 2,
+				HasBounds:    false,
+			},
+		},
+		"case-insensitive bounds match": {
+			name:       "case insensitive",
+			columns:    []string{"minx", "MaxX", "MINY", "maxy", "geom"},
+			rows:       [][]interface{}{{0, 10, 0, 10, "g1"}},
+			bboxFields: bbox,
+			expected: geometrycodec.SQLGeometryContract{
+				BoundsFields: geometrycodec.BBoxFields{"minx", "MaxX", "MINY", "maxy"},
+				ValidMOSRows: 1,
+				HasBounds:    true,
+			},
 		},
 	}
 
@@ -715,6 +1047,8 @@ func TestResolveGeometryType(t *testing.T) {
 	tests := map[string]tcase{
 		"missing key":         {layerConf: dict.Dict{}, expected: nil},
 		"empty value":         {layerConf: dict.Dict{"geometry_type": ""}, expected: nil},
+		"auto alias":          {layerConf: dict.Dict{"geometry_type": "auto"}, expected: nil},
+		"auto alias padded":   {layerConf: dict.Dict{"geometry_type": "  AUTO  "}, expected: nil},
 		"point":               {layerConf: dict.Dict{"geometry_type": "point"}, expected: geom.Point{}},
 		"canonical case":      {layerConf: dict.Dict{"geometry_type": "LineString"}, expected: geom.LineString{}},
 		"padded spaces":       {layerConf: dict.Dict{"geometry_type": "  Polygon  "}, expected: geom.Polygon{}},

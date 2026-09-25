@@ -388,6 +388,15 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 		layer.mosConfig = codec.MergeMOSConfig(layer.mosConfig, layerMosCfg)
 
+		// Bounds-backed MOS SQL: resolve the bounds field names with the
+		// common layer > provider > defaults precedence. Used by the
+		// !BBOX! predicate for bounds-backed MOS custom SQL and excluded
+		// from feature tags.
+		layer.bboxFields, err = codec.ResolveBBoxFields(config, layerConf, layerName)
+		if err != nil {
+			return nil, err
+		}
+
 		// The effective layer format is now known: MOS quantization settings
 		// are irrelevant for explicitly raw formats. With geometry_format
 		// auto they are kept, since a runtime MapplGIS LayerInfo blob can
@@ -410,6 +419,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 			if mInfo.IsMapplGIS {
 				layer.isMapplGIS = true
+				layer.mapplSource = codec.MapplGISTableCanonical
 				layer.mapplSysInfo = mInfo.SystemInfo
 				layer.geomFieldname = mapplgis.GeometryField
 				// A02: the MapplGIS contract fixes the ID field to the
@@ -512,13 +522,18 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 			layer.sql = customSQL
 
-			// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use
-			// the native-spatial !BBOX! token; reject it up front instead of
-			// generating invalid per-tile SQL. The auto format is exempt:
-			// runtime inspection may resolve the column to a native spatial
-			// type for which !BBOX! is valid.
+			// Raw custom-SQL contract: wkb/wkt cannot use the native-spatial
+			// !BBOX! token; reject it up front instead of generating invalid
+			// per-tile SQL. Bounds-backed MOS custom SQL is permitted — and
+			// required to carry !BBOX! — because the token expands into the
+			// configured bounds-fields predicate. The auto format is exempt
+			// from both rules: runtime inspection may resolve the column to
+			// a native spatial type for which !BBOX! is valid.
 			if verr := codec.ValidateRawCustomSQL(layerName, layerGeometryFormat, customSQL, conf.BboxToken); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, verr)
+			}
+			if rerr := codec.RequireBBoxCustomSQL(layerName, layerGeometryFormat, customSQL, conf.BboxToken, "!BOX!"); rerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, rerr)
 			}
 
 			if gtypeExplicit {

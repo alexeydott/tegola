@@ -2,13 +2,13 @@ package mysql
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
+	"github.com/go-spatial/tegola/internal/log"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 )
@@ -33,7 +33,7 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	}
 
 	bboxSQL := "1=1"
-	if !layer.deferredInspection && !basic.IsSyntheticSRID(layer.srid) {
+	if layer.geometryFormat != GeometryFormatMOS && !layer.deferredInspection && !basic.IsSyntheticSRID(layer.srid) {
 		bboxSQL = fmt.Sprintf(
 			"ST_Intersects(%v, %v)",
 			geomRef,
@@ -43,10 +43,19 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 
 	// MOS blobs are opaque proprietary binaries: the server has no geometry
 	// functions over them. EGKO MOS tables nevertheless expose indexed raw
-	// bounds (MINX/MAXX/MINY/MAXY), so use those as a coarse SQL filter and
-	// keep the exact decoded-geometry check in TileFeatures.
+	// bounds (MINX/MAXX/MINY/MAXY by default; configurable via the common
+	// bbox_*_fieldname keys), so use those as a coarse SQL filter and keep
+	// the exact decoded-geometry check in TileFeatures. When the bounds
+	// predicate cannot be built (invalid quantization, nil extent), the
+	// filter degrades to 1=1 and TileFeatures' in-memory check stays
+	// authoritative.
 	if layer.geometryFormat == GeometryFormatMOS {
-		bboxSQL = mosBoundsSQL(layer, bboxExtent)
+		mosSQL, merr := mosBoundsSQL(layer, bboxExtent)
+		if merr != nil {
+			log.Errorf("layer (%v): %v; falling back to in-memory filtering", layer.name, merr)
+		} else {
+			bboxSQL = mosSQL
+		}
 	}
 
 	extent, _ := tile.Extent()
@@ -104,41 +113,16 @@ func geomFromWKBSQL(value string, srid uint64) string {
 // mosBoundsSQL builds a coarse indexed filter for the raw bounds stored
 // alongside MOS blobs. The bounds use the quantized MOS coordinate units,
 // while bboxExtent is expressed in the layer CRS metres after applying
-// mosUnitsFactor.
-func mosBoundsSQL(layer *Layer, bboxExtent *geom.Extent) string {
-	if bboxExtent == nil {
-		return "1=1"
-	}
-
-	precisionScale := math.Pow(10, layer.mosConfig.Precision)
-	unitFactor := layer.mosConfig.UnitFactor
-	if math.IsNaN(precisionScale) || math.IsInf(precisionScale, 0) || precisionScale <= 0 ||
-		math.IsNaN(unitFactor) || math.IsInf(unitFactor, 0) || unitFactor <= 0 {
-		return "1=1"
-	}
-
-	rawScale := precisionScale / unitFactor
-	if math.IsNaN(rawScale) || math.IsInf(rawScale, 0) || rawScale <= 0 {
-		return "1=1"
-	}
-
-	minX := math.Floor(bboxExtent.MinX() * rawScale)
-	maxX := math.Ceil(bboxExtent.MaxX() * rawScale)
-	minY := math.Floor(bboxExtent.MinY() * rawScale)
-	maxY := math.Ceil(bboxExtent.MaxY() * rawScale)
-	for _, value := range []float64{minX, maxX, minY, maxY} {
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return "1=1"
-		}
-	}
-
-	format := func(value float64) string {
-		return strconv.FormatFloat(value, 'f', 0, 64)
-	}
-	return fmt.Sprintf(
-		"%sMINX <= %s AND %sMAXX >= %s AND %sMINY <= %s AND %sMAXY >= %s",
-		"", format(maxX), "", format(minX),
-		"", format(maxY), "", format(minY),
+// mosUnitsFactor. Field names come from the resolved layer BBoxFields
+// (layer > provider > defaults). An invalid scale is a configuration error,
+// not a silent filter bypass.
+func mosBoundsSQL(layer *Layer, bboxExtent *geom.Extent) (string, error) {
+	return codec.BuildBoundsPredicate(
+		layer.bboxFields,
+		bboxExtent,
+		codec.BoundsMOSRaw,
+		layer.mosConfig,
+		quoteIdentifier,
 	)
 }
 

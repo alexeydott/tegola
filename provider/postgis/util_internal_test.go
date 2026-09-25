@@ -255,6 +255,7 @@ func TestDecipherFields(t *testing.T) {
 					context.TODO(),
 					geoFieldname,
 					idFieldname,
+					nil,
 					descriptions,
 					vals,
 				)

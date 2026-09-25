@@ -50,29 +50,63 @@ reprojected geometry — one consistent CRS contract end to end.
 | Native | Provider spatial predicate against the indexed geometry (e.g. `&&`, MBR, RTree) | Exact bounding-box check |
 | `wkb` | None (raw bytes are not database geometries); `mysql` wraps the WKB column in `ST_GeomFromWKB` as a provider optimization | Exact bounding-box check |
 | `wkt` | None; `mysql` wraps the WKT column in `ST_GeomFromText` as a provider optimization | Exact bounding-box check |
-| `mos` | Provider-specific: none for `gpkg`/`hana`, indexed bounds columns (`MINX/MAXX/MINY/MAXY`) for `mysql` | Exact bounding-box check |
+| `mos` | Bounds-backed SQL: indexed bounds columns (`MINX/MAXX/MINY/MAXY` by default) filtered with `!BBOX!`; mandatory for custom SQL | Exact bounding-box check |
 
 Because raw formats cannot use the database spatial index (except the
-MySQL bounds-column case), spatial selectivity comes from the in-memory
+bounds-backed MOS case), spatial selectivity comes from the in-memory
 bounding-box check applied to every decoded feature. The MySQL
 `ST_GeomFromWKB`/`ST_GeomFromText` wrapping is only a server-side coarse
 filter (a provider optimization, not an index use); the exact in-memory
 bounding-box check remains mandatory for every raw format.
 
+### Bounds-backed MOS SQL (`!BBOX!` over bounds columns)
+
+The `mos` format stores each feature's raw bounds in four numeric columns
+(EGKO MapplGIS convention: `MINX`, `MAXX`, `MINY`, `MAXY` by default). These
+are the only server-side filter a raw MOS column can support: for `mos`
+layers the `!BBOX!` token (and `!BOX!`) expands into the bounds predicate
+
+```
+<maxx> >= tile.maxx AND <minx> <= tile.minx AND <maxy> >= tile.maxy AND <miny> <= tile.miny
+```
+
+scaled from the tile metres by the layer's MOS quantization
+(floor/ceil x 10^precision / unit-factor), so the comparison runs in the
+same integer units the bounds columns store.
+
+The four columns are configurable with the common config keys (layer level
+overrides provider level, per field):
+
+- `bbox_minx_fieldname` (default `MINX`)
+- `bbox_maxx_fieldname` (default `MAXX`)
+- `bbox_miny_fieldname` (default `MINY`)
+- `bbox_maxy_fieldname` (default `MAXY`)
+
+Columns resolved this way are excluded from the feature tags: they are
+implementation details of the bounds contract, not feature attributes.
+
 ### Raw formats and custom SQL
 
-Custom SQL (`sql` key) combined with a raw `geometry_format` (`wkb`, `wkt`,
-`mos`) must **not** use the `!BBOX!` token (nor its `!BOX!` alias): its
-expansion assumes a native spatial column (e.g. `geom && ST_MakeEnvelope(...)`
-or a `minx`/`maxx` column predicate), which a raw BLOB/TEXT column does not
-provide. Providers reject such custom SQL at startup with an error naming the
-layer and the offending token — remove `!BBOX!` from the custom SQL; the exact
-in-memory bounding-box filter is always applied for raw formats. Custom SQL
-without `!BBOX!` works for raw formats in every provider, so the same
-configuration behaves identically across `postgis`, `hana`, `gpkg`, and
-`mysql`. The `auto` format of `mysql` is exempt from the startup check because
-runtime inspection may resolve the column to a native spatial type for which
-`!BBOX!` is valid.
+Custom SQL (`sql` key) with a raw `geometry_format`:
+
+- `mos` **must** use `!BBOX!` (or `!BOX!`): the bounds predicate over the
+  configured bounds fields is the only server-side selectivity a raw MOS
+  column supports. Providers reject bounds-backed MOS custom SQL without the
+  token at startup with an error naming the layer. As a registration-time
+  sanity probe, providers additionally sample the custom SQL result and warn
+  when the four bounds columns or decodable MOS rows are missing
+  (`MapplGISSource` = `sql-sample`).
+- `wkb`/`wkt` must **not** use `!BBOX!` (nor its `!BOX!` alias): its
+  expansion assumes a native spatial column (e.g. `geom && ST_MakeEnvelope(...)`
+  or a `minx`/`maxx` column predicate), which a raw BLOB/TEXT column does not
+  provide. Providers reject such custom SQL at startup with an error naming the
+  layer and the offending token — remove `!BBOX!` from the custom SQL; the exact
+  in-memory bounding-box filter is always applied for raw formats. Custom SQL
+  without `!BBOX!` works for raw formats in every provider, so the same
+  configuration behaves identically across `postgis`, `hana`, `gpkg`, and
+  `mysql`. The `auto` format of `mysql` is exempt from the startup check because
+  runtime inspection may resolve the column to a native spatial type for which
+  `!BBOX!` is valid.
 
 ## GeometryCollection behaviour
 

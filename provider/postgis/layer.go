@@ -36,9 +36,17 @@ type Layer struct {
 	// MapplGIS table contract at registration (provider/mapplgis). Only
 	// set for tablename layers; custom SQL is never auto-detected.
 	isMapplGIS bool
+	// mapplSource distinguishes how the layer was detected as MapplGIS:
+	// canonical table detection (SystemInfo guaranteed) or the SQL sample
+	// probe (no SystemInfo; explicit CRS config required).
+	mapplSource codec.MapplGISSource
 	// mapplSysInfo is the parsed layer self-description of a detected
-	// MapplGIS table. Valid only when isMapplGIS is true.
+	// MapplGIS table. Valid only when mapplSource is MapplGISTableCanonical.
 	mapplSysInfo mos.SystemInfo
+	// bboxFields holds the resolved bounds field names (layer > provider >
+	// defaults) backing the bounds-backed custom-SQL !BBOX! predicate for
+	// raw (MOS) layers, and excluded from feature tags.
+	bboxFields codec.BBoxFields
 }
 
 func (l Layer) Name() string {

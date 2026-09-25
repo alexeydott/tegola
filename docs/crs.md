@@ -54,6 +54,13 @@ providers (not just MySQL):
   MOS layers use the system-info projection (see
   [geometry-formats.md](geometry-formats.md)).
 
+Bounds-backed MOS custom SQL builds its `!BBOX!` predicate in the layer's
+source CRS and then converts the tile extent into the quantized raw MOS
+units (floor/ceil scaling by `10^precision / unit factor`). Unlike a
+MapplGIS table, SQL sample detection never decodes a
+`MapplGIS LayerInfo projection`, so a `mos` custom-SQL layer must configure
+its source CRS (`srid` or `crs_defn`) explicitly.
+
 The `MapplGIS LayerInfo projection` blob is the shared source-derived CRS for
 layers of **every** standard provider whose table was identified as a
 MapplGIS table at registration (structural detection: DDL + primary key +

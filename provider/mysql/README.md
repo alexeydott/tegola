@@ -199,7 +199,7 @@ registered SRS. MOS layers continue to use their indexed raw-bounds filter.
 
 The following tokens are supported in custom `sql` (case-insensitive) and behave identically to the postgis provider:
 
-- `!BBOX!` — for native spatial geometries, replaced with `ST_Intersects(<geom_field>, ST_GeomFromText('POLYGON(...)', <layer_srid>))` using the tile's buffered extent in the layer's SRID. WKT columns are wrapped with the same SRID. For MOS, replaced with an indexed `MINX`/`MAXX`/`MINY`/`MAXY` overlap predicate in the raw packed coordinate units.
+- `!BBOX!` — for native spatial geometries, replaced with `ST_Intersects(<geom_field>, ST_GeomFromText('POLYGON(...)', <layer_srid>))` using the tile's buffered extent in the layer's SRID. WKT columns are wrapped with the same SRID. For MOS, replaced with an indexed bounds-columns overlap predicate in the raw packed coordinate units. For MOS custom SQL the `!BBOX!` token is **required** and expands into the bounds-columns predicate (the bounds column names are configurable via `bbox_minx_fieldname` / `bbox_maxx_fieldname` / `bbox_miny_fieldname` / `bbox_maxy_fieldname`, defaults `MINX`/`MAXX`/`MINY`/`MAXY`); the provider verifies the token at registration.
 - `!ZOOM!`, `!Z!` — the tile's zoom (Z) value.
 - `!X!`, `!Y!` — the tile's X/Y values.
 - `!SCALE_DENOMINATOR!` — scale denominator assuming 90.7 DPI.

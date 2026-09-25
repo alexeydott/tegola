@@ -728,6 +728,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				if isMappl {
 					layer.isMapplGIS = true
+					layer.mapplSource = codec.MapplGISTableCanonical
 					log.Debugf("layer '%v': table %q detected as MapplGIS", layerName, tablename)
 				}
 			} else {
@@ -768,11 +769,21 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 			layer.sql = customSQL
 
-			// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use
-			// the native-spatial !BBOX! token; reject it up front instead of
-			// generating invalid per-tile SQL.
+			// Resolve the bounds field names (layer > provider > defaults)
+			// backing the bounds-backed custom-SQL !BBOX! predicate.
+			layer.bboxFields, err = codec.ResolveBBoxFields(config, layerConf, layerName)
+			if err != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, err)
+			}
+
+			// Raw custom-SQL contract: native gpkg geometry still cannot use
+			// the native-spatial !BBOX! token; raw formats are allowed (MOS
+			// is required to use it) with the bounds-backed predicate builder.
 			if verr := codec.ValidateRawCustomSQL(layerName, layer.geometryFormat, customSQL, conf.BboxToken, "!BOX!"); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, verr)
+			}
+			if rerr := codec.RequireBBoxCustomSQL(layerName, layer.geometryFormat, customSQL, conf.BboxToken, "!BOX!"); rerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, rerr)
 			}
 
 			if gtypeExplicit {

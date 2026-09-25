@@ -42,9 +42,18 @@ type Layer struct {
 	// MapplGIS table detection (provider/mapplgis contract). It is
 	// immutable afterwards: tile requests never repeat the detection.
 	isMapplGIS bool
+	// mapplSource distinguishes how the layer was detected as MapplGIS:
+	// canonical table detection (SystemInfo guaranteed) or the SQL sample
+	// probe (no SystemInfo; explicit CRS config required).
+	mapplSource codec.MapplGISSource
 	// mapplSysInfo is the layer self-description parsed from the OKEY = 1
-	// row of a detected MapplGIS table. Valid only when isMapplGIS is true.
+	// row of a detected MapplGIS table. Valid only when mapplSource is
+	// MapplGISTableCanonical.
 	mapplSysInfo mos.SystemInfo
+	// bboxFields holds the resolved bounds field names (layer > provider >
+	// defaults) used by the bounds-backed MOS !BBOX! predicate and excluded
+	// from feature tags.
+	bboxFields codec.BBoxFields
 }
 
 func (l Layer) Name() string            { return l.name }
@@ -53,6 +62,10 @@ func (l Layer) SRID() uint64            { return l.srid }
 func (l Layer) IDFieldName() string     { return l.idFieldname }
 func (l Layer) GeomFieldName() string   { return l.geomFieldname }
 
-// IsMapplGIS reports whether the layer was detected as a MapplGIS table at
-// registration time.
+// IsMapplGIS reports whether the layer was detected as MapplGIS at
+// registration time (either table canonical or SQL sample).
 func (l Layer) IsMapplGIS() bool { return l.isMapplGIS }
+
+// MapplGISource reports the detection source. SystemInfo is only guaranteed
+// for MapplGISTableCanonical.
+func (l Layer) MapplGISource() codec.MapplGISSource { return l.mapplSource }

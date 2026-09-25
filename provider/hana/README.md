@@ -63,8 +63,9 @@ id_fieldname = "gid"
 - `geometry_format` (string): [Optional] layer-level geometry format override: `wkb`, `wkt` or `mos`. Overrides the provider-level default.
 - `mos_precision` / `mos_units` (int / string): [Optional] layer-level MOS overrides (only with `geometry_format = "mos"`). Explicit values always win over the `MapplGIS LayerInfo` self-description blob. See [docs/geometry-formats.md](../../docs/geometry-formats.md).
 - `geometry_type` (string): [Optional] the layer geometry type. If not set, the table will be inspected at startup to try and infer the gemetry type. Valid values are: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`.
+- `bbox_minx_fieldname` / `bbox_maxx_fieldname` / `bbox_miny_fieldname` / `bbox_maxy_fieldname` (string): [Optional] bounds columns used by the coarse `!BBOX!` filter for raw-format (`wkb`/`wkt`/`mos`) layers, layer level overrides provider level, defaults `MINX`/`MAXX`/`MINY`/`MAXY`. Resolved bounds columns are excluded from feature tags.
 - `sql` (string): [*Required] custom SQL to use use. Required if `tablename` is not defined. Supports the following tokens:
-  - `!BBOX!` - [Required] will be replaced with the bounding box of the tile before the query is sent to the database. `!bbox!` and`!BOX!` are supported as well for compatibilitiy with queries from Mapnik and MapServer styles.
+  - `!BBOX!` - [Required] will be replaced with the bounding box of the tile before the query is sent to the database. `!bbox!` and`!BOX!` are supported as well for compatibilitiy with queries from Mapnik and MapServer styles. For MOS custom SQL the token expands into a bounds-columns predicate over the configured bounds fields (with MOS raw scaling) and the provider verifies its presence at registration.
   - `!ZOOM!` - [Optional] will be replaced with the "Z" (zoom) value of the requested tile.
   - `!X!` - [Optional] will be replaced with the "X" value of the requested tile.
   - `!Y!` - [Optional] will be replaced with the "Y" value of the requested tile.

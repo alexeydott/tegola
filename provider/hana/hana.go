@@ -638,6 +638,14 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		l.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
 		codec.WarnAndResetMOSParams(l.geometryFormat, &l.mosConfig, lName)
 
+		// Resolve the bounds field names (layer > provider > defaults)
+		// backing the bounds-backed custom-SQL !BBOX! predicate for raw
+		// (MOS) layers.
+		l.bboxFields, lerr = codec.ResolveBBoxFields(config, layer, lName)
+		if lerr != nil {
+			return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, lerr)
+		}
+
 		// A06: canonical MapplGIS detection runs for every tablename layer
 		// before the SRID resolution: a MapplGIS table is not a spatial
 		// table, so a layer pointing at one must be discovered here and
@@ -727,16 +735,15 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 
 		if sql != "" {
 			sql = sanitizeSQL(sql)
-			// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use
-			// the native-spatial !BBOX! token; reject it up front instead of
-			// generating invalid per-tile SQL.
+			// Raw custom-SQL contract: native HANA geometry requires the
+			// !BBOX! token; raw formats are allowed (MOS is required to
+			// use it) with the bounds-backed predicate builder replacing
+			// the spatial predicate at query time.
 			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, bboxToken); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
 			}
-			// make sure that the sql has a !BBOX! token (native formats only:
-			// raw formats filter in memory and must not require !BBOX!)
-			if !codec.IsRawFormat(l.geometryFormat) && !strings.Contains(sql, bboxToken) {
-				return nil, fmt.Errorf("SQL for layer (%v) %v is missing required token: %v", i, lName, bboxToken)
+			if rerr := codec.RequireBBoxCustomSQL(lName, l.geometryFormat, sql, bboxToken); rerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, rerr)
 			}
 			if !strings.Contains(sql, "*") {
 				if !strings.Contains(sql, geomfld) {
@@ -879,7 +886,7 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 
 	withBBox := strings.Contains(l.sql, bboxToken)
 	// normal replacer
-	sqlQuery, err = replaceTokens(p.dbVersion, sqlQuery, l.IDFieldName(), l.GeomFieldName(), l.GeomType(), l.SRID(), tile, true)
+	sqlQuery, err = replaceTokens(p.dbVersion, sqlQuery, l, l.GeomType(), l.SRID(), tile, true)
 	if err != nil {
 		return err
 	}
@@ -962,7 +969,7 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	sqlQuery = strings.Replace(sqlQuery, bboxToken, "1=1", -1)
 
 	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
-	sqlQuery, err := replaceTokens(p.dbVersion, sqlQuery, l.IDFieldName(), l.GeomFieldName(), l.GeomType(), l.SRID(), tile, true)
+	sqlQuery, err := replaceTokens(p.dbVersion, sqlQuery, l, l.GeomType(), l.SRID(), tile, true)
 	if err != nil {
 		return err
 	}
@@ -1101,7 +1108,7 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		tileBBox = sourceBBox
 	}
 
-	sqlQuery, err := replaceTokens(p.dbVersion, plyr.sql, plyr.IDFieldName(), plyr.GeomFieldName(), plyr.GeomType(), plyr.SRID(), tile, true)
+	sqlQuery, err := replaceTokens(p.dbVersion, plyr.sql, &plyr, plyr.GeomType(), plyr.SRID(), tile, true)
 	if err != nil {
 		return fmt.Errorf("error replacing layer tokens for layer (%v) SQL (%v): %w", layer, sqlQuery, err)
 	}
@@ -1164,7 +1171,7 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 			return fmt.Errorf("error running layer (%v) SQL (%v): %w", layer, sqlQuery, err)
 		}
 
-		gid, geobytes, tags, err := readRowValues(ctx, plyr.FieldDescriptions(), rowValues)
+		gid, geobytes, tags, err := readRowValues(ctx, &plyr, plyr.FieldDescriptions(), rowValues)
 		if err := ctxErr(ctx, err); err != nil {
 			return fmt.Errorf("for layer (%v) %w", plyr.Name(), err)
 		}
@@ -1257,7 +1264,7 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 			log.Debugf("SQL for Layer(%v):\n%v\n", l.Name(), l.sql)
 		}
 
-		sqlQuery, err := replaceTokens(p.dbVersion, l.sql, l.IDFieldName(), l.GeomFieldName(), l.GeomType(), l.SRID(), tile, false)
+		sqlQuery, err := replaceTokens(p.dbVersion, l.sql, &l, l.GeomType(), l.SRID(), tile, false)
 		if err := ctxErr(ctx, err); err != nil {
 			return nil, err
 		}
@@ -1342,8 +1349,15 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 	// (already quoted) table name. Unqualified tables resolve against the
 	// connection's CURRENT SCHEMA and are matched accordingly.
 	var schemaName string
-	if parts := strings.Split(tblName, "."); len(parts) == 2 {
+	var bareTableName string
+	if parts := strings.Split(tblName, "."); len(parts) >= 2 {
 		schemaName = strings.Trim(parts[0], `"`)
+		// The last part is the bare table identifier; trim per part so a
+		// fully quoted name like `"schema"."table"` does not keep embedded
+		// quote characters in the catalog predicate argument.
+		bareTableName = strings.Trim(parts[len(parts)-1], `"`)
+	} else {
+		bareTableName = strings.Trim(tblName, `"`)
 	}
 
 	// DDL columns.
@@ -1353,7 +1367,7 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 		schemaPred = `SCHEMA_NAME = ?`
 		args = append(args, schemaName)
 	}
-	args = append(args, strings.Trim(tblName, `"`))
+	args = append(args, bareTableName)
 
 	colRows, err := pool.pool.QueryContext(ctx, fmt.Sprintf(`
 		SELECT COLUMN_NAME
@@ -1382,17 +1396,17 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 
 	// Primary key columns in key order.
 	pkArgs := []interface{}{}
-	pkSchemaPred := "TABLE_SCHEMA = CURRENT_SCHEMA"
+	pkSchemaPred := "ic.SCHEMA_NAME = CURRENT_SCHEMA"
 	if schemaName != "" {
-		pkSchemaPred = "TABLE_SCHEMA = ?"
+		pkSchemaPred = "ic.SCHEMA_NAME = ?"
 		pkArgs = append(pkArgs, schemaName)
 	}
-	pkArgs = append(pkArgs, strings.Trim(tblName, `"`))
+	pkArgs = append(pkArgs, bareTableName)
 	pkRows, err := pool.pool.QueryContext(ctx, fmt.Sprintf(`
 		SELECT ic.COLUMN_NAME
 		FROM SYS.INDEX_COLUMNS ic
 		JOIN SYS.INDEXES i
-			ON i.SCHEMA_NAME = ic.INDEX_SCHEMA AND i.INDEX_NAME = ic.INDEX_NAME
+			ON i.SCHEMA_NAME = ic.SCHEMA_NAME AND i.INDEX_NAME = ic.INDEX_NAME
 		WHERE %v AND ic.TABLE_NAME = ? AND i.CONSTRAINT = 'PRIMARY KEY'
 		ORDER BY ic.POSITION`, pkSchemaPred), pkArgs...)
 	if err != nil {
@@ -1414,17 +1428,17 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 
 	// Every index with its ordered column list.
 	idxArgs := []interface{}{}
-	idxSchemaPred := "i.TABLE_SCHEMA = CURRENT_SCHEMA"
+	idxSchemaPred := "i.SCHEMA_NAME = CURRENT_SCHEMA"
 	if schemaName != "" {
-		idxSchemaPred = "i.TABLE_SCHEMA = ?"
+		idxSchemaPred = "i.SCHEMA_NAME = ?"
 		idxArgs = append(idxArgs, schemaName)
 	}
-	idxArgs = append(idxArgs, strings.Trim(tblName, `"`))
+	idxArgs = append(idxArgs, bareTableName)
 	idxRows, err := pool.pool.QueryContext(ctx, fmt.Sprintf(`
 		SELECT i.INDEX_NAME, ic.COLUMN_NAME
 		FROM SYS.INDEXES i
 		JOIN SYS.INDEX_COLUMNS ic
-			ON ic.INDEX_SCHEMA = i.SCHEMA_NAME AND ic.INDEX_NAME = i.INDEX_NAME AND ic.TABLE_NAME = i.TABLE_NAME
+			ON ic.SCHEMA_NAME = i.SCHEMA_NAME AND ic.INDEX_NAME = i.INDEX_NAME AND ic.TABLE_NAME = i.TABLE_NAME
 		WHERE %v AND i.TABLE_NAME = ?
 		ORDER BY i.INDEX_NAME, ic.POSITION`, idxSchemaPred), idxArgs...)
 	if err != nil {
@@ -1514,6 +1528,7 @@ func detectMapplGIS(ctx context.Context, pool *connectionPoolCollector, l *Layer
 		return false, fmt.Errorf("table %v apply MOS system info: %v", tblName, aerr)
 	}
 	l.isMapplGIS = true
+	l.mapplSource = codec.MapplGISTableCanonical
 	l.mapplSysInfo = info.SystemInfo
 	if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(l.srid), false, info.SystemInfo.Projection); aerr != nil {
 		return false, fmt.Errorf("table %v apply MOS projection: %v", tblName, aerr)

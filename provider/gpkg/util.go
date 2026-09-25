@@ -7,9 +7,18 @@ import (
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/config"
+	"github.com/go-spatial/tegola/internal/log"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
 )
+
+// sqliteQuoteIdent quotes a SQLite identifier, escaping embedded backticks
+// so a crafted config value cannot break out of the quoted name. Defined
+// separately from quoteIdent in gpkg.go because util.go is built without
+// the cgo tag while gpkg.go is not.
+func sqliteQuoteIdent(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
 
 // replaceTokens replaces tile and layer metadata tokens in a SQL query.
 //
@@ -18,13 +27,32 @@ import (
 // calculated from the tile's unbuffered Web Mercator extent, matching the
 // PostGIS provider.
 func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) string {
-	bboxSQL := fmt.Sprintf(
-		"minx <= %v AND maxx >= %v AND miny <= %v AND maxy >= %v",
-		bboxExtent.MaxX(),
-		bboxExtent.MinX(),
-		bboxExtent.MaxY(),
-		bboxExtent.MinY(),
-	)
+	// For custom-SQL MOS layers the !BBOX! token expands to the bounds
+	// predicate over the configured bounds fields with MOS raw scaling;
+	// for native gpkg geometry and tablename layers the buffered extent
+	// comparison is used as before.
+	bboxPredicate := func() string {
+		return fmt.Sprintf(
+			"minx <= %v AND maxx >= %v AND miny <= %v AND maxy >= %v",
+			bboxExtent.MaxX(),
+			bboxExtent.MinX(),
+			bboxExtent.MaxY(),
+			bboxExtent.MinY(),
+		)
+	}
+	if layer.tablename == "" && layer.geometryFormat == codec.FormatMOS {
+		predicate, err := codec.BuildBoundsPredicate(
+			layer.bboxFields, bboxExtent, codec.BoundsMOSRaw, layer.mosConfig, sqliteQuoteIdent,
+		)
+		if err != nil {
+			log.Errorf("layer (%v): %v; spatial filter disabled", layer.name, err)
+			predicate = "1=1"
+		}
+		bboxSQL := predicate
+		bboxPredicate = func() string { return bboxSQL }
+	}
+
+	bboxSQL := bboxPredicate()
 
 	extent, _ := tile.Extent()
 	pixelWidth := (extent.MaxX() - extent.MinX()) / 256

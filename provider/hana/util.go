@@ -131,7 +131,7 @@ func getLayerFields(pool *connectionPoolCollector, l *Layer, sql string) ([]Fiel
 	//	'tablename' param. because of this case normal SQL token replacement needs to be
 	//	applied to tablename SQL generation
 	tile := provider.NewTile(18, 0, 0, 64, tegola.WebMercator)
-	sql, err := replaceTokens(2, sql, l.IDFieldName(), l.GeomFieldName(), l.GeomType(), l.SRID(), tile, false)
+	sql, err := replaceTokens(2, sql, l, l.GeomType(), l.SRID(), tile, false)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +374,7 @@ func sanitizeSQL(sql string) string {
 // !PIXEL_HEIGHT! - the pixel height in meters, assuming 256x256 tiles
 // !GEOM_FIELD! - the geom field name
 // !GEOM_TYPE! - the geom field type if defined otherwise ""
-func replaceTokens(dbVersion uint, sql string, idFieldName string, geomFieldName string, geomFieldType geom.Geometry, srid uint64, tile provider.Tile, withBuffer bool) (string, error) {
+func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geometry, srid uint64, tile provider.Tile, withBuffer bool) (string, error) {
 	var (
 		geoType string
 	)
@@ -389,16 +389,36 @@ func replaceTokens(dbVersion uint, sql string, idFieldName string, geomFieldName
 		geoType = fmt.Sprintf("%v", geomFieldType)
 	}
 
+	bboxFilter := getBBoxFilter(dbVersion, l.geomField, srid)
+	// Raw (MOS) layers cannot use the native spatial predicate: their
+	// !BBOX! token expands to the bounds predicate over the configured
+	// bounds fields with MOS raw scaling instead. Custom SQL for MOS is
+	// required to carry the token (RequireBBoxCustomSQL).
+	if l.geometryFormat == codec.FormatMOS {
+		bboxExtent, _ := getTileExtent(tile, withBuffer)
+		sourceExtent, cerr := basic.FromWebMercatorExtent(srid, bboxExtent)
+		if cerr != nil {
+			return "", fmt.Errorf("error converting tile extent: %w", cerr)
+		}
+		predicate, perr := codec.BuildBoundsPredicate(
+			l.bboxFields, sourceExtent, codec.BoundsMOSRaw, l.mosConfig, quoteIdentifier,
+		)
+		if perr != nil {
+			return "", fmt.Errorf("layer (%v): %w", l.name, perr)
+		}
+		bboxFilter = predicate
+	}
+
 	// replace query string tokens
 	z, x, y := tile.ZXY()
 	tokenReplacer := strings.NewReplacer(
-		bboxToken, getBBoxFilter(dbVersion, geomFieldName, srid),
+		bboxToken, bboxFilter,
 		zoomToken, strconv.FormatUint(uint64(z), 10),
 		zToken, strconv.FormatUint(uint64(z), 10),
 		xToken, strconv.FormatUint(uint64(x), 10),
 		yToken, strconv.FormatUint(uint64(y), 10),
-		idFieldToken, idFieldName,
-		geomFieldToken, geomFieldName,
+		idFieldToken, l.IDFieldName(),
+		geomFieldToken, l.geomField,
 		geomTypeToken, geoType,
 		scaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		pixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
@@ -549,7 +569,7 @@ func setupRowValues(descriptions []FieldDescription, rowValues []interface{}) {
 	}
 }
 
-func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValues []interface{}) (gid uint64, geom []byte, tags map[string]interface{}, err error) {
+func readRowValues(ctx context.Context, l *Layer, descriptions []FieldDescription, rowValues []interface{}) (gid uint64, geom []byte, tags map[string]interface{}, err error) {
 	var idFieldParsed bool
 	tags = make(map[string]interface{})
 
@@ -566,6 +586,13 @@ func readRowValues(ctx context.Context, descriptions []FieldDescription, rowValu
 
 		desc := descriptions[i]
 		fieldName := desc.name
+
+		// Bounds fields backing the bounds-backed !BBOX! predicate are
+		// operational columns, not user attributes: never leak them into
+		// feature tags.
+		if l != nil && l.bboxFields.IsBBoxField(fieldName) {
+			continue
+		}
 
 		switch desc.dataType {
 		case DtBoolean:

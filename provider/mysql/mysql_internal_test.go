@@ -201,12 +201,15 @@ func TestTrimTrailingSemicolon(t *testing.T) {
 // TestMySQLMOSBoundsSQL covers the R3-08 provider-level regression: the
 // !BBOX! token for MOS layers must expand to the coarse indexed raw-bounds
 // filter scaled from the tile metres, not to a spatial predicate over the
-// opaque blob.
+// opaque blob. The MOS MOS case also covers R9-10: the SQL text (ORDER BY
+// etc.) must survive token replacement untouched.
 func TestMySQLMOSBoundsSQL(t *testing.T) {
 	type tcase struct {
 		name        string
+		bboxFields  codec.BBoxFields
 		mosConfig   codec.MOSConfig
 		bbox        *geom.Extent
+		sql         string
 		wantBBoxSQL string
 	}
 
@@ -217,10 +220,11 @@ func TestMySQLMOSBoundsSQL(t *testing.T) {
 				geometryFormat: GeometryFormatMOS,
 				srid:           3857,
 				mosConfig:      tc.mosConfig,
+				bboxFields:     tc.bboxFields,
 			}
 			tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
 			extent := tc.bbox
-			got := replaceTokens("WHERE !BBOX!", layer, tile, extent)
+			got := replaceTokens(tc.sql, layer, tile, extent)
 			want := "WHERE " + tc.wantBBoxSQL
 			if got != want {
 				t.Fatalf("MOS bbox = %q, want %q", got, want)
@@ -231,26 +235,42 @@ func TestMySQLMOSBoundsSQL(t *testing.T) {
 	// extent [-10..10] metres, precision 2 (scale 100) with metre units
 	// (unit factor 1) => raw bounds [-1000..1000].
 	metreUnits := codec.MOSConfig{Precision: 2, UnitFactor: 1}
+	defaults := codec.DefaultBBoxFields()
 	tests := map[string]tcase{
 		"bounds scaled by precision": {
+			bboxFields:  defaults,
 			mosConfig:   metreUnits,
 			bbox:        geom.NewExtent(geom.Point{-10, -10}, geom.Point{10, 10}),
-			wantBBoxSQL: "MINX <= 1000 AND MAXX >= -1000 AND MINY <= 1000 AND MAXY >= -1000",
+			sql:         "WHERE !BBOX!",
+			wantBBoxSQL: "`MAXX` >= -1000 AND `MINX` <= 1000 AND `MAXY` >= -1000 AND `MINY` <= 1000",
 		},
 		"degenerate zero-extent tile falls back to raw bounds too": {
+			bboxFields:  defaults,
 			mosConfig:   metreUnits,
 			bbox:        geom.NewExtent(geom.Point{0, 0}, geom.Point{0, 0}),
-			wantBBoxSQL: "MINX <= 0 AND MAXX >= 0 AND MINY <= 0 AND MAXY >= 0",
+			sql:         "WHERE !BBOX!",
+			wantBBoxSQL: "`MAXX` >= 0 AND `MINX` <= 0 AND `MAXY` >= 0 AND `MINY` <= 0",
 		},
 		"invalid mos config falls back to 1=1": {
+			bboxFields:  defaults,
 			mosConfig:   codec.MOSConfig{Precision: 2, UnitFactor: 0},
 			bbox:        geom.NewExtent(geom.Point{-10, -10}, geom.Point{10, 10}),
+			sql:         "WHERE !BBOX!",
 			wantBBoxSQL: "1=1",
 		},
 		"nil extent falls back to 1=1": {
+			bboxFields:  defaults,
 			mosConfig:   metreUnits,
 			bbox:        nil,
+			sql:         "WHERE !BBOX!",
 			wantBBoxSQL: "1=1",
+		},
+		"custom bounds fields and ORDER BY survive": {
+			bboxFields:  codec.BBoxFields{"t.XMIN", "t.XMAX", "t.YMIN", "t.YMAX"},
+			mosConfig:   metreUnits,
+			bbox:        geom.NewExtent(geom.Point{-10, -10}, geom.Point{10, 10}),
+			sql:         "WHERE !BBOX! ORDER BY t.Okey",
+			wantBBoxSQL: "`t`.`XMAX` >= -1000 AND `t`.`XMIN` <= 1000 AND `t`.`YMAX` >= -1000 AND `t`.`YMIN` <= 1000 ORDER BY t.Okey",
 		},
 	}
 
@@ -863,6 +883,8 @@ func TestQuoteIdentifier(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"geom", "`geom`"},
 		{"my`geom", "`my``geom`"},
+		{"t.Okey", "`t`.`Okey`"},
+		{"t.my`col", "`t`.`my``col`"},
 	}
 	for _, c := range cases {
 		if got := quoteIdentifier(c.in); got != c.want {
@@ -894,10 +916,11 @@ func TestReplaceTokens(t *testing.T) {
 		tablename:      "",
 		geometryFormat: GeometryFormatMOS,
 		mosConfig:      codec.MOSConfig{Precision: 0, UnitFactor: 0.001},
+		bboxFields:     codec.DefaultBBoxFields(),
 	}
 	mosExtent := geom.NewExtent(geom.Point{1.25, -2.5}, geom.Point{3.75, 4.5})
 	got = replaceTokens("SELECT * FROM buildings WHERE !BBOX!", mosLayer, tile, mosExtent)
-	if want := "MINX <= 3750 AND MAXX >= 1250 AND MINY <= 4500 AND MAXY >= -2500"; !strings.Contains(got, want) {
+	if want := "`MAXX` >= 1250 AND `MINX` <= 3750 AND `MAXY` >= -2500 AND `MINY` <= 4500"; !strings.Contains(got, want) {
 		t.Errorf("expected indexed MOS bounds %q, got: %v", want, got)
 	}
 

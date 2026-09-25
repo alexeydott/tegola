@@ -7,8 +7,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -139,40 +137,29 @@ func quoteIdent(name string) string {
 // 10^precision / unit factor), otherwise the layer CRS coordinates that the
 // source extent is already expressed in. An empty result means the filter
 // cannot be applied and filtering must happen in memory after decoding.
+//
+// The predicate shape and MOS raw scaling are shared with the other raw
+// providers through codec.BuildBoundsPredicate; the [4]string order here is
+// minx/maxx/miny/maxy.
 func rawBoundsSQL(l *Layer, extent *geom.Extent) string {
 	if l.boundFieldnames == nil || extent == nil {
 		return ""
 	}
-	minX, maxX, minY, maxY := extent.MinX(), extent.MaxX(), extent.MinY(), extent.MaxY()
+	mode := codec.BoundsSourceCRS
 	if l.geometryFormat == codec.FormatMOS {
-		precisionScale := math.Pow(10, l.mosConfig.Precision)
-		unitFactor := l.mosConfig.UnitFactor
-		if math.IsNaN(precisionScale) || math.IsInf(precisionScale, 0) || precisionScale <= 0 ||
-			math.IsNaN(unitFactor) || math.IsInf(unitFactor, 0) || unitFactor <= 0 {
-			return ""
-		}
-		rawScale := precisionScale / unitFactor
-		if math.IsNaN(rawScale) || math.IsInf(rawScale, 0) || rawScale <= 0 {
-			return ""
-		}
-		minX, maxX = math.Floor(minX*rawScale), math.Ceil(maxX*rawScale)
-		minY, maxY = math.Floor(minY*rawScale), math.Ceil(maxY*rawScale)
+		mode = codec.BoundsMOSRaw
 	}
-	format := func(value float64) string {
-		return strconv.FormatFloat(value, 'f', -1, 64)
-	}
-	for _, value := range []float64{minX, maxX, minY, maxY} {
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return ""
-		}
-	}
-	return fmt.Sprintf(
-		"l.%v <= %v AND l.%v >= %v AND l.%v <= %v AND l.%v >= %v",
-		quoteIdent(l.boundFieldnames[0]), format(maxX),
-		quoteIdent(l.boundFieldnames[1]), format(minX),
-		quoteIdent(l.boundFieldnames[2]), format(maxY),
-		quoteIdent(l.boundFieldnames[3]), format(minY),
+	predicate, err := codec.BuildBoundsPredicate(
+		codec.BBoxFields{
+			l.boundFieldnames[0], l.boundFieldnames[1],
+			l.boundFieldnames[2], l.boundFieldnames[3],
+		},
+		extent, mode, l.mosConfig, quoteIdent,
 	)
+	if err != nil {
+		return ""
+	}
+	return predicate
 }
 
 type Provider struct {
@@ -389,6 +376,12 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				continue
 
 			default:
+				// Bounds fields backing the bounds-backed custom-SQL
+				// !BBOX! predicate are operational columns, not user
+				// attributes: never leak them into feature tags.
+				if pLayer.bboxFields.IsBBoxField(cols[i]) {
+					continue
+				}
 				// Grab any non-nil, non-id, non-bounding box, & non-geometry column as a tag
 				switch v := vals[i].(type) {
 				case []uint8:

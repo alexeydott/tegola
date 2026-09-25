@@ -350,6 +350,7 @@ func (p Provider) TileFeatures(
 			ctx,
 			plyr.GeomFieldName(),
 			plyr.IDFieldName(),
+			&plyr.bboxFields,
 			fdescs,
 			vals,
 		)
@@ -650,6 +651,7 @@ func detectMapplGIS(ctx context.Context, pool *connectionPoolCollector, l *Layer
 		return false, fmt.Errorf("table %v.%v apply MOS system info: %v", schema, table, aerr)
 	}
 	l.isMapplGIS = true
+	l.mapplSource = codec.MapplGISTableCanonical
 	l.mapplSysInfo = info.SystemInfo
 	if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(l.srid), l.crsExplicit, info.SystemInfo.Projection); aerr != nil {
 		return false, fmt.Errorf("table %v.%v apply MOS projection: %v", schema, table, aerr)
@@ -1345,6 +1347,14 @@ func CreateProvider(
 		l.geometryFormat = layerGeometryFormat
 		l.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
 		codec.WarnAndResetMOSParams(l.geometryFormat, &l.mosConfig, lName)
+
+		// Resolve the bounds field names (layer > provider > defaults)
+		// backing the bounds-backed custom-SQL !BBOX! predicate for raw
+		// (MOS) layers.
+		l.bboxFields, lerr = codec.ResolveBBoxFields(config, layer, lName)
+		if lerr != nil {
+			return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, lerr)
+		}
 		// MVT providers must not take the raw geometry path: their geometry
 		// is MVT bytes produced by the database, not a raw feature geometry.
 		if isMVT(providerType) {
@@ -1452,11 +1462,15 @@ func CreateProvider(
 				}
 			}
 
-			// Raw custom-SQL contract: raw formats (wkb/wkt/mos) cannot use
-			// the native-spatial !BBOX! token; reject it up front instead of
-			// generating invalid per-tile SQL.
+			// Raw custom-SQL contract: native PostGIS geometry still uses
+			// the native-spatial !BBOX! envelope; raw formats are allowed
+			// (MOS is required to use it) with the bounds-backed predicate
+			// builder replacing the envelope at query time.
 			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
+			}
+			if rerr := codec.RequireBBoxCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken); rerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, rerr)
 			}
 
 			l.sql = sql

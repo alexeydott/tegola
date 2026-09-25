@@ -86,18 +86,21 @@ func ValidateMVTGeometryFormat(format string) error {
 }
 
 // ValidateRawCustomSQL enforces the raw custom-SQL contract shared by all
-// providers: raw geometry formats (wkb/wkt/mos) store geometries as BLOB/TEXT
-// columns, so custom SQL cannot use the legacy !BBOX! token, whose expansion
-// assumes a native spatial column (e.g. "geom && ST_MakeEnvelope(...)" or a
-// minx/maxx column predicate). Custom SQL for a raw layer must not require
-// !BBOX!; tegola applies an exact in-memory bbox filter instead. Passing any
-// of bboxTokens in customSQL is rejected with a descriptive error naming the
-// layer, so misconfiguration fails at startup instead of producing invalid
-// per-tile SQL. Token matching is case-insensitive, mirroring the providers'
-// uppercaseTokens normalization. Non-raw formats and empty SQL are always
-// accepted.
+// providers. Capability-aware: the MOS format supports bounds-backed custom
+// SQL via the configured bounds fields (bbox_minx_fieldname etc.), so
+// !BBOX! is permitted for `mos`; wkb/wkt store geometries as BLOB/TEXT
+// columns without raw bounds columns, so !BBOX! remains rejected for them —
+// tegola applies an exact in-memory bbox filter instead. Token matching is
+// case-insensitive, mirroring the providers' uppercaseTokens normalization.
+// Non-raw formats and empty SQL are always accepted. For MOS callers that
+// require bounds-backed SQL, use RequireBBoxCustomSQL afterwards.
 func ValidateRawCustomSQL(layerName, geometryFormat, customSQL string, bboxTokens ...string) error {
 	if !IsRawFormat(geometryFormat) || customSQL == "" {
+		return nil
+	}
+	if geometryFormat == FormatMOS {
+		// bounds-backed MOS SQL: !BBOX! expands into the configured
+		// bounds-column predicate, so the token is valid.
 		return nil
 	}
 	for _, tok := range bboxTokens {
@@ -109,6 +112,27 @@ func ValidateRawCustomSQL(layerName, geometryFormat, customSQL string, bboxToken
 		}
 	}
 	return nil
+}
+
+// RequireBBoxCustomSQL reports whether customSQL for a bounds-backed MOS
+// layer is missing the required !BBOX! token (or its !BOX! alias). The
+// bounds predicate is the only server-side selectivity a raw MOS column can
+// support, so bounds-backed MOS custom SQL must carry the token. sqlHasBBox
+// is the provider's existing token check (e.g. strings.Contains on the
+// uppercase-normalized SQL).
+func RequireBBoxCustomSQL(layerName, geometryFormat, customSQL string, bboxTokens ...string) error {
+	if geometryFormat != FormatMOS || customSQL == "" {
+		return nil
+	}
+	for _, tok := range bboxTokens {
+		if strings.Contains(strings.ToLower(customSQL), strings.ToLower(tok)) {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"layer (%v): custom SQL with geometry_format=%q must use %v: the bounds predicate over the configured bounds fields (bbox_minx_fieldname etc.) is the only server-side filter a raw MOS column supports",
+		layerName, geometryFormat, bboxTokens[0],
+	)
 }
 
 // Default MOS quantization settings: integer units with no offset.
@@ -546,7 +570,8 @@ func GeometryTypeFromName(name string) (geom.Geometry, error) {
 
 // ResolveGeometryType reads the common `geometry_type` layer key. It returns
 // (geometry, true, nil) when the key is present and valid, (nil, false, nil)
-// when the key is absent or empty, and an error for an unsupported value.
+// when the key is absent, empty, or the explicit "auto" alias (which selects
+// type inference), and an error for an unsupported value.
 // Providers use the explicit value to fix the layer geometry type before any
 // data is read, which skips startup type inspection (including the sampling
 // query that would otherwise infer the type).
@@ -557,6 +582,9 @@ func ResolveGeometryType(layerConf dict.Dicter, layerName string) (geom.Geometry
 		return nil, false, fmt.Errorf("layer (%v) %v: %w", layerName, ConfigKeyGeometryType, err)
 	}
 	if strings.TrimSpace(raw) == "" {
+		return nil, false, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(raw), "auto") {
 		return nil, false, nil
 	}
 	g, err := GeometryTypeFromName(raw)

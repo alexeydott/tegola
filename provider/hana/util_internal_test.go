@@ -89,7 +89,7 @@ func TestReplaceTokens(t *testing.T) {
 
 	fn := func(tc tcase) func(t *testing.T) {
 		return func(t *testing.T) {
-			sql, err := replaceTokens(tc.dbVersion, tc.sql, tc.layer.IDFieldName(), tc.layer.GeomFieldName(), tc.layer.GeomType(), tc.layer.SRID(), tc.tile, true)
+			sql, err := replaceTokens(tc.dbVersion, tc.sql, &tc.layer, tc.layer.GeomType(), tc.layer.SRID(), tc.tile, true)
 			if err != nil {
 				t.Errorf("unexpected error, Expected nil Got %v", err)
 				return

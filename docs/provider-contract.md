@@ -20,6 +20,10 @@ raw geometry format / MOS parts of this contract.
 | `geometry_format` | string | Default geometry format for layers that do not override it: `wkb`, `wkt` or `mos`. Empty/unset means the provider's native geometry handling. Provider-specific values exist: `mysql` accepts `auto`, `mysql` and `mariadb` in addition to the shared formats; `gpkg` accepts `gpkg` (its native GeoPackage binary). |
 | `mos_precision` | int | Decimal digits carried by MOS coordinates (see below). Only applies when `geometry_format = "mos"`. |
 | `mos_units` | string | Packed linear unit of MOS coordinates: `mm`, `cm`, `dm`, `m` or `km`. Only applies when `geometry_format = "mos"`. |
+| `bbox_minx_fieldname` | string | Bounds column holding the feature minimum X, used by bounds-backed MOS SQL. Default `MINX`. |
+| `bbox_maxx_fieldname` | string | Bounds column holding the feature maximum X. Default `MAXX`. |
+| `bbox_miny_fieldname` | string | Bounds column holding the feature minimum Y. Default `MINY`. |
+| `bbox_maxy_fieldname` | string | Bounds column holding the feature maximum Y. Default `MAXY`. |
 
 ## Common layer-level keys
 
@@ -34,6 +38,7 @@ raw geometry format / MOS parts of this contract.
 | `srid` / `crs_defn` | int / string | Layer CRS override; see [crs.md](crs.md). |
 | `geometry_format` | string | Layer-level geometry format override. |
 | `mos_precision` / `mos_units` | int / string | Layer-level MOS overrides (only with `mos`). |
+| `bbox_*_fieldname` | string | Layer-level bounds column overrides (`bbox_minx_fieldname`, `bbox_maxx_fieldname`, `bbox_miny_fieldname`, `bbox_maxy_fieldname`). Resolution is per field: layer > provider > defaults (`MINX`/`MAXX`/`MINY`/`MAXY`). Resolved columns are excluded from feature tags. Only used by bounds-backed MOS SQL (see [geometry-formats.md](geometry-formats.md)). |
 | `fields` | []string | Additional fields to include for generated table SQL. Semantics of an absent or empty `fields` differ per provider and cannot be mixed freely (see matrix below). |
 
 ## CRS
@@ -88,7 +93,14 @@ filter, the data and the MVT encoding agree on one CRS (see
 | Format | SQL-side filter |
 |---|---|
 | native geometry | Provider spatial predicate (`&&`, `ST_Intersects`, MBR, …) |
-| `wkb` / `wkt` / `mos` | No native spatial predicate (raw values are not database geometries); the provider either uses indexed bounds columns (MySQL-style `MINX/MAXX/MINY/MAXY` for MOS) or no SQL filter at all, and applies an exact in-memory bounding-box check on the decoded geometry in all cases |
+| `wkb` / `wkt` | No native spatial predicate (raw values are not database geometries); the exact in-memory bounding-box check on the decoded geometry is applied in all cases |
+| `mos` | Bounds-backed SQL: the `!BBOX!` token expands into the indexed bounds-columns predicate (`bbox_*_fieldname`, defaults `MINX/MAXX/MINY/MAXY`) scaled by the layer's MOS quantization; the exact in-memory bounding-box check remains authoritative. Custom MOS SQL must carry `!BBOX!`/`!BOX!` |
+
+MapplGIS detection distinguishes how a layer was identified: `table-canonical`
+(structural DDL + PK + indexes + probe row, guarantees system info) vs
+`sql-sample` (custom SQL whose sample carries the four bounds columns and
+decodable MOS rows — no system info guarantee). Custom `sql` MOS layers must
+still configure `srid`/`crs_defn`, `mos_precision` and `mos_units` explicitly.
 
 ## System info auto-configuration (MapplGIS tables only)
 

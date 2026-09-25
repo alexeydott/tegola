@@ -459,6 +459,12 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 				feature.Geometry = geo
 
 			default:
+				// Bounds fields are operational columns backing the
+				// bounds-backed MOS !BBOX! predicate, not user attributes:
+				// never leak them into feature tags.
+				if pLayer.bboxFields.IsBBoxField(cols[i]) {
+					continue
+				}
 				// Grab any non-nil, non-id, non-geometry column as a tag,
 				// converting numeric columns the driver returns as []byte
 				switch v := vals[i].(type) {
@@ -566,6 +572,11 @@ func (p *Provider) Close() error {
 
 // quoteIdentifier wraps an identifier in backticks, escaping embedded ones.
 func quoteIdentifier(name string) string {
+	// qualified names ("table.column") are quoted per part so the bounds
+	// fields accept table-qualified columns without breaking the SQL
+	if table, column, ok := strings.Cut(name, "."); ok {
+		return quoteIdentifier(table) + "." + quoteIdentifier(column)
+	}
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 

@@ -168,6 +168,20 @@ the stored bounds values must match what the provider compares against:
   `mos_units = "mm"`), because the extent is scaled by `rawScale` before the
   comparison.
 
+The bounds column names are configurable with the common
+`bbox_minx_fieldname` / `bbox_maxx_fieldname` / `bbox_miny_fieldname` /
+`bbox_maxy_fieldname` keys (layer level overrides provider level, per
+field; defaults `MINX`/`MAXX`/`MINY`/`MAXY`). Resolved bounds columns are
+excluded from feature tags.
+
+For custom SQL with `geometry_format = "mos"` the `!BBOX!` token is
+**required** and expands into the bounds-columns predicate over the
+configured bounds fields (with MOS raw scaling); the provider verifies at
+registration that the token is present. Custom SQL with the native `gpkg`
+binary format may use `!BBOX!` as a source-CRS bounds comparison over the
+same columns (no MOS scaling). Bounds-backed MOS custom SQL must configure
+`srid`/`crs_defn`, `mos_precision` and `mos_units` explicitly.
+
 Example table layout for a `wkb` layer:
 
 ```sql

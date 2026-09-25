@@ -186,6 +186,14 @@ are valid at provider level (defaults for all layers) and at layer level
 - `mos_units` (string): [Optional] packed linear unit of MOS coordinates
   (`mm`, `cm`, `dm`, `m` or `km`). Only applies when the effective geometry
   format is `mos`.
+- `bbox_minx_fieldname` / `bbox_maxx_fieldname` / `bbox_miny_fieldname` /
+  `bbox_maxy_fieldname` (string): [Optional] bounds columns used by the
+  coarse `!BBOX!` filter for raw-format (`wkb`/`wkt`/`mos`) layers, layer
+  level overrides provider level, defaults `MINX`/`MAXX`/`MINY`/`MAXY`.
+  Resolved bounds columns are excluded from feature tags. For MOS custom SQL
+  the `!BBOX!` token is **required** and expands into a bounds-columns
+  predicate over these fields (with MOS raw scaling); the provider verifies
+  the token at registration.
 
 ```toml
 [[providers]]

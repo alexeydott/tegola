@@ -201,6 +201,21 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 		bboxSRID,
 	)
 
+	// Raw (MOS) custom-SQL layers cannot use the native envelope: their
+	// !BBOX! token expands to the bounds predicate over the configured
+	// bounds fields with MOS raw scaling instead. Custom SQL for MOS is
+	// required to carry the token (RequireBBoxCustomSQL), and tablename
+	// MOS layers never reach the !BBOX! path (raw sqlTmpl has no token).
+	if lyr.geometryFormat == codec.FormatMOS {
+		predicate, perr := codec.BuildBoundsPredicate(
+			lyr.bboxFields, sourceExtent, codec.BoundsMOSRaw, lyr.mosConfig, nil,
+		)
+		if perr != nil {
+			return "", fmt.Errorf("layer (%v): %w", lyr.name, perr)
+		}
+		bbox = predicate
+	}
+
 	extent, _ = tile.Extent()
 	// TODO: Always convert to meter if we support different projections
 	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
@@ -312,9 +327,14 @@ func transformVal(valType uint32, val any) (any, error) {
 }
 
 // decipherFields is responsible for processing the SQL result set, decoding geometries, ids and feature tags.
+// When boundsFields is non-nil, the four configured bounds columns
+// (bbox_minx_fieldname etc.) are excluded from the tags: they are
+// implementation details of the bounds-backed MOS SQL contract, not feature
+// attributes.
 func decipherFields(
 	ctx context.Context,
 	geomFieldname, idFieldname string,
+	boundsFields *codec.BBoxFields,
 	descriptions []pgconn.FieldDescription,
 	values []any,
 ) (gid uint64, geom []byte, tags map[string]any, err error) {
@@ -337,6 +357,10 @@ func decipherFields(
 
 		desc := descriptions[i]
 		descName := string(desc.Name)
+
+		if boundsFields != nil && boundsFields.IsBBoxField(descName) {
+			continue
+		}
 
 		switch descName {
 		case geomFieldname:
