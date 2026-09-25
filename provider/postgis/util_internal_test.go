@@ -169,6 +169,34 @@ func TestGenSQLSyntheticSRIDUsesDatabaseSRIDZero(t *testing.T) {
 	}
 }
 
+// Regression for the flat-identifier quoting audit item: generated table SQL
+// double-quotes the geometry identifier, so a mixed-case column created as
+// "Geom" keeps its case-sensitive name instead of being folded to lowercase.
+func TestGenSQLMixedCaseGeometryColumnIsQuoted(t *testing.T) {
+	srid, err := basic.RegisterProj4Defn("+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+	if err != nil {
+		t.Fatalf("registering synthetic CRS: %v", err)
+	}
+
+	got, err := genSQL(
+		&Layer{geomField: "Geom", idField: "gid", srid: srid},
+		nil,
+		"roads",
+		[]string{"gid", "Geom"},
+		true,
+		ProviderType,
+	)
+	if err != nil {
+		t.Fatalf("genSQL returned error: %v", err)
+	}
+	if !strings.Contains(got, `ST_AsBinary("Geom") AS "Geom"`) {
+		t.Fatalf("mixed-case geometry column must be quoted in the select clause: %q", got)
+	}
+	if !strings.Contains(got, `ST_SetSRID("Geom",0) && !BBOX!`) {
+		t.Fatalf("mixed-case geometry column must be quoted in the synthetic SRID predicate: %q", got)
+	}
+}
+
 func TestUppercaseTokens(t *testing.T) {
 	type tcase struct {
 		str      string
