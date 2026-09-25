@@ -361,36 +361,10 @@ func (p Provider) TileFeatures(
 		}
 
 		// The MOS layer self-description blob (MapplGIS LayerInfo) is
-		// metadata, never a feature: apply it to the MOS config, register
-		// its Projection as the layer CRS when no explicit CRS was
-		// configured, and skip the row.
+		// metadata, never a feature. Registration-time detection already
+		// finalized the layer's MOS parameters and CRS (audit A-01): no
+		// runtime application, the row is simply skipped.
 		if plyr.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geobytes) {
-			sysInfo, serr := codec.ParseSystemInfoValue(geobytes)
-			if serr != nil {
-				return fmt.Errorf("for layer (%v) %w", plyr.Name(), serr)
-			}
-			if aerr := plyr.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-				return fmt.Errorf("for layer (%v) %w", plyr.Name(), aerr)
-			}
-			srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(plyr.srid), plyr.crsExplicit, sysInfo.Projection)
-			if aerr != nil {
-				return fmt.Errorf("for layer (%v) %w", plyr.Name(), aerr)
-			}
-			if applied {
-				plyr.srid = uint64(srid)
-				// The runtime self-description is the resolved CRS for this
-				// request; a source-inferred SRID must not override it.
-				plyr.crsExplicit = true
-				if plyr.srid != tegola.WebMercator {
-					sourceBBox, berr := basic.FromWebMercatorExtent(plyr.srid, webMercatorBBox)
-					if berr != nil {
-						return fmt.Errorf("error converting tile extent for layer (%v): %w", layer, berr)
-					}
-					tileBBox = sourceBBox
-				} else {
-					tileBBox = webMercatorBBox
-				}
-			}
 			continue
 		}
 
@@ -475,9 +449,11 @@ func inferTableSRID(ctx context.Context, pool *connectionPoolCollector, schema, 
 	return uint64(srid), nil
 }
 
-// inspectMOSLayerGeomType samples the first rows of the layer's SQL, applies
-// any MapplGIS LayerInfo blob to the MOS config, and derives the geometry
-// type from the first decodable MOS geometry.
+// inspectMOSLayerGeomType samples the first rows of the layer's SQL and
+// derives the geometry type from the first decodable MOS geometry. The
+// MapplGIS LayerInfo blob is metadata: rows carrying it are skipped without
+// applying anything (audit A-01 — custom SQL never auto-applies system
+// info; detection belongs to the registration-time table contract).
 func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	// neutralize tokens that could filter out all rows during inspection
 	allZoomsSQL := "ANY('{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24}')"
@@ -520,27 +496,9 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 				return fmt.Errorf("layer (%v): unexpected MOS column type %T", l.name, vals[i])
 			}
 
-			// system info rows configure the MOS quantization and are not
-			// features
+			// system info rows are metadata, not features: skip without
+			// applying anything (audit A-01)
 			if mos.IsSystemInfoBlob(raw) {
-				sysInfo, serr := mos.ParseSystemInfo(raw)
-				if serr != nil {
-					return fmt.Errorf("layer (%v): invalid MOS system info: %w", l.name, serr)
-				}
-				if aerr := l.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-					return fmt.Errorf("layer (%v): %w", l.name, aerr)
-				}
-				// The system-info Projection is the shared source-derived
-				// CRS for MOS layers: register it as a synthetic SRID unless
-				// an explicit srid/crs_defn was configured.
-				srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(l.srid), l.crsExplicit, sysInfo.Projection)
-				if aerr != nil {
-					return fmt.Errorf("layer (%v): %w", l.name, aerr)
-				}
-				if applied {
-					l.srid = uint64(srid)
-					l.crsExplicit = true
-				}
 				continue
 			}
 

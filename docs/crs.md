@@ -54,9 +54,12 @@ providers (not just MySQL):
   MOS layers use the system-info projection (see
   [geometry-formats.md](geometry-formats.md)).
 
-The `MapplGIS LayerInfo projection` blob carried by MOS system-info records
-is the shared source-derived CRS for MOS layers of **every** standard
-provider: when no explicit `srid`/`crs_defn` is configured, it is registered
+The `MapplGIS LayerInfo projection` blob is the shared source-derived CRS for
+layers of **every** standard provider whose table was identified as a
+MapplGIS table at registration (structural detection: DDL + primary key +
+required indexes + an `OKEY = 1` probe row; custom `sql` layers are never
+auto-detected and never apply system info from result rows). When no explicit
+`srid`/`crs_defn` is configured, the projection is registered
 as a synthetic SRID through the same mechanism as `crs_defn` (see
 [`provider/crsconfig.ApplySystemInfoCRS`](../provider/crsconfig/crsconfig.go)).
 Provider-native metadata is consulted only in the provider's native geometry

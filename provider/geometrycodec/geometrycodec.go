@@ -63,11 +63,12 @@ func IsRawFormat(format string) bool {
 }
 
 // InspectionSampleLimit is the uniform number of rows every provider samples
-// during startup inspection. All rows in the window are scanned: MOS
-// system-info metadata rows are applied regardless of their position and the
-// first decodable geometry infers the layer geometry type. This keeps
-// LayerInfo auto-configuration independent of physical row order, which SQL
-// does not guarantee without ORDER BY. See docs/provider-contract.md.
+// during startup inspection to infer the layer geometry type (first decodable
+// geometry wins). It is used for geometry-type inference only: MapplGIS
+// identity detection is a separate one-time, structural check at registration
+// (DDL + primary key + required indexes + an OKEY=1 probe row), and custom
+// SQL layers never apply system info from result rows. See
+// docs/provider-contract.md.
 const InspectionSampleLimit = 16
 
 // ValidateMVTGeometryFormat rejects raw geometry formats on MVT passthrough
@@ -280,6 +281,13 @@ func resolveMOSUnits(cfg dict.Dicter, errPrefix string) (float64, bool, error) {
 // atomically: the value and its explicit flag travel together, so a layer
 // value never bleeds into the provider base and vice versa. Values left
 // unset at both levels keep the base's (default) values.
+//
+// mos_precision is paired with the effective units: when the layer
+// overrides mos_units without an explicit mos_precision (and the base
+// precision was not explicitly set either), the default precision for the
+// resulting units is re-derived (see DefaultMOSPrecisionForUnits). This
+// makes MergeMOSConfig equivalent to resolving the provider+layer configs
+// through ResolveMOSConfig in one pass.
 func MergeMOSConfig(base, override MOSConfig) MOSConfig {
 	cfg := base
 	if override.PrecisionSet {
@@ -287,6 +295,11 @@ func MergeMOSConfig(base, override MOSConfig) MOSConfig {
 	}
 	if override.UnitsSet {
 		cfg.UnitFactor, cfg.UnitsSet = override.UnitFactor, true
+	}
+	if override.UnitsSet && !cfg.PrecisionSet {
+		// units changed without an explicit precision anywhere: re-pair
+		// the precision with the effective units.
+		cfg.Precision = DefaultMOSPrecisionForUnits(cfg.UnitFactor)
 	}
 	return cfg
 }

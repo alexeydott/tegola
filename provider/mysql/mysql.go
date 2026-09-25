@@ -20,7 +20,6 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/crsconfig"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
@@ -394,12 +393,11 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 				}
 
 			case pLayer.geomFieldname:
-				// a layer system info blob (MapplGIS layer self-description)
-				// is metadata, not geometry; skip it silently.
+				// A MapplGIS layer system-info blob is metadata, not
+				// geometry: skip it silently. MapplGIS detection is done
+				// once at registration (provider/mapplgis contract); tile
+				// requests never repeat or apply it at runtime.
 				if blob, ok := vals[i].([]byte); ok && mos.IsSystemInfoBlob(blob) {
-					if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosCfg, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
-						return err
-					}
 					skipRow = true
 					break
 				}
@@ -530,24 +528,9 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 	}
 
 	if pLayer.deferredInspection {
-		// A system-info row is not guaranteed to precede the geometry rows in
-		// a custom query. Parse every marker before decoding any feature so
-		// precision, units, projection, and the source-CRS tile extent apply
-		// consistently to the complete result set.
-		for _, vals := range deferredRows {
-			for i := range cols {
-				if cols[i] != pLayer.geomFieldname {
-					continue
-				}
-				blob, ok := vals[i].([]byte)
-				if !ok || !mos.IsSystemInfoBlob(blob) {
-					continue
-				}
-				if err := applyRuntimeSystemInfo(&pLayer, &geometryFormat, &mosCfg, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
-					return err
-				}
-			}
-		}
+		// Deferred rows are reprocessed only for their geometry: the
+		// canonical MapplGIS detection ran once at registration, so there is
+		// no runtime system-info pass over the result set anymore.
 		for _, vals := range deferredRows {
 			if err := processRow(vals); err != nil {
 				return err
@@ -571,55 +554,6 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 	for i := range features {
 		if err := fn(&features[i]); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-// applyRuntimeSystemInfo applies a MOS layer's self-description when startup
-// inspection was deferred for tile-dependent custom SQL. The layer is a local
-// copy in TileFeatures, so updating its CRS and decode settings is safe for
-// concurrent requests.
-func applyRuntimeSystemInfo(
-	layer *Layer,
-	geometryFormat *string,
-	mosConfig *codec.MOSConfig,
-	tileBBox **geom.Extent,
-	webMercatorBBox *geom.Extent,
-	tileSRID uint64,
-	blob []byte,
-) error {
-	sysInfo, err := mos.ParseSystemInfo(blob)
-	if err != nil {
-		return fmt.Errorf("parse layer system info: %w", err)
-	}
-
-	if *geometryFormat == GeometryFormatAuto {
-		*geometryFormat = GeometryFormatMOS
-	}
-	if err := mosConfig.ApplySystemInfo(&sysInfo); err != nil {
-		return fmt.Errorf("apply layer system-info: %w", err)
-	}
-
-	srid, applied, err := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection)
-	if err != nil {
-		return fmt.Errorf("register layer system-info projection: %w", err)
-	}
-	if applied {
-		layer.srid = uint64(srid)
-		// Treat the runtime self-description as the resolved CRS for this
-		// request. A native geometry header may contain a placeholder or
-		// database SRID and must not override the projection declared by the
-		// layer metadata.
-		layer.crsExplicit = true
-		if layer.srid != tileSRID {
-			sourceBBox, err := basic.FromWebMercatorExtent(layer.srid, webMercatorBBox)
-			if err != nil {
-				return fmt.Errorf("convert tile extent for layer system-info projection: %w", err)
-			}
-			*tileBBox = sourceBBox
-		} else {
-			*tileBBox = webMercatorBBox
 		}
 	}
 	return nil

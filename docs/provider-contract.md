@@ -30,7 +30,7 @@ raw geometry format / MOS parts of this contract.
 | `sql` | string | Custom SQL. Mutually exclusive with `tablename`. Supports `!BBOX!`, `!ZOOM!`, `!X!`, `!Y!`, `!Z!`, `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, `!PIXEL_HEIGHT!`, `!ID_FIELD!`, `!GEOM_FIELD!`, `!GEOM_TYPE!` (token support varies slightly per provider; unknown tokens are rejected). |
 | `geometry_fieldname` | string | Geometry column. Defaults to `geom` for generated table SQL. For custom SQL the column must be present in the result set. |
 | `id_fieldname` | string | Feature id column. Defaults: `fid` for `mysql`/`gpkg`, empty for `postgis`/`hana`. |
-| `geometry_type` | string | Explicit layer geometry type, valid for every standard provider: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`. An explicit value fixes the layer type before any data is read and skips startup type inspection entirely (including system-info auto-configuration for table layers). Mixed content is permitted: features whose decoded type differs from the declared value are rendered, and the mismatch is logged once per layer. |
+| `geometry_type` | string | Explicit layer geometry type, valid for every standard provider: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`. An explicit value fixes the layer geometry type and skips startup type inspection. It is orthogonal to MapplGIS table detection: a `tablename` layer is still checked for the MapplGIS signature and still receives system-info configuration when detected. Mixed content is permitted: features whose decoded type differs from the declared value are rendered, and the mismatch is logged once per layer. |
 | `srid` / `crs_defn` | int / string | Layer CRS override; see [crs.md](crs.md). |
 | `geometry_format` | string | Layer-level geometry format override. |
 | `mos_precision` / `mos_units` | int / string | Layer-level MOS overrides (only with `mos`). |
@@ -90,25 +90,52 @@ filter, the data and the MVT encoding agree on one CRS (see
 | native geometry | Provider spatial predicate (`&&`, `ST_Intersects`, MBR, …) |
 | `wkb` / `wkt` / `mos` | No native spatial predicate (raw values are not database geometries); the provider either uses indexed bounds columns (MySQL-style `MINX/MAXX/MINY/MAXY` for MOS) or no SQL filter at all, and applies an exact in-memory bounding-box check on the decoded geometry in all cases |
 
-## System info auto-configuration (MOS)
+## System info auto-configuration (MapplGIS tables only)
 
 MOS tables written by MapplGIS carry a `MapplGIS LayerInfo` metadata blob.
-During startup inspection every provider samples the same window of up to
-`codec.InspectionSampleLimit` (16) rows. The whole window is scanned: rows
-carrying the blob are applied wherever they appear — before, between or after
-feature rows — and the first decodable geometry infers the layer geometry
-type. LayerInfo auto-configuration is therefore independent of physical row
-order, which SQL does not guarantee without `ORDER BY` (custom SQL may even
-reorder rows). The provider reads:
+Every standard provider identifies such tables with the same one-time,
+registration-time detector — the detection is **structural**, based on the
+table's DDL, its indexes and a single probe row, never on scanning result
+rows or sample windows:
+
+1. The registered `tablename` is inspected (case-insensitive) for all nine
+   required columns: `OKEY`, `MUID`, `MINX`, `MAXX`, `MINY`, `MAXY`,
+   `ObjectStyle`, `ObjectType`, `LINE`.
+2. `OKEY` must be the table's primary key.
+3. All six required indexes must exist over `MUID`, `MINX`, `MAXX`, `MINY`,
+   `MAXY`, `ObjectType`.
+4. A single point probe (`OKEY = 1 AND LINE IS NOT NULL`) must return a
+   decodable `LayerSystemInfo` blob.
+
+Only when all four conditions hold does the layer get `IsMapplGIS=true`,
+applied exactly once during registration. From the decoded system info the
+provider reads:
 
 - `Precision` → `mos_precision` (when not explicitly configured),
 - `Projection` → layer PROJ.4 definition registered as a synthetic SRID (same
   mechanism as `crs_defn`, only used when no `srid`/`crs_defn` is configured),
 - `MapUnits` / `flMapUnitsDefined` → `mos_units` metres factor.
 
-Explicit configuration always wins over system info. Rows that carry the blob
-are skipped as feature rows. A layer whose window holds no decodable geometry
-registers without an inferred geometry type (MVT encoding stays permissive).
+Explicit configuration always wins over system info.
+
+**Custom `sql` layers never auto-detect MapplGIS and never apply
+`LayerSystemInfo` from result rows.** A SQL layer that uses
+`geometry_format = "mos"` must provide `srid`/`crs_defn`, `mos_precision` and
+`mos_units` explicitly in its config; a decodable blob that happens to appear
+in its result set is ignored (the row is still rendered as a feature if its
+geometry decodes, otherwise it is skipped).
+
+Because detection happens once at registration, tile requests do not repeat
+it: after `NewTileProvider` returns, the layer's MapplGIS identity and MOS
+settings are immutable and the tile path only reads them. `geometry_type` is
+orthogonal to detection: an explicit `geometry_type` does not skip MapplGIS
+table detection (it only fixes the layer's geometry type), and a detected
+MapplGIS table still applies its system info even with `geometry_type` set.
+
+Startup type inspection (as opposed to MapplGIS detection) still samples the
+same uniform window of up to `codec.InspectionSampleLimit` (16) rows to
+infer the layer geometry type from the first decodable geometry — but this
+sampling is type inference only and never applies system info.
 
 ## Provider support matrix
 
@@ -117,7 +144,7 @@ registers without an inferred geometry type (MVT encoding stays permissive).
 | `srid` / `crs_defn` | yes | yes | yes | yes (synthetic CRS requires a raw format, see below) |
 | `geometry_format` (`wkb`/`wkt`/`mos`) | yes | yes (`mos` skips the GeoPackage binary header) | yes | yes |
 | `mos_precision` / `mos_units` | yes | yes | yes | yes |
-| system info auto-config | yes | yes | yes | yes |
+| system info auto-config (MapplGIS tables) | yes | yes | yes | yes |
 | native spatial filter | yes (MBR/indexed bounds) | yes (RTree index; skipped for all raw formats `wkb`/`wkt`/`mos`, and for raw tables without GeoPackage metadata) | yes (`&&`) | yes (`ST_IntersectsRect*`; skipped for `mos` and synthetic CRS) |
 | `id_fieldname` default | `fid` | `fid` | empty | empty |
 | absent/empty `fields` | id + geometry only | id + geometry only | all columns | all columns |

@@ -96,15 +96,34 @@ optional `uint16` flags word before the subobject counts. Real coordinates are
 - point → `Point`/`MultiPoint`
 - text/image → anchor `Point`
 
-### Layer system info blob (auto-configuration)
+### MapplGIS table detection (auto-configuration)
 
-MapplGIS commonly stores a `MapplGIS LayerInfo` version wrapper blob near the beginning of every MOS geometry table. It carries the layer's self-description, and the provider samples up to 16 rows while looking for both a decodable geometry and this metadata at registration (for `tablename` and `sql` layers):
+MapplGIS tables are detected once, at registration, by their **structure** —
+never by scanning sample rows and never for custom `sql` layers. A
+`tablename` layer is recognized as a MapplGIS table only when all of the
+following hold (matched case-insensitively):
+
+- the table has all nine required columns: `OKEY`, `MUID`, `MINX`, `MAXX`,
+  `MINY`, `MAXY`, `ObjectStyle`, `ObjectType`, `LINE`;
+- `OKEY` is the table's primary key;
+- all six required indexes exist over `MUID`, `MINX`, `MAXX`, `MINY`, `MAXY`,
+  `ObjectType`;
+- a single point probe (`OKEY = 1 AND LINE IS NOT NULL`) returns a decodable
+  `MapplGIS LayerInfo` system info blob.
+
+When detection succeeds the layer gets `IsMapplGIS=true` and the decoded
+system info configures the layer:
 
 - `Precision` — the quantization precision (`kPrecision = 10^Precision`). Applied as the layer's `mos_precision` when neither the provider- nor layer-level `mos_precision` key is set.
 - `Projection` — the layer's full PROJ.4 definition. Registered as a synthetic SRID (≥ 340000001, same mechanism as `crs_defn`) and used as the layer SRID when no `srid`/`crs_defn` is configured at provider or layer level. Explicit config values always win.
 - `MapUnits` / `flMapUnitsDefined` — when `mos_units` is not configured, the declared unit is converted to a metres factor and applied after dequantization. Supported units are millimetres (`muMm`), centimetres (`muSm`), decimetres (`muDm`), metres (`muM`) and kilometres (`muKm`). Unsupported angular/undefined units are rejected.
 
-In practice this means a MOS table exported by MapplGIS needs no `mos_precision`/`mos_units`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides.
+In practice this means a MapplGIS table needs no `mos_precision`/`mos_units`/`srid` configuration at all — the layer configures itself from its own system info row, and explicit config keys remain available as overrides.
+
+Custom `sql` layers are **never** auto-detected and never apply
+`LayerSystemInfo` from result rows: an explicit `geometry_format = "mos"` SQL
+layer must set `srid`/`crs_defn`, `mos_precision` and `mos_units` in its
+config.
 
 ## SRID handling
 
@@ -114,7 +133,7 @@ SRID resolution order (highest priority first):
 2. Layer-level `srid` config value.
 3. Provider-level `crs_defn` config value.
 4. Provider-level `srid` config value (if explicitly configured).
-5. `MapplGIS LayerInfo projection` decoded from the sampled system info blob (MOS layers only, applied when no `srid`/`crs_defn` is configured at provider or layer level; registered as a synthetic SRID, see [docs/crs.md](../../docs/crs.md)).
+5. `MapplGIS LayerInfo projection` decoded from the system info blob of a detected MapplGIS table layer (registration-time detection only — never from custom SQL; applied when no `srid`/`crs_defn` is configured at provider or layer level; registered as a synthetic SRID, see [docs/crs.md](../../docs/crs.md)).
 6. SRID decoded from the sampled geometry header at registration (native formats only).
 7. Default `3857` (Web Mercator).
 
@@ -194,10 +213,9 @@ with its configured CRS and inspected when a tile is requested. For such a
 layer, `!BBOX!` is deliberately replaced with `1=1` when the geometry format
 is `auto`; Tegola decodes the returned geometries and applies the tile
 intersection check in memory. This avoids applying MySQL spatial functions to
-an unknown format (including MOS). If the first returned row is a MOS
-system-info record, its precision, units, and projection are applied to the
-request unless the corresponding CRS or MOS settings were explicitly
-configured.
+an unknown format (including MOS). Custom SQL layers never auto-detect
+MapplGIS and never apply a system-info record from result rows: a MOS SQL
+layer must set its CRS and MOS settings explicitly in the config.
 
 ## Empty layers
 

@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/mos"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
@@ -37,6 +38,13 @@ type Layer struct {
 	// MapplGIS LayerInfo blob from overriding an explicit provider- or
 	// layer-level mos_precision/mos_units setting, including explicit 0.
 	mosConfig codec.MOSConfig
+	// isMapplGIS records the result of the one-time registration-time
+	// MapplGIS table detection (provider/mapplgis contract). It is
+	// immutable afterwards: tile requests never repeat the detection.
+	isMapplGIS bool
+	// mapplSysInfo is the layer self-description parsed from the OKEY = 1
+	// row of a detected MapplGIS table. Valid only when isMapplGIS is true.
+	mapplSysInfo mos.SystemInfo
 }
 
 func (l Layer) Name() string            { return l.name }
@@ -44,3 +52,7 @@ func (l Layer) GeomType() geom.Geometry { return l.geomType }
 func (l Layer) SRID() uint64            { return l.srid }
 func (l Layer) IDFieldName() string     { return l.idFieldname }
 func (l Layer) GeomFieldName() string   { return l.geomFieldname }
+
+// IsMapplGIS reports whether the layer was detected as a MapplGIS table at
+// registration time.
+func (l Layer) IsMapplGIS() bool { return l.isMapplGIS }

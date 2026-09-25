@@ -113,7 +113,9 @@ func TestRootReadmeListsMOSConfigKeys(t *testing.T) {
 		}
 	}
 	// the startup inspection sample size must be documented with the
-	// constant name and its value so code and docs stay aligned
+	// constant name and its value so code and docs stay aligned. MapplGIS
+	// detection itself is structural (DDL + indexes + OKEY=1), not
+	// sample-based.
 	if !strings.Contains(content, "InspectionSampleLimit") || !strings.Contains(content, "(16)") {
 		t.Error("docs/provider-contract.md does not document the InspectionSampleLimit (16) startup sample size")
 	}

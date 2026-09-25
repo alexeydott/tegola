@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -18,6 +19,7 @@ import (
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/crsconfig"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/mapplgis"
 )
 
 // ErrMissingLayerName is returned when a layer config is missing the 'name' key
@@ -100,16 +102,13 @@ func sampleGeometryQuery(qtext string) string {
 }
 
 // geomTypeFromColumn samples up to geomTypeSampleRows geometry values from
-// the given query and decodes the first one that succeeds. A
-// MapplGIS LayerInfo version wrapper blob (the layer self-description
-// MapplGIS stores as the first row of a MOS table) is parsed and returned
-// via sysInfo without terminating the sampling. It returns sql.ErrNoRows
-// when the query yields no rows at all, and the decode error only when
-// every sampled row failed to decode.
-func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosCfg codec.MOSConfig) (geo geom.Geometry, headerSRID uint64, sysInfo *mos.SystemInfo, err error) {
+// the given query and decodes the first one that succeeds. It returns
+// sql.ErrNoRows when the query yields no rows at all, and the decode error
+// only when every sampled row failed to decode.
+func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosCfg codec.MOSConfig) (geo geom.Geometry, headerSRID uint64, err error) {
 	rows, err := db.Query(sampleGeometryQuery(qtext))
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -118,48 +117,35 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 	for rows.Next() {
 		var geomVal interface{}
 		if err := rows.Scan(&geomVal); err != nil {
-			return nil, 0, nil, err
+			return nil, 0, err
 		}
 		if geomVal == nil {
 			continue
 		}
-		// a layer system info blob describes the layer rather than being a
-		// geometry; parse it and keep sampling for a real feature.
+		// A MapplGIS LayerInfo blob describes the layer rather than being a
+		// geometry; detection is handled by the one-time provider/mapplgis
+		// contract, so sampling just skips such values.
 		if blob, ok := geomVal.([]byte); ok && mos.IsSystemInfoBlob(blob) {
-			si, perr := mos.ParseSystemInfo(blob)
-			if perr != nil {
-				log.Warnf("mysql provider: unable to parse layer system info blob: %v", perr)
-				continue
-			}
-			sysInfo = &si
 			continue
 		}
 		values = append(values, geomVal)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, nil, err
-	}
-
-	sampleFormat := geometryFormat
-	if sampleFormat == GeometryFormatAuto && sysInfo != nil {
-		// MapplGIS MOS tables identify themselves with a system-info row.
-		// Decode the sampled values only after scanning all rows so the marker
-		// is honored even when the driver does not return it first.
-		sampleFormat = GeometryFormatMOS
+		return nil, 0, err
 	}
 
 	for _, geomVal := range values {
-		srid, decoded, decodeErr := decodeGeometry(geomVal, sampleFormat, serverFlavor, mosCfg)
+		srid, decoded, decodeErr := decodeGeometry(geomVal, geometryFormat, serverFlavor, mosCfg)
 		if decodeErr != nil {
 			lastErr = decodeErr
 			continue
 		}
-		return decoded, srid, sysInfo, nil
+		return decoded, srid, nil
 	}
 	if lastErr != nil {
-		return nil, 0, nil, fmt.Errorf("error decoding sampled geometry: %v", lastErr)
+		return nil, 0, fmt.Errorf("error decoding sampled geometry: %v", lastErr)
 	}
-	return nil, 0, nil, sql.ErrNoRows
+	return nil, 0, sql.ErrNoRows
 }
 
 func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, error) {
@@ -404,20 +390,57 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 			}
 
+			// one-time MapplGIS table detection (provider/mapplgis contract):
+			// runs for every tablename layer, including ones with an explicit
+			// geometry_type, since detection and declared geometry types are
+			// orthogonal concerns. Tile requests never repeat this discovery.
+			mInfo, derr := detectMapplGIS(db, tablename)
+			if derr != nil {
+				return nil, fmt.Errorf("layer '%v' (table %v): %v", layerName, tablename, derr)
+			}
+			if mInfo.IsMapplGIS {
+				layer.isMapplGIS = true
+				layer.mapplSysInfo = mInfo.SystemInfo
+				layer.geomFieldname = mapplgis.GeometryField
+			}
+
 			if gtypeExplicit {
 				// an explicit geometry_type skips startup inspection: the
-				// declared type wins over any sampled inference. MOS
-				// system-info auto-configuration does not run for these
-				// layers; use explicit srid/crs_defn/mos_* settings when
-				// needed. The layer CRS contract still applies: a
-				// layer-level srid/crs_defn overrides the provider-level
-				// default even though no geometry header is decoded.
+				// declared type wins over any sampled inference. The layer
+				// CRS contract still applies: a layer-level srid/crs_defn
+				// overrides the provider-level default even though no
+				// geometry header is decoded. Table identity (tablename/
+				// fields) must still be recorded so TileFeatures takes the
+				// table path instead of falling through to an empty custom
+				// SQL. A detected MapplGIS table still applies its layer
+				// self-description (format, precision, projection) behind
+				// explicit-config precedence.
+				if mInfo.IsMapplGIS {
+					if err := applySystemInfo(&layer, &layer.mapplSysInfo, sridExplicit || lcrs.Explicit); err != nil {
+						return nil, fmt.Errorf("layer '%v' (table %v): %v", layerName, tablename, err)
+					}
+				}
 				lcrs, rerr := crsconfig.ResolveLayer(layerConf, srid)
 				if rerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v invalid CRS: %w", i, layerName, rerr)
 				}
 				layer.srid = uint64(lcrs.SRID)
 				layer.crsExplicit = sridExplicit || lcrs.Explicit
+				layer.tablename = tablename
+				layer.tagFieldnames = tagFieldnames
+				layer.idFieldname = idFieldname
+				p.layers[layer.name] = layer
+				continue
+			}
+
+			// a detected MapplGIS table skips startup geometry sampling: its
+			// geometry column and layer self-description are already known.
+			if mInfo.IsMapplGIS {
+				if err := applySystemInfo(&layer, &layer.mapplSysInfo, sridExplicit || lcrs.Explicit); err != nil {
+					return nil, fmt.Errorf("layer '%v' (table %v): %v", layerName, tablename, err)
+				}
+				layer.tablename = tablename
+				layer.tagFieldnames = tagFieldnames
 				layer.idFieldname = idFieldname
 				p.layers[layer.name] = layer
 				continue
@@ -428,7 +451,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			inspectionSQL := fmt.Sprintf("SELECT %v FROM %v WHERE %v IS NOT NULL LIMIT 1",
 				quoteIdentifier(geomFieldname), quoteIdentifier(tablename), quoteIdentifier(geomFieldname))
 
-			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, inspectionSQL, layerGeometryFormat, serverFlavor, layer.mosConfig)
+			geo, headerSRID, err := geomTypeFromColumn(db, inspectionSQL, layerGeometryFormat, serverFlavor, layer.mosConfig)
 			switch {
 			case err == sql.ErrNoRows:
 				layer.deferredInspection = true
@@ -461,12 +484,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.geomType = geo
 				layer.srid = uint64(lsrid)
 
-				// apply layer self-description from a MapplGIS LayerInfo blob:
-				// precision and PROJ.4 projection. Explicit config values
-				// (mos_precision / mos_units / srid / crs_defn) always win.
-				if err := applySystemInfo(&layer, sysInfo, sridExplicit || lcrs.Explicit); err != nil {
-					return nil, fmt.Errorf("layer '%v' (table %v): %v", layerName, tablename, err)
-				}
+				// MapplGIS layer self-description already applied above via
+				// the one-time provider/mapplgis detection; startup sampling
+				// carries no system-info contract anymore.
 			}
 
 		} else { // layerConf[ConfigKeySQL] exists
@@ -544,7 +564,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 			log.Debugf("qtext: %v", qtext)
 
-			geo, headerSRID, sysInfo, err := geomTypeFromColumn(db, qtext, layerGeometryFormat, serverFlavor, layer.mosConfig)
+			geo, headerSRID, err := geomTypeFromColumn(db, qtext, layerGeometryFormat, serverFlavor, layer.mosConfig)
 			switch {
 			case err == sql.ErrNoRows:
 				layer.deferredInspection = true
@@ -574,12 +594,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.srid = uint64(lsrid)
 				layer.idFieldname = idFieldname
 
-				// apply layer self-description from a MapplGIS LayerInfo blob:
-				// precision and PROJ.4 projection. Explicit config values
-				// (mos_precision / mos_units / srid / crs_defn) always win.
-				if err := applySystemInfo(&layer, sysInfo, sridExplicit || lcrs.Explicit); err != nil {
-					return nil, fmt.Errorf("layer '%v' (custom SQL): %v", layerName, err)
-				}
+				// Custom SQL layers never auto-detect as MapplGIS tables
+				// (canonical one-time detection contract): no system-info
+				// blob is parsed here, and tile requests never apply runtime
+				// detection either. Configure these layers explicitly.
 			}
 		}
 
@@ -595,7 +613,104 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	return &p, nil
 }
 
-// applySystemInfo applies a layer self-description parsed from a
+// detectMapplGIS collects the schema metadata required by the canonical
+// MapplGIS table contract (provider/mapplgis) for the given table and runs
+// the one-time detection:
+//   - SHOW COLUMNS supplies the DDL column list;
+//   - SHOW INDEX supplies the primary key and indexed columns;
+//   - the OKEY = 1 row's LINE value is parsed as the layer
+//     self-description blob.
+//
+// It runs exactly once per tablename layer at provider registration; tile
+// requests never repeat this discovery.
+func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
+	// DDL columns.
+	colRows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %v", quoteIdentifier(tablename)))
+	if err != nil {
+		return mapplgis.Info{}, fmt.Errorf("unable to list columns of table %v: %v", tablename, err)
+	}
+	defer colRows.Close()
+	var meta mapplgis.TableMeta
+	for colRows.Next() {
+		var field, colType string
+		var nullVal, keyVal, extra sql.NullString
+		var def sql.NullString
+		if err := colRows.Scan(&field, &colType, &nullVal, &keyVal, &def, &extra); err != nil {
+			return mapplgis.Info{}, fmt.Errorf("unable to scan columns of table %v: %v", tablename, err)
+		}
+		meta.Columns = append(meta.Columns, field)
+		if err := colRows.Err(); err != nil {
+			return mapplgis.Info{}, fmt.Errorf("error iterating columns of table %v: %v", tablename, err)
+		}
+	}
+	if err := colRows.Err(); err != nil {
+		return mapplgis.Info{}, fmt.Errorf("error iterating columns of table %v: %v", tablename, err)
+	}
+
+	// SHOW INDEX column count varies by server version (MySQL 8.0 returns
+	// the legacy 13 columns plus `expression` and `visible`), so scan the
+	// legacy prefix and discard any trailing columns dynamically.
+	idxRows, err := db.Query(fmt.Sprintf("SHOW INDEX FROM %v", quoteIdentifier(tablename)))
+	if err != nil {
+		return mapplgis.Info{}, fmt.Errorf("unable to list indexes of table %v: %v", tablename, err)
+	}
+	defer idxRows.Close()
+	indexed := make(map[string]struct{})
+	for idxRows.Next() {
+		vals := make([]any, 15)
+		for i := range vals {
+			vals[i] = new(sql.NullString)
+		}
+		if err := idxRows.Scan(vals...); err != nil {
+			return mapplgis.Info{}, fmt.Errorf("unable to scan indexes of table %v: %v", tablename, err)
+		}
+		keyName := vals[2].(*sql.NullString).String
+		seqInIndexStr := vals[3].(*sql.NullString).String
+		columnName := vals[4].(*sql.NullString).String
+		seqInIndex, err := strconv.Atoi(seqInIndexStr)
+		if err != nil {
+			return mapplgis.Info{}, fmt.Errorf("unable to parse seq_in_index of table %v: %v", tablename, err)
+		}
+		if keyName == "PRIMARY" && seqInIndex == 1 {
+			meta.PKColumn = columnName
+		}
+		indexed[columnName] = struct{}{}
+	}
+	if err := idxRows.Err(); err != nil {
+		return mapplgis.Info{}, fmt.Errorf("error iterating indexes of table %v: %v", tablename, err)
+	}
+	for column := range indexed {
+		meta.IndexedColumns = append(meta.IndexedColumns, column)
+	}
+
+	// The OKEY = 1 metadata row: LINE is the required geometry column
+	// literal of the MapplGIS contract; OKEY the required primary key.
+	fetch := func() (*mos.SystemInfo, error) {
+		var blob []byte
+		err := db.QueryRow(fmt.Sprintf(
+			"SELECT %v FROM %v WHERE OKEY = 1 AND %v IS NOT NULL LIMIT 1",
+			quoteIdentifier(mapplgis.GeometryField), quoteIdentifier(tablename), quoteIdentifier(mapplgis.GeometryField),
+		)).Scan(&blob)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if len(blob) == 0 {
+			return nil, nil
+		}
+		si, perr := mos.ParseSystemInfo(blob)
+		if perr != nil {
+			return nil, perr
+		}
+		return &si, nil
+	}
+
+	return mapplgis.Detect(meta, fetch)
+}
+
+
 // MapplGIS LayerInfo blob to the layer being registered. Only values not
 // explicitly configured take effect:
 //   - precision: used when neither provider- nor layer-level mos_precision

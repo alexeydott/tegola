@@ -3,6 +3,7 @@ package gpkg
 import (
 	"github.com/go-spatial/geom"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/mos"
 )
 
 type Layer struct {
@@ -33,14 +34,17 @@ type Layer struct {
 	// They act as a coarse SQL filter mirroring the MySQL provider's MOS
 	// bounds filter; nil when the table does not carry them.
 	boundFieldnames *[4]string
-	// systemInfoApplied records that a MOS system-info blob was already
-	// parsed and applied during registration sampling; TileFeatures skips
-	// re-parsing identical blobs on every tile.
+	// systemInfoApplied records that the MOS system-info parameters were
+	// applied at registration (canonical MapplGIS detection or explicit
+	// config); TileFeatures skips re-applying them per tile.
 	systemInfoApplied bool
-	// systemInfoChecked records that the runtime system-info pre-query
-	// already ran for this layer (regardless of whether a blob was found),
-	// so it is not repeated on every tile.
-	systemInfoChecked bool
+	// isMapplGIS records that the table satisfied the canonical MapplGIS
+	// contract (DDL + PK + indexes + OKEY=1 blob) at registration. After
+	// NewTileProvider this state is final; tile requests never re-detect.
+	isMapplGIS bool
+	// mapplSysInfo is the parsed layer self-description; valid only when
+	// isMapplGIS is true.
+	mapplSysInfo mos.SystemInfo
 	// deferredInspection marks tile-dependent custom SQL whose geometry
 	// could not be inspected safely at startup.
 	deferredInspection bool
@@ -54,3 +58,7 @@ func (l Layer) GeomType() geom.Geometry { return l.geomType }
 func (l Layer) SRID() uint64            { return l.srid }
 func (l Layer) IDFieldName() string     { return l.idFieldname }
 func (l Layer) GeomFieldName() string   { return l.geomFieldname }
+
+// IsMapplGIS reports whether the layer's table satisfied the canonical
+// MapplGIS detection contract at registration.
+func (l Layer) IsMapplGIS() bool { return l.isMapplGIS }

@@ -228,10 +228,9 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		return ErrUnknownLayer{layer}
 	}
 
-	// Resolve pending MOS system-info metadata before the tile extent and
-	// the spatial filter are built, so decode parameters and the layer
-	// SRID are final for the whole row stream (see ensureSystemInfo).
-	p.ensureSystemInfo(pLayer, tile)
+	// Tile requests never repeat discovery (audit A-06): registration
+	// finalized all MOS system-info metadata, so no runtime pre-query
+	// runs here.
 
 	// read the tile extent
 	tileBBox, tileSRID := tile.BufferedExtent()
@@ -350,8 +349,8 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			case pLayer.geomFieldname:
 				// The MOS layer self-description blob (MapplGIS LayerInfo)
 				// is metadata, never a feature. System-info parameters are
-				// finalized before the query runs (registration sampling or
-				// the runtime pre-query in ensureSystemInfo); applying them
+				// finalized at registration (canonical one-time detection,
+				// see gpkg_register.go detectMapplGIS); applying them
 				// mid-stream would decode earlier rows with different
 				// precision/units and invalidate the already-built SQL
 				// bounds filter, so late blobs are skipped (R6).
@@ -434,36 +433,6 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		return err
 	}
 	return nil
-}
-
-// ensureSystemInfo resolves pending MOS system-info metadata before the tile
-// query runs. Registration normally applies it while sampling the layer; for
-// tile-dependent custom SQL (deferred inspection) a dedicated pre-query runs
-// here, so decode parameters and the layer SRID are final before the spatial
-// filter is built. Previously system-info could be applied mid-stream, which
-// decoded earlier rows with different precision/units and invalidated the
-// already-built SQL bounds filter. The pre-query runs at most once per layer.
-func (p *Provider) ensureSystemInfo(layer *Layer, tile provider.Tile) {
-	if layer.geometryFormat != codec.FormatMOS {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if layer.systemInfoApplied || layer.systemInfoChecked {
-		return
-	}
-	if layer.deferredInspection && layer.sql != "" {
-		// project just the geometry column like the startup inspection
-		// does: the custom SQL may select additional columns that would
-		// break inspectCustomSQLSample's single-value Scan
-		qgeom := quoteIdent(layer.geomFieldname)
-		qtext := fmt.Sprintf("SELECT %[1]v FROM (%[2]v) WHERE %[1]v IS NOT NULL LIMIT %[3]v;",
-			qgeom, buildDeferredInspectionSQL(layer, tile), codec.InspectionSampleLimit)
-		if _, _, _, err := inspectCustomSQLSample(p.db, layer, qtext); err != nil {
-			log.Warnf("layer '%v' system-info pre-query failed: %v", layer.Name(), err)
-		}
-	}
-	layer.systemInfoChecked = true
 }
 
 // warnOnce logs a warning only the first time it is called with a given key.

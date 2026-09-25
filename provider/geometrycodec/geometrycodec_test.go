@@ -634,13 +634,28 @@ func TestMergeMOSConfig(t *testing.T) {
 		t.Errorf("units should inherit base, got %+v", got)
 	}
 
-	// layer explicit units override atomically (value + flag)
+	// layer explicit units override atomically (value + flag); the paired
+	// default precision is re-derived for the new units because the base
+	// precision was not explicit
 	got = geometrycodec.MergeMOSConfig(base, geometrycodec.MOSConfig{UnitFactor: 0.001, UnitsSet: true})
 	if got.UnitFactor != 0.001 || !got.UnitsSet {
 		t.Errorf("expected factor 0.001 set, got %+v", got)
 	}
-	if got.Precision != 2 || got.PrecisionSet {
-		t.Errorf("precision should inherit base, got %+v", got)
+	if got.Precision != geometrycodec.DefaultMOSPrecisionForUnits(0.001) || got.PrecisionSet {
+		t.Errorf("expected re-paired precision %v unset, got %+v", geometrycodec.DefaultMOSPrecisionForUnits(0.001), got)
+	}
+
+	// m -> km layer override re-pairs precision to 5
+	got = geometrycodec.MergeMOSConfig(base, geometrycodec.MOSConfig{UnitFactor: 1000, UnitsSet: true})
+	if got.Precision != 5 {
+		t.Errorf("expected precision 5 for km, got %+v", got)
+	}
+
+	// provider explicit precision survives a layer units override
+	explicit := geometrycodec.MOSConfig{Precision: 3, UnitFactor: 1, PrecisionSet: true}
+	got = geometrycodec.MergeMOSConfig(explicit, geometrycodec.MOSConfig{UnitFactor: 0.001, UnitsSet: true})
+	if got.Precision != 3 || !got.PrecisionSet || got.UnitFactor != 0.001 {
+		t.Errorf("explicit precision 3 must survive units override, got %+v", got)
 	}
 
 	// empty override keeps base untouched

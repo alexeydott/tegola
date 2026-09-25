@@ -410,14 +410,17 @@ func TestTileFeaturesWKBInMemoryFilter(t *testing.T) {
 	}
 }
 
-func TestGeomTypeFromColumnKeepsSamplingAfterGeometry(t *testing.T) {
+func TestGeomTypeFromColumnSkipsSystemInfoBlob(t *testing.T) {
+	// The MapplGIS LayerInfo blob is metadata, not geometry: sampling must
+	// skip it and keep looking for a decodable geometry. Detection itself
+	// runs once at registration via the provider/mapplgis contract.
 	systemInfo := make([]byte, 64)
 	copy(systemInfo, []byte{5, 'V', 'e', 'r', ' ', '1'})
 	binary.LittleEndian.PutUint32(systemInfo[11:15], 4)
 
 	driverName := "tegola_mysql_sampling_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
 	sql.Register(driverName, &samplingTestDriver{
-		values: [][]driver.Value{{"POINT(1 2)"}, {systemInfo}},
+		values: [][]driver.Value{{systemInfo}, {"POINT(1 2)"}},
 	})
 	db, err := sql.Open(driverName, "")
 	if err != nil {
@@ -425,57 +428,35 @@ func TestGeomTypeFromColumnKeepsSamplingAfterGeometry(t *testing.T) {
 	}
 	defer db.Close()
 
-	geo, _, sysInfo, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
+	geo, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := geo.(geom.Point); !ok {
 		t.Fatalf("expected geom.Point, got %T", geo)
 	}
-	if sysInfo == nil || sysInfo.Precision != 4 {
-		t.Fatalf("expected system info precision 4, got %#v", sysInfo)
-	}
 }
 
-func TestGeomTypeFromColumnLayerInfoPositionInvariant(t *testing.T) {
-	// Sampling invariant (docs/provider-contract.md): the MapplGIS LayerInfo
-	// blob must be picked up wherever it sits inside the shared 16-row
-	// sample window — first row, middle or last.
+func TestGeomTypeFromColumnOnlySystemInfoRowsYieldsErrNoRows(t *testing.T) {
+	// A sample consisting solely of the layer self-description blob carries
+	// no geometry: sampling must report sql.ErrNoRows rather than succeed.
 	systemInfo := make([]byte, 64)
 	copy(systemInfo, []byte{5, 'V', 'e', 'r', ' ', '1'})
 	binary.LittleEndian.PutUint32(systemInfo[11:15], 4)
 
-	for _, pos := range []int{1, 5, codec.InspectionSampleLimit} {
-		pos := pos
-		t.Run("position "+strconv.Itoa(pos), func(t *testing.T) {
-			values := make([][]driver.Value, 0, codec.InspectionSampleLimit)
-			for i := 1; i <= codec.InspectionSampleLimit; i++ {
-				if i == pos {
-					values = append(values, []driver.Value{systemInfo})
-					continue
-				}
-				values = append(values, []driver.Value{"POINT(1 2)"})
-			}
+	driverName := "tegola_mysql_layerinfo_only_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
+	sql.Register(driverName, &samplingTestDriver{
+		values: [][]driver.Value{{systemInfo}},
+	})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
 
-			driverName := "tegola_mysql_layerinfo_pos_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
-			sql.Register(driverName, &samplingTestDriver{values: values})
-			db, err := sql.Open(driverName, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-
-			geo, _, sysInfo, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, ok := geo.(geom.Point); !ok {
-				t.Fatalf("expected geom.Point, got %T", geo)
-			}
-			if sysInfo == nil || sysInfo.Precision != 4 {
-				t.Fatalf("expected system info precision 4, got %#v", sysInfo)
-			}
-		})
+	_, _, err = geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
+	if err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
 }
 
@@ -490,7 +471,7 @@ func TestGeomTypeFromColumnSkipsNullGeometryRows(t *testing.T) {
 	}
 	defer db.Close()
 
-	geo, _, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
+	geo, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1114,40 +1095,7 @@ func TestApplySystemInfo(t *testing.T) {
 }
 
 func TestApplyRuntimeSystemInfo(t *testing.T) {
-	const projection = "+proj=merc +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
-	blob := make([]byte, 64+len(projection))
-	copy(blob, []byte{5, 'V', 'e', 'r', ' ', '1'})
-	binary.LittleEndian.PutUint32(blob[11:15], 3)
-	blob[15] = 1
-	blob[52] = byte(mos.UnitsCentimetres)
-	blob[53] = 1
-	binary.LittleEndian.PutUint32(blob[60:64], uint32(len(projection)))
-	copy(blob[64:], projection)
-
-	layer := Layer{name: "deferred", geometryFormat: GeometryFormatAuto, mosConfig: codec.DefaultMOSConfig()}
-	format := layer.geometryFormat
-	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
-	tileBBox, tileSRID := tile.BufferedExtent()
-	webMercatorBBox := tileBBox
-
-	if err := applyRuntimeSystemInfo(&layer, &format, &layer.mosConfig, &tileBBox, webMercatorBBox, tileSRID, blob); err != nil {
-		t.Fatalf("applyRuntimeSystemInfo: %v", err)
-	}
-	if format != GeometryFormatMOS {
-		t.Fatalf("geometry format = %q, want %q", format, GeometryFormatMOS)
-	}
-	if layer.mosConfig.Precision != 3 {
-		t.Fatalf("precision = %v, want 3", layer.mosConfig.Precision)
-	}
-	if layer.mosConfig.UnitFactor != 0.01 {
-		t.Fatalf("units factor = %v, want 0.01", layer.mosConfig.UnitFactor)
-	}
-	if layer.srid == 0 || !basic.IsSyntheticSRID(layer.srid) {
-		t.Fatalf("expected synthetic runtime SRID, got %v", layer.srid)
-	}
-	if tileBBox == webMercatorBBox {
-		t.Fatal("expected tile extent to be converted for runtime projection")
-	}
+	t.Skip("runtime system-info application removed by canonical MapplGIS contract (audit A-01): detection is registration-time only")
 }
 
 // TestMySQLLayerGeometryFormatResolution verifies the layer-level
@@ -1247,11 +1195,34 @@ func (c *noQueryConn) QueryContext(context.Context, string, []driver.NamedValue)
 	return nil, errors.New("no startup queries expected")
 }
 
+// ensureLiveTestTable creates the plain (non-MapplGIS) table used by the
+// live construction tests. With the canonical MapplGIS contract (A-05)
+// detection runs for every tablename layer, so the table must exist at
+// registration; the earlier contract skipped all inspection for explicit
+// geometry_type layers and did not need it.
+func ensureLiveTestTable(t *testing.T) {
+	t.Helper()
+	db, err := sql.Open("mysql", "u:p@tcp(localhost:3306)/test?parseTime=true")
+	if err != nil {
+		t.Fatalf("unable to open live test connection: %v", err)
+	}
+	defer db.Close()
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS `lines` (" +
+		"`id` BIGINT NOT NULL PRIMARY KEY," +
+		"`geom` GEOMETRY," +
+		"`name` VARCHAR(255))")
+	if err != nil {
+		t.Fatalf("unable to create live test table: %v", err)
+	}
+}
+
 // TestExplicitGeometryTypeSkipsStartupInspection verifies the common
 // geometry_type layer key contract for MySQL (docs/provider-contract.md):
 // an explicit value fixes the layer type before any data is read and skips
-// the startup inspection query entirely, and an unsupported value fails
-// provider construction.
+// the startup geometry sampling query, and an unsupported value fails
+// provider construction. MapplGIS detection (DDL + PK + indexes + OKEY=1)
+// still runs once at registration, before the geometry_type decision,
+// independently of the configured type (audit A-05).
 func TestExplicitGeometryTypeSkipsStartupInspection(t *testing.T) {
 	baseConfig := func() dict.Dict {
 		return dict.Dict{
@@ -1275,6 +1246,7 @@ func TestExplicitGeometryTypeSkipsStartupInspection(t *testing.T) {
 		if os.Getenv("RUN_MYSQL_TESTS") != "yes" {
 			t.Skip("skip live construction test, set RUN_MYSQL_TESTS=yes to run")
 		}
+		ensureLiveTestTable(t)
 		driverName := "tegola_mysql_no_query_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
 		sql.Register(driverName, &noQueryDriver{})
 
@@ -1294,6 +1266,50 @@ func TestExplicitGeometryTypeSkipsStartupInspection(t *testing.T) {
 		}
 		if _, ok := lyrs[0].GeomType().(geom.LineString); !ok {
 			t.Fatalf("expected geom.LineString, got %T", lyrs[0].GeomType())
+		}
+	})
+
+	t.Run("explicit type keeps table identity", func(t *testing.T) {
+		// A-02 regression: tablename + geometry_type must register a layer
+		// with the table identity (tablename and fields) so TileFeatures
+		// serves the table instead of falling through to an empty custom
+		// SQL. Requires a reachable MySQL server.
+		if os.Getenv("RUN_MYSQL_TESTS") != "yes" {
+			t.Skip("skip live construction test, set RUN_MYSQL_TESTS=yes to run")
+		}
+		ensureLiveTestTable(t)
+
+		config := baseConfig()
+		config["layers"].([]map[string]interface{})[0]["geometry_type"] = "LineString"
+		config["layers"].([]map[string]interface{})[0]["fields"] = []string{"name"}
+
+		prov, err := NewTileProvider(config, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		lyrs, err := prov.(provider.Layerer).Layers()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(lyrs) != 1 {
+			t.Fatalf("expected 1 layer, got %d", len(lyrs))
+		}
+		// A-02 regression: tablename + geometry_type must register a layer
+		// with the table identity (tablename and fields) so TileFeatures
+		// takes the table path instead of falling through to an empty
+		// custom SQL.
+		lyr, ok := lyrs[0].(Layer)
+		if !ok {
+			t.Fatalf("expected internal Layer type, got %T", lyrs[0])
+		}
+		if lyr.tablename != "lines" {
+			t.Errorf("expected tablename 'lines', got %q", lyr.tablename)
+		}
+		if len(lyr.tagFieldnames) != 1 || lyr.tagFieldnames[0] != "name" {
+			t.Errorf("expected tagFieldnames [name], got %v", lyr.tagFieldnames)
+		}
+		if lyr.sql != "" {
+			t.Errorf("expected empty custom sql for a table layer, got %q", lyr.sql)
 		}
 	})
 

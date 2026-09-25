@@ -1,6 +1,6 @@
 # Tegola
 
-![On push](https://github.com/alexeydott/tegola/actions/workflows/on_pr_push.yml/badge.svg?branch=user3486788-fix-gpkg-srid-crs)
+![On push](https://github.com/alexeydott/tegola/actions/workflows/on_pr_push.yml/badge.svg?branch=gpkg-mysql-crs)
 [![license](http://img.shields.io/badge/license-MIT-red.svg?style=flat)](https://github.com/go-spatial/tegola/blob/master/LICENSE.md)
 
 Tegola is a vector tile server delivering [Mapbox Vector Tiles](https://github.com/mapbox/vector-tile-spec) with support for [PostGIS](provider/postgis), [GeoPackage](provider/gpkg), [MySQL/MariaDB](provider/mysql) and [SAP HANA Spatial](https://www.sap.com/products/technology-platform/hana/what-is-sap-hana.html) data providers. User documentation can be found at [tegola.io](https://tegola.io)
@@ -45,7 +45,7 @@ Use "tegola [command] --help" for more information about a command.
 
 ## Running tegola as a vector tile server
 
-1. Download the appropriate binary of tegola for your platform via the [release page](https://github.com/go-spatial/tegola/releases).
+1. Download the appropriate binary of tegola for your platform via the [release page](https://github.com/alexeydott/tegola/releases).
 2. Set up your config file and run. By default, Tegola looks for a `config.toml` in the same directory as the binary. You can set a different location for the `config.toml` using a command flag:
 
 ```

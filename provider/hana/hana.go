@@ -984,16 +984,9 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 				return fmt.Errorf("layer (%v): unexpected MOS column type %T", l.name, rowValues[i])
 			}
 
-			// system info rows configure the MOS quantization and are not
-			// features
+			// system info rows are metadata, not features: skip without
+			// applying anything (audit A-01)
 			if mos.IsSystemInfoBlob(raw) {
-				sysInfo, serr := mos.ParseSystemInfo(raw)
-				if serr != nil {
-					return fmt.Errorf("layer (%v): invalid MOS system info: %w", l.name, serr)
-				}
-				if aerr := l.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-					return fmt.Errorf("layer (%v): %w", l.name, aerr)
-				}
 				continue
 			}
 
@@ -1257,16 +1250,10 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		}
 
 		// The MOS layer self-description blob (MapplGIS LayerInfo) is
-		// metadata, never a feature: apply it to the MOS config and skip
-		// the row.
+		// metadata, never a feature. Registration-time detection already
+		// finalized the layer's MOS parameters (audit A-01): no runtime
+		// application, the row is simply skipped.
 		if plyr.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geobytes) {
-			sysInfo, serr := codec.ParseSystemInfoValue(geobytes)
-			if serr != nil {
-				return fmt.Errorf("for layer (%v) %w", plyr.Name(), serr)
-			}
-			if aerr := mosCfg.ApplySystemInfo(&sysInfo); aerr != nil {
-				return fmt.Errorf("for layer (%v) %w", plyr.Name(), aerr)
-			}
 			continue
 		}
 

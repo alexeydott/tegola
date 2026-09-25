@@ -156,6 +156,134 @@ func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, string, error) {
 	return colNames, pkCol, nil
 }
 
+// tableIndexedColumns returns every column covered by at least one table
+// index, read via PRAGMA index_list / PRAGMA index_info, lowercased for
+// contract comparisons.
+func tableIndexedColumns(db *sql.DB, tablename string) ([]string, error) {
+	indexRows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%v);", quoteIdent(tablename)))
+	if err != nil {
+		return nil, fmt.Errorf("table %q index lookup: %v", tablename, err)
+	}
+	type indexInfo struct {
+		seq     int
+		name    string
+		unique  int
+		origin  string
+		partial int
+	}
+	var indexes []indexInfo
+	for indexRows.Next() {
+		var idx indexInfo
+		if err := indexRows.Scan(&idx.seq, &idx.name, &idx.unique, &idx.origin, &idx.partial); err != nil {
+			_ = indexRows.Close()
+			return nil, fmt.Errorf("table %q index scan: %v", tablename, err)
+		}
+		indexes = append(indexes, idx)
+	}
+	if err := indexRows.Err(); err != nil {
+		_ = indexRows.Close()
+		return nil, fmt.Errorf("table %q index rows: %v", tablename, err)
+	}
+	if err := indexRows.Close(); err != nil {
+		return nil, fmt.Errorf("table %q index close: %v", tablename, err)
+	}
+
+	indexed := make(map[string]struct{})
+	for _, idx := range indexes {
+		infoRows, err := db.Query(fmt.Sprintf("PRAGMA index_info(%v);", quoteIdent(idx.name)))
+		if err != nil {
+			return nil, fmt.Errorf("table %q index_info %q: %v", tablename, idx.name, err)
+		}
+		for infoRows.Next() {
+			var seqno int
+			var cid, name sql.NullString
+			if err := infoRows.Scan(&seqno, &cid, &name); err != nil {
+				_ = infoRows.Close()
+				return nil, fmt.Errorf("table %q index_info %q scan: %v", tablename, idx.name, err)
+			}
+			if name.Valid && name.String != "" {
+				indexed[strings.ToLower(name.String)] = struct{}{}
+			}
+		}
+		if err := infoRows.Err(); err != nil {
+			_ = infoRows.Close()
+			return nil, fmt.Errorf("table %q index_info %q rows: %v", tablename, idx.name, err)
+		}
+		if err := infoRows.Close(); err != nil {
+			return nil, fmt.Errorf("table %q index_info %q close: %v", tablename, idx.name, err)
+		}
+	}
+
+	cols := make([]string, 0, len(indexed))
+	for c := range indexed {
+		cols = append(cols, c)
+	}
+	sort.Strings(cols)
+	return cols, nil
+}
+
+// detectMapplGIS applies the canonical MapplGIS table contract to a raw
+// gpkg table (audit A-00/A-06): DDL + PK + required indexes + the OKEY=1
+// LINE blob, checked once at registration. On a detected layer the MOS
+// system-info is applied to the layer (format stays as configured; the
+// projection becomes the layer SRID unless the config was explicit).
+func detectMapplGIS(db *sql.DB, tablename string, layer *Layer) (bool, error) {
+	colNames, pkCol, err := tableColumnsAndPK(db, tablename)
+	if err != nil {
+		return false, err
+	}
+	indexed, err := tableIndexedColumns(db, tablename)
+	if err != nil {
+		return false, err
+	}
+
+	info, err := mapplgis.Detect(mapplgis.TableMeta{
+		Columns:        colNames,
+		PKColumn:       pkCol,
+		IndexedColumns: indexed,
+	}, func() (*mos.SystemInfo, error) {
+		const fetchQuery = "SELECT LINE FROM %v WHERE OKEY = 1 AND LINE IS NOT NULL LIMIT 1;"
+		rows, qerr := db.Query(fmt.Sprintf(fetchQuery, quoteIdent(tablename)))
+		if qerr != nil {
+			return nil, qerr
+		}
+		defer func() { _ = rows.Close() }()
+		if !rows.Next() {
+			if rerr := rows.Err(); rerr != nil {
+				return nil, rerr
+			}
+			return nil, nil
+		}
+		var value interface{}
+		if serr := rows.Scan(&value); serr != nil {
+			return nil, serr
+		}
+		sysInfo, perr := codec.ParseSystemInfoValue(value)
+		if perr != nil {
+			return nil, perr
+		}
+		return &sysInfo, nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("table %q: %w", tablename, err)
+	}
+	if !info.IsMapplGIS {
+		return false, nil
+	}
+
+	if aerr := layer.mosConfig.ApplySystemInfo(&info.SystemInfo); aerr != nil {
+		return false, fmt.Errorf("table %q apply MOS system info: %v", tablename, aerr)
+	}
+	layer.mapplSysInfo = info.SystemInfo
+	if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, info.SystemInfo.Projection); aerr != nil {
+		return false, fmt.Errorf("table %q apply MOS projection: %v", tablename, aerr)
+	} else if applied {
+		layer.srid = uint64(srid)
+		layer.crsExplicit = true
+	}
+	return true, nil
+}
+
 // detectBoundColumns maps the raw bounds columns (case-insensitive
 // minx/maxx/miny/maxy) from a table's column list to the query field order
 // [minx, maxx, miny, maxy]; nil when the table does not carry them. The
@@ -276,11 +404,12 @@ func hasGpkgMetadataTables(db *sql.DB) (bool, error) {
 }
 
 // sampleRawTableLayer samples a raw-format (wkb/wkt/mos) table's geometry
-// column to infer the layer's geometry type and apply a MOS system-info blob
-// when one is stored alongside the geometries. Only rows the in-memory tile
+// column to infer the layer's geometry type. Only rows the in-memory tile
 // filter cannot pre-reject are needed, so a small LIMIT window suffices; a
 // table that currently holds no decodable geometry registers without an
-// inferred type, matching the custom-SQL path.
+// inferred type, matching the custom-SQL path. The MapplGIS LayerInfo blob
+// is metadata, not a feature: rows carrying it are skipped, detection runs
+// once via the registration-time contract (see detectMapplGIS).
 func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 	qtext := fmt.Sprintf("SELECT %v FROM %v WHERE %v IS NOT NULL LIMIT %v;",
 		quoteIdent(layer.geomFieldname), quoteIdent(layer.tablename), quoteIdent(layer.geomFieldname), codec.InspectionSampleLimit)
@@ -291,9 +420,6 @@ func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 	}
 	defer func() { _ = rows.Close() }()
 
-	// The whole window is scanned so MOS system-info rows are applied
-	// regardless of their position; the first decodable geometry sets the
-	// geometry type.
 	for rows.Next() {
 		var value interface{}
 		if err := rows.Scan(&value); err != nil {
@@ -301,26 +427,13 @@ func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 		}
 
 		if layer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(value) {
-			sysInfo, serr := codec.ParseSystemInfoValue(value)
-			if serr != nil {
-				return fmt.Errorf("table %q parse MOS system info: %v", layer.tablename, serr)
-			}
-			if aerr := layer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-				return fmt.Errorf("table %q apply MOS system info: %v", layer.tablename, aerr)
-			}
-			layer.systemInfoApplied = true
-			if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection); aerr != nil {
-				return fmt.Errorf("table %q apply MOS projection: %v", layer.tablename, aerr)
-			} else if applied {
-				layer.srid = uint64(srid)
-				layer.crsExplicit = true
-			}
+			// MapplGIS LayerInfo blob: metadata, never a feature. The
+			// detection contract already applied its parameters.
 			continue
 		}
 
 		if layer.geomType != nil {
-			// geometry type already inferred; later rows only matter for
-			// system-info metadata handled above
+			// geometry type already inferred
 			continue
 		}
 
@@ -575,8 +688,21 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.srid = uint64(lcrs.SRID)
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
 
+				// Canonical MapplGIS detection runs once at registration,
+				// before geometry sampling (audit A-00/A-06): the detected
+				// system-info fixes MOS decode parameters and the layer
+				// SRID for the whole row stream.
+				isMappl, derr := detectMapplGIS(db, tablename, &layer)
+				if derr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, derr)
+				}
+
 				if gerr := sampleRawTableLayer(db, &layer); gerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, gerr)
+				}
+				if isMappl {
+					layer.isMapplGIS = true
+					log.Debugf("layer '%v': table %q detected as MapplGIS", layerName, tablename)
 				}
 			} else {
 				d, ok := geomTableDetails[tablename]
@@ -751,12 +877,12 @@ func Cleanup() {
 
 // inspectCustomSQLSample executes an inspection query built from custom SQL
 // and inspects the returned sample rows. For raw formats the whole window is
-// scanned: MOS system-info blobs are parsed and applied to the layer
-// wherever they appear, and the first decodable geometry infers the layer's
-// geometry type. For native GeoPackage geometry the first row's binary
-// header and geometry are returned. sysInfoCRSApplied reports whether a MOS
-// system-info projection already resolved the layer SRID. It is shared by
-// startup inspection and the runtime pre-query for deferred layers (R6).
+// scanned: MOS system-info blobs are recognized as metadata and skipped (no
+// auto-detection for custom SQL — audit A-01), and the first decodable
+// geometry infers the layer's geometry type. For native GeoPackage geometry
+// the first row's binary header and geometry are returned. sysInfoCRSApplied
+// is always false: kept in the signature for callers that treat the SRID as
+// already resolved when a system-info projection was applied.
 func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom geom.Geometry, firstHeader *BinaryHeader, sysInfoCRSApplied bool, err error) {
 	layerName := layer.Name()
 	log.Debugf("qtext: %v", qtext)
@@ -774,29 +900,16 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 		}
 
 		if codec.IsRawFormat(layer.geometryFormat) {
-			// MOS system-info rows are metadata, never features:
-			// apply them and continue to the next row.
+			// The MapplGIS LayerInfo blob is metadata, never a feature.
+			// Custom SQL layers are never auto-detected and never apply
+			// system-info parameters from result rows (audit A-01): the
+			// row is skipped so decoding continues with the explicitly
+			// configured format/precision/units/CRS.
 			if layer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geomData) {
-				sysInfo, serr := codec.ParseSystemInfoValue(geomData)
-				if serr != nil {
-					return nil, nil, false, fmt.Errorf("layer '%v' parse MOS system info: %v", layerName, serr)
-				}
-				if aerr := layer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-					return nil, nil, false, fmt.Errorf("layer '%v' apply MOS system info: %v", layerName, aerr)
-				}
-				layer.systemInfoApplied = true
-				if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection); aerr != nil {
-					return nil, nil, false, fmt.Errorf("layer '%v' apply MOS projection: %v", layerName, aerr)
-				} else if applied {
-					layer.srid = uint64(srid)
-					layer.crsExplicit = true
-					sysInfoCRSApplied = true
-				}
 				continue
 			}
 			if firstGeom != nil {
-				// geometry type already inferred; later rows only
-				// matter for system-info metadata handled above
+				// geometry type already inferred
 				continue
 			}
 			_, geo, derr := decodeGeometryValue(geomData, layer.geometryFormat, layer.mosConfig)
