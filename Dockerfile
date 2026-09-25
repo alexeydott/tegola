@@ -28,6 +28,11 @@
 #  $ cp my-config-file docker-config/config.toml
 #  $ cp my-db.gpkg docker-config/
 #  $ docker run -v /path/to/docker-config:/opt/tegola_config -p 8080 tegola serve
+#
+# The container runs as the non-root "tegola" user and /opt is owned by root.
+# A writable directory is provided at /opt/cache (owned by tegola) for file
+# caches; log files written to the working directory will fail unless the
+# directory is mounted from the host with appropriate permissions.
 
 # Intermediary container for building
 FROM golang:1.26.7-alpine3.23 AS build
@@ -61,7 +66,10 @@ RUN cd /go/src/github.com/go-spatial/tegola/cmd/tegola \
 	-o /opt/tegola \
 	&& chmod a+x /opt/tegola
 
-# Build binary (production: optimizations enabled)
+# Release stage: builds the production binary with optimizations enabled.
+# Each stage builds its own /opt/tegola so the final image copies the
+# production binary (the debug stage keeps the -gcflags build).
+FROM build AS release
 RUN cd /go/src/github.com/go-spatial/tegola/cmd/tegola \
 	&& go build -v  \
 	-ldflags "-w -X '${BUILD_PKG}.Version=${VERSION}' -X '${BUILD_PKG}.GitRevision=${GIT_REVISION}' -X '${BUILD_PKG}.GitBranch=${GIT_BRANCH}'" \
@@ -76,9 +84,11 @@ RUN apk update \
 	&& apk add ca-certificates \
 	&& rm -rf /var/cache/apk/* \
 	&& addgroup -S tegola \
-	&& adduser -S -G tegola tegola
+	&& adduser -S -G tegola tegola \
+	&& mkdir -p /opt/cache \
+	&& chown tegola:tegola /opt/cache
 
-COPY --from=build /opt/tegola /opt/
+COPY --from=release /opt/tegola /opt/
 WORKDIR /opt
 USER tegola
 ENTRYPOINT ["/opt/tegola"]

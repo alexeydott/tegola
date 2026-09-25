@@ -34,6 +34,25 @@ services:
     - ./testdata:/testdata
     command: ["/bin/bash", "-c", "testdata/postgis/migration.sh"]
 
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      # credentials match the live construction test in provider/mysql
+      # (mysql_internal_test.go), which connects with database=test,
+      # user=u, password=p.
+      MYSQL_DATABASE: test
+      MYSQL_USER: u
+      MYSQL_PASSWORD: p
+    ports:
+    - 3306:3306
+
   # NOTE: useful for debugging
   # does not run by default, only when you run with:
   # docker-compose --profile pgadmin up (-d)
