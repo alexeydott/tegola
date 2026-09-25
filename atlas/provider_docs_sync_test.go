@@ -269,15 +269,19 @@ func TestProviderDocsAvoidStaleContractClaims(t *testing.T) {
 	must(crs, "Web Mercator")
 
 	readme := "../README.md"
-	must(readme, "v0.17.0-fork.1")
-	must(readme, "fork of go-spatial/tegola, based on 0.17.0, see CHANGELOG")
-	if strings.Contains(contents[readme], "v0.21.0") {
-		t.Error("README.md claims version v0.21.0; the fork version is v0.17.0-fork.1")
+	must(readme, "v0.21.0-fork.1")
+	must(readme, "fork of go-spatial/tegola, based on upstream master (post-v0.21.0), see CHANGELOG")
+	// The bare upstream version must not be presented as the fork version.
+	// Compare per full line so "Version: v0.21.0-fork.1" does not trip the check.
+	for _, line := range strings.Split(contents[readme], "\n") {
+		if strings.TrimSpace(strings.TrimSuffix(line, "\r")) == "Version: v0.21.0" {
+			t.Error("README.md claims bare upstream version v0.21.0; the fork version is v0.21.0-fork.1")
+		}
 	}
 
 	changelog := "../CHANGELOG.md"
-	must(changelog, "v0.17.0-fork.1")
-	must(changelog, "based on upstream 0.17.0")
+	must(changelog, "v0.21.0-fork.1")
+	must(changelog, "upstream master (post-v0.21.0, 2024-12-19)")
 
 	mysqlReadme := "../provider/mysql/README.md"
 	must(mysqlReadme, "SQL-sample storage detection")
