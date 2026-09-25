@@ -8,7 +8,6 @@ import (
 type Layer struct {
 	name          string
 	tablename     string
-	features      []string
 	tagFieldnames []string
 	idFieldname   string
 	geomFieldname string
@@ -38,6 +37,10 @@ type Layer struct {
 	// parsed and applied during registration sampling; TileFeatures skips
 	// re-parsing identical blobs on every tile.
 	systemInfoApplied bool
+	// systemInfoChecked records that the runtime system-info pre-query
+	// already ran for this layer (regardless of whether a blob was found),
+	// so it is not repeated on every tile.
+	systemInfoChecked bool
 	// deferredInspection marks tile-dependent custom SQL whose geometry
 	// could not be inspected safely at startup.
 	deferredInspection bool

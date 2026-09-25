@@ -60,6 +60,47 @@ func uppercaseTokens(str string) string {
 	return provider.ParameterTokenRegexp.ReplaceAllStringFunc(str, strings.ToUpper)
 }
 
+// permissiveTokenReplacer replaces zoom comparisons with an all-zoom list
+// and spatial filters with an always-true expression, for inspection queries
+// built from custom SQL that must return rows regardless of the requested
+// tile.
+func permissiveTokenReplacer() *strings.Replacer {
+	const allZoomsSQL = "IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24)"
+	return strings.NewReplacer(
+		">= "+config.ZoomToken, allZoomsSQL,
+		">="+config.ZoomToken, allZoomsSQL,
+		"=> "+config.ZoomToken, allZoomsSQL,
+		"=>"+config.ZoomToken, allZoomsSQL,
+		"=< "+config.ZoomToken, allZoomsSQL,
+		"=<"+config.ZoomToken, allZoomsSQL,
+		"<= "+config.ZoomToken, allZoomsSQL,
+		"<="+config.ZoomToken, allZoomsSQL,
+		"!= "+config.ZoomToken, allZoomsSQL,
+		"!="+config.ZoomToken, allZoomsSQL,
+		"= "+config.ZoomToken, allZoomsSQL,
+		"="+config.ZoomToken, allZoomsSQL,
+		"> "+config.ZoomToken, allZoomsSQL,
+		">"+config.ZoomToken, allZoomsSQL,
+		"< "+config.ZoomToken, allZoomsSQL,
+		"<"+config.ZoomToken, allZoomsSQL,
+		config.BboxToken, "1=1",
+		"!BOX!", "1=1",
+		"!bbox!", "1=1",
+	)
+}
+
+// buildDeferredInspectionSQL builds the runtime system-info pre-query for a
+// tile-dependent custom-SQL layer (R6): zoom comparisons cover all zooms and
+// the spatial filter is dropped so the sample window can reach MOS
+// system-info blobs regardless of the requested tile, while tile position
+// tokens are replaced with the current tile's values so the statement is
+// valid SQL.
+func buildDeferredInspectionSQL(layer *Layer, tile provider.Tile) string {
+	qtext := permissiveTokenReplacer().Replace(trimTrailingSemicolon(uppercaseTokens(layer.sql)))
+	inspectionExtent, _ := tile.BufferedExtent()
+	return replaceTokens(qtext, layer, tile, inspectionExtent)
+}
+
 func trimTrailingSemicolon(sqlText string) string {
 	sqlText = strings.TrimSpace(sqlText)
 	return strings.TrimSpace(strings.TrimSuffix(sqlText, ";"))

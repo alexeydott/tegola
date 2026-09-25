@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/geom/encoding/wkb"
+	"github.com/go-spatial/geom/slippy"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
@@ -699,7 +700,8 @@ func TestRawFormatTableLayer(t *testing.T) {
 		}
 	})
 
-	t.Run("missing geometry column fails", func(t *testing.T) {		fx := newRawFixture(t, []string{
+	t.Run("missing geometry column fails", func(t *testing.T) {
+		fx := newRawFixture(t, []string{
 			"CREATE TABLE plain (id INTEGER PRIMARY KEY AUTOINCREMENT, data BLOB)",
 		})
 		conf := dict.Dict{
@@ -719,6 +721,86 @@ func TestRawFormatTableLayer(t *testing.T) {
 		t.Logf("got expected error: %v", err)
 	})
 }
+
+// TestMOSDeferredCustomSQLPreQuery covers the R6 runtime contract for
+// tile-dependent custom-SQL MOS layers: when registration sees an empty
+// table (deferred inspection), system info must be applied by the pre-query
+// before the tile query is built, so features decode with correct
+// scale/offset parameters.
+func TestMOSDeferredCustomSQLPreQuery(t *testing.T) {
+	fx := newRawFixture(t, []string{
+		"CREATE TABLE mos_layer (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB)",
+	})
+	// the table is empty at registration: the layer is registered with
+	// deferredInspection and without system info
+
+	conf := dict.Dict{
+		"filepath": fx.path,
+		"layers": []map[string]interface{}{
+			{
+				"name":            "mos_layer",
+				"geometry_format": "mos",
+				// tile-dependent SQL exercising the position tokens
+				// (!BBOX! is not allowed for raw formats: tegola filters
+				// in memory instead)
+				"sql": "SELECT id, geom FROM mos_layer WHERE !ZOOM! >= 0 AND !X! >= 0 AND !Y! >= 0",
+			},
+		},
+	}
+	p, err := gpkg.NewTileProvider(conf, nil)
+	if err != nil {
+		t.Fatalf("NewTileProvider: %v", err)
+	}
+	t.Cleanup(gpkg.Cleanup)
+
+	// data (and its system-info blob) appears after registration
+	insertRows(t, fx.path, "mos_layer", []string{"geom"}, [][]interface{}{
+		{mosSystemInfoBlob(2, "", byte(mos.UnitsMetres), true)},
+		// quantized (200, 400) => (2, 4) metres with precision 2
+		{mosPointBlob([][2]int32{{200, 400}})},
+	})
+
+	tile := &deferredTestTile{
+		z:    5,
+		x:    0,
+		y:    0,
+		srid: 3857,
+		bufferedExtent: geom.NewExtent(
+			[2]float64{0, 0},
+			[2]float64{10, 10},
+		),
+	}
+	var count int
+	err = p.TileFeatures(context.TODO(), "mos_layer", tile, nil, func(f *provider.Feature) error {
+		count++
+		pt, ok := f.Geometry.(geom.Point)
+		if !ok {
+			t.Errorf("geometry type = %T, want geom.Point", f.Geometry)
+			return nil
+		}
+		if pt[0] != 2 || pt[1] != 4 {
+			t.Errorf("point = %v, want [2 4] (system info must be applied before tile query)", pt)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("TileFeatures: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("feature count = %v, want 1", count)
+	}
+}
+
+type deferredTestTile struct {
+	z              slippy.Zoom
+	x, y           uint
+	srid           uint64
+	bufferedExtent *geom.Extent
+}
+
+func (t *deferredTestTile) Extent() (*geom.Extent, uint64)         { return t.bufferedExtent, t.srid }
+func (t *deferredTestTile) BufferedExtent() (*geom.Extent, uint64) { return t.bufferedExtent, t.srid }
+func (t *deferredTestTile) ZXY() (slippy.Zoom, uint, uint)         { return t.z, t.x, t.y }
 
 // insertRows inserts rows into the given table with named columns (the id
 // column is autoincrement and is omitted).

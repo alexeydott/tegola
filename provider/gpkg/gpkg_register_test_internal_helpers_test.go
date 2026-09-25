@@ -27,7 +27,7 @@ func NewProviderInternal(config dict.Dict) (*Provider, error) {
 var errNotAGPKGProvider = errors.New("tile provider is not a gpkg Provider")
 
 // LayerInternal returns the unexported Layer for the given name.
-func (p *Provider) LayerInternal(name string) (Layer, bool) {
+func (p *Provider) LayerInternal(name string) (*Layer, bool) {
 	l, ok := p.layers[name]
 	return l, ok
 }

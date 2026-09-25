@@ -1,5 +1,4 @@
 //go:build cgo
-// +build cgo
 
 package gpkg
 
@@ -11,6 +10,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-spatial/geom"
@@ -19,7 +19,6 @@ import (
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/crsconfig"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
@@ -179,12 +178,21 @@ func rawBoundsSQL(l *Layer, extent *geom.Extent) string {
 type Provider struct {
 	// path to the geopackage file
 	Filepath string
-	// map of layer name and corresponding sql
-	layers map[string]Layer
+	// layers maps layer names to their definitions. Layers are stored as
+	// pointers so runtime discoveries (MOS system-info application) are
+	// visible to concurrent tile requests; the map itself is populated
+	// only by NewTileProvider and is read-only afterwards.
+	layers map[string]*Layer
 	// reference to the database connection
 	db *sql.DB
 	// default SRID for the provider
 	srid uint64
+	// mu guards the runtime mutable layer state (system-info application)
+	// and the warn-once bookkeeping below; tile requests run concurrently.
+	mu sync.Mutex
+	// warned tracks warn-once keys (unexpected column types, late
+	// system-info rows) so a warning is emitted once instead of per row.
+	warned map[string]struct{}
 }
 
 // ErrUnknownLayer denotes a layer name that is not registered on the provider.
@@ -220,6 +228,11 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		return ErrUnknownLayer{layer}
 	}
 
+	// Resolve pending MOS system-info metadata before the tile extent and
+	// the spatial filter are built, so decode parameters and the layer
+	// SRID are final for the whole row stream (see ensureSystemInfo).
+	p.ensureSystemInfo(pLayer, tile)
+
 	// read the tile extent
 	tileBBox, tileSRID := tile.BufferedExtent()
 
@@ -251,7 +264,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			}
 
 			where := fmt.Sprintf("l.%v IS NOT NULL", quoteIdent(pLayer.geomFieldname))
-			if bboxSQL := rawBoundsSQL(&pLayer, tileBBox); bboxSQL != "" {
+			if bboxSQL := rawBoundsSQL(pLayer, tileBBox); bboxSQL != "" {
 				where += " AND " + bboxSQL
 			}
 			qtext = fmt.Sprintf("%v FROM %v l WHERE %v", selectClause, quoteIdent(pLayer.tablename), where)
@@ -265,14 +278,16 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				selectClause += fmt.Sprintf(", l.%v", quoteIdent(tf))
 			}
 
-			// l - layer table, si - spatial index
-			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.%v = si.id WHERE l.%v IS NOT NULL AND !BBOX!", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname))
+			// l - layer table, si - spatial index; ORDER BY keeps row
+			// order deterministic so concurrent requests stream identical
+			// rows (stable MVT output).
+			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.%v = si.id WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
 
-			qtext = replaceTokens(qtext, &pLayer, tile, tileBBox)
+			qtext = replaceTokens(qtext, pLayer, tile, tileBBox)
 		}
 	} else {
 		// If layer was specified via "sql" in config, collect it
-		qtext = replaceTokens(pLayer.sql, &pLayer, tile, tileBBox)
+		qtext = replaceTokens(pLayer.sql, pLayer, tile, tileBBox)
 		qtext = queryParams.ReplaceParams(qtext, &args)
 	}
 
@@ -288,7 +303,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		log.Errorf("err during query: %v - %v", qtext, err)
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	cols, err := rows.Columns()
 	if err != nil {
@@ -334,38 +349,16 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 
 			case pLayer.geomFieldname:
 				// The MOS layer self-description blob (MapplGIS LayerInfo)
-				// is metadata, never a feature. When registration sampling
-				// already applied the system info (the common case) it is
-				// cached on the layer and only skipped here; otherwise it
-				// is applied on first sight and from then on cached.
+				// is metadata, never a feature. System-info parameters are
+				// finalized before the query runs (registration sampling or
+				// the runtime pre-query in ensureSystemInfo); applying them
+				// mid-stream would decode earlier rows with different
+				// precision/units and invalidate the already-built SQL
+				// bounds filter, so late blobs are skipped (R6).
 				if pLayer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(vals[i]) {
-					if !pLayer.systemInfoApplied {
-						sysInfo, serr := codec.ParseSystemInfoValue(vals[i])
-						if serr != nil {
-							log.Errorf("error parsing MOS system info: %v", serr)
-							return serr
-						}
-						if aerr := pLayer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-							log.Errorf("error applying MOS system info: %v", aerr)
-							return aerr
-						}
-						if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(pLayer.srid), pLayer.crsExplicit, sysInfo.Projection); aerr != nil {
-							log.Errorf("error applying MOS system info projection: %v", aerr)
-							return aerr
-						} else if applied {
-							pLayer.srid = uint64(srid)
-							pLayer.crsExplicit = true
-							pLayer.systemInfoApplied = true
-							if pLayer.srid != tileSRID {
-								sourceBBox, berr := basic.FromWebMercatorExtent(pLayer.srid, tileBBox)
-								if berr != nil {
-									log.Errorf("error converting tile extent for system-info projection: %v", berr)
-									return berr
-								}
-								tileBBox = sourceBBox
-							}
-						}
-					}
+					p.warnOnce("late-system-info:"+pLayer.name,
+						"layer '%v': MOS system-info row encountered after the query was built; skipping",
+						pLayer.name)
 					skipRow = true
 					continue
 				}
@@ -412,7 +405,10 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				case time.Time:
 					feature.Tags[cols[i]] = v.Format(time.RFC3339)
 				default:
-					log.Errorf("unexpected type for sqlite column data: %v: %T", cols[i], v)
+					// Emit a warning once per column: the same unexpected
+					// type recurs for every row of the stream.
+					p.warnOnce("unexpected-column:"+cols[i],
+						"unexpected type for sqlite column data: %v: %T", cols[i], v)
 				}
 			}
 		}
@@ -438,6 +434,51 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		return err
 	}
 	return nil
+}
+
+// ensureSystemInfo resolves pending MOS system-info metadata before the tile
+// query runs. Registration normally applies it while sampling the layer; for
+// tile-dependent custom SQL (deferred inspection) a dedicated pre-query runs
+// here, so decode parameters and the layer SRID are final before the spatial
+// filter is built. Previously system-info could be applied mid-stream, which
+// decoded earlier rows with different precision/units and invalidated the
+// already-built SQL bounds filter. The pre-query runs at most once per layer.
+func (p *Provider) ensureSystemInfo(layer *Layer, tile provider.Tile) {
+	if layer.geometryFormat != codec.FormatMOS {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if layer.systemInfoApplied || layer.systemInfoChecked {
+		return
+	}
+	if layer.deferredInspection && layer.sql != "" {
+		// project just the geometry column like the startup inspection
+		// does: the custom SQL may select additional columns that would
+		// break inspectCustomSQLSample's single-value Scan
+		qgeom := quoteIdent(layer.geomFieldname)
+		qtext := fmt.Sprintf("SELECT %[1]v FROM (%[2]v) WHERE %[1]v IS NOT NULL LIMIT %[3]v;",
+			qgeom, buildDeferredInspectionSQL(layer, tile), codec.InspectionSampleLimit)
+		if _, _, _, err := inspectCustomSQLSample(p.db, layer, qtext); err != nil {
+			log.Warnf("layer '%v' system-info pre-query failed: %v", layer.Name(), err)
+		}
+	}
+	layer.systemInfoChecked = true
+}
+
+// warnOnce logs a warning only the first time it is called with a given key.
+// Guarded by mu because tile requests run concurrently.
+func (p *Provider) warnOnce(key string, format string, args ...interface{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.warned == nil {
+		p.warned = make(map[string]struct{})
+	}
+	if _, ok := p.warned[key]; ok {
+		return
+	}
+	p.warned[key] = struct{}{}
+	log.Warnf(format, args...)
 }
 
 // Close will close the Provider's database connection

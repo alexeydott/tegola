@@ -1,5 +1,4 @@
 //go:build cgo
-// +build cgo
 
 package gpkg
 
@@ -41,13 +40,8 @@ func customSQLNeedsDeferredInspection(sqlText string) bool {
 	return false
 }
 
-// configuredLayerSRID and applyLayerCRSDefn were replaced by the shared
-// provider/crsconfig resolver, which implements the same provider/layer
-// crs_defn > srid > fallback precedence together with explicit-flag
-// tracking for every standard provider.
-
 func init() {
-	provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
+	_ = provider.Register(provider.TypeStd.Prefix()+Name, NewTileProvider, Cleanup)
 }
 
 // Metadata for feature tables in gpkg database
@@ -69,8 +63,7 @@ func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
-
+	defer func() { _ = db.Close() }()
 	ftMetaData, err := featureTableMetaData(db)
 	if err != nil {
 		return nil, err
@@ -119,7 +112,7 @@ func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("table %q column lookup: %v", tablename, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type columnInfo struct {
 		name string
@@ -202,7 +195,7 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 		log.Errorf("error during query: %v - %v", qtext, err)
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// container for tracking metadata for each table with a geometry
 	geomTableDetails := make(map[string]featureTableDetails)
@@ -236,7 +229,11 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 
 		colNames, pkCol, cerr := tableColumnsAndPK(gpkg, tablename.String)
 		if cerr != nil {
-			return nil, cerr
+			// An orphaned gpkg_contents entry (table dropped or unreadable)
+			// must not abort registration of every other table; skip it and
+			// warn so the remaining layers are still served (R3).
+			log.Warnf("table %q listed in gpkg_contents but unreadable, skipping: %v", tablename.String, cerr)
+			continue
 		}
 
 		geomTableDetails[tablename.String] = featureTableDetails{
@@ -268,6 +265,13 @@ func hasGpkgMetadataTables(db *sql.DB) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if count == 1 {
+		// Exactly one of the two metadata tables exists: the file is
+		// partially initialized or corrupted and gpkg-format layers cannot
+		// be read reliably, so refuse it instead of silently mismatching
+		// bounds with the RTree join (R8).
+		return false, errors.New("geopackage metadata tables are partially present (one of gpkg_contents/gpkg_geometry_columns missing): file appears corrupted")
+	}
 	return count == 2, nil
 }
 
@@ -278,14 +282,14 @@ func hasGpkgMetadataTables(db *sql.DB) (bool, error) {
 // table that currently holds no decodable geometry registers without an
 // inferred type, matching the custom-SQL path.
 func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
-	qtext := fmt.Sprintf("SELECT `%v` FROM `%v` WHERE `%v` IS NOT NULL LIMIT %v;",
-		layer.geomFieldname, layer.tablename, layer.geomFieldname, codec.InspectionSampleLimit)
+	qtext := fmt.Sprintf("SELECT %v FROM %v WHERE %v IS NOT NULL LIMIT %v;",
+		quoteIdent(layer.geomFieldname), quoteIdent(layer.tablename), quoteIdent(layer.geomFieldname), codec.InspectionSampleLimit)
 
 	rows, err := db.Query(qtext)
 	if err != nil {
 		return fmt.Errorf("table %q sample query: %v", layer.tablename, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// The whole window is scanned so MOS system-info rows are applied
 	// regardless of their position; the first decodable geometry sets the
@@ -304,12 +308,12 @@ func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 			if aerr := layer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
 				return fmt.Errorf("table %q apply MOS system info: %v", layer.tablename, aerr)
 			}
+			layer.systemInfoApplied = true
 			if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection); aerr != nil {
 				return fmt.Errorf("table %q apply MOS projection: %v", layer.tablename, aerr)
 			} else if applied {
 				layer.srid = uint64(srid)
 				layer.crsExplicit = true
-				layer.systemInfoApplied = true
 			}
 			continue
 		}
@@ -422,7 +426,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 	p := Provider{
 		Filepath: filepath,
-		layers:   make(map[string]Layer),
+		layers:   make(map[string]*Layer),
 		db:       db,
 		srid:     uint64(srid),
 	}
@@ -629,7 +633,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				layer.srid = uint64(lcrs.SRID)
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
-				p.layers[layer.name] = layer
+				p.layers[layer.name] = &layer
 				continue
 			}
 
@@ -640,36 +644,16 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				layer.srid = uint64(lcrs.SRID)
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
+				layer.deferredInspection = true
 				log.Warnf("layer '%v' uses tile-dependent custom SQL; deferring startup geometry inspection", layerName)
-				p.layers[layer.name] = layer
+				p.layers[layer.name] = &layer
 				continue
 			}
 
 			// if a !ZOOM! token exists, all features could be filtered out so we don't have a geometry to inspect it's type.
 			// TODO(arolek): implement an SQL parser or figure out a different approach. this is brittle but I can't figure out a better
 			// solution without using an SQL parser on custom SQL statements
-			allZoomsSQL := "IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24)"
-			tokenReplacer := strings.NewReplacer(
-				">= "+conf.ZoomToken, allZoomsSQL,
-				">="+conf.ZoomToken, allZoomsSQL,
-				"=> "+conf.ZoomToken, allZoomsSQL,
-				"=>"+conf.ZoomToken, allZoomsSQL,
-				"=< "+conf.ZoomToken, allZoomsSQL,
-				"=<"+conf.ZoomToken, allZoomsSQL,
-				"<= "+conf.ZoomToken, allZoomsSQL,
-				"<="+conf.ZoomToken, allZoomsSQL,
-				"!= "+conf.ZoomToken, allZoomsSQL,
-				"!="+conf.ZoomToken, allZoomsSQL,
-				"= "+conf.ZoomToken, allZoomsSQL,
-				"="+conf.ZoomToken, allZoomsSQL,
-				"> "+conf.ZoomToken, allZoomsSQL,
-				">"+conf.ZoomToken, allZoomsSQL,
-				"< "+conf.ZoomToken, allZoomsSQL,
-				"<"+conf.ZoomToken, allZoomsSQL,
-				conf.BboxToken, "1=1",
-				"!BOX!", "1=1",
-				"!bbox!", "1=1",
-			)
+			tokenReplacer := permissiveTokenReplacer()
 
 			inspectionSQL := tokenReplacer.Replace(trimTrailingSemicolon(uppercaseTokens(customSQL)))
 			inspectionTile := provider.NewTile(0, 0, 0, 0, uint(p.srid))
@@ -680,84 +664,13 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			// formats the whole sample window is scanned because MOS
 			// system-info blobs may be stored at any position before or
 			// after the first decodable geometry.
-			qtext := fmt.Sprintf("SELECT %[1]v FROM (%v) WHERE %[1]v IS NOT NULL LIMIT %[3]v;", layer.geomFieldname, inspectionSQL, codec.InspectionSampleLimit)
+			qgeom := quoteIdent(layer.geomFieldname)
+			qtext := fmt.Sprintf("SELECT %[1]v FROM (%[2]v) WHERE %[1]v IS NOT NULL LIMIT %[4]v;", qgeom, inspectionSQL, qgeom, codec.InspectionSampleLimit)
 
-			log.Debugf("qtext: %v", qtext)
-
-			inspectRows, qerr := db.Query(qtext)
-			if qerr != nil {
-				return nil, fmt.Errorf("layer '%v' problem executing custom SQL: %v", layerName, qerr)
+			firstGeom, firstHeader, sysInfoCRSApplied, ierr := inspectCustomSQLSample(db, &layer, qtext)
+			if ierr != nil {
+				return nil, ierr
 			}
-
-			var firstGeom geom.Geometry
-			var firstHeader *BinaryHeader
-			var sysInfoCRSApplied bool
-			for inspectRows.Next() {
-				var geomData interface{}
-				if serr := inspectRows.Scan(&geomData); serr != nil {
-					inspectRows.Close()
-					return nil, fmt.Errorf("layer '%v' problem reading custom SQL row: %v", layerName, serr)
-				}
-
-				if codec.IsRawFormat(layer.geometryFormat) {
-					// MOS system-info rows are metadata, never features:
-					// apply them and continue to the next row.
-					if layer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geomData) {
-						sysInfo, serr := codec.ParseSystemInfoValue(geomData)
-						if serr != nil {
-							inspectRows.Close()
-							return nil, fmt.Errorf("layer '%v' parse MOS system info: %v", layerName, serr)
-						}
-						if aerr := layer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
-							inspectRows.Close()
-							return nil, fmt.Errorf("layer '%v' apply MOS system info: %v", layerName, aerr)
-						}
-						if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection); aerr != nil {
-							inspectRows.Close()
-							return nil, fmt.Errorf("layer '%v' apply MOS projection: %v", layerName, aerr)
-						} else if applied {
-							layer.srid = uint64(srid)
-							layer.crsExplicit = true
-							sysInfoCRSApplied = true
-							layer.systemInfoApplied = true
-						}
-						continue
-					}
-					if firstGeom != nil {
-						// geometry type already inferred; later rows only
-						// matter for system-info metadata handled above
-						continue
-					}
-					_, geo, derr := decodeGeometryValue(geomData, layer.geometryFormat, layer.mosConfig)
-					if derr != nil {
-						inspectRows.Close()
-						return nil, fmt.Errorf("layer '%v' decode %v geometry: %v", layerName, layer.geometryFormat, derr)
-					}
-					if geo != nil {
-						firstGeom = geo
-					}
-					continue
-				}
-
-				geomDataBytes, ok := geomData.([]byte)
-				if !ok {
-					inspectRows.Close()
-					return nil, errors.New("unexpected column type for geom field. expected blob")
-				}
-				h, geo, derr := decodeGeometry(geomDataBytes)
-				if derr != nil {
-					inspectRows.Close()
-					return nil, derr
-				}
-				firstGeom = geo
-				firstHeader = h
-				break
-			}
-			if rerr := inspectRows.Err(); rerr != nil {
-				inspectRows.Close()
-				return nil, fmt.Errorf("layer '%v' problem reading custom SQL rows: %v", layerName, rerr)
-			}
-			inspectRows.Close()
 
 			switch {
 			case firstGeom == nil:
@@ -771,7 +684,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				layer.srid = uint64(lcrs.SRID)
 				log.Warnf("layer '%v' with custom SQL currently returns 0 rows; registering it without an inferred geometry type: %v", layerName, customSQL)
-				p.layers[layer.name] = layer
+				p.layers[layer.name] = &layer
 				continue
 
 			default:
@@ -802,12 +715,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 		}
 
-		p.layers[layer.name] = layer
+		p.layers[layer.name] = &layer
 	}
 
 	// track the provider so we can clean it up later
 	providersMu.Lock()
-	providers = append(providers, p)
+	providers = append(providers, &p)
 	providersMu.Unlock()
 	keepDB = true
 
@@ -815,7 +728,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 }
 
 // reference to all instantiated providers
-var providers []Provider
+var providers []*Provider
 var providersMu sync.Mutex
 
 // Cleanup will close all database connections and destroy all previously instantiated Provider instances
@@ -833,5 +746,83 @@ func Cleanup() {
 		}
 	}
 
-	providers = make([]Provider, 0)
+	providers = make([]*Provider, 0)
+}
+
+// inspectCustomSQLSample executes an inspection query built from custom SQL
+// and inspects the returned sample rows. For raw formats the whole window is
+// scanned: MOS system-info blobs are parsed and applied to the layer
+// wherever they appear, and the first decodable geometry infers the layer's
+// geometry type. For native GeoPackage geometry the first row's binary
+// header and geometry are returned. sysInfoCRSApplied reports whether a MOS
+// system-info projection already resolved the layer SRID. It is shared by
+// startup inspection and the runtime pre-query for deferred layers (R6).
+func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom geom.Geometry, firstHeader *BinaryHeader, sysInfoCRSApplied bool, err error) {
+	layerName := layer.Name()
+	log.Debugf("qtext: %v", qtext)
+
+	inspectRows, qerr := db.Query(qtext)
+	if qerr != nil {
+		return nil, nil, false, fmt.Errorf("layer '%v' problem executing custom SQL: %v", layerName, qerr)
+	}
+	defer func() { _ = inspectRows.Close() }()
+
+	for inspectRows.Next() {
+		var geomData interface{}
+		if serr := inspectRows.Scan(&geomData); serr != nil {
+			return nil, nil, false, fmt.Errorf("layer '%v' problem reading custom SQL row: %v", layerName, serr)
+		}
+
+		if codec.IsRawFormat(layer.geometryFormat) {
+			// MOS system-info rows are metadata, never features:
+			// apply them and continue to the next row.
+			if layer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(geomData) {
+				sysInfo, serr := codec.ParseSystemInfoValue(geomData)
+				if serr != nil {
+					return nil, nil, false, fmt.Errorf("layer '%v' parse MOS system info: %v", layerName, serr)
+				}
+				if aerr := layer.mosConfig.ApplySystemInfo(&sysInfo); aerr != nil {
+					return nil, nil, false, fmt.Errorf("layer '%v' apply MOS system info: %v", layerName, aerr)
+				}
+				layer.systemInfoApplied = true
+				if srid, applied, aerr := crsconfig.ApplySystemInfoCRS(int(layer.srid), layer.crsExplicit, sysInfo.Projection); aerr != nil {
+					return nil, nil, false, fmt.Errorf("layer '%v' apply MOS projection: %v", layerName, aerr)
+				} else if applied {
+					layer.srid = uint64(srid)
+					layer.crsExplicit = true
+					sysInfoCRSApplied = true
+				}
+				continue
+			}
+			if firstGeom != nil {
+				// geometry type already inferred; later rows only
+				// matter for system-info metadata handled above
+				continue
+			}
+			_, geo, derr := decodeGeometryValue(geomData, layer.geometryFormat, layer.mosConfig)
+			if derr != nil {
+				return nil, nil, false, fmt.Errorf("layer '%v' decode %v geometry: %v", layerName, layer.geometryFormat, derr)
+			}
+			if geo != nil {
+				firstGeom = geo
+			}
+			continue
+		}
+
+		geomDataBytes, ok := geomData.([]byte)
+		if !ok {
+			return nil, nil, false, errors.New("unexpected column type for geom field. expected blob")
+		}
+		h, geo, derr := decodeGeometry(geomDataBytes)
+		if derr != nil {
+			return nil, nil, false, derr
+		}
+		firstGeom = geo
+		firstHeader = h
+		break
+	}
+	if rerr := inspectRows.Err(); rerr != nil {
+		return nil, nil, false, fmt.Errorf("layer '%v' problem reading custom SQL rows: %v", layerName, rerr)
+	}
+	return firstGeom, firstHeader, sysInfoCRSApplied, nil
 }
