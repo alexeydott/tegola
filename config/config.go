@@ -417,6 +417,13 @@ func Load(location string) (conf Config, err error) {
 		if err != nil {
 			return conf, fmt.Errorf("error fetching remote config file (%v): %v ", location, err)
 		}
+		defer func() { _ = res.Body.Close() }()
+
+		// require a success status so error pages don't end up in the TOML
+		// parser (part13 P6-27)
+		if res.StatusCode < 200 || res.StatusCode > 299 {
+			return conf, fmt.Errorf("error fetching remote config file (%v). unexpected http status: %s", location, res.Status)
+		}
 
 		// set the reader to the response body
 		reader = res.Body
@@ -431,10 +438,12 @@ func Load(location string) (conf Config, err error) {
 			return conf, fmt.Errorf("config file at location (%v) not found", location)
 		}
 		// open the config file
-		reader, err = os.Open(location)
+		f, err := os.Open(location)
 		if err != nil {
 			return conf, fmt.Errorf("error opening local config file (%v): %v ", location, err)
 		}
+		defer func() { _ = f.Close() }()
+		reader = f
 	}
 
 	return Parse(reader, location)
