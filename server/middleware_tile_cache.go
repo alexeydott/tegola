@@ -237,10 +237,11 @@ func isMVTContentType(header http.Header) bool {
 // context detached from (but value-derived from) the initiating request, while
 // mutating paths pass the request's own context.
 //
-// When checkStale is set (ordinary miss renders) the cached write is skipped
-// if a ?tile=update regenerated the metatile while the render was in flight,
-// so a slow render can never overwrite freshly updated tiles with stale
-// bytes. Mutating paths (?dirty) pass checkStale=false: they hold the metatile
+// When checkStale is set (ordinary miss renders) the cached write is claimed
+// atomically with respect to metatile mutations: if a ?tile=update or ?dirty
+// regeneration rewrote the metatile while the render was in flight, the stale
+// write is dropped, so a slow render can never overwrite freshly regenerated
+// tiles. Mutating paths (?dirty) pass checkStale=false: they hold the metatile
 // lock and their write is authoritative.
 func renderTileForCache(ctx context.Context, r *http.Request, next http.Handler, cacher cache.Interface, key *cache.Key, checkStale bool) *tileRenderResult {
 	var snap metatileSnapshot
@@ -275,10 +276,20 @@ func renderTileForCache(ctx context.Context, r *http.Request, next http.Handler,
 		return res
 	}
 
-	if checkStale && !tileUpdateLocks.stable(snap) {
-		// a ?tile=update or ?dirty regeneration rewrote this metatile while we
-		// were rendering; the freshly written tiles must not be overwritten
-		log.Debugf("cache middleware: skipping stale cache write for tile %v", key)
+	if checkStale {
+		// the freshness re-check and the cache write are one atomic step with
+		// respect to metatile mutations: a ?tile=update or ?dirty
+		// regeneration that rewrote this metatile while we were rendering
+		// supersedes our result and the stale write is dropped
+		wrote, err := tileUpdateLocks.writeStable(ctx, snap, func(ctx context.Context) error {
+			return cacher.Set(ctx, key, res.body)
+		})
+		if err != nil {
+			log.Warnf("cache response writer err: %v", err)
+		}
+		if !wrote {
+			log.Debugf("cache middleware: skipping stale cache write for tile %v", key)
+		}
 		return res
 	}
 
