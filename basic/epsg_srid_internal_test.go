@@ -129,3 +129,81 @@ func TestResolveDefnSRIDCollisionPath(t *testing.T) {
 		t.Fatalf("re-resolving testDefnA gave %v, want %v", codeAgain, codeA)
 	}
 }
+
+// ---- P6-21: validation probe point ----
+
+// TestProj4ProbePoint locks the probe-point selection used by
+// isSupportedProj4: definitions declaring a projection center validate at that
+// center (so definitions whose domain excludes the historical fixed point
+// (10, 50) are not incorrectly rejected), UTM +zone definitions validate at
+// their central meridian, and definitions without a declared center fall back
+// to the fixed point.
+func TestProj4ProbePoint(t *testing.T) {
+	tests := []struct {
+		name   string
+		proj4  string
+		lonLat [2]float64
+	}{
+		{"center via lon_0 and lat_0", "+proj=aea +lat_1=-30 +lat_2=-60 +lat_0=-45 +lon_0=170 +datum=WGS84", [2]float64{170, -45}},
+		{"zero center is still a declared center", "+proj=merc +lon_0=0 +lat_0=0 +ellps=WGS84", [2]float64{0, 0}},
+		{"lat_0 without lon_0", "+proj=merc +lat_0=50 +ellps=WGS84", [2]float64{0, 50}},
+		{"lon_0 without lat_0", "+proj=merc +lon_0=37.5 +ellps=WGS84", [2]float64{37.5, 0}},
+		{"utm zone central meridian", "+proj=utm +zone=1 +datum=WGS84", [2]float64{-177, 0}},
+		{"utm zone 33", "+proj=utm +zone=33 +datum=WGS84", [2]float64{15, 0}},
+		{"utm zone 60", "+proj=utm +zone=60 +datum=WGS84", [2]float64{177, 0}},
+		{"explicit lon_0 wins over zone", "+proj=utm +zone=33 +lon_0=10 +datum=WGS84", [2]float64{10, 0}},
+		{"longitude wrap east", "+proj=merc +lon_0=190 +lat_0=10 +ellps=WGS84", [2]float64{-170, 10}},
+		{"longitude wrap west", "+proj=merc +lon_0=-190 +lat_0=10 +ellps=WGS84", [2]float64{170, 10}},
+		{"no center falls back to fixed point", "+proj=merc +ellps=WGS84", [2]float64{10, 50}},
+		{"unparseable center falls back", "+proj=merc +lon_0=39,5 +ellps=WGS84", [2]float64{10, 50}},
+	}
+	for _, tc := range tests {
+		lon, lat := proj4ProbePoint(tc.proj4)
+		if lon != tc.lonLat[0] || lat != tc.lonLat[1] {
+			t.Errorf("proj4ProbePoint(%q) = (%v, %v), want (%v, %v)", tc.proj4, lon, lat, tc.lonLat[0], tc.lonLat[1])
+		}
+	}
+}
+
+// TestIsSupportedProj4UsesDeclaredCenter is the behavioral P6-21 regression:
+// +proj=merc +lat_0=90 declares its center at the pole, which merc cannot
+// project. The historical fixed probe (10, 50) validated it as usable even
+// though its own declared center lies outside the projection's domain; probing
+// the center must reject it.
+func TestIsSupportedProj4UsesDeclaredCenter(t *testing.T) {
+	broken := "+proj=merc +a=6370997 +b=6370997 +lat_0=90 +lon_0=0 +units=m +no_defs"
+	if isSupportedProj4(broken) {
+		t.Fatalf("definition %q declares an unprojectable center (0, 90) and must be rejected", broken)
+	}
+	// the same definition with a projectable center stays accepted
+	good := "+proj=merc +a=6370997 +b=6370997 +lat_0=89 +lon_0=0 +units=m +no_defs"
+	if !isSupportedProj4(good) {
+		t.Fatalf("definition %q is valid and must be accepted", good)
+	}
+}
+
+// TestBuiltinProj4DefnsValidate guards P6-21/P6-8: every built-in table
+// definition must survive validation unchanged after the probe point and
+// definition checks changed.
+func TestBuiltinProj4DefnsValidate(t *testing.T) {
+	for srid, def := range builtinProj4SRIDs {
+		if !isSupportedProj4(def) {
+			t.Errorf("builtin EPSG:%d definition %q does not validate", srid, def)
+		}
+	}
+}
+
+// TestIsSupportedProj4StillRejectsBrokenDefns keeps genuinely broken
+// definitions rejected: unsupported projections and the vendored airy /
+// august operations, whose Inverse panics.
+func TestIsSupportedProj4StillRejectsBrokenDefns(t *testing.T) {
+	for _, def := range []string{
+		"+proj=stere +lat_0=46",
+		"+proj=airy +lat_0=49 +lon_0=-2 +ellps=WGS84",
+		"+proj=august +lat_0=45 +lon_0=0 +a=6378137 +b=6378137",
+	} {
+		if isSupportedProj4(def) {
+			t.Errorf("broken definition %q must be rejected", def)
+		}
+	}
+}

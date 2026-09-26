@@ -2,6 +2,7 @@ package basic
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -266,6 +267,59 @@ func Proj4DefnSRID(proj4 string) (uint64, bool) {
 	return code, ok
 }
 
+// proj4ProbePoint returns the geographic point used to validate a PROJ.4
+// definition's forward and inverse operations. When the definition declares a
+// projection center via +lon_0 / +lat_0 (or a UTM +zone), the center is used
+// so that definitions whose valid domain excludes the historical fixed probe
+// point (10, 50) — e.g. an orthographic projection centered on the Pacific —
+// are not incorrectly rejected. Probing the declared center also catches
+// definitions whose own center is not projectable. Definitions that declare no
+// center fall back to the fixed point (10, 50).
+func proj4ProbePoint(proj4 string) (lon, lat float64) {
+	haveCenter := false
+	haveZone := false
+	var zone float64
+	for _, field := range strings.Fields(proj4) {
+		if !strings.HasPrefix(field, "+") {
+			continue
+		}
+		key, val, ok := strings.Cut(strings.TrimPrefix(field, "+"), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "lon_0":
+			if v, err := strconv.ParseFloat(val, 64); err == nil {
+				lon, haveCenter = v, true
+			}
+		case "lat_0":
+			if v, err := strconv.ParseFloat(val, 64); err == nil {
+				lat, haveCenter = v, true
+			}
+		case "zone":
+			if v, err := strconv.ParseFloat(val, 64); err == nil {
+				zone, haveZone = v, true
+			}
+		}
+	}
+	if haveCenter {
+		// wrap the probe longitude into (-180, 180] so it is canonical
+		lon = math.Mod(lon, 360)
+		switch {
+		case lon > 180:
+			lon -= 360
+		case lon <= -180:
+			lon += 360
+		}
+		return lon, lat
+	}
+	if haveZone {
+		// UTM central meridian; the natural center latitude is the equator
+		return 6*zone - 183, 0
+	}
+	return 10, 50
+}
+
 // isSupportedProj4 validates a PROJ.4 string by asking proj to build and
 // round-trip a conversion for it via a temporary EPSG code outside the
 // standard range. Each validation uses a fresh probe code because proj caches
@@ -284,8 +338,12 @@ func isSupportedProj4(proj4 string) (ok bool) {
 			ok = false
 		}
 	}()
+	// probe the projection's declared center when it has one (P6-21): a
+	// single fixed point (10, 50) incorrectly rejects valid definitions
+	// whose domain excludes that point.
+	lon, lat := proj4ProbePoint(proj4)
 	// forward then inverse must both succeed for a usable projection
-	out, err := proj.Convert(probe, []float64{10.0, 50.0})
+	out, err := proj.Convert(probe, []float64{lon, lat})
 	if err != nil {
 		return false
 	}
