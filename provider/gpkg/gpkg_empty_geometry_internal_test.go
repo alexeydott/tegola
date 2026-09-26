@@ -1,3 +1,5 @@
+//go:build cgo
+
 package gpkg
 
 // Unit tests for audit part12 N15: decodeGeometry must honor the
