@@ -53,7 +53,11 @@ type featureTableDetails struct {
 	geomFieldname string
 	geomType      geom.Geometry
 	srid          uint64
-	bbox          *geom.Extent
+	// srsIDRaw is the raw SRS id from the metadata (audit P6-14): 0
+	// (undefined), negatives (cartesian engineering CRS) and NULL are
+	// preserved so the fallback to web mercator can be warned about.
+	srsIDRaw sql.NullInt64
+	bbox     *geom.Extent
 }
 
 // Creates a config instance of the type NewTileProvider() requires including all available feature
@@ -394,6 +398,7 @@ func featureTableMetaData(gpkg *sql.DB) (map[string][]featureTableDetails, error
 		if err = rows.Scan(&tablename, &minX, &minY, &maxX, &maxY, &srid, &geomCol, &geomType); err != nil {
 			return nil, err
 		}
+		srsIDRaw := srid
 
 		// map the returned geom type to a tegola geom type
 		tg, err := geomNameToGeom(geomType.String)
@@ -431,6 +436,7 @@ func featureTableMetaData(gpkg *sql.DB) (map[string][]featureTableDetails, error
 			geomFieldname: geomCol.String,
 			geomType:      tg,
 			srid:          sridVal,
+			srsIDRaw:      srsIDRaw,
 			// the extent of the layer's features
 			bbox: bbox,
 		})
@@ -473,6 +479,21 @@ func pickGeometryColumn(cols []featureTableDetails, configured string, explicit 
 		return cols[0], nil
 	}
 	return featureTableDetails{}, fmt.Errorf("table has no geometry column %q (available: %v)", configured, strings.Join(names, ", "))
+}
+
+// warnSRSIDFallback warns when an SRID source is missing, 0 (undefined per
+// the GeoPackage spec) or negative (cartesian engineering CRS) and the
+// layer therefore falls back to the configured/default SRID instead of
+// silently pretending the data is web mercator (audit P6-14).
+func warnSRSIDFallback(layerName, source string, srsID sql.NullInt64, fallback uint64) {
+	switch {
+	case !srsID.Valid:
+		log.Warnf("layer %q: %s is NULL; falling back to srid %d (configure srid explicitly to override)", layerName, source, fallback)
+	case srsID.Int64 == 0:
+		log.Warnf("layer %q: %s is 0 (undefined per the GeoPackage spec); falling back to srid %d - if the data is longitude/latitude, configure srid 4326", layerName, source, fallback)
+	case srsID.Int64 < 0:
+		log.Warnf("layer %q: %s is %d (cartesian engineering CRS); falling back to srid %d - configure srid explicitly if this is wrong", layerName, source, srsID.Int64, fallback)
+	}
 }
 
 // hasGpkgMetadataTables reports whether the file has the GeoPackage metadata
@@ -860,8 +881,15 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				// gpkg_geometry_columns.srs_id; the inferred value is only used as a fallback when
 				// the user did not configure anything explicitly.
 				layerSRID := p.srid
-				if !providerSRIDExplicit && d.srid > 0 {
-					layerSRID = d.srid
+				if !providerSRIDExplicit {
+					if d.srid > 0 {
+						layerSRID = d.srid
+					} else {
+						// audit P6-14: GeoPackage SRS IDs 0 (undefined) and
+						// -1 (cartesian engineering CRS) must not silently
+						// fall back to web mercator.
+						warnSRSIDFallback(layerName, "gpkg_geometry_columns.srs_id", d.srsIDRaw, layerSRID)
+					}
 				}
 
 				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
@@ -1014,10 +1042,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				continue
 			}
 
-			// Get geometry type & srid from geometry of first row. For raw
-			// formats the whole sample window is scanned because MOS
-			// system-info blobs may be stored at any position before or
-			// after the first decodable geometry.
+			// Get geometry type & srid from the sample window (bounded by
+			// the LIMIT below). For raw formats the whole window is scanned
+			// because MOS system-info blobs may be stored at any position
+			// before or after the first decodable geometry; for GPKG the
+			// window is scanned so mixed geometry-header SRS ids can be
+			// detected and warned about (audit P5-9).
 			qgeom := quoteIdent(layer.geomFieldname)
 			qtext := fmt.Sprintf("SELECT %[1]v FROM (%[2]v) WHERE %[1]v IS NOT NULL LIMIT %[4]v;", qgeom, inspectionSQL, qgeom, codec.InspectionSampleLimit)
 
@@ -1052,8 +1082,15 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					break
 				}
 				layerSRID := p.srid
-				if !providerSRIDExplicit && firstHeader != nil && firstHeader.SRSId() > 0 {
-					layerSRID = uint64(firstHeader.SRSId())
+				if !providerSRIDExplicit {
+					if firstHeader != nil && firstHeader.SRSId() > 0 {
+						layerSRID = uint64(firstHeader.SRSId())
+					} else if firstHeader != nil {
+						// audit P6-14: header SRS IDs 0/-1 must not silently
+						// fall back to web mercator.
+						warnSRSIDFallback(layerName, "geometry header SRS ID",
+							sql.NullInt64{Int64: int64(firstHeader.SRSId()), Valid: true}, layerSRID)
+					}
 				}
 
 				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
@@ -1158,14 +1195,26 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 		if derr != nil {
 			return nil, nil, false, derr
 		}
-		firstHeader = h
 		if geo == nil {
 			// empty-geometry row (GeoPackage empty flag, audit N15):
-			// keep scanning for a real sample geometry.
+			// keep scanning the sample window for a real sample geometry.
 			continue
 		}
-		firstGeom = geo
-		break
+		// audit P5-9 analog: a custom SQL result set may mix per-row
+		// geometry-header SRS ids. The first decodable sample row defines
+		// the layer SRS; rows carrying a different header SRS id are
+		// skipped with a warning instead of silently first-row-wins.
+		if firstHeader != nil && h != nil && h.SRSId() != firstHeader.SRSId() {
+			log.Warnf("layer '%v': custom SQL sample rows carry mixed geometry-header SRS IDs (%d and %d); keeping %d and ignoring rows with other SRS IDs",
+				layerName, firstHeader.SRSId(), h.SRSId(), firstHeader.SRSId())
+			continue
+		}
+		if firstHeader == nil {
+			firstHeader = h
+		}
+		if firstGeom == nil {
+			firstGeom = geo
+		}
 	}
 	if rerr := inspectRows.Err(); rerr != nil {
 		return nil, nil, false, fmt.Errorf("layer '%v' problem reading custom SQL rows: %v", layerName, rerr)

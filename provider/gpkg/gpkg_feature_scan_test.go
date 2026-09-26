@@ -3,10 +3,12 @@
 package gpkg_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -16,6 +18,19 @@ import (
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/gpkg"
 )
+
+// captureWarns runs f with the default slog logger replaced by one writing
+// WARN+ records into a buffer and returns the captured text. internal/log's
+// Warnf routes through slog's default logger.
+func captureWarns(t *testing.T, f func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+	f()
+	return buf.String()
+}
 
 // TestNullFeatureIDSkipped covers the gpkg part of audit P6-11: a NULL
 // feature id must not silently become ID 0 (duplicate IDs collapse in the
@@ -350,4 +365,150 @@ func TestGeometryColumnSelectedByConfig(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "no geometry column") {
 		t.Errorf("error = %q, expected it to name the missing geometry column", err.Error())
 	}
+}
+
+// TestSRSFallbackWarnings covers audit P6-14: GeoPackage SRS ids 0
+// (undefined) and -1 (cartesian engineering CRS) as well as NULL srs_id
+// values must not silently fall back to web mercator - registration warns
+// with a hint (0: configure srid 4326 for lon/lat data). An explicitly
+// configured srid keeps its documented override semantics and must not warn.
+// Pre-fix: none of these warnings were emitted.
+func TestSRSFallbackWarnings(t *testing.T) {
+	const srsDDL = `CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT, srs_id INTEGER, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE);
+CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT);
+CREATE TABLE rtree_t1_geom (id INTEGER, minx DOUBLE, maxx DOUBLE, miny DOUBLE, maxy DOUBLE);`
+
+	mkFixture := func(t *testing.T, gcSrsID interface{}) string {
+		t.Helper()
+		fx := newRawFixture(t, []string{
+			"CREATE TABLE t1 (fid INTEGER PRIMARY KEY, geom BLOB, note TEXT)",
+			srsDDL,
+		})
+		insertRows(t, fx.path, "gpkg_contents", []string{"table_name", "data_type", "srs_id"}, [][]interface{}{
+			{"t1", "features", nil},
+		})
+		insertRows(t, fx.path, "gpkg_geometry_columns", []string{"table_name", "column_name", "geometry_type_name", "srs_id", "z", "m"}, [][]interface{}{
+			{"t1", "geom", "GEOMETRY", gcSrsID, 0, 0},
+		})
+		insertRows(t, fx.path, "t1", []string{"fid", "geom", "note"}, [][]interface{}{
+			{1, wkbGeomBytes(t, geom.Point{1, 1}), "a"},
+		})
+		return fx.path
+	}
+	baseConf := func(path string) dict.Dict {
+		return dict.Dict{
+			"filepath": path,
+			"layers": []map[string]interface{}{
+				{
+					"name":               "t1",
+					"tablename":          "t1",
+					"id_fieldname":       "fid",
+					"geometry_fieldname": "geom",
+					"fields":             []string{"note"},
+				},
+			},
+		}
+	}
+
+	t.Run("srs_id 0 suggests 4326", func(t *testing.T) {
+		path := mkFixture(t, 0)
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(baseConf(path), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			_ = p
+		})
+		for _, want := range []string{"undefined per the GeoPackage spec", "configure srid 4326"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("warning %q missing from logs: %s", want, out)
+			}
+		}
+	})
+
+	t.Run("srs_id -1 cartesian", func(t *testing.T) {
+		path := mkFixture(t, -1)
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(baseConf(path), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			_ = p
+		})
+		for _, want := range []string{"cartesian engineering CRS", "falling back to srid"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("warning %q missing from logs: %s", want, out)
+			}
+		}
+	})
+
+	t.Run("srs_id NULL", func(t *testing.T) {
+		path := mkFixture(t, nil)
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(baseConf(path), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			_ = p
+		})
+		for _, want := range []string{"is NULL", "falling back to srid"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("warning %q missing from logs: %s", want, out)
+			}
+		}
+	})
+
+	t.Run("explicit srid suppresses the warning", func(t *testing.T) {
+		path := mkFixture(t, 0)
+		conf := baseConf(path)
+		conf["srid"] = 4326
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(conf, nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			_ = p
+		})
+		if strings.Contains(out, "falling back") {
+			t.Errorf("explicit srid must keep override semantics without warnings, got: %s", out)
+		}
+	})
+
+	t.Run("custom sql header srs_id 0", func(t *testing.T) {
+		fx := newRawFixture(t, []string{
+			"CREATE TABLE t1 (fid INTEGER PRIMARY KEY, geom BLOB, note TEXT)",
+		})
+		insertRows(t, fx.path, "t1", []string{"fid", "geom", "note"}, [][]interface{}{
+			{1, gpkgPointBlob(t, 0, 1, 1), "a"},
+		})
+		conf := dict.Dict{
+			"filepath": fx.path,
+			"layers": []map[string]interface{}{
+				{
+					"name":               "custom",
+					"sql":                "SELECT * FROM t1",
+					"id_fieldname":       "fid",
+					"geometry_fieldname": "geom",
+					"fields":             []string{"note"},
+				},
+			},
+		}
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(conf, nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			_ = p
+		})
+		for _, want := range []string{"geometry header SRS ID is 0", "configure srid 4326"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("warning %q missing from logs: %s", want, out)
+			}
+		}
+	})
 }

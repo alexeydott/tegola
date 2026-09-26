@@ -3,11 +3,17 @@
 package gpkg
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
+	"fmt"
+	"log/slog"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/go-spatial/geom"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -266,5 +272,79 @@ func TestPickGeometryColumn(t *testing.T) {
 	}
 	if got.geomFieldname != "the_geom" {
 		t.Errorf("implicit single pick = %q, expected the_geom", got.geomFieldname)
+	}
+}
+
+// gpkgBlob crafts a minimal GeoPackage geometry blob: 8-byte header (magic
+// 'GP', version 0, flags 0x01 = little endian + no envelope, SRS id little
+// endian) followed by a WKB little-endian Point.
+func gpkgBlob(srid int32, x, y float64) []byte {
+	b := make([]byte, 8+21)
+	b[0], b[1], b[2], b[3] = 'G', 'P', 0, 0x01
+	binary.LittleEndian.PutUint32(b[4:8], uint32(srid))
+	wkb := b[8:]
+	wkb[0] = 1
+	binary.LittleEndian.PutUint32(wkb[1:5], 1)
+	binary.LittleEndian.PutUint64(wkb[5:13], math.Float64bits(x))
+	binary.LittleEndian.PutUint64(wkb[13:21], math.Float64bits(y))
+	return b
+}
+
+// captureWarns runs f with the default slog logger replaced by one writing
+// WARN+ records into a buffer and returns the captured text. internal/log's
+// Warnf routes through slog's default logger.
+func captureWarns(t *testing.T, f func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+	f()
+	return buf.String()
+}
+
+// TestInspectCustomSQLSampleMixedHeaderSRS covers the P5-9 analog for the
+// gpkg custom SQL sample: rows mixing geometry-header SRS ids must keep the
+// first decodable sample row's SRS id and skip rows with a different one,
+// warning about the mix instead of silently first-row-wins. Pre-fix: no
+// warning was emitted and the first row won silently.
+func TestInspectCustomSQLSampleMixedHeaderSRS(t *testing.T) {
+	db := newGpkgMetadataDB(t)
+	if _, err := db.Exec("CREATE TABLE mixed (geom BLOB)"); err != nil {
+		t.Fatalf("create mixed: %v", err)
+	}
+	for i, blob := range [][]byte{
+		gpkgBlob(3857, 1, 1),
+		gpkgBlob(4326, 2, 2),
+		gpkgBlob(3857, 3, 3),
+	} {
+		if _, err := db.Exec("INSERT INTO mixed (geom) VALUES (?)", blob); err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	layer := Layer{name: "mixed_layer", geometryFormat: GeometryFormatGPKG, geomFieldname: "geom"}
+	var (
+		firstGeom   geom.Geometry
+		firstHeader *BinaryHeader
+		gerr        error
+	)
+	out := captureWarns(t, func() {
+		firstGeom, firstHeader, _, gerr = inspectCustomSQLSample(db, &layer, "SELECT geom FROM mixed LIMIT 16;")
+	})
+	if gerr != nil {
+		t.Fatalf("inspectCustomSQLSample errored = %v", gerr)
+	}
+	if firstHeader == nil {
+		t.Fatal("inspectCustomSQLSample returned nil firstHeader")
+	}
+	if firstHeader.SRSId() != 3857 {
+		t.Errorf("firstHeader.SRSId() = %d, expected 3857 (first decodable row defines the SRS)", firstHeader.SRSId())
+	}
+	if got := fmt.Sprintf("%v", firstGeom); got != "[1 1]" {
+		t.Errorf("firstGeom = %v, expected [1 1] (first decodable row's geometry)", got)
+	}
+	if !strings.Contains(out, "mixed geometry-header SRS IDs") {
+		t.Errorf("expected mixed-SRS warning in logs, got: %s", out)
 	}
 }
