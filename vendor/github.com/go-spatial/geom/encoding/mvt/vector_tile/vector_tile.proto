@@ -3,7 +3,7 @@
 package vector_tile;
 
 option optimize_for = LITE_RUNTIME;
-option go_package  = "vectorTile";
+option go_package  = "github.com/go-spatial/geom/encoding/mvt/vector_tile;vectorTile";
 
 message Tile {
 

@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 
 	vectorTile "github.com/go-spatial/geom/encoding/mvt/vector_tile"
 	"github.com/go-spatial/geom/slippy"
@@ -245,7 +245,7 @@ func TestEncode(t *testing.T) {
 	type tcase struct {
 		grid     atlas.Map
 		tile     slippy.Tile
-		expected vectorTile.Tile
+		expected *vectorTile.Tile
 	}
 
 	fn := func(tc tcase) func(t *testing.T) {
@@ -394,7 +394,7 @@ func TestEncode(t *testing.T) {
 				},
 			},
 			tile: slippy.Tile{Z: 2, X: 3, Y: 3},
-			expected: vectorTile.Tile{
+			expected: &vectorTile.Tile{
 				Layers: []*vectorTile.Tile_Layer{
 					{
 						Version: p.Uint32(2),
@@ -452,7 +452,7 @@ func TestEncode(t *testing.T) {
 				},
 			},
 			tile: slippy.Tile{Z: 2, X: 3, Y: 3},
-			expected: vectorTile.Tile{
+			expected: &vectorTile.Tile{
 				Layers: []*vectorTile.Tile_Layer{
 					{
 						Version:  p.Uint32(2),

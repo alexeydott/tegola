@@ -4,5 +4,5 @@ go 1.21
 
 require (
 	github.com/go-spatial/proj v0.3.0
-	github.com/golang/protobuf v1.5.4
+	google.golang.org/protobuf v1.36.12
 )

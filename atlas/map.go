@@ -11,7 +11,7 @@ import (
 
 	"github.com/go-spatial/tegola/observability"
 
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/geom/encoding/mvt"

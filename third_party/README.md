@@ -31,6 +31,15 @@ under `third_party/`, then run `go mod vendor`.
   clip/simplify instead of panicking with an index-out-of-range.
 - `encoding/mvt/prepare.go` `preparePolygon`: guard against short/nil rings
   returned by `preparelinestr` when a ring collapses below two unique points.
+- `encoding/mvt/vector_tile/vector_tile.pb.go`: regenerated with
+  protoc-gen-go v1.36.12 (`google.golang.org/protobuf` APIv2); the fork no
+  longer depends on `github.com/golang/protobuf`. `vector_tile.proto` gained
+  the full `go_package` path; wire format is unchanged.
+- `encoding/mvt/layer.go` `vectorTileValue`: unsupported value types stash
+  their raw bytes via `ProtoReflect().SetUnknown` (the v2 replacement for
+  assigning the old `XXX_unrecognized` field).
+- `encoding/mvt/decode.go`: `github.com/arolek/p` usage dropped in favour of
+  a local variable (dependency hygiene, no behaviour change).
 
 The `go` directive of the fork go.mod files (`go 1.21`) must stay at or below
 the main module's `go` directive. The `require` versions in the root

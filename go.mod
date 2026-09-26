@@ -17,7 +17,6 @@ require (
 	github.com/go-spatial/proj v0.3.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/go-test/deep v1.1.1
-	github.com/golang/protobuf v1.5.4
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx-gofrs-uuid v0.0.0-20230224015001-1d428863c2e2
 	github.com/jackc/pgx/v5 v5.11.0
@@ -25,6 +24,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/theckman/goconstraint v1.11.0
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/go-playground/colors.v1 v1.2.0
 )
 
@@ -99,5 +99,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260921155816-b14227669459 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260921155816-b14227669459 // indirect
 	google.golang.org/grpc v1.84.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )
