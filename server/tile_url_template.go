@@ -60,7 +60,7 @@ func (t *TileURLTemplate) UnmarshalJSON(data []byte) error {
 		if pathParts[i] == TileURLMapsToken {
 			// check pathParts length before inspecting further
 			// ahead in the slice
-			if len(pathParts) < i+1 {
+			if i+1 >= len(pathParts) {
 				return ErrMalformedTileTemplateURL{
 					Got: urlStr,
 				}
@@ -80,7 +80,14 @@ func (t *TileURLTemplate) UnmarshalJSON(data []byte) error {
 		if pathParts[i] == TileURLZToken {
 			foundZToken = true
 			// value before the z token is either the
-			// map name or the layer name.
+			// map name or the layer name. the z token must not
+			// be the first path part, otherwise there is no
+			// preceding map or layer name to read
+			if i == 0 {
+				return ErrMalformedTileTemplateURL{
+					Got: urlStr,
+				}
+			}
 			if pathParts[i-1] != t.MapName {
 				t.LayerName = pathParts[i-1]
 			}
