@@ -125,6 +125,15 @@ func TestTrimTrailingSemicolon(t *testing.T) {
 	}
 }
 
+// P6-16: GeoPackage files must be opened read-only, with a busy timeout.
+func TestSQLiteReadOnlyDSN(t *testing.T) {
+	got := sqliteReadOnlyDSN(`C:\data\file.gpkg`)
+	want := `file:C:\data\file.gpkg?mode=ro&_busy_timeout=5000`
+	if got != want {
+		t.Fatalf("sqliteReadOnlyDSN() = %q, want %q", got, want)
+	}
+}
+
 // A12: bounds predicate build errors must fail closed (returned to the
 // caller), never silently fall back to 1=1.
 func TestReplaceTokensFailClosed(t *testing.T) {

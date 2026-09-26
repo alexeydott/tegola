@@ -18,6 +18,14 @@ func sqliteQuoteIdent(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
+// sqliteReadOnlyDSN builds the sqlite3 DSN used to open GeoPackage files.
+// The provider never writes to a GeoPackage, so the database is opened in
+// read-only mode (audit P6-16); _busy_timeout keeps reads patient against a
+// file locked by another process.
+func sqliteReadOnlyDSN(path string) string {
+	return "file:" + path + "?mode=ro&_busy_timeout=5000"
+}
+
 // replaceTokens replaces tile and layer metadata tokens in a SQL query.
 //
 // bboxExtent must be the tile's buffered extent transformed to the layer's
