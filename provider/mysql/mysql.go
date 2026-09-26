@@ -500,6 +500,11 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 					}
 				case int64:
 					feature.Tags[cols[i]] = v
+				case uint64:
+					// BIGINT UNSIGNED arrives as typed uint64 under the
+					// binary protocol; MVT has a native uint representation,
+					// matching what the []byte ParseUint fallback returns.
+					feature.Tags[cols[i]] = v
 				case string:
 					feature.Tags[cols[i]] = v
 				case float64:
