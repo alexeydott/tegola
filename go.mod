@@ -11,7 +11,7 @@ require (
 	github.com/akrylysov/algnhsa v1.1.0
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/dimfeld/httptreemux v5.0.1+incompatible
-	github.com/gdey/tbltest v0.0.0-20170331191646-af8abc47b052
+	github.com/gdey/tbltest v0.0.0-20180914212833-1865222d591f
 	github.com/go-spatial/cobra v0.0.3-0.20181105183926-68194e4fbcc6
 	github.com/go-spatial/geom v0.1.0
 	github.com/go-spatial/proj v0.3.0
