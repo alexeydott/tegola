@@ -184,9 +184,6 @@ func ValidateProjStringContents(pl *support.ProjString) error {
 	if pl.ContainsKey("geoidgrids") {
 		return merror.New(merror.UnsupportedProjectionString, "geoidgrids")
 	}
-	if pl.ContainsKey("to_meter") {
-		return merror.New(merror.UnsupportedProjectionString, "to_meter")
-	}
 
 	return nil
 }
@@ -355,7 +352,7 @@ func (sys *System) processEllipsoid() error {
 func (sys *System) readUnits(vertical bool) (float64, float64, error) {
 
 	units := "units"
-	toMeter := "toMeter"
+	toMeter := "to_meter"
 
 	var to, from float64
 
@@ -402,7 +399,7 @@ func (sys *System) readUnits(vertical bool) (float64, float64, error) {
 			to = factor
 		}
 
-		from = 1.0 / sys.FromMeter
+		from = 1.0 / to
 	} else {
 		to = 1.0
 		from = 1.0
