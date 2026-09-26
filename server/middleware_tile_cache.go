@@ -9,6 +9,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-spatial/geom/encoding/mvt"
 	"github.com/go-spatial/tegola/atlas"
@@ -77,7 +78,7 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 			tileUpdateLocks.beginRegeneration(state)
 			defer tileUpdateLocks.endRegeneration(state)
 
-			res := renderTileForCache(r, next, cacher, key, false)
+			res := renderTileForCache(r.Context(), r, next, cacher, key, false)
 			res.writeTo(w)
 			return
 		}
@@ -112,23 +113,27 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 		}
 
 		// cache miss: render the tile once per tile key and share the captured
-		// result with all concurrent requests for the same tile
-		for attempt := 0; ; attempt++ {
-			res, _ := tileRenders.do(r.Context(), key.String(), func() *tileRenderResult {
-				return renderTileForCache(r, next, cacher, key, true)
-			})
+		// result with all concurrent requests for the same tile. The render is
+		// driven by a context detached from any single request, so a leader
+		// that disconnects cannot abort a render live waiters depend on.
+		res, _ := tileRenders.do(r.Context(), key.String(), func(renderCtx context.Context) *tileRenderResult {
+			return renderTileForCache(renderCtx, r, next, cacher, key, true)
+		})
 
-			if res.canceled && attempt < 1 && r.Context().Err() == nil {
-				// the shared render was canceled by another request while ours
-				// is still alive: try again instead of dropping a good request
-				continue
-			}
-			if r.Context().Err() != nil {
-				return
-			}
-			res.writeTo(w)
+		if r.Context().Err() != nil {
+			// our request ended while the render was in flight: the client is
+			// gone and there is nothing left to deliver
 			return
 		}
+		if res.canceled {
+			// The shared render was abandoned (bounded render timeout) while we
+			// were still live. A canceled result must never be written as an
+			// empty 200: answer with a proper error instead.
+			log.Warnf("cache middleware: shared render for %v did not complete", r.URL.Path)
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return
+		}
+		res.writeTo(w)
 	})
 }
 
@@ -227,14 +232,17 @@ func isMVTContentType(header http.Header) bool {
 
 // renderTileForCache renders a tile through the wrapped handler and stores the
 // encoded result in the cache. The render is captured and replayed to the
-// caller instead of being streamed, so concurrent requests can share it.
+// caller instead of being streamed, so concurrent requests can share it. The
+// ctx drives both the render and the cache write: shared miss renders pass a
+// context detached from (but value-derived from) the initiating request, while
+// mutating paths pass the request's own context.
 //
 // When checkStale is set (ordinary miss renders) the cached write is skipped
 // if a ?tile=update regenerated the metatile while the render was in flight,
 // so a slow render can never overwrite freshly updated tiles with stale
 // bytes. Mutating paths (?dirty) pass checkStale=false: they hold the metatile
 // lock and their write is authoritative.
-func renderTileForCache(r *http.Request, next http.Handler, cacher cache.Interface, key *cache.Key, checkStale bool) *tileRenderResult {
+func renderTileForCache(ctx context.Context, r *http.Request, next http.Handler, cacher cache.Interface, key *cache.Key, checkStale bool) *tileRenderResult {
 	var snap metatileSnapshot
 	if checkStale {
 		// keep the metatile state alive across the render and remember its
@@ -246,9 +254,9 @@ func renderTileForCache(r *http.Request, next http.Handler, cacher cache.Interfa
 	}
 
 	// render with a query-parameter-free copy of the request (?dirty and
-	// friends must not leak into the provider query), keeping the original
-	// context so cancellation still propagates to the provider
-	renderReq := r.Clone(r.Context())
+	// friends must not leak into the provider query); cancellation flows
+	// through ctx
+	renderReq := r.Clone(ctx)
 	renderReq.URL.RawQuery = ""
 	renderReq.URL.Fragment = ""
 	renderReq.Form = nil
@@ -257,7 +265,7 @@ func renderTileForCache(r *http.Request, next http.Handler, cacher cache.Interfa
 	capture := newTileRenderCapture()
 	next.ServeHTTP(capture, renderReq)
 
-	res := capture.result(r.Context().Err() != nil)
+	res := capture.result(ctx.Err() != nil)
 	if res.canceled || res.status != http.StatusOK || len(res.body) == 0 {
 		return res
 	}
@@ -274,15 +282,25 @@ func renderTileForCache(r *http.Request, next http.Handler, cacher cache.Interfa
 		return res
 	}
 
-	if err := cacher.Set(r.Context(), key, res.body); err != nil {
+	if err := cacher.Set(ctx, key, res.body); err != nil {
 		log.Warnf("cache response writer err: %v", err)
 	}
 	return res
 }
 
+// tileRenderTimeout bounds how long a shared render may outlive the requests
+// that started it. It is a variable so tests can tighten the bound.
+var tileRenderTimeout = 30 * time.Second
+
 // tileRenderGroup deduplicates concurrent renders of the same tile key in
-// flight. Waiters receive the leader's result; a waiter whose context ends
-// first stops waiting and reports cancellation.
+// flight. Waiters receive the leader's result.
+//
+// The render is detached from any single request's context (bounded by
+// tileRenderTimeout): a leader that disconnects must not abort a render other
+// requests are still waiting for. Every request that joins a render holds a
+// refcount; when all of them disconnect before completion, the detached render
+// is canceled. A waiter whose own context ends reports cancellation and never
+// observes an aborted render's result.
 type tileRenderGroup struct {
 	mu    sync.Mutex
 	calls map[string]*tileRenderCall
@@ -291,35 +309,79 @@ type tileRenderGroup struct {
 type tileRenderCall struct {
 	done chan struct{}
 	res  *tileRenderResult
+	// refs counts the requests still waiting on the render. The render runs
+	// detached from request contexts; when the last waiter disconnects, the
+	// detached render is canceled and the call is retired.
+	refs   int
+	cancel context.CancelFunc
+}
+
+// runTileRender runs fn, converting a panic into a proper 500 result so live
+// waiters are never left without a response.
+func runTileRender(ctx context.Context, fn func(context.Context) *tileRenderResult) (res *tileRenderResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Errorf("cache middleware: tile render panicked: %v", p)
+			res = &tileRenderResult{status: http.StatusInternalServerError}
+		}
+	}()
+	return fn(ctx)
 }
 
 // do executes fn for key unless an identical call is already in flight, in
 // which case it waits for and returns that call's result. The second return
 // value reports whether the result was shared from another call.
-func (g *tileRenderGroup) do(ctx context.Context, key string, fn func() *tileRenderResult) (res *tileRenderResult, shared bool) {
+func (g *tileRenderGroup) do(ctx context.Context, key string, fn func(context.Context) *tileRenderResult) (res *tileRenderResult, shared bool) {
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = make(map[string]*tileRenderCall)
 	}
 	if call, ok := g.calls[key]; ok {
+		call.refs++
 		g.mu.Unlock()
-		select {
-		case <-call.done:
-			return call.res, true
-		case <-ctx.Done():
-			return &tileRenderResult{canceled: true}, true
-		}
+		return call.wait(ctx, g, key), true
 	}
-	call := &tileRenderCall{done: make(chan struct{})}
+
+	renderCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tileRenderTimeout)
+	call := &tileRenderCall{done: make(chan struct{}), refs: 1, cancel: cancel}
 	g.calls[key] = call
 	g.mu.Unlock()
 
-	call.res = fn()
+	go func() {
+		defer cancel()
+		call.res = runTileRender(renderCtx, fn)
 
-	g.mu.Lock()
-	delete(g.calls, key)
-	g.mu.Unlock()
-	close(call.done)
+		g.mu.Lock()
+		if g.calls[key] == call {
+			delete(g.calls, key)
+		}
+		g.mu.Unlock()
+		close(call.done)
+	}()
 
-	return call.res, false
+	return call.wait(ctx, g, key), false
+}
+
+// wait blocks until the render completes or ctx ends. A caller whose context
+// ends first gives up its refcount and receives a canceled result; when the
+// last ref is dropped the detached render is canceled and the call is retired
+// so no new caller can join it.
+func (c *tileRenderCall) wait(ctx context.Context, g *tileRenderGroup, key string) *tileRenderResult {
+	select {
+	case <-c.done:
+		return c.res
+	case <-ctx.Done():
+		g.mu.Lock()
+		c.refs--
+		last := c.refs == 0
+		if last && g.calls[key] == c {
+			delete(g.calls, key)
+		}
+		g.mu.Unlock()
+		if last {
+			// no request is waiting for this render anymore: stop rendering
+			c.cancel()
+		}
+		return &tileRenderResult{canceled: true}
+	}
 }

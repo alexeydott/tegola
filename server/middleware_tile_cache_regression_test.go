@@ -23,7 +23,7 @@ func TestRenderTileForCacheCachesImplicitSuccessfulWrite(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/maps/m/l/4/3/2", nil)
-	res := renderTileForCache(req, handler, cacher, key, true)
+	res := renderTileForCache(req.Context(), req, handler, cacher, key, true)
 
 	if res.status != http.StatusOK {
 		t.Fatalf("rendered status = %d, want 200", res.status)
