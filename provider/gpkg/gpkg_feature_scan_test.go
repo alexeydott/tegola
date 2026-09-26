@@ -9,6 +9,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -574,6 +576,148 @@ func TestRawLayerWithoutBoundsWarns(t *testing.T) {
 		})
 		if strings.Contains(out, "full-table-scan") {
 			t.Errorf("bounds columns present, expected no scan-cost warning, got: %s", out)
+		}
+	})
+}
+
+// TestRTreeAndIDChecks covers audit P5-5: registration verifies the RTree
+// spatial index table exists (clear error naming the table and the
+// CreateRTreeIndex fix) and that the configured id column is the rowid
+// alias (INTEGER PRIMARY KEY) - warn otherwise. The tile query joins the
+// RTree on rowid, so the join stays deterministic even when the id column
+// is not the rowid alias. Pre-fix: no registration checks existed and the
+// join matched the configured id column against the RTree's rowid, silently
+// dropping rows when the two differ.
+func TestRTreeAndIDChecks(t *testing.T) {
+	const metaDDL = `CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT, srs_id INTEGER, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE);
+CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT);
+CREATE TABLE rtree_t1_geom (id INTEGER, minx DOUBLE, maxx DOUBLE, miny DOUBLE, maxy DOUBLE);`
+	const metaDDLNoRTree = `CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT, srs_id INTEGER, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE);
+CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT);`
+
+	mkNativeFixture := func(t *testing.T, ddl string, idCol string, ids []interface{}) string {
+		t.Helper()
+		// "fid" fixtures model the GeoPackage rowid alias (INTEGER
+		// PRIMARY KEY); "id" fixtures are plain non-alias columns.
+		idDef := fmt.Sprintf("%v INTEGER", idCol)
+		if idCol == "fid" {
+			idDef += " PRIMARY KEY"
+		}
+		fx := newRawFixture(t, []string{
+			fmt.Sprintf("CREATE TABLE t1 (%v, geom BLOB, note TEXT)", idDef),
+			ddl,
+		})
+		insertRows(t, fx.path, "gpkg_contents", []string{"table_name", "data_type", "srs_id"}, [][]interface{}{
+			{"t1", "features", 3857},
+		})
+		insertRows(t, fx.path, "gpkg_geometry_columns", []string{"table_name", "column_name", "geometry_type_name", "srs_id", "z", "m"}, [][]interface{}{
+			{"t1", "geom", "GEOMETRY", 3857, 0, 0},
+		})
+		geomPts := []geom.Point{{50, 50}, {60, 60}}
+		rows := make([][]interface{}, len(ids))
+		for i := range ids {
+			rows[i] = []interface{}{ids[i], gpkgPointBlob(t, 3857, geomPts[i][0], geomPts[i][1]), "n"}
+		}
+		insertRows(t, fx.path, "t1", []string{idCol, "geom", "note"}, rows)
+		// RTree entries key on rowid (insertion order 1..n).
+		if strings.Contains(ddl, "rtree_t1_geom") {
+			insertRows(t, fx.path, "rtree_t1_geom", []string{"id", "minx", "maxx", "miny", "maxy"}, [][]interface{}{
+				{1, 40.0, 60.0, 40.0, 60.0},
+				{2, 50.0, 70.0, 50.0, 70.0},
+			})
+		}
+		return fx.path
+	}
+	mkConf := func(path, idField string) dict.Dict {
+		return dict.Dict{
+			"filepath": path,
+			"layers": []map[string]interface{}{
+				{
+					"name":               "t1",
+					"tablename":          "t1",
+					"id_fieldname":       idField,
+					"geometry_fieldname": "geom",
+					"fields":             []string{"note"},
+				},
+			},
+		}
+	}
+	fetchIDs := func(t *testing.T, p provider.Tiler) []uint64 {
+		t.Helper()
+		tile := MockTile{
+			srid:           3857,
+			bufferedExtent: geom.NewExtent([2]float64{0, 0}, [2]float64{100, 100}),
+		}
+		var ids []uint64
+		err := p.TileFeatures(context.TODO(), "t1", &tile, nil, func(f *provider.Feature) error {
+			ids = append(ids, f.ID)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("TileFeatures: %v", err)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		return ids
+	}
+
+	t.Run("missing rtree errors clearly", func(t *testing.T) {
+		path := mkNativeFixture(t, metaDDLNoRTree, "fid", []interface{}{1, 2})
+		_, err := gpkg.NewTileProvider(mkConf(path, "fid"), nil)
+		if err == nil {
+			t.Fatal("NewTileProvider errored = nil, want missing-RTree error")
+		}
+		for _, want := range []string{"rtree_t1_geom", "CreateRTreeIndex", "t1"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q missing %q", err.Error(), want)
+			}
+		}
+	})
+
+	t.Run("missing id column errors", func(t *testing.T) {
+		path := mkNativeFixture(t, metaDDL, "fid", []interface{}{1, 2})
+		_, err := gpkg.NewTileProvider(mkConf(path, "nope"), nil)
+		if err == nil || !strings.Contains(err.Error(), `has no id column "nope"`) {
+			t.Errorf("error = %v, want clear missing-id-column error", err)
+		}
+	})
+
+	t.Run("non-alias id warns and joins on rowid", func(t *testing.T) {
+		// id values deliberately differ from rowids: pre-fix the join
+		// l.id = si.id matched nothing (0 features).
+		path := mkNativeFixture(t, metaDDL, "id", []interface{}{10, 20})
+		var ids []uint64
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(mkConf(path, "id"), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			ids = fetchIDs(t, p)
+		})
+		if !strings.Contains(out, "not an INTEGER PRIMARY KEY") || !strings.Contains(out, "t1") {
+			t.Errorf("expected rowid-alias warning naming table t1, got: %s", out)
+		}
+		if want := []uint64{10, 20}; !reflect.DeepEqual(ids, want) {
+			t.Errorf("feature ids = %v, want %v (rowid join must match rows regardless of the id column)", ids, want)
+		}
+	})
+
+	t.Run("rowid alias id is silent and deterministic", func(t *testing.T) {
+		path := mkNativeFixture(t, metaDDL, "fid", []interface{}{1, 2})
+		var ids []uint64
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(mkConf(path, "fid"), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			ids = fetchIDs(t, p)
+		})
+		if strings.Contains(out, "not an INTEGER PRIMARY KEY") {
+			t.Errorf("fid is the rowid alias, expected no warning, got: %s", out)
+		}
+		if want := []uint64{1, 2}; !reflect.DeepEqual(ids, want) {
+			t.Errorf("feature ids = %v, want %v", ids, want)
 		}
 	})
 }

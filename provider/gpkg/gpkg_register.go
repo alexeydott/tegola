@@ -180,6 +180,69 @@ func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, []string, error)
 	return colNames, pkColumns, nil
 }
 
+// rowidAliasColumn returns the name of the table's rowid-alias column (a
+// single INTEGER PRIMARY KEY column) per the SQLite alias rules: declared
+// type exactly INTEGER and the sole primary-key column. Returns "" when the
+// table has no rowid alias (audit P5-5).
+func rowidAliasColumn(db *sql.DB, tablename string) (string, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%v);", quoteIdent(tablename)))
+	if err != nil {
+		return "", fmt.Errorf("table %q column lookup: %v", tablename, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type columnInfo struct {
+		name  string
+		ctype string
+		pk    int
+	}
+	var cols []columnInfo
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return "", fmt.Errorf("table %q column scan: %v", tablename, err)
+		}
+		cols = append(cols, columnInfo{name: name, ctype: ctype, pk: pk})
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("table %q column rows: %v", tablename, err)
+	}
+
+	var pkCols []columnInfo
+	for _, col := range cols {
+		if col.pk > 0 {
+			pkCols = append(pkCols, col)
+		}
+	}
+	// Single-column INTEGER PRIMARY KEY only; composite keys and non-INT
+	// types never alias the rowid. The declared type must be exactly
+	// "INTEGER" (case-insensitive) per the SQLite alias rules.
+	if len(pkCols) == 1 && pkCols[0].pk == 1 && strings.EqualFold(pkCols[0].ctype, "INTEGER") {
+		return pkCols[0].name, nil
+	}
+	return "", nil
+}
+
+// rtreeTableExists reports whether the RTree spatial index table used by
+// the native tile query JOIN is present (audit P5-5). Real GeoPackages
+// carry it as a virtual table registered via gpkg_extensions; either way
+// sqlite_master is the authoritative check for what the query can join.
+func rtreeTableExists(db *sql.DB, rtreeName string) (bool, error) {
+	var one int
+	err := db.QueryRow("SELECT 1 FROM sqlite_master WHERE lower(name) = lower(?)", rtreeName).Scan(&one)
+	switch {
+	case err == sql.ErrNoRows:
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("spatial index %q lookup: %v", rtreeName, err)
+	}
+	return true, nil
+}
+
 // tableIndexedColumns returns one IndexMeta per table index with its
 // columns in index-position order, read via PRAGMA index_list /
 // PRAGMA index_info. Names are returned in their stored case; the MapplGIS
@@ -916,6 +979,45 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.bboxFields, err = codec.ResolveBBoxFields(config, layerConf, layerName)
 				if err != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, err)
+				}
+
+				// audit P5-5: the tile query JOINs the RTree spatial index
+				// table - verify at registration that it exists, failing
+				// with a clear error instead of a cryptic "no such table"
+				// per tile request.
+				rtreeName := fmt.Sprintf("rtree_%v_%v", tablename, layer.geomFieldname)
+				exists, terr := rtreeTableExists(db, rtreeName)
+				if terr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, terr)
+				}
+				if !exists {
+					return nil, fmt.Errorf("for layer (%v) %v: table %q has no RTree spatial index %q; native GeoPackage layers require the spatial index for tile queries - create it with SELECT CreateRTreeIndex('%v','%v') (or export the data with the rtree extension enabled)", i, layerName, tablename, rtreeName, tablename, layer.geomFieldname)
+				}
+
+				// audit P5-5: the RTree join keys on the table rowid. The
+				// configured id column only feeds feature IDs; when it is
+				// not the rowid alias (INTEGER PRIMARY KEY) its values may
+				// not match rowids and may not be unique.
+				alias, aerr := rowidAliasColumn(db, tablename)
+				if aerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, aerr)
+				}
+				colNames, _, cerr := tableColumnsAndPK(db, tablename)
+				if cerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, cerr)
+				}
+				idFound := false
+				for _, c := range colNames {
+					if strings.EqualFold(c, layer.idFieldname) {
+						idFound = true
+						break
+					}
+				}
+				if !idFound {
+					return nil, fmt.Errorf("for layer (%v) %v: table %q has no id column %q", i, layerName, tablename, layer.idFieldname)
+				}
+				if alias == "" || !strings.EqualFold(alias, layer.idFieldname) {
+					log.Warnf("layer '%v': table %q id column %q is not an INTEGER PRIMARY KEY (rowid alias); the RTree join keys on rowid and feature IDs come from %q, which may be non-unique or mismatched", layerName, tablename, layer.idFieldname, layer.idFieldname)
 				}
 			}
 

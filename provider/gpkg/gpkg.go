@@ -275,10 +275,14 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				selectClause += fmt.Sprintf(", l.%v", quoteIdent(tf))
 			}
 
-			// l - layer table, si - spatial index; ORDER BY keeps row
-			// order deterministic so concurrent requests stream identical
-			// rows (stable MVT output).
-			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.%v = si.id WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
+			// l - layer table, si - spatial index. The RTree's id is the
+			// table rowid (audit P5-5): join on l.rowid directly so the
+			// join is deterministic regardless of the configured id
+			// column (which only feeds feature IDs and is verified at
+			// registration). ORDER BY keeps row order deterministic so
+			// concurrent requests stream identical rows (stable MVT
+			// output); rowid breaks ties for non-unique id columns.
+			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.rowid = si.id WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v, l.rowid", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
 
 			// bounds predicate build errors are fail-closed (A12): surface
 			// them instead of silently running unfiltered SQL.
