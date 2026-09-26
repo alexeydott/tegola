@@ -97,13 +97,22 @@ implementation details of the bounds contract, not feature attributes.
 
 Custom SQL (`sql` key) with a raw `geometry_format`. In custom SQL an empty
 `geometry_fieldname` means the geometry column is the last column of the
-result set. Structural validation always runs at registration and failing it
-is a startup error naming the layer:
+result set. Structural validation always runs at registration: a missing
+`!BBOX!`/`!BOX!` token or a missing configured geometry column is a startup
+error naming the layer. The bounds columns are validated only when they
+appear in the SQL result: their actual result-column names are persisted for
+the bounds predicate, and when they are absent from the SELECT list the
+layer is registered with a warning under the resolved names (layer >
+provider > `MINX`/`MAXX`/`MINY`/`MAXY`), because the `!BBOX!` predicate
+resolves the bounds columns in the query's own scope (e.g. the source
+table's columns) — they do not have to be selected. This contract is
+identical in every SQL provider (`mysql`, `postgis`, `hana`, `gpkg`).
 
 - `mos` **must** use `!BBOX!` (or `!BOX!`): the bounds predicate over the
   configured bounds fields is the only server-side selectivity a raw MOS
   column supports. The `mos` structural contract requires the geometry
-  column, the four configured bounds columns and the `!BBOX!` token. An
+  column and the `!BBOX!` token as startup errors; the four bounds columns
+  follow the result-column rule above. An
   explicit `geometry_type` never skips this structural validation — it
   skips only geometry-class inference and the >=3-sample-row requirement
   (explicitly typed layers may have empty data). With

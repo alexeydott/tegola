@@ -22,6 +22,7 @@ Breaking changes
 
 Bugs
 
+* Custom SQL structural validation no longer requires the bounds columns in the SELECT result: they are validated only when they are part of the SQL result (their actual names are persisted for the bounds predicate), and a layer whose SELECT list omits them is registered with a warning under the resolved names (`layer > provider > MINX/MAXX/MINY/MAXY`) — the `!BBOX!` predicate resolves the bounds columns in the query's own scope. A missing `!BBOX!`/`!BOX!` token or a missing configured geometry column remain startup errors. Applies to all providers (`mysql`, `postgis`, `hana`, `gpkg`).
 * MySQL provider: the connection DSN is now built from `mysqlDriver.NewConfig()`, preserving the go-sql-driver authentication defaults. Previously a bare config struct literal disabled `allowNativePasswords`, so accounts using `mysql_native_password` failed to connect with "this user requires mysql native password authentication".
 ## 0.17.0 (2023-07-27)
 

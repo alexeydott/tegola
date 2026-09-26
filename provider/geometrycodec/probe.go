@@ -338,34 +338,46 @@ func (e ErrSQLGeometryContract) Error() string {
 	return fmt.Sprintf("layer (%v) custom SQL geometry contract: %v", e.Layer, e.Reason)
 }
 
-// ValidateBoundsSQLContract validates the static and structural contract of
-// a bounds-backed custom SQL query. It is the fail-closed registration
-// gate: a missing !BBOX! token, a missing geometry column, or missing
-// bounds columns are startup errors, never warnings.
+// ResolveBoundsSQLContract validates the structural contract of a
+// bounds-backed custom SQL query and resolves the bounds field names the
+// layer must persist for the runtime !BBOX! predicate.
 //
-//   - the SQL must contain a bbox token (!BBOX!, case-insensitive);
+// Fail-closed registration errors — the runtime tile query cannot execute
+// without them:
+//
+//   - the SQL must contain a bbox token (!BBOX! or !BOX!, case-insensitive);
 //   - when a geometry column is configured, the probe must have matched it
-//     in the result columns;
-//   - the probe must have found all four bounds columns.
+//     in the result columns.
 //
-// columnSummary is the comma-joined list of actual result column names, for
-// error messages.
-func ValidateBoundsSQLContract(layerName, sql, geometryField string, contract SQLGeometryContract) error {
+// Bounds columns missing from the result set are NOT an error
+// (boundsInResult=false): the generated !BBOX! predicate expands INSIDE the
+// custom SQL and resolves in the query's own scope (e.g. the source table's
+// bounds columns — filtered on but not selected in the SELECT list), so the
+// resolved chain (layer > provider > MINX/MAXX/MINY/MAXY) stays in effect.
+// Callers warn and register the layer instead of failing the whole
+// provider: the fail-closed variant of this gate (b5ad0979) regressed
+// working MapplGIS SQL for every provider.
+//
+// When all four bounds columns are present in the result set
+// (boundsInResult=true), resolved carries their ACTUAL result-column names
+// — runtime predicates quote identifiers case-sensitively, so callers must
+// persist those instead of the configured spellings. Otherwise resolved is
+// the configured chain passed in.
+func ResolveBoundsSQLContract(layerName, sql, geometryField string, contract SQLGeometryContract, configured BBoxFields) (resolved BBoxFields, boundsInResult bool, err error) {
 	upper := strings.ToUpper(sql)
 	if !strings.Contains(upper, strings.ToUpper(config.BboxToken)) &&
 		!strings.Contains(upper, "!BOX!") {
-		return ErrSQLGeometryContract{Layer: layerName,
+		return configured, false, ErrSQLGeometryContract{Layer: layerName,
 			Reason: fmt.Sprintf("missing %v token; bounds-backed custom SQL must carry a bounds predicate", config.BboxToken)}
 	}
 	if geometryField != "" && contract.GeometryField == "" {
-		return ErrSQLGeometryContract{Layer: layerName,
+		return configured, false, ErrSQLGeometryContract{Layer: layerName,
 			Reason: fmt.Sprintf("geometry column %q not present in the result columns", geometryField)}
 	}
-	if !contract.HasBounds {
-		return ErrSQLGeometryContract{Layer: layerName,
-			Reason: fmt.Sprintf("bounds columns (%v) not all present in the result columns", contract.BoundsFields)}
+	if contract.HasBounds {
+		return contract.BoundsFields, true, nil
 	}
-	return nil
+	return configured, false, nil
 }
 
 // ValidateMOSSQLExplicitConfig enforces the CRS policy for MOS custom SQL:

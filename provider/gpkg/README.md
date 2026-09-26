@@ -181,7 +181,12 @@ excluded from feature tags.
 For custom SQL with `geometry_format = "mos"` the `!BBOX!` token is
 **required** and expands into the bounds-columns predicate over the
 configured bounds fields (with MOS raw scaling); the provider verifies at
-registration that the token is present. Custom SQL with the native `gpkg`
+registration that the token is present. The bounds columns do not need to
+appear in the SELECT list — the predicate resolves them in the query's own
+scope (e.g. the source table's columns). When they are present in the result
+their actual names are used; when absent, registration logs a warning and
+the layer uses the resolved names (layer > provider > `MINX`/`MAXX`/`MINY`/
+`MAXY`). Custom SQL with the native `gpkg`
 binary format may use `!BBOX!` as a source-CRS bounds comparison over the
 same columns (no MOS scaling). Bounds-backed MOS custom SQL must configure
 `srid` or `crs_defn` explicitly (a missing CRS is a startup error);

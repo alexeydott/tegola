@@ -72,13 +72,20 @@ still detected.
 
 At registration every layer is structurally validated and inspected to
 resolve its geometry type and, where possible, its SRID. Structural
-validation for custom SQL always runs at registration and failing it is a
-startup error (see [geometry-formats.md](geometry-formats.md)): `mos`
-requires the geometry column, the four configured bounds columns and the
-`!BBOX!` token; custom `geometry_format = "gpkg"` carries the same contract
-with the bounds-source-CRS predicate; `wkb` / `wkt` forbid `!BBOX!` and
-bounds columns. An explicit `geometry_type` never skips structural
-validation — it skips only geometry-class inference and the
+validation for custom SQL always runs at registration: a missing
+`!BBOX!`/`!BOX!` token or a missing configured geometry column is a startup
+error; `mos` requires the geometry column and the `!BBOX!` token, custom
+`geometry_format = "gpkg"` carries the same contract with the
+bounds-source-CRS predicate, and `wkb` / `wkt` forbid `!BBOX!` and
+bounds columns. The four bounds columns are validated only when they
+appear in the SQL result: their actual result-column names are persisted
+for the bounds predicate, and when the SELECT list omits them the layer is
+registered with a warning under the resolved names (layer > provider >
+`MINX`/`MAXX`/`MINY`/`MAXY`) — the `!BBOX!` predicate resolves the bounds
+columns in the query's own scope (e.g. the source table's columns), so they
+do not have to be selected. This rule is identical in every SQL provider
+(`mysql`, `postgis`, `hana`, `gpkg`). An explicit `geometry_type` never
+skips structural validation — it skips only geometry-class inference and the
 >=3-sample-row requirement (explicitly typed layers may have empty data).
 
 - **Table layers** are inspected via database metadata / a sample query.

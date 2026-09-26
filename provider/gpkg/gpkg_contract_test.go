@@ -9,7 +9,9 @@
 package gpkg_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -98,8 +100,12 @@ func TestMOSCustomSQLRegistrationContract(t *testing.T) {
 		}
 	})
 
-	t.Run("missing bounds column errors", func(t *testing.T) {
-		// regression matrix row 2: "missing one bound -> startup error".
+	t.Run("missing bounds column warns and registers", func(t *testing.T) {
+		// regression matrix row 2 (b5ad0979 regression fix): the !BBOX!
+		// predicate resolves the bounds columns in the query's own scope
+		// (the table's columns), so bounds columns missing from the SELECT
+		// list are a registration warning, never a startup error - and the
+		// layer must still register and serve.
 		fx := newRawFixture(t, []string{contractDDLUpper})
 		insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, contractRows())
 		conf := contractConf(fx.path, map[string]interface{}{
@@ -108,12 +114,20 @@ func TestMOSCustomSQLRegistrationContract(t *testing.T) {
 			"geometry_format": "mos",
 			"srid":            3857,
 		})
-		_, err := gpkg.NewTileProvider(conf, nil)
-		if err == nil {
-			t.Fatal("expected startup error: missing bounds column must fail the structural contract")
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		defer slog.SetDefault(prev)
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			t.Fatalf("NewTileProvider: missing bounds column in the SELECT list must warn, not fail: %v", err)
 		}
-		if !strings.Contains(err.Error(), "bounds columns") {
-			t.Errorf("error must describe the missing bounds columns, got: %v", err)
+		t.Cleanup(gpkg.Cleanup)
+		if !strings.Contains(buf.String(), "bounds columns") {
+			t.Errorf("registration must warn about the missing bounds result columns, got log: %q", buf.String())
+		}
+		if count := contractFeatures(t, p, "raw_layer"); count != 3 {
+			t.Errorf("feature count = %v, want 3 (the !BBOX! predicate must resolve against the table's bounds columns)", count)
 		}
 	})
 
@@ -136,9 +150,9 @@ func TestMOSCustomSQLRegistrationContract(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit geometry type with missing bound errors", func(t *testing.T) {
+	t.Run("explicit geometry type with missing bound warns and registers", func(t *testing.T) {
 		// A03: an explicit geometry_type must never skip the structural
-		// validation.
+		// validation - the probe still runs and warns; the layer registers.
 		fx := newRawFixture(t, []string{contractDDLUpper})
 		insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, contractRows())
 		conf := contractConf(fx.path, map[string]interface{}{
@@ -148,12 +162,20 @@ func TestMOSCustomSQLRegistrationContract(t *testing.T) {
 			"geometry_type":   "LineString",
 			"srid":            3857,
 		})
-		_, err := gpkg.NewTileProvider(conf, nil)
-		if err == nil {
-			t.Fatal("expected startup error: explicit geometry_type must not bypass the structural probe")
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		defer slog.SetDefault(prev)
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			t.Fatalf("NewTileProvider: explicit geometry_type must not turn the bounds warning into an error: %v", err)
 		}
-		if !strings.Contains(err.Error(), "bounds columns") {
-			t.Errorf("error must describe the missing bounds columns, got: %v", err)
+		t.Cleanup(gpkg.Cleanup)
+		if !strings.Contains(buf.String(), "bounds columns") {
+			t.Errorf("the structural probe must still run and warn under an explicit geometry_type, got log: %q", buf.String())
+		}
+		if count := contractFeatures(t, p, "raw_layer"); count != 3 {
+			t.Errorf("feature count = %v, want 3", count)
 		}
 	})
 
@@ -204,9 +226,10 @@ func TestMOSCustomSQLRegistrationContract(t *testing.T) {
 		}
 	})
 
-	t.Run("tile dependent sql with missing bound errors", func(t *testing.T) {
+	t.Run("tile dependent sql with missing bound warns and registers", func(t *testing.T) {
 		// regression matrix row 7 / A08: tile-dependent SQL still runs the
-		// structural result-column check at registration.
+		// structural result-column check at registration - it warns and the
+		// layer registers; it never skips the probe and never fails.
 		fx := newRawFixture(t, []string{contractDDLUpper})
 		insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, contractRows())
 		conf := contractConf(fx.path, map[string]interface{}{
@@ -215,12 +238,20 @@ func TestMOSCustomSQLRegistrationContract(t *testing.T) {
 			"geometry_format": "mos",
 			"srid":            3857,
 		})
-		_, err := gpkg.NewTileProvider(conf, nil)
-		if err == nil {
-			t.Fatal("expected startup error: tile-dependent MOS custom SQL must still run the structural check")
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		defer slog.SetDefault(prev)
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			t.Fatalf("NewTileProvider: tile-dependent custom SQL must warn about missing bounds columns, not fail: %v", err)
 		}
-		if !strings.Contains(err.Error(), "bounds columns") {
-			t.Errorf("error must describe the missing bounds columns, got: %v", err)
+		t.Cleanup(gpkg.Cleanup)
+		if !strings.Contains(buf.String(), "bounds columns") {
+			t.Errorf("tile-dependent custom SQL must still run the structural probe and warn, got log: %q", buf.String())
+		}
+		if count := contractFeatures(t, p, "raw_layer"); count != 3 {
+			t.Errorf("feature count = %v, want 3", count)
 		}
 	})
 
@@ -245,22 +276,37 @@ func TestMOSCustomSQLRegistrationContract(t *testing.T) {
 		}
 	})
 
-	t.Run("gpkg format custom sql requires all bounds columns", func(t *testing.T) {
+	t.Run("gpkg format custom sql with missing bounds column warns and registers", func(t *testing.T) {
+		// A06: geometry_format=gpkg carries the same contract as mos -
+		// missing bounds result columns warn and register (the predicate
+		// resolves in the table's scope).
 		fx := newRawFixture(t, []string{contractDDLUpper})
-		insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, contractRows())
+		insertRows(t, fx.path, "mos_layer", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, [][]interface{}{
+			{gpkgPointBlob(t, 3857, 1, 1), 1.0, 3.0, 1.0, 3.0},
+			{gpkgPointBlob(t, 3857, 2, 2), 1.0, 3.0, 1.0, 3.0},
+			{gpkgPointBlob(t, 3857, 3, 3), 1.0, 3.0, 1.0, 3.0},
+		})
 		conf := contractConf(fx.path, map[string]interface{}{
 			"name":            "raw_layer",
 			"sql":             "SELECT id, geom, MINX, MAXX, MINY FROM mos_layer WHERE !BBOX!",
 			"geometry_format": "gpkg",
-			"geometry_type":   "LineString",
+			"geometry_type":   "Point",
 			"srid":            3857,
 		})
-		_, err := gpkg.NewTileProvider(conf, nil)
-		if err == nil {
-			t.Fatal("expected startup error: gpkg custom SQL with a missing bounds column must fail")
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		defer slog.SetDefault(prev)
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			t.Fatalf("NewTileProvider: gpkg custom SQL with a missing bounds column must warn, not fail: %v", err)
 		}
-		if !strings.Contains(err.Error(), "bounds columns") {
-			t.Errorf("error must describe the missing bounds columns, got: %v", err)
+		t.Cleanup(gpkg.Cleanup)
+		if !strings.Contains(buf.String(), "bounds columns") {
+			t.Errorf("registration must warn about the missing bounds result columns, got log: %q", buf.String())
+		}
+		if count := contractFeatures(t, p, "raw_layer"); count != 3 {
+			t.Errorf("feature count = %v, want 3", count)
 		}
 	})
 

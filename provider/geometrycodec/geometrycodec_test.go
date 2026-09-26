@@ -1257,31 +1257,60 @@ func TestPrepareProbeSQLNeutralization(t *testing.T) {
 	}
 }
 
-// TestValidateBoundsSQLContract pins the fail-closed structural contract
-// (audit A02): missing !BBOX!, missing geometry column and missing bounds
-// columns are errors, never warnings.
-func TestValidateBoundsSQLContract(t *testing.T) {
+// TestResolveBoundsSQLContract pins the structural contract split (b5ad0979
+// regression fix): missing !BBOX! and missing geometry column stay
+// fail-closed registration errors; missing bounds columns in the result set
+// are NOT errors — the layer registers with the configured chain
+// (layer > provider > MINX/MAXX/MINY/MAXY) and the caller warns, because the
+// !BBOX! predicate expands inside the custom SQL and resolves in the query's
+// own scope. When the bounds columns are found, their actual result-column
+// names are returned (A09: runtime predicates quote identifiers
+// case-sensitively).
+func TestResolveBoundsSQLContract(t *testing.T) {
 	ok := geometrycodec.SQLGeometryContract{
-		BoundsFields:  geometrycodec.DefaultBBoxFields(),
+		BoundsFields:  [4]string{"minx", "maxx", "miny", "maxy"},
 		GeometryField: "geom",
 		HasBounds:     true,
 	}
-	if err := geometrycodec.ValidateBoundsSQLContract("l", "SELECT * FROM t WHERE !BBOX!", "geom", ok); err != nil {
+	configured := geometrycodec.DefaultBBoxFields()
+
+	resolved, inResult, err := geometrycodec.ResolveBoundsSQLContract("l", "SELECT * FROM t WHERE !BBOX!", "geom", ok, configured)
+	if err != nil {
 		t.Fatalf("valid contract rejected: %v", err)
 	}
+	if !inResult {
+		t.Fatal("bounds present in result must report boundsInResult=true")
+	}
+	if resolved != ok.BoundsFields {
+		t.Fatalf("must persist the ACTUAL result-column names, got %v want %v", resolved, ok.BoundsFields)
+	}
 
-	if err := geometrycodec.ValidateBoundsSQLContract("l", "SELECT * FROM t", "geom", ok); err == nil {
+	_, _, err = geometrycodec.ResolveBoundsSQLContract("l", "SELECT * FROM t", "geom", ok, configured)
+	if err == nil {
 		t.Fatal("missing !BBOX! must be an error")
 	}
 	noGeom := ok
 	noGeom.GeometryField = ""
-	if err := geometrycodec.ValidateBoundsSQLContract("l", "SELECT * FROM t WHERE !BBOX!", "geom", noGeom); err == nil {
+	_, _, err = geometrycodec.ResolveBoundsSQLContract("l", "SELECT * FROM t WHERE !BBOX!", "geom", noGeom, configured)
+	if err == nil {
 		t.Fatal("missing geometry column must be an error")
 	}
+
+	// Regression pin: bounds filtered on but not selected in the result set
+	// must pass through with the configured chain intact — never a fatal
+	// error and never a wipe of the resolved names.
 	noBounds := ok
 	noBounds.HasBounds = false
-	if err := geometrycodec.ValidateBoundsSQLContract("l", "SELECT * FROM t WHERE !BBOX!", "geom", noBounds); err == nil {
-		t.Fatal("missing bounds columns must be an error")
+	noBounds.BoundsFields = geometrycodec.BBoxFields{}
+	resolved, inResult, err = geometrycodec.ResolveBoundsSQLContract("l", "SELECT geom FROM t WHERE !BBOX!", "geom", noBounds, configured)
+	if err != nil {
+		t.Fatalf("missing bounds columns in the result set must not be fatal (b5ad0979 regression): %v", err)
+	}
+	if inResult {
+		t.Fatal("missing bounds columns must report boundsInResult=false")
+	}
+	if resolved != configured {
+		t.Fatalf("fallback must keep the configured chain, got %v want %v", resolved, configured)
 	}
 }
 

@@ -1697,12 +1697,25 @@ func CreateProvider(
 						// A02: the structural contract is a startup error,
 						// validated AFTER format resolution so an
 						// auto-detected MOS layer cannot skip it (A05)
-						if verr := codec.ValidateBoundsSQLContract(lName, sql, l.geomField, contract); verr != nil {
+						resolved, boundsInResult, verr := codec.ResolveBoundsSQLContract(lName, sql, l.geomField, contract, l.bboxFields)
+						if verr != nil {
 							return nil, fmt.Errorf("layer (%v) %v: %w", i, lName, verr)
 						}
-						// A09: persist the actual result-column names so
-						// runtime SQL quotes identifiers that really exist
-						l.bboxFields = contract.BoundsFields
+						if boundsInResult {
+							// persist the ACTUAL result-column names (A09):
+							// runtime predicates quote identifiers
+							// case-sensitively.
+							l.bboxFields = resolved
+						} else {
+							// Bounds columns are filtered on but not selected in the
+							// result set: the generated !BBOX! predicate expands inside
+							// the custom SQL and resolves in the query's own scope (e.g.
+							// the source table's bounds columns). Keep the resolved
+							// chain (layer > provider > MINX/MAXX/MINY/MAXY) and warn -
+							// never fail the whole provider over this (b5ad0979
+							// regression fix).
+							log.Warnf("layer '%v': bounds columns (%v) are not present in the custom SQL result columns; the !BBOX! predicate resolves in the query's own scope (e.g. the source table's bounds columns). Registering with the configured bounds field names - add the bounds columns to the SELECT list to validate them at registration", lName, strings.Join(resolved[:], ", "))
+						}
 						if contract.GeometryField != "" {
 							l.geomField = contract.GeometryField
 						}

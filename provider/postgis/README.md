@@ -195,7 +195,12 @@ are valid at provider level (defaults for all layers) and at layer level
   Resolved bounds columns are excluded from feature tags. For MOS custom SQL
   the `!BBOX!` token is **required** and expands into a bounds-columns
   predicate over these fields (with MOS raw scaling); the provider verifies
-  the token at registration.
+  the token at registration. The bounds columns do not need to appear in the
+  SELECT list — the predicate resolves them in the query's own scope (e.g.
+  the source table's columns). When they are present in the result their
+  actual names are used; when absent, registration logs a warning and the
+  layer uses the resolved names (layer > provider > `MINX`/`MAXX`/`MINY`/
+  `MAXY`).
 
 ```toml
 [[providers]]
