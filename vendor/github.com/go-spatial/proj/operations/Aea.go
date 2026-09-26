@@ -40,7 +40,6 @@ type Aea struct {
 	dd     float64
 	n2     float64
 	rho0   float64
-	rho    float64
 	phi1   float64
 	phi2   float64
 	en     []float64
@@ -175,14 +174,14 @@ func (op *Aea) Forward(lp *core.CoordLP) (*core.CoordXY, error) {
 	} else {
 		t = Q.n2 * math.Sin(lp.Phi)
 	}
-	Q.rho = Q.c - t
-	if Q.rho < 0. {
+	rho := Q.c - t
+	if rho < 0. {
 		return xy, merror.New(merror.ToleranceCondition)
 	}
-	Q.rho = Q.dd * math.Sqrt(Q.rho)
+	rho = Q.dd * math.Sqrt(rho)
 	lp.Lam *= Q.n
-	xy.X = Q.rho * math.Sin(lp.Lam)
-	xy.Y = Q.rho0 - Q.rho*math.Cos(lp.Lam)
+	xy.X = rho * math.Sin(lp.Lam)
+	xy.Y = Q.rho0 - rho*math.Cos(lp.Lam)
 	return xy, nil
 }
 
@@ -194,14 +193,14 @@ func (op *Aea) Inverse(xy *core.CoordXY) (*core.CoordLP, error) {
 	PE := op.System.Ellipsoid
 
 	xy.Y = Q.rho0 - xy.Y
-	Q.rho = math.Hypot(xy.X, xy.Y)
-	if Q.rho != 0.0 {
+	rho := math.Hypot(xy.X, xy.Y)
+	if rho != 0.0 {
 		if Q.n < 0. {
-			Q.rho = -Q.rho
+			rho = -rho
 			xy.X = -xy.X
 			xy.Y = -xy.Y
 		}
-		lp.Phi = Q.rho / Q.dd
+		lp.Phi = rho / Q.dd
 		if Q.ellips {
 			lp.Phi = (Q.c - lp.Phi*lp.Phi) / Q.n
 			if math.Abs(Q.ec-math.Abs(lp.Phi)) > tol7 {
