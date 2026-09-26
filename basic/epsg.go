@@ -150,22 +150,85 @@ func IsSyntheticSRID(srid uint64) bool {
 	return srid >= SyntheticSRIDMin
 }
 
-// defnCodeBase sits above the probe code space (320000000+) and marks SRIDs
+// Synthetic SRIDs sit above the probe code space (320000000+) and mark SRIDs
 // synthesized from raw PROJ.4 definitions (crs_defn config options) rather
 // than assigned a real EPSG code.
-var defnCodeBase int64 = int64(SyntheticSRIDMin - 1)
+//
+// Synthetic SRIDs are derived deterministically from the definition instead of
+// being handed out by a counter: the same crs_defn must resolve to the same
+// SRID in every process and under any config load order, because SRIDs end up
+// in cache keys, logs and external systems. The allocation is
+// SyntheticSRIDMin + hash(definition) % defnSRIDSpan, with deterministic
+// collision resolution (see resolveDefnSRID).
+const (
+	// defnSRIDSpan bounds the synthetic SRID space:
+	// [SyntheticSRIDMin, SyntheticSRIDMin+defnSRIDSpan).
+	defnSRIDSpan = 100000000
+	// defnSRIDProbeStep is the fixed step used to move to the next candidate
+	// when a hash collision puts a different definition on the first choice.
+	defnSRIDProbeStep = 1
+)
 
 // proj4DefnCodes maps PROJ.4 definitions registered through RegisterProj4Defn
 // to their synthetic SRIDs so repeated registrations of the same definition
 // are stable within a process.
 var proj4DefnCodes = map[string]uint64{}
 
+// defnHash returns a stable FNV-1a hash of a normalized PROJ.4 definition. The
+// algorithm is implemented here (rather than relying on the runtime's map
+// hash) so the value is identical across processes and Go versions.
+func defnHash(s string) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime64
+	}
+	return h
+}
+
+// defnFirstChoice returns the deterministic SRID a definition maps to before
+// collision resolution: always within [SyntheticSRIDMin, SyntheticSRIDMin+defnSRIDSpan).
+func defnFirstChoice(defn string) uint64 {
+	return SyntheticSRIDMin + defnHash(defn)%defnSRIDSpan
+}
+
+// resolveDefnSRID returns the synthetic SRID for defn given the current
+// ownership map of SRID -> definition. The first choice is deterministic
+// (defnFirstChoice); when a different definition already owns it, the next
+// SRIDs are probed with the fixed step defnSRIDProbeStep, wrapping inside the
+// synthetic SRID space, until a free slot (or one already owned by defn
+// itself) is found. The result therefore depends only on the definition and
+// the set of already-allocated SRIDs, never on a process-local counter. ok is
+// false only if the whole synthetic SRID space is exhausted.
+func resolveDefnSRID(defn string, owners map[uint64]string) (uint64, bool) {
+	start := defnFirstChoice(defn)
+	code := start
+	for {
+		if owner, taken := owners[code]; !taken || owner == defn {
+			return code, true
+		}
+		code += defnSRIDProbeStep
+		if code >= SyntheticSRIDMin+defnSRIDSpan {
+			code = SyntheticSRIDMin
+		}
+		if code == start {
+			return 0, false
+		}
+	}
+}
+
 // RegisterProj4Defn registers an arbitrary PROJ.4 coordinate system definition
 // and returns a synthetic SRID standing in for it. Configs that carry a full
 // textual CRS description (crs_defn) instead of a numeric EPSG code pass the
 // definition here and use the returned SRID everywhere a numeric SRID is
 // expected: layer config, !BBOX! reprojection and feature SRIDs. Registering
-// the same definition twice returns the same synthetic SRID.
+// the same definition twice returns the same synthetic SRID, and the SRID is
+// derived deterministically from the definition, so the same crs_defn resolves
+// to the same SRID across processes and config load orders.
 func RegisterProj4Defn(proj4 string) (uint64, error) {
 	proj4 = strings.TrimSpace(proj4)
 	if proj4 == "" {
@@ -180,7 +243,10 @@ func RegisterProj4Defn(proj4 string) (uint64, error) {
 	if code, ok := proj4DefnCodes[proj4]; ok {
 		return code, nil
 	}
-	code := uint64(atomic.AddInt64(&defnCodeBase, 1))
+	code, ok := resolveDefnSRID(proj4, proj4Registered)
+	if !ok {
+		return 0, fmt.Errorf("RegisterProj4Defn: synthetic SRID space exhausted")
+	}
 	proj4DefnCodes[proj4] = code
 	proj4Registered[code] = proj4
 

@@ -30,7 +30,28 @@ in-tree for each.
 | Bug (present on upstream master + v0.21.0 tag) | Minimal repro (in-tree test) | Fork status | Upstream status |
 | --- | --- | --- | --- |
 | `cache/gcs.Get()` reports every read failure as a cache miss (`return nil, false, nil`), swallowing backend errors. PR [#938](https://github.com/go-spatial/tegola/pull/938) fixed this (merged 2023-08-03) but the fix **regressed on `master`** - the bug is live on `master` today. | `cache/gcs/gcs_test.go`: transient backend error -> `(nil, false, err)`; missing object -> clean miss. | Fixed in fork. | Candidate for upstream PR (repro test included). Do **not** record this as "released in upstream v0.18/v0.19": the fix was merged, then regressed on `master`. |
-| `webserver.HostName` with a malformed value is silently ignored because `url.Parse` soft-parses scheme-less inputs such as `cdn.example.com:443` (parsed as scheme=`cdn.example.com`, Host empty). Present on both the `v0.21.0` tag and `master`. | `internal/env/parse_test.go`: scheme-less `cdn.example.com:443` and a garbage value are rejected at startup. | Fixed in fork. | Candidate for upstream PR (repro test included). |
+| `webserver.HostName` with a malformed value is silently ignored because `url.Parse` soft-parses scheme-less inputs such as `cdn.example.com:443` (parsed as scheme=`cdn.example.com`, Host empty). Present on both the `v0.21.0` tag and `master`. | `internal/env/parse_test.go`: scheme-less `cdn.example.com:443` and a garbage value are rejected at startup. | Fixed in fork. | Candidate for upstream PR (repro test included). Submit upstream **only after** the empty-hostname regression (audit N5) is fixed, so the patch preserves the upstream behaviour "empty `webserver.HostName` = derive the host from the request"; N5 is fixed in this fork (wave 4), so the patch is now upstream-ready. |
+
+## Candidates for upstream PR
+
+Beyond the two bugs in the table above, the audit (`tegola_review_part12.md`, section 0.8)
+lists the following items as upstream pull-request candidates. Sending them upstream
+lowers the future cost of syncing this fork.
+
+* **HANA provider trio**: unchecked `rows.Close()` in `getLayerFields`, `$1` -> `?`
+  placeholder style, and `quoteIdentifier` hardening (audit N10/N11/N12).
+* **go-spatial/geom WKB decoder**: guard `make(..., num)` allocations against
+  stream-supplied element/point counts before allocating (audit N13). The minimal patch
+  and a fuzz target live in `third_party/go-spatial/geom/encoding/wkb` in this fork and
+  are ready to be offered to `go-spatial/geom`.
+* **gzip response decompression**: `gzipDecompressResponseWriter.Write` must buffer the
+  compressed body, decode it once at handler completion, and then set `Content-Length`
+  (audit N14, `server/middleware_gzip.go`).
+* **File cache**: per-call unique temp file (`os.CreateTemp`) instead of the shared
+  `destPath + "-tmp"`, and `Purge` must ignore `os.IsNotExist` races on `Remove`.
+* **GCS and hostname**: see the table above. The hostname patch may go upstream only
+  after the empty-hostname regression (audit N5) is fixed, otherwise the fork's
+  regression would be shipped upstream. N5 is fixed in this fork (wave 4).
 
 ## Sync methodology
 
@@ -45,12 +66,18 @@ release chronology are **GitHub Releases** and **tags**.
 
 ## Linting (CI)
 
-`govet`, `errcheck`, and `staticcheck` are enabled in `.golangci.yml`; CI runs
-golangci-lint v2.13.2 via the `lint` job in `.github/workflows/on_pr_push.yml`. One
-targeted `errcheck` exclusion is recorded here: `(*database/sql.Rows).Close` is excluded
-(same rationale as the pre-existing `(io.Closer).Close` exclusion). The remaining
-unchecked `Rows.Close` calls live in `provider/hana` and `provider/mysql`, which are out
-of scope for this wave and are deliberately left un-refactored rather than edited.
+`govet`, `errcheck`, `staticcheck`, `sqlclosecheck`, and `rowserrcheck` are enabled
+in `.golangci.yml` (test files are linted as well, `tests: true`); CI runs
+golangci-lint v2.13.2 via the `lint` job in `.github/workflows/on_pr_push.yml`.
+Two targeted `errcheck` exclusions are recorded here: `(*database/sql.Rows).Close`
+and `(io.Closer).Close` (cleanup in tests and deferred probe closes are
+uninteresting error paths). The exclusions are safe because the dedicated
+`sqlclosecheck` and `rowserrcheck` linters cover the dangerous half of that
+space: a `*sql.Rows` that is never closed, closed twice, or iterated past a
+silent query error is still reported. Row-`Close`/`Err` hygiene findings that
+remain are concentrated in `provider/hana`, `provider/mysql`, `provider/gpkg`,
+`provider/postgis`, and `server/` and are tracked as deferred debt rather than
+silently suppressed.
 
 Honest limitation: `errcheck` only catches *ignored* (unchecked) errors. It does **not**
 catch the "error is checked, then deliberately swallowed as a cache miss" bug class (the
@@ -65,11 +92,12 @@ The following items were identified in the fork-vs-upstream audit but are intent
 | Audit ID | Description |
 | --- | --- |
 | 2.1 | Async metatile regeneration - metatile regeneration currently blocks the HTTP tile request; it should be moved off the request path. |
-| 2.2 | Redis cache: move to URI-only configuration and migrate `go-redis` to v9. |
+| 2.2 | Redis cache: URI-only configuration. The `go-redis` v9 migration is **done** (module `github.com/redis/go-redis/v9`, `cache/redis/redis.go`); the remaining decision is whether to drop the legacy `address` key in favour of `uri` (the legacy key is still accepted as a fallback). |
 | 2.3 | Migrate cloud SDK usage to AWS SDK v2 and the current Azure SDK. |
 | 2.4 | Common provider test harness - consolidate duplicated provider test setup (`provider/test/provider.go` TODO). |
 | 2.5 | Logging consolidation on `log/slog`. |
-| 2.6 | SQL token lexer for GPKG custom SQL (replace string-interpolation-based query assembly). |
+| 2.6 | SQL-context-aware token substitution: `!BBOX!`-style token replacement is plain string interpolation and does not protect SQL strings or comments (`provider/gpkg/util.go`, `provider/geometrycodec/probe.go`); the proper fix is an SQL lexer + parametrization effort. |
+| part12 0.6 | HANA and PostGIS probes continue with a zero `Layer` when the configured layer is not found: `log.Warnf` and fall through with an empty value instead of failing the request (upstream behaviour; deferred). |
 | 3.6 | `basic/line.go` simplification correctness: line simplification does not check point intersection ("malformed geoprocessing with providers of type not mvt_postgis", an open upstream bug noted in v0.21.0). Geometry behavior is left unchanged until a test corpus exists. |
 | part10 A15 | External dependency portability - `third_party` `replace` directives complicate out-of-tree consumption. |
 | part10 A16 | CI green-status runs are unavailable for this fork (no GitHub Actions quota), so the standing policy is local re-verification on the exact pushed SHA: `go test -mod vendor -count=1 ./...` with `CGO_ENABLED=0` and `CGO_ENABLED=1`, plus `golangci-lint run ./...`. |

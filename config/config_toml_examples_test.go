@@ -68,7 +68,7 @@ func TestParseRepoTomlConfigs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			_, err = config.Parse(f, path)
 			if expectErr {

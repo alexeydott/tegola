@@ -23,6 +23,33 @@ func (e ErrInvalidType) Error() string {
 	return fmt.Sprintf("decode: invalid type for %v", e.Primary)
 }
 
+// ErrElementCount is returned when a WKB header declares an element or point
+// count whose minimum encoded size exceeds the remaining input. Checking the
+// count against the remaining bytes before allocating stops hostile or corrupt
+// inputs from driving huge allocations (OOM) for data that could never decode.
+type ErrElementCount struct {
+	Primary string
+	Count   uint32
+}
+
+func (e ErrElementCount) Error() string {
+	return fmt.Sprintf("decode: %v element count %v exceeds input size", e.Primary, e.Count)
+}
+
+// ensureCount verifies that num elements of at least minBytesPerElem each can
+// fit into the remaining bytes of r, before any slice is allocated for them.
+// Readers that report their remaining length (e.g. the *bytes.Reader behind
+// wkb.DecodeBytes) are checked; opaque io.Readers skip the pre-check and fail
+// on binary.Read as before.
+func ensureCount(r io.Reader, primary string, num uint32, minBytesPerElem uint64) error {
+	if lr, ok := r.(interface{ Len() int }); ok {
+		if uint64(num)*minBytesPerElem > uint64(lr.Len()) {
+			return ErrElementCount{Primary: primary, Count: num}
+		}
+	}
+	return nil
+}
+
 func ByteOrderType(r io.Reader) (byteOrder binary.ByteOrder, typ uint32, err error) {
 	var bom = make([]byte, 1, 1)
 	// the bom is the first byte
@@ -55,6 +82,11 @@ func MultiPoint(r io.Reader, bom binary.ByteOrder) (pts geom.MultiPoint, err err
 	if err != nil {
 		return pts, err
 	}
+	// Each point needs at least a byte order marker, a type and two
+	// coordinates (5 + 16 bytes) in the input.
+	if err = ensureCount(r, "multipoint", num, 21); err != nil {
+		return pts, err
+	}
 
 	pts = make([][2]float64, num)
 	for i := range pts {
@@ -79,6 +111,10 @@ func LineString(r io.Reader, bom binary.ByteOrder) (ln geom.LineString, err erro
 	if err = binary.Read(r, bom, &num); err != nil {
 		return ln, err
 	}
+	// Each point needs at least two float64 coordinates (16 bytes).
+	if err = ensureCount(r, "linestring", num, 16); err != nil {
+		return ln, err
+	}
 	ln = make([][2]float64, num)
 	for i := range ln {
 		if err = binary.Read(r, bom, &ln[i]); err != nil {
@@ -91,6 +127,11 @@ func LineString(r io.Reader, bom binary.ByteOrder) (ln geom.LineString, err erro
 func MultiLineString(r io.Reader, bom binary.ByteOrder) (lns geom.MultiLineString, err error) {
 	var num uint32
 	if err = binary.Read(r, bom, &num); err != nil {
+		return lns, err
+	}
+	// Each line needs at least a byte order marker, a type and a point
+	// count (5 + 4 bytes) in the input.
+	if err = ensureCount(r, "multilinestring", num, 9); err != nil {
 		return lns, err
 	}
 	lns = make([][][2]float64, num)
@@ -114,6 +155,10 @@ func LinerRing(r io.Reader, bom binary.ByteOrder) (rn [][2]float64, err error) {
 	if err = binary.Read(r, bom, &num); err != nil {
 		return rn, err
 	}
+	// Each point needs at least two float64 coordinates (16 bytes).
+	if err = ensureCount(r, "ring", num, 16); err != nil {
+		return rn, err
+	}
 	rn = make([][2]float64, num)
 	for i := range rn {
 		if err = binary.Read(r, bom, &rn[i]); err != nil {
@@ -135,6 +180,10 @@ func Polygon(r io.Reader, bom binary.ByteOrder) (ply geom.Polygon, err error) {
 	if err = binary.Read(r, bom, &num); err != nil {
 		return ply, err
 	}
+	// Each ring needs at least its point count (4 bytes) in the input.
+	if err = ensureCount(r, "polygon", num, 4); err != nil {
+		return ply, err
+	}
 	ply = make([][][2]float64, num)
 	for i := range ply {
 		if ply[i], err = LinerRing(r, bom); err != nil {
@@ -147,6 +196,11 @@ func Polygon(r io.Reader, bom binary.ByteOrder) (ply geom.Polygon, err error) {
 func MultiPolygon(r io.Reader, bom binary.ByteOrder) (plys geom.MultiPolygon, err error) {
 	var num uint32
 	if err = binary.Read(r, bom, &num); err != nil {
+		return plys, err
+	}
+	// Each polygon needs at least a byte order marker, a type and a ring
+	// count (5 + 4 bytes) in the input.
+	if err = ensureCount(r, "multipolygon", num, 9); err != nil {
 		return plys, err
 	}
 	plys = make([][][][2]float64, num)
@@ -168,6 +222,11 @@ func MultiPolygon(r io.Reader, bom binary.ByteOrder) (plys geom.MultiPolygon, er
 func Collection(r io.Reader, bom binary.ByteOrder) (col geom.Collection, err error) {
 	var num uint32
 	if err = binary.Read(r, bom, &num); err != nil {
+		return col, err
+	}
+	// Each element needs at least a byte order marker and a type (5 bytes)
+	// in the input.
+	if err = ensureCount(r, "collection", num, 5); err != nil {
 		return col, err
 	}
 	col = make(geom.Collection, num)

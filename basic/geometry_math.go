@@ -230,7 +230,7 @@ func CloneGeometry(geometry geom.Geometry) (geom.Geometry, error) {
 // so there is no routing cycle.
 func projToWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
 	if !proj.IsKnownConversionSRID(proj.EPSGCode(SRID)) {
-		return nil, fmt.Errorf("don't know how to convert from %v to %v (unknown or unregistered SRID; use the provider's proj4 config option to register one).", tegola.WebMercator, SRID)
+		return nil, fmt.Errorf("don't know how to convert from %v to %v (unknown or unregistered SRID; use the provider's srid or crs_defn config option to register one).", tegola.WebMercator, SRID)
 	}
 	return ApplyToPoints(geometry, func(coords ...float64) ([]float64, error) {
 		xy, err := proj.Inverse(proj.EPSGCode(SRID), []float64{coords[0], coords[1]})
@@ -263,7 +263,7 @@ func ToWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
 // through WGS84 lon/lat. See projToWebMercator for details.
 func projFromWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
 	if !proj.IsKnownConversionSRID(proj.EPSGCode(SRID)) {
-		return nil, fmt.Errorf("don't know how to convert from %v to %v (unknown or unregistered SRID; use the provider's proj4 config option to register one).", SRID, tegola.WebMercator)
+		return nil, fmt.Errorf("don't know how to convert from %v to %v (unknown or unregistered SRID; use the provider's srid or crs_defn config option to register one).", SRID, tegola.WebMercator)
 	}
 	return ApplyToPoints(geometry, func(coords ...float64) ([]float64, error) {
 		ll, err := webmercator.PToLonLat(coords[0], coords[1])
