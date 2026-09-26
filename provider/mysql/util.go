@@ -94,7 +94,7 @@ func boundsSQLForLayer(layer *Layer, bboxExtent *geom.Extent) (string, error) {
 		return fmt.Sprintf(
 			"ST_Intersects(%v, %v)",
 			geomRef,
-			geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid, layer.serverFlavor),
+			geomFromTextSQL(sqlStringLiteral(wktPolygon(bboxExtent)), layer.srid, layer.serverFlavor),
 		), nil
 	}
 	return "1=1", nil
@@ -112,6 +112,18 @@ func axisOrderSQL(srid uint64, serverFlavor string) string {
 		return ", 'axis-order=long-lat'"
 	}
 	return ""
+}
+
+// escapeSQLStringLiteral escapes a value embedded in a single-quoted SQL
+// string literal by doubling single quotes (audit P5-8).
+func escapeSQLStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlStringLiteral wraps a value in a single-quoted SQL string literal,
+// escaping embedded quotes (audit P5-8).
+func sqlStringLiteral(s string) string {
+	return "'" + escapeSQLStringLiteral(s) + "'"
 }
 
 // geomFromTextSQL creates a geometry expression with the layer SRID when one

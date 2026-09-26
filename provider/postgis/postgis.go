@@ -23,9 +23,9 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/mapplgis"
 	"github.com/jackc/pgx/v5"
 )
@@ -954,23 +954,9 @@ func (p Provider) MVTForLayers(
 
 		// ref: https://postgis.net/docs/ST_AsMVT.html
 		// bytea ST_AsMVT(any_element row, text name, integer extent, text geom_name, text feature_id_name)
-
-		var featureIDName string
-
-		if l.IDFieldName() == "" {
-			featureIDName = "NULL"
-		} else {
-			featureIDName = fmt.Sprintf(`'%s'`, l.IDFieldName())
-		}
-
-		sqls = append(sqls, fmt.Sprintf(
-			`(SELECT ST_AsMVT(q,'%s',%d,'%s',%s) AS data FROM (%s) AS q)`,
-			layers[i].MVTName,
-			tegola.DefaultExtent,
-			l.GeomFieldName(),
-			featureIDName,
-			sql,
-		))
+		// name/geom/feature-id arguments are single-quoted SQL literals with
+		// embedded quotes escaped (audit P5-8)
+		sqls = append(sqls, buildMVTLayerSQL(layers[i].MVTName, l.GeomFieldName(), l.IDFieldName(), sql))
 	}
 
 	subsqls := strings.Join(sqls, "||")
@@ -1514,10 +1500,10 @@ func CreateProvider(
 		lsrid := lcrs.SRID
 
 		l := Layer{
-			name:           lName,
-			idField:        idfld,
-			geomField:      geomfld,
-			srid:           uint64(lsrid),
+			name:      lName,
+			idField:   idfld,
+			geomField: geomfld,
+			srid:      uint64(lsrid),
 			// explicit CRS at either config level suppresses any
 			// source-provided projection (MOS system-info blob)
 			crsExplicit:    pcrs.Explicit || lcrs.Explicit,

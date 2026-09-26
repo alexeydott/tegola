@@ -255,6 +255,39 @@ func pgQuoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// escapeSQLStringLiteral escapes a value embedded in a single-quoted SQL
+// string literal by doubling single quotes (audit P5-8).
+func escapeSQLStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlStringLiteral wraps a value in a single-quoted SQL string literal,
+// escaping embedded quotes (audit P5-8).
+func sqlStringLiteral(s string) string {
+	return "'" + escapeSQLStringLiteral(s) + "'"
+}
+
+// buildMVTLayerSQL builds the per-layer ST_AsMVT subquery. The name,
+// geometry-field and feature-id arguments are single-quoted SQL literals;
+// embedded single quotes are escaped by doubling (audit P5-8). An empty
+// idFieldName produces NULL (no feature id) as before.
+func buildMVTLayerSQL(mvtName, geomFieldName, idFieldName, innerSQL string) string {
+	featureIDName := "NULL"
+	if idFieldName != "" {
+		featureIDName = sqlStringLiteral(idFieldName)
+	}
+	// ref: https://postgis.net/docs/ST_AsMVT.html
+	// bytea ST_AsMVT(any_element row, text name, integer extent, text geom_name, text feature_id_name)
+	return fmt.Sprintf(
+		`(SELECT ST_AsMVT(q,%s,%d,%s,%s) AS data FROM (%s) AS q)`,
+		sqlStringLiteral(mvtName),
+		tegola.DefaultExtent,
+		sqlStringLiteral(geomFieldName),
+		featureIDName,
+		innerSQL,
+	)
+}
+
 // quoteTokenIdentifier quotes an identifier substituted for an
 // !ID_FIELD!/!GEOM_FIELD! SQL token (audit P5-10). Values the user already
 // wrapped in a complete quote pair (double quotes or backticks) pass through
