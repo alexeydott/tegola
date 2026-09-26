@@ -16,7 +16,12 @@
 //     MapplGIS LayerSystemInfo blob.
 //
 // Detection runs once per tablename layer at provider registration; tile
-// requests never repeat it. Custom SQL layers are never auto-detected.
+// requests never repeat it. Custom SQL layers skip the canonical checks
+// above entirely: they are recognized only through the provider's SQL-sample
+// contract (MapplGISSQLSample), which requires bounds columns, a geometry
+// column and at least 3 valid MOS sample rows. A custom SQL layer is tagged
+// on a successful MOS sample only, and SystemInfo rows are never applied for
+// it.
 package mapplgis
 
 import (
