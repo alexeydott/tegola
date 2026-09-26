@@ -12,6 +12,7 @@ import (
 	"github.com/go-spatial/tegola/provider/test/mosfixture"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // probeFakeRows is an in-memory pgx.Rows over REAL row values for the
@@ -50,7 +51,10 @@ func (r *probeFakeRows) Values() ([]any, error) {
 	return r.rows[r.next-1], nil
 }
 func (r *probeFakeRows) RawValues() [][]byte { return nil }
-func (r *probeFakeRows) Conn() *pgx.Conn      { return nil }
+func (r *probeFakeRows) Conn() *pgx.Conn     { return nil }
+
+// TypeMap satisfies pgx.Rows as of pgx v5.11.
+func (r *probeFakeRows) TypeMap() *pgtype.Map { return nil }
 
 // TestProbeSQLContractRows runs the shared bounds-contract fixture through
 // the PostGIS probe row inspection and asserts the identical
