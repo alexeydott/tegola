@@ -12,6 +12,7 @@ Features
 * HANA MVT provider (`mvt_hana`) alongside `mvt_postgis`.
 * Memory and multilevel tile caches.
 * Tile endpoint modes `?tile=status|update|getupdated` and cache invalidation via `?dirty`.
+* Providers can be excluded from the binary at build time with the `noMysqlProvider`, `noGpkgProvider`, `noPostgisProvider` and `noHanaProvider` build flags (e.g. `go build -tags 'noMysqlProvider'`); `tegola version` reports the active set.
 
 Breaking changes
 

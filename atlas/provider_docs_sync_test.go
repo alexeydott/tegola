@@ -91,6 +91,56 @@ func TestRootReadmeListsProviders(t *testing.T) {
 	}
 }
 
+// TestProviderBuildFlagsSync keeps the provider opt-out build flags in sync
+// with the registry, the registration files and the docs. Every standard
+// driver is registered from atlas/provider_<name>.go behind a !no<X>Provider
+// build constraint so it can be excluded from the binary at build time (e.g.
+// `go build -tags 'noMysqlProvider'`); the flag must be listed in the root
+// README build flags section and reported by internal/build (tegola version).
+func TestProviderBuildFlagsSync(t *testing.T) {
+	readme, err := os.ReadFile("../README.md")
+	if err != nil {
+		t.Skipf("root README not readable from this working dir: %v", err)
+	}
+	content := string(readme)
+
+	// test-only providers are registered from test helpers, not from atlas/
+	// registration files, so they have no opt-out flag
+	excluded := map[string]bool{
+		"debug":           true,
+		"test":            true,
+		"mvt_test":        true,
+		"collection":      true,
+		"emptycollection": true,
+	}
+	for _, name := range provider.Drivers(provider.TypeStd) {
+		if excluded[name] {
+			continue
+		}
+		// no<Name>Provider, e.g. mysql -> noMysqlProvider
+		flag := "no" + strings.ToUpper(name[:1]) + name[1:] + "Provider"
+
+		// the registration file must be constrained on the flag
+		reg, err := os.ReadFile("../atlas/provider_" + name + ".go")
+		if err != nil {
+			t.Errorf("standard provider %q has no atlas/provider_%s.go registration file: %v", name, name, err)
+		} else if !strings.Contains(string(reg), "!"+flag) {
+			t.Errorf("atlas/provider_%s.go is not guarded by the %s build constraint", name, flag)
+		}
+
+		// the flag must be documented in the README build flags section
+		if !strings.Contains(content, "`"+flag+"`") {
+			t.Errorf("root README.md does not document the %s build flag", flag)
+		}
+
+		// internal/build must be able to report the flag in `tegola version`
+		tagfile := "../internal/build/no_" + name + "_provider.generated.go"
+		if _, err := os.ReadFile(tagfile); err != nil {
+			t.Errorf("internal/build tag reporter for %s is missing (%s); run go generate ./internal/build/", flag, tagfile)
+		}
+	}
+}
+
 // TestRootReadmeListsMOSConfigKeys asserts the lightweight docs markers for
 // the shared provider contract config keys (srid, crs_defn, geometry_format
 // and the MOS parameters).
