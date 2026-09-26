@@ -512,3 +512,68 @@ CREATE TABLE rtree_t1_geom (id INTEGER, minx DOUBLE, maxx DOUBLE, miny DOUBLE, m
 		}
 	})
 }
+
+// TestRawLayerWithoutBoundsWarns covers audit P6-19: a raw-format layer
+// whose table has no bounds columns full-table-scans per tile request -
+// registration must warn, naming the layer and the perf cost. Pre-fix: no
+// warning was emitted.
+func TestRawLayerWithoutBoundsWarns(t *testing.T) {
+	mkConf := func(path string) dict.Dict {
+		return dict.Dict{
+			"filepath": path,
+			"layers": []map[string]interface{}{
+				{
+					"name":               "raw_layer",
+					"tablename":          "places",
+					"id_fieldname":       "id",
+					"geometry_fieldname": "geom",
+					"geometry_format":    "wkb",
+					"srid":               3857,
+					"fields":             []string{"name"},
+				},
+			},
+		}
+	}
+
+	t.Run("warns without bounds columns", func(t *testing.T) {
+		fx := newRawFixture(t, []string{
+			"CREATE TABLE places (id INTEGER, geom BLOB, name TEXT)",
+		})
+		insertRows(t, fx.path, "places", []string{"id", "geom", "name"}, [][]interface{}{
+			{1, wkbGeomBytes(t, geom.Point{50, 50}), "a"},
+		})
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(mkConf(fx.path), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			_ = p
+		})
+		for _, want := range []string{"raw_layer", "places", "full-table-scan"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("warning %q missing from logs: %s", want, out)
+			}
+		}
+	})
+
+	t.Run("no warning with bounds columns", func(t *testing.T) {
+		fx := newRawFixture(t, []string{
+			"CREATE TABLE places (id INTEGER, geom BLOB, name TEXT, minx DOUBLE, maxx DOUBLE, miny DOUBLE, maxy DOUBLE)",
+		})
+		insertRows(t, fx.path, "places", []string{"id", "geom", "name", "minx", "maxx", "miny", "maxy"}, [][]interface{}{
+			{1, wkbGeomBytes(t, geom.Point{50, 50}), "a", 50.0, 50.0, 50.0, 50.0},
+		})
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(mkConf(fx.path), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			_ = p
+		})
+		if strings.Contains(out, "full-table-scan") {
+			t.Errorf("bounds columns present, expected no scan-cost warning, got: %s", out)
+		}
+	})
+}

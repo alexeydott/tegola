@@ -837,6 +837,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				if layer.boundFieldnames != nil {
 					log.Debugf("layer (%v): table %q carries raw bounds columns; enabling SQL bounds filter", layerName, tablename)
+				} else {
+					// audit P6-19: without bounds columns every tile request
+					// scans the whole table and filters features in memory.
+					log.Warnf("layer '%v': table %q has no bounds columns (minx/maxx/miny/maxy or configured bbox_*_fieldname); every tile request will full-table-scan %q and filter in memory - add bounds columns and configure bbox_*_fieldname to avoid the per-tile scan cost", layerName, tablename, tablename)
 				}
 				// bboxFields mirrors the detected (or resolved) bounds
 				// columns so tag exclusion and the predicate builder share
