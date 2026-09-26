@@ -1100,8 +1100,13 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 		if derr != nil {
 			return nil, nil, false, derr
 		}
-		firstGeom = geo
 		firstHeader = h
+		if geo == nil {
+			// empty-geometry row (GeoPackage empty flag, audit N15):
+			// keep scanning for a real sample geometry.
+			continue
+		}
+		firstGeom = geo
 		break
 	}
 	if rerr := inspectRows.Err(); rerr != nil {
