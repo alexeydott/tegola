@@ -19,6 +19,10 @@ Breaking changes
 * MySQL provider: the `proj4` config key was removed in favour of `srid` / `crs_defn`.
 * PostGIS provider: `tablename` and `sql` are strictly mutually exclusive (startup error).
 * PostGIS provider: `pool_*` connection-pool keys were introduced/renamed; review your `[[providers]]` blocks.
+
+Bugs
+
+* MySQL provider: the connection DSN is now built from `mysqlDriver.NewConfig()`, preserving the go-sql-driver authentication defaults. Previously a bare config struct literal disabled `allowNativePasswords`, so accounts using `mysql_native_password` failed to connect with "this user requires mysql native password authentication".
 ## 0.17.0 (2023-07-27)
 
 Features

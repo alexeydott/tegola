@@ -27,20 +27,22 @@ import (
 
 // buildDSN formats the MySQL connection DSN with the vendored
 // go-sql-driver/mysql Config so credential and database values containing
-// special characters are escaped correctly (audit P6-4). multiStatements is
-// deliberately not enabled: layer SQL is always executed as a single
-// statement.
+// special characters are escaped correctly (audit P6-4). The config starts
+// from mysqlDriver.NewConfig() so the driver's authentication and liveness
+// defaults (e.g. allowNativePasswords=true) are preserved — building a bare
+// struct literal silently disabled them and broke users that require
+// mysql_native_password authentication. multiStatements is deliberately not
+// enabled: layer SQL is always executed as a single statement.
 func buildDSN(user, password, host string, port int, database, tlsConfig string, timeout time.Duration) string {
-	cfg := mysqlDriver.Config{
-		User:      user,
-		Passwd:    password,
-		Net:       "tcp",
-		Addr:      net.JoinHostPort(host, strconv.Itoa(port)),
-		DBName:    database,
-		ParseTime: true,
-		TLSConfig: tlsConfig,
-		Timeout:   timeout,
-	}
+	cfg := mysqlDriver.NewConfig()
+	cfg.User = user
+	cfg.Passwd = password
+	cfg.Net = "tcp"
+	cfg.Addr = net.JoinHostPort(host, strconv.Itoa(port))
+	cfg.DBName = database
+	cfg.ParseTime = true
+	cfg.TLSConfig = tlsConfig
+	cfg.Timeout = timeout
 	return cfg.FormatDSN()
 }
 

@@ -13,6 +13,9 @@ mid-stream connection failure cannot emit duplicates.
 
 The connection DSN is built with the go-sql-driver's `Config.FormatDSN`, so
 user/password/database values with special characters are escaped correctly.
+The config starts from the driver's `NewConfig()` defaults, so the standard
+authentication plugins (`mysql_native_password`, `caching_sha2_password`) stay
+allowed exactly as the upstream driver permits them.
 `multiStatements` is deliberately **not** enabled: layer SQL must be a single
 statement.
 

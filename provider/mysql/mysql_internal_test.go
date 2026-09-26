@@ -227,6 +227,17 @@ func TestBuildDSNEscapingAndOptions(t *testing.T) {
 	if !cfg.ParseTime {
 		t.Fatalf("parseTime must stay enabled: %q", dsn)
 	}
+	// the driver's authentication/liveness defaults must survive DSN
+	// building: a bare mysqlDriver.Config struct literal left
+	// AllowNativePasswords=false and the connection failed with
+	// "this user requires mysql native password authentication" for users
+	// using mysql_native_password (e.g. legacy MapplGIS accounts).
+	if !cfg.AllowNativePasswords {
+		t.Fatalf("allowNativePasswords must stay enabled (driver default): %q", dsn)
+	}
+	if !cfg.CheckConnLiveness {
+		t.Fatalf("checkConnLiveness must stay enabled (driver default): %q", dsn)
+	}
 	if strings.Contains(dsn, "multiStatements") {
 		t.Fatalf("multiStatements must be disabled: %q", dsn)
 	}
