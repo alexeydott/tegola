@@ -2,6 +2,7 @@ package postgis
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/go-spatial/tegola/internal/ttools"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // TestGenSQLRawFormat covers the R3-08 provider-level regression for the
@@ -124,6 +127,47 @@ func TestReplaceTokens(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+// TestReplaceTokensQuotesIdentifierTokens (audit P5-10) pins identifier
+// quoting for !ID_FIELD!/!GEOM_FIELD! substitution in the postgis provider:
+// plain and
+// qualified names are quoted per part, values already wrapped in a complete
+// quote pair pass through verbatim (backward compatibility), and hostile
+// names cannot break out of the quoted identifier.
+func TestReplaceTokensQuotesIdentifierTokens(t *testing.T) {
+	tile := provider.NewTile(0, 0, 0, 0, tegola.WebMercator)
+
+	cases := []struct {
+		name      string
+		idField   string
+		geomField string
+		want      string
+	}{
+		{"plain name", "fid", "geom", `SELECT "fid", "geom" FROM t`},
+		{"qualified name", "t.fid", "db.t.geom", `SELECT "t"."fid", "db"."t"."geom" FROM t`},
+		{"already double quoted", `"fid"`, `"t"."geom"`, `SELECT "fid", "t"."geom" FROM t`},
+		{"already backtick quoted", "`fid`", "`geom`", "SELECT `fid`, `geom` FROM t"},
+		{"hostile input", `we"ird`, `ge"om`, `SELECT "we""ird", "ge""om" FROM t`},
+		{"unbalanced quote", `"fid`, `ge"om"`, `SELECT """fid", "ge""om""" FROM t`},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sql, err := replaceTokens(
+				"SELECT !ID_FIELD!, !GEOM_FIELD! FROM t",
+				&Layer{idField: c.idField, geomField: c.geomField, srid: tegola.WebMercator},
+				tile,
+				false,
+			)
+			if err != nil {
+				t.Fatalf("replaceTokens returned error: %v", err)
+			}
+			if sql != c.want {
+				t.Fatalf("identifier tokens not quoted safely:\n got %q\nwant %q", sql, c.want)
+			}
+		})
 	}
 }
 
@@ -362,5 +406,100 @@ func TestDecipherFields(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+// TestDecipherFieldsGeometryValueTypes (audit P6-2) covers the geometry value
+// types decipherFields must accept. pgx returns Go strings (not []byte) for
+// text/varchar columns, so geometry_format="wkt" layers reading WKT from a
+// text column broke with "unable to convert geometry field into bytes".
+// Both []byte and string values must be accepted; anything else errors.
+func TestDecipherFieldsGeometryValueTypes(t *testing.T) {
+	ctx := t.Context()
+	descriptions := []pgconn.FieldDescription{
+		{Name: "geom", DataTypeOID: pgtype.TextOID},
+		{Name: "id", DataTypeOID: pgtype.Int8OID},
+	}
+	const wkt = "POINT(1 2)"
+
+	type tcase struct {
+		geomValue any
+		wantGeom  []byte
+		wantErr   bool
+	}
+
+	tests := map[string]tcase{
+		"geometry as []byte": {
+			geomValue: []byte(wkt),
+			wantGeom:  []byte(wkt),
+		},
+		"geometry as string": {
+			geomValue: wkt,
+			wantGeom:  []byte(wkt),
+		},
+		"geometry as unsupported type errors": {
+			geomValue: int64(3),
+			wantErr:   true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			gid, geom, _, err := decipherFields(
+				ctx,
+				"geom",
+				"id",
+				nil,
+				descriptions,
+				[]any{tc.geomValue, int64(7)},
+			)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got none (geom=%q)", geom)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gid != 7 {
+				t.Errorf("gid: expected 7, got %v", gid)
+			}
+			if string(geom) != string(tc.wantGeom) {
+				t.Errorf("geom: expected %q, got %q", tc.wantGeom, geom)
+			}
+		})
+	}
+}
+
+// TestGIDRejectsInvalidIDs (audit P6-10) pins the feature-ID contract at the
+// PostGIS decipherFields call site: negative, fractional and out-of-range IDs
+// are rejected with an error instead of being wrapped (-1 → 2^64-1) or
+// truncated (1.5 → 1). gId shares the rules with provider.ConvertFeatureID.
+func TestGIDRejectsInvalidIDs(t *testing.T) {
+	for _, val := range []any{
+		float64(-1),
+		float64(1.5),
+		math.NaN(),
+		math.Pow(2, 64),
+		int64(-2),
+		int32(-3),
+		"-7",
+		nil,
+	} {
+		got, err := gId(val)
+		if err == nil {
+			t.Fatalf("gId(%v (%T)) = %d, want a rejection error", val, val, got)
+		}
+		if got != 0 {
+			t.Fatalf("gId(%v) = %d alongside error, want 0", val, got)
+		}
+	}
+
+	if got, err := gId(float64(3)); err != nil || got != 3 {
+		t.Fatalf("gId(3.0) = %d, %v, want 3, nil", got, err)
+	}
+	if got, err := gId("123"); err != nil || got != 123 {
+		t.Fatalf("gId(%q) = %d, %v, want 123, nil", "123", got, err)
 	}
 }

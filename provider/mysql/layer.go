@@ -27,9 +27,21 @@ type Layer struct {
 	// "mysql", "mariadb", "wkb", "wkt", "mos"); used to build !BBOX! for text
 	// geometry columns.
 	geometryFormat string
+	// serverFlavor records the server flavor detected at registration
+	// ("mysql" or "mariadb"). MySQL 8 stores geographic SRS geometry
+	// latitude-first per its SRS metadata while tegola writes WKT and bbox
+	// polygons longitude-first, so geometry constructors for geographic
+	// SRIDs must carry 'axis-order=long-lat' on MySQL only (audit P6-3).
+	serverFlavor string
 	// deferredInspection is set for tile-dependent custom SQL whose geometry
 	// type cannot be inferred safely during provider startup.
 	deferredInspection bool
+	// deferredSRIDLocked records that the first native geometry header SRID
+	// seen for a deferred custom-SQL layer has established the canonical
+	// layer CRS (audit P5-9). Later rows carrying a different header SRID
+	// are skipped with a warning instead of silently being interpreted as
+	// if they carried the canonical SRID.
+	deferredSRIDLocked bool
 	// crsExplicit records whether the provider or layer explicitly selected a
 	// CRS. It prevents a runtime MOS system-info row from replacing that CRS.
 	crsExplicit bool
@@ -65,6 +77,48 @@ func (l Layer) GeomFieldName() string   { return l.geomFieldname }
 // IsMapplGIS reports whether the layer was detected as MapplGIS at
 // registration time (either table canonical or SQL sample).
 func (l Layer) IsMapplGIS() bool { return l.isMapplGIS }
+
+// deferredSRIDAction is the outcome of adjudicating a native geometry header
+// SRID for a deferred custom-SQL layer (audit P5-9).
+type deferredSRIDAction int
+
+const (
+	// deferredSRIDProcess: the row carries the canonical layer SRID (or no
+	// header SRID at all); process it normally.
+	deferredSRIDProcess deferredSRIDAction = iota
+	// deferredSRIDAdopt: the first non-zero header SRID established the
+	// canonical layer CRS; the caller must recompute its tile bounding box
+	// for the new source CRS.
+	deferredSRIDAdopt
+	// deferredSRIDSkip: the row carries a different SRID than the canonical
+	// layer CRS; the caller must skip it with a warning.
+	deferredSRIDSkip
+)
+
+// resolveDeferredHeaderSRID adjudicates a native geometry header SRID for a
+// deferred custom-SQL layer whose CRS was not explicitly configured (audit
+// P5-9). The first non-zero header SRID seen establishes the canonical layer
+// CRS (adopting it when it differs from the provisional SRID); rows carrying
+// a different non-zero header SRID are reported as deferredSRIDSkip so
+// mixed-SRID results cannot be silently mislabeled. Rows without a header
+// SRID (0) never lock the CRS and always process.
+func (l *Layer) resolveDeferredHeaderSRID(srid uint64) deferredSRIDAction {
+	if !l.deferredInspection || l.crsExplicit || srid == 0 {
+		return deferredSRIDProcess
+	}
+	if !l.deferredSRIDLocked {
+		l.deferredSRIDLocked = true
+		if l.srid != srid {
+			l.srid = srid
+			return deferredSRIDAdopt
+		}
+		return deferredSRIDProcess
+	}
+	if l.srid != srid {
+		return deferredSRIDSkip
+	}
+	return deferredSRIDProcess
+}
 
 // MapplGISSource reports the detection source. SystemInfo is only guaranteed
 // for MapplGISTableCanonical.

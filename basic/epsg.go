@@ -2,6 +2,8 @@ package basic
 
 import (
 	"fmt"
+	"log"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -221,6 +223,61 @@ func resolveDefnSRID(defn string, owners map[uint64]string) (uint64, bool) {
 	}
 }
 
+// claimDefnSRID allocates the synthetic SRID for defn, updating the owners
+// (SRID -> definition) and codes (definition -> SRID) maps. Two distinct
+// definitions with the same first choice must resolve identically regardless
+// of registration order (P5-11): the lexicographically smaller definition
+// owns the contested slot, the larger one re-resolves along its own probe
+// chain, and a displaced earlier registration re-resolves recursively. Every
+// contested slot logs a warning naming both definitions and the SRID, so
+// silent load-order resolution is no longer possible. The result depends only
+// on the set of registered definitions.
+func claimDefnSRID(defn string, owners map[uint64]string, codes map[string]uint64) (uint64, bool) {
+	return claimDefnSRIDFrom(defn, owners, codes, 0)
+}
+
+// claimDefnSRIDFrom is claimDefnSRID with skipCode: a slot whose collision was
+// already reported (the slot the definition was just displaced from), so the
+// displacement does not log the same pair twice. Note the returned SRID of an
+// earlier registration may change when a colliding lexicographically smaller
+// definition is registered later; callers that stored a previously returned
+// code should re-query it with Proj4DefnSRID.
+func claimDefnSRIDFrom(defn string, owners map[uint64]string, codes map[string]uint64, skipCode uint64) (uint64, bool) {
+	start := defnFirstChoice(defn)
+	code := start
+	for {
+		owner, taken := owners[code]
+		switch {
+		case !taken || owner == defn:
+			owners[code] = defn
+			codes[defn] = code
+			return code, true
+		case defn < owner:
+			if code != skipCode {
+				log.Printf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", defn, owner, code)
+			}
+			owners[code] = defn
+			codes[defn] = code
+			delete(codes, owner)
+			if _, ok := claimDefnSRIDFrom(owner, owners, codes, code); !ok {
+				return 0, false
+			}
+			return code, true
+		default:
+			if code != skipCode {
+				log.Printf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", owner, defn, code)
+			}
+			code += defnSRIDProbeStep
+			if code >= SyntheticSRIDMin+defnSRIDSpan {
+				code = SyntheticSRIDMin
+			}
+			if code == start {
+				return 0, false
+			}
+		}
+	}
+}
+
 // RegisterProj4Defn registers an arbitrary PROJ.4 coordinate system definition
 // and returns a synthetic SRID standing in for it. Configs that carry a full
 // textual CRS description (crs_defn) instead of a numeric EPSG code pass the
@@ -243,16 +300,35 @@ func RegisterProj4Defn(proj4 string) (uint64, error) {
 	if code, ok := proj4DefnCodes[proj4]; ok {
 		return code, nil
 	}
-	code, ok := resolveDefnSRID(proj4, proj4Registered)
+	prevCodes := make(map[string]uint64, len(proj4DefnCodes))
+	for d, c := range proj4DefnCodes {
+		prevCodes[d] = c
+	}
+	code, ok := claimDefnSRID(proj4, proj4Registered, proj4DefnCodes)
 	if !ok {
 		return 0, fmt.Errorf("RegisterProj4Defn: synthetic SRID space exhausted")
 	}
-	proj4DefnCodes[proj4] = code
-	proj4Registered[code] = proj4
 
 	proj4RegisterOnce.Do(func() {})
 	proj4ProjectionMu.Lock()
 	proj.CustomProjection(proj.EPSGCode(code), proj4)
+	// a collision may have displaced earlier definitions to new SRIDs:
+	// register every changed definition under its new code, then drop stale
+	// codes that no current definition claims (a stale code may have been
+	// reused by the definition that caused the displacement).
+	currentCodes := make(map[uint64]bool, len(proj4DefnCodes))
+	for d, c := range proj4DefnCodes {
+		currentCodes[c] = true
+		if prev, ok := prevCodes[d]; !ok || prev != c {
+			proj.CustomProjection(proj.EPSGCode(c), d)
+		}
+	}
+	for d, prev := range prevCodes {
+		c, ok := proj4DefnCodes[d]
+		if (!ok || c != prev) && !currentCodes[prev] {
+			proj.RemoveCustomProjection(proj.EPSGCode(prev))
+		}
+	}
 	proj4ProjectionMu.Unlock()
 	return code, nil
 }
@@ -264,6 +340,59 @@ func Proj4DefnSRID(proj4 string) (uint64, bool) {
 	defer proj4RegisteredMu.Unlock()
 	code, ok := proj4DefnCodes[strings.TrimSpace(proj4)]
 	return code, ok
+}
+
+// proj4ProbePoint returns the geographic point used to validate a PROJ.4
+// definition's forward and inverse operations. When the definition declares a
+// projection center via +lon_0 / +lat_0 (or a UTM +zone), the center is used
+// so that definitions whose valid domain excludes the historical fixed probe
+// point (10, 50) — e.g. an orthographic projection centered on the Pacific —
+// are not incorrectly rejected. Probing the declared center also catches
+// definitions whose own center is not projectable. Definitions that declare no
+// center fall back to the fixed point (10, 50).
+func proj4ProbePoint(proj4 string) (lon, lat float64) {
+	haveCenter := false
+	haveZone := false
+	var zone float64
+	for _, field := range strings.Fields(proj4) {
+		if !strings.HasPrefix(field, "+") {
+			continue
+		}
+		key, val, ok := strings.Cut(strings.TrimPrefix(field, "+"), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "lon_0":
+			if v, err := strconv.ParseFloat(val, 64); err == nil {
+				lon, haveCenter = v, true
+			}
+		case "lat_0":
+			if v, err := strconv.ParseFloat(val, 64); err == nil {
+				lat, haveCenter = v, true
+			}
+		case "zone":
+			if v, err := strconv.ParseFloat(val, 64); err == nil {
+				zone, haveZone = v, true
+			}
+		}
+	}
+	if haveCenter {
+		// wrap the probe longitude into (-180, 180] so it is canonical
+		lon = math.Mod(lon, 360)
+		switch {
+		case lon > 180:
+			lon -= 360
+		case lon <= -180:
+			lon += 360
+		}
+		return lon, lat
+	}
+	if haveZone {
+		// UTM central meridian; the natural center latitude is the equator
+		return 6*zone - 183, 0
+	}
+	return 10, 50
 }
 
 // isSupportedProj4 validates a PROJ.4 string by asking proj to build and
@@ -284,13 +413,64 @@ func isSupportedProj4(proj4 string) (ok bool) {
 			ok = false
 		}
 	}()
-	// forward then inverse must both succeed for a usable projection
-	out, err := proj.Convert(probe, []float64{10.0, 50.0})
+	// probe the projection's declared center when it has one (P6-21): a
+	// single fixed point (10, 50) incorrectly rejects valid definitions
+	// whose domain excludes that point.
+	lon, lat := proj4ProbePoint(proj4)
+	// forward then inverse must both succeed and produce finite results
+	// (P6-8): a definition whose forward output overflows to Inf/NaN, or
+	// whose inverse silently returns NaN instead of an error, is not usable.
+	out, err := proj.Convert(probe, []float64{lon, lat})
 	if err != nil {
 		return false
 	}
-	_, err = proj.Inverse(probe, out)
-	return err == nil
+	if anyNonFinite(out) {
+		return false
+	}
+	back, err := proj.Inverse(probe, out)
+	if err != nil {
+		return false
+	}
+	if anyNonFinite(back) {
+		return false
+	}
+	// and the round trip must return close to the probe point (P6-8)
+	if math.Abs(normalizeLonDelta(back[0]-lon)) > proj4RoundTripTolerance {
+		return false
+	}
+	return math.Abs(back[1]-lat) <= proj4RoundTripTolerance
+}
+
+// proj4RoundTripTolerance bounds the forward-then-inverse error, in degrees,
+// accepted when validating a PROJ.4 definition. The vendored spherical-merc
+// forward/inverse path has a latitude-dependent round-trip artifact of up to
+// ~4e-4 deg on definitions mixing a spherical forward with an ellipsoidal
+// datum path (seen on EPSG:3785-style +towgs84 definitions at non-zero
+// latitudes), so 1e-3 deg is the practical floor. Genuinely broken
+// definitions fail by orders of magnitude (tens of degrees) or return
+// non-finite values.
+const proj4RoundTripTolerance = 1e-3
+
+// anyNonFinite reports whether the slice contains a NaN or Inf value.
+func anyNonFinite(v []float64) bool {
+	for _, f := range v {
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeLonDelta wraps a longitude difference into (-180, 180].
+func normalizeLonDelta(d float64) float64 {
+	d = math.Mod(d, 360)
+	switch {
+	case d > 180:
+		d -= 360
+	case d <= -180:
+		d += 360
+	}
+	return d
 }
 
 // probeCodeBase sits above every EPSG code space (standard codes are <= 7

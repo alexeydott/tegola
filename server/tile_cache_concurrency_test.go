@@ -214,6 +214,64 @@ func TestTileCacheConcurrentMissesShareOneRender(t *testing.T) {
 	}
 }
 
+// TestTileCacheWaiterGetsSharedCacheHeader guards cache header reporting
+// across a shared render: the request that owns the render reports MISS,
+// while requests that join an already in-flight render report SHARED, so
+// instrumentation can tell a real cache miss from a coalesced wait.
+func TestTileCacheWaiterGetsSharedCacheHeader(t *testing.T) {
+	tiler := newBlockingTiler(1)
+	layer := testLayer1
+	layer.Provider = tiler
+
+	a := newTestMapWithLayers(layer)
+	_, router := newTileOpsTestServer(t, a)
+
+	base := "/maps/test-map/test-layer/4/2/3.pbf"
+
+	type result struct {
+		code     int
+		cacheHdr string
+	}
+	leaderCh := make(chan result, 1)
+	waiterCh := make(chan result, 1)
+
+	// the leader request owns the render
+	go func() {
+		w := tileOpsRequest(router, base, "")
+		leaderCh <- result{code: w.Code, cacheHdr: w.Header().Get("Tegola-Cache")}
+	}()
+
+	// the render is now paused inside the provider; a second request joins it
+	<-tiler.entered
+	go func() {
+		w := tileOpsRequest(router, base, "")
+		waiterCh <- result{code: w.Code, cacheHdr: w.Header().Get("Tegola-Cache")}
+	}()
+
+	// give the waiter time to join the in-flight render
+	time.Sleep(100 * time.Millisecond)
+	close(tiler.release)
+
+	leader := <-leaderCh
+	waiter := <-waiterCh
+
+	if leader.code != http.StatusOK {
+		t.Errorf("leader: status = %d, want 200", leader.code)
+	}
+	if waiter.code != http.StatusOK {
+		t.Errorf("waiter: status = %d, want 200", waiter.code)
+	}
+	if leader.cacheHdr != "MISS" {
+		t.Errorf("leader Tegola-Cache = %q, want MISS", leader.cacheHdr)
+	}
+	if waiter.cacheHdr != "SHARED" {
+		t.Errorf("waiter Tegola-Cache = %q, want SHARED (waiters must not inherit the leader's MISS)", waiter.cacheHdr)
+	}
+	if got := tiler.callCount(); got != 1 {
+		t.Errorf("provider renders = %d, want 1 (waiter must join the in-flight render)", got)
+	}
+}
+
 // TestTileUpdateNotOverwrittenByStaleMissRender guards the metatile
 // generation check: a miss render that is in flight while ?tile=update
 // regenerates the metatile must not write its stale bytes afterwards.

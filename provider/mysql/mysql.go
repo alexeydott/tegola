@@ -72,6 +72,8 @@ const (
 	ConfigKeyDatabase       = "database"
 	ConfigKeyUser           = "user"
 	ConfigKeyPassword       = "password"
+	ConfigKeyTLS            = "tls"
+	ConfigKeyTimeout        = "timeout"
 	ConfigKeySRID           = "srid"
 	ConfigKeyCRSDefn        = "crs_defn"
 	ConfigKeyMaxConn        = "max_connections"
@@ -422,17 +424,28 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 
 				// Match startup inspection for deferred custom SQL: when no
 				// CRS was configured, a native geometry header is the only
-				// available source-CRS declaration.
-				if pLayer.deferredInspection && !pLayer.crsExplicit && srid > 0 && pLayer.srid != srid {
-					pLayer.srid = srid
-					if pLayer.srid != tileSRID {
-						sourceBBox, err := basic.FromWebMercatorExtent(pLayer.srid, webMercatorBBox)
-						if err != nil {
-							return fmt.Errorf("convert tile extent for geometry header SRID %d: %w", srid, err)
+				// available source-CRS declaration. The first non-zero
+				// header SRID establishes the canonical layer CRS; rows
+				// carrying a different SRID are skipped with a warning
+				// instead of being silently mislabeled (audit P5-9).
+				if pLayer.deferredInspection && !pLayer.crsExplicit && srid > 0 {
+					switch pLayer.resolveDeferredHeaderSRID(srid) {
+					case deferredSRIDAdopt:
+						if pLayer.srid != tileSRID {
+							sourceBBox, err := basic.FromWebMercatorExtent(pLayer.srid, webMercatorBBox)
+							if err != nil {
+								return fmt.Errorf("convert tile extent for geometry header SRID %d: %w", srid, err)
+							}
+							tileBBox = sourceBBox
+						} else {
+							tileBBox = webMercatorBBox
 						}
-						tileBBox = sourceBBox
-					} else {
-						tileBBox = webMercatorBBox
+					case deferredSRIDSkip:
+						log.Warnf("mysql provider: layer %v: skipping row with geometry header SRID %d; the layer CRS was established as SRID %d from the first sampled row (mixed SRIDs are not supported in deferred custom SQL)", pLayer.Name(), srid, pLayer.srid)
+						skipRow = true
+					}
+					if skipRow {
+						break
 					}
 				}
 
@@ -586,6 +599,32 @@ func quoteIdentifier(name string) string {
 		return quoteIdentifier(table) + "." + quoteIdentifier(column)
 	}
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+// quoteTokenIdentifier quotes an identifier substituted for an
+// !ID_FIELD!/!GEOM_FIELD! SQL token (audit P5-10). Values the user already
+// wrapped in a complete quote pair (backticks or double quotes) pass through
+// verbatim for backward compatibility; anything else is quoted with
+// quoteIdentifier, which escapes embedded backticks and quotes qualified
+// names per part so hostile names cannot break out of the identifier.
+func quoteTokenIdentifier(name string) string {
+	if isQuotedIdentifierValue(name) {
+		return name
+	}
+	return quoteIdentifier(name)
+}
+
+// isQuotedIdentifierValue reports whether name is already wrapped in a
+// complete quote pair (backticks or double quotes). Semantics are kept
+// identical to the postgis provider's token quoting (audit P5-10).
+func isQuotedIdentifierValue(name string) bool {
+	if len(name) < 2 {
+		return false
+	}
+	if name[0] != '`' && name[0] != '"' {
+		return false
+	}
+	return name[len(name)-1] == name[0]
 }
 
 // wktPolygon formats an extent as a WKT POLYGON string for use with

@@ -214,6 +214,40 @@ func (c *tileUpdateCoordinator) stable(snap metatileSnapshot) bool {
 	return state.mutations == 0 && state.generation == snap.gen && c.metatiles[state.key] == state
 }
 
+// writeStable performs the cache write for a finished miss render when the
+// metatile is still untouched since snap. The final freshness check and the
+// write itself run under the metatile mutation lock, closing the window
+// between the generation check and the cache write: a metatile mutation
+// either completes before the check (the superseded write is dropped) or
+// starts after the write (its regenerated tiles land last). A render from a
+// superseded generation can therefore never overwrite newer tiles.
+//
+// set runs at most once, while the write is claimed; its error is returned to
+// the caller. When the metatile was mutated since snap, or ctx ends before
+// the write is claimed, nothing is written and wrote is false.
+func (c *tileUpdateCoordinator) writeStable(ctx context.Context, snap metatileSnapshot, set func(context.Context) error) (wrote bool, err error) {
+	state := snap.state
+	if state == nil || !c.stable(snap) {
+		return false, nil
+	}
+
+	// serialize with mutation writes ( ?tile=update / ?tile=getupdated and
+	// ?dirty regeneration hold this lock across their cache writes )
+	_, unlock, err := c.acquire(ctx, state.key)
+	if err != nil {
+		// the writer's context ended while waiting for the mutation lock
+		return false, nil
+	}
+	defer unlock()
+
+	// re-check under the mutation lock: anything that moved the generation
+	// since the snapshot supersedes this render
+	if !c.stable(snap) {
+		return false, nil
+	}
+	return true, set(ctx)
+}
+
 // isUpdating reports whether a metatile update operation ( ?tile=update or
 // ?tile=getupdated ) is currently in flight for key. Ordinary requests and
 // ?dirty regenerations are not reported as updating.

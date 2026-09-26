@@ -81,3 +81,74 @@ func TestPLatToYOutOfRange(t *testing.T) {
 		}
 	})
 }
+
+// TestPLonToXNaNPropagation documents the audit P5-14 contract: a NaN
+// longitude propagates as a NaN x. The previous behavior logged the problem
+// and returned 0, silently drawing invalid input on the central meridian.
+func TestPLonToXNaNPropagation(t *testing.T) {
+	got := PLonToX(math.NaN())
+	if !math.IsNaN(got) {
+		t.Fatalf("PLonToX(NaN) = %v, want NaN (invalid input yields invalid output)", got)
+	}
+	if got == 0 {
+		t.Fatal("PLonToX(NaN) = 0: NaN must never collapse to the central meridian")
+	}
+}
+
+// TestPToXYNaNContract documents the audit P5-14 NaN contract at the point
+// level: if either coordinate of a point is NaN, the whole point is invalid
+// and BOTH x and y come back as NaN. Finite coordinates and the non-NaN
+// clamping behavior are unchanged.
+func TestPToXYNaNContract(t *testing.T) {
+	nan := math.NaN()
+
+	tests := map[string]struct {
+		lon, lat float64
+	}{
+		"lon is NaN": {lon: nan, lat: 50.0},
+		"lat is NaN": {lon: 10.0, lat: nan},
+		"both NaN":   {lon: nan, lat: nan},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := PToXY(tc.lon, tc.lat, 13.0, 42.0)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !math.IsNaN(got[0]) || !math.IsNaN(got[1]) {
+				t.Fatalf("PToXY(%v, %v) = (%v, %v), want (NaN, NaN): an invalid point must be invalid in both coordinates",
+					tc.lon, tc.lat, got[0], got[1])
+			}
+			// z/m pass-through is unaffected by the NaN contract
+			if got[2] != 13.0 || got[3] != 42.0 {
+				t.Fatalf("z/m values changed: got %v", got[2:])
+			}
+		})
+	}
+
+	t.Run("finite input unchanged", func(t *testing.T) {
+		got, err := PToXY(10.0, 50.0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		wantX := DegToRad(10.0) * EarthRadius
+		if math.Abs(got[0]-wantX) > 1e-6 {
+			t.Fatalf("PToXY x = %v, want %v", got[0], wantX)
+		}
+		if math.Abs(got[1]-PLatToY(50.0)) > 1e-6 {
+			t.Fatalf("PToXY y = %v, want %v", got[1], PLatToY(50.0))
+		}
+	})
+
+	t.Run("clamping unchanged", func(t *testing.T) {
+		// non-NaN out-of-range latitudes keep clamping to the map edge
+		got, err := PToXY(10.0, 91.0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if math.Abs(got[1]-PLatToY(MaxLatitude)) > 1e-6 {
+			t.Fatalf("PToXY lat 91 y = %v, want clamped edge %v", got[1], PLatToY(MaxLatitude))
+		}
+	})
+}

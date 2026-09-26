@@ -11,6 +11,11 @@ retried up to two times when the driver reports a broken connection. Features
 are held until the complete result set has been read, so a retry after a
 mid-stream connection failure cannot emit duplicates.
 
+The connection DSN is built with the go-sql-driver's `Config.FormatDSN`, so
+user/password/database values with special characters are escaped correctly.
+`multiStatements` is deliberately **not** enabled: layer SQL must be a single
+statement.
+
 ```toml
 [[providers]]
 name = "mysql_provider"
@@ -25,6 +30,8 @@ geometry_format = "auto"    # optional: auto (default) | mysql | mariadb | wkb |
 mos_precision = 2           # optional, MOS format only: decimal digits of quantized int coords; default depends on mos_units (mm→0, cm→1, dm→1, m→2, km→5)
 mos_units = "m"             # optional, MOS format only: mm | cm | dm | m | km, default m
 max_connections = 100       # optional, default 100
+# tls = "preferred"         # optional, go-sql-driver TLS config name: true | false | preferred | skip-verify | <registered tls.Config name>
+# timeout = "10s"           # optional, dial timeout; Go duration string ("500ms", "10s") or integer seconds; default: driver default (no timeout)
 
 [[providers.layers]]
 name = "buildings"
@@ -85,6 +92,24 @@ same value set:
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
 - `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; `mos_precision` (optional) is the number of decimal digits they carry and `mos_units` (optional) their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`, default `m`; the default `mos_precision` is paired with the units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`, `km`→`5` via `DefaultMOSPrecisionForUnits`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
+
+### Geographic SRIDs and MySQL axis order
+
+MySQL 8 interprets geometry values for geographic SRIDs (e.g. `4326`)
+latitude-first according to its SRS metadata, while tegola writes WKT and
+`!BBOX!` polygons longitude-first. For `wkt`/`wkb` layers on MySQL with a
+geographic SRID the provider therefore builds
+`ST_GeomFromText(value, srid, 'axis-order=long-lat')` /
+`ST_GeomFromWKB(value, srid, 'axis-order=long-lat')` (both for the geometry
+column and the tile bbox polygon) so the filter and the stored data agree.
+MariaDB does not support the options argument and projected SRIDs have no
+axis order — both keep the plain constructor form. (MySQL 5.7 does not
+accept the options argument either; use a projected SRID or MariaDB there.)
+
+Geometry *reads* are decoded in Go from the raw column values and are
+unaffected. Custom SQL that returns `ST_AsBinary(geom)` for a geographic
+SRID should pass the same option — `ST_AsBinary(geom, 'axis-order=long-lat')`
+— so the emitted WKB is longitude-first like everything tegola consumes.
 
 ## MOS geometry format
 
@@ -148,6 +173,10 @@ SRID resolution order (highest priority first):
 7. Default `3857` (Web Mercator).
 
 When the layer SRID differs from Web Mercator, tile bounding boxes are reprojected into the layer SRID before the `!BBOX!` filter is applied, and geometries are delivered to the MVT encoder with their true SRID. The full CRS contract (config keys, precedence, synthetic SRIDs, `!BBOX!` semantics) is documented in [docs/crs.md](../../docs/crs.md) and is shared by all standard providers.
+
+### Deferred custom SQL and mixed SRIDs
+
+Tile-dependent custom SQL (queries containing `!X!`/`!Y!`/`!Z!` and friends) defers geometry inspection to the first query. Without an explicitly configured CRS, the first non-zero native geometry header SRID seen in the results establishes the canonical layer CRS. Rows carrying a *different* header SRID are skipped with a per-row warning instead of being silently interpreted as if they carried the canonical SRID; rows without a header SRID (0) are always processed. Mixed-SRID results are therefore not supported on deferred custom SQL layers — configure `srid`/`crs_defn` explicitly if the source mixes SRIDs.
 
 ### Reprojection
 
@@ -240,6 +269,19 @@ uses the same safe in-memory filtering path as custom SQL whose geometry type
 is not yet resolved so a later
 geometry header can establish the source CRS without an incorrect startup
 assumption.
+
+## Raw geometry formats need bounds columns (audit P6-19)
+
+Layers using `geometry_format` `wkb`/`wkt`/`mos` store raw geometry, so a
+bounds predicate cannot be pushed down and evaluated cheaply: every tile
+request scans the full table and filters geometries in memory (O(rows) per
+tile). A registration-time warning is logged per affected layer. The
+recommended setup is the raw/MOS bounds-columns one: configure
+`bbox_minx_fieldname`/`bbox_maxx_fieldname`/`bbox_miny_fieldname`/
+`bbox_maxy_fieldname` (precomputed column bounds) and use a bounds-backed
+MOS custom query carrying `!BBOX!`, which expands to a server-side
+comparison over those columns. Alternatively use a native geometry column
+(`geometry_format` unset) so MySQL spatial predicates apply.
 
 ## Known limitations
 

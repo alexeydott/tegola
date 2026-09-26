@@ -2,14 +2,15 @@ package mysql
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 // replaceTokens replaces tile and layer metadata tokens in a SQL query.
@@ -57,12 +58,47 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		config.ScaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		config.PixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
 		config.PixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-		config.IdFieldToken, layer.idFieldname,
-		config.GeomFieldToken, layer.geomFieldname,
+		config.IdFieldToken, quoteTokenIdentifier(layer.idFieldname),
+		config.GeomFieldToken, quoteTokenIdentifier(layer.geomFieldname),
 		config.GeomTypeToken, geomType,
 	)
 
 	return tokenReplacer.Replace(qtext), nil
+}
+
+// rawGeometryBoundsWarning returns the registration-time warning for a
+// raw-geometry-format layer (wkb/wkt/mos) whose per-tile query has no
+// bounds-columns-backed server-side predicate: tegola scans the whole layer
+// source on every tile request and filters geometries in memory (or via a
+// non-indexable per-row predicate over raw geometry storage). Returns ""
+// when no warning is needed (audit P6-19).
+func rawGeometryBoundsWarning(layerName, geometryFormat string, boundsPredicateUsed bool) string {
+	if !codec.IsRawFormat(geometryFormat) || boundsPredicateUsed {
+		return ""
+	}
+	return fmt.Sprintf(
+		"layer (%v): geometry_format=%q stores raw geometry without bounds columns backing a server-side filter; every tile request scans the full table and filters geometries in memory (O(rows) per tile). Configure bounds columns (bbox_minx_fieldname/bbox_maxx_fieldname/bbox_miny_fieldname/bbox_maxy_fieldname) with a bounds-backed MOS query carrying !BBOX! so tile requests filter server-side, or use a native geometry column (audit P6-19)",
+		layerName, geometryFormat,
+	)
+}
+
+// rawGeometryBoundsWarnings returns the sorted set of registration-time
+// warnings for the configured layers (audit P6-19). MOS layers always
+// filter server-side over the configured bounds columns (the generated
+// table query and the required !BBOX! in custom SQL both expand to the
+// bounds-columns predicate); raw wkb/wkt storage cannot use such a
+// predicate and is fully scanned per tile.
+func rawGeometryBoundsWarnings(layers map[string]Layer) []string {
+	var msgs []string
+	for _, l := range layers {
+		boundsPredicateUsed := l.geometryFormat == codec.FormatMOS ||
+			codec.SQLHasBBoxToken(l.sql, config.BboxToken, "!BOX!")
+		if msg := rawGeometryBoundsWarning(l.name, l.geometryFormat, boundsPredicateUsed); msg != "" {
+			msgs = append(msgs, msg)
+		}
+	}
+	sort.Strings(msgs)
+	return msgs
 }
 
 // boundsSQLForLayer builds the !BBOX! replacement for a layer. MOS blobs are
@@ -87,40 +123,70 @@ func boundsSQLForLayer(layer *Layer, bboxExtent *geom.Extent) (string, error) {
 		geomRef := quoteIdentifier(layer.geomFieldname)
 		switch layer.geometryFormat {
 		case GeometryFormatWKT:
-			geomRef = geomFromTextSQL(geomRef, layer.srid)
+			geomRef = geomFromTextSQL(geomRef, layer.srid, layer.serverFlavor)
 		case GeometryFormatWKB:
-			geomRef = geomFromWKBSQL(geomRef, layer.srid)
+			geomRef = geomFromWKBSQL(geomRef, layer.srid, layer.serverFlavor)
 		}
 		return fmt.Sprintf(
 			"ST_Intersects(%v, %v)",
 			geomRef,
-			geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid),
+			geomFromTextSQL(sqlStringLiteral(wktPolygon(bboxExtent)), layer.srid, layer.serverFlavor),
 		), nil
 	}
 	return "1=1", nil
+}
+
+// axisOrderSQL returns the ST_GeomFromText/ST_GeomFromWKB axis-order option
+// for MySQL servers with a geographic (degrees) SRID. MySQL 8 interprets
+// such values latitude-first per its SRS metadata, while tegola writes WKT
+// and bbox polygons longitude-first, so without 'axis-order=long-lat' bbox
+// filters and stored geometries disagree (audit P6-3). MariaDB does not
+// support the options argument, and projected SRIDs have no axis order, so
+// both keep the plain constructor form.
+func axisOrderSQL(srid uint64, serverFlavor string) string {
+	if serverFlavor == GeometryFormatMySQL && codec.IsGeographicSRID(srid) {
+		return ", 'axis-order=long-lat'"
+	}
+	return ""
+}
+
+// escapeSQLStringLiteral escapes a value embedded in a single-quoted SQL
+// string literal by doubling single quotes (audit P5-8).
+func escapeSQLStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlStringLiteral wraps a value in a single-quoted SQL string literal,
+// escaping embedded quotes (audit P5-8).
+func sqlStringLiteral(s string) string {
+	return "'" + escapeSQLStringLiteral(s) + "'"
 }
 
 // geomFromTextSQL creates a geometry expression with the layer SRID when one
 // is configured. MySQL and MariaDB otherwise assign SRID 0 to WKT values;
 // comparing that value with a geometry column that has a non-zero SRID can
 // fail with a different-SRID error instead of applying the spatial filter.
-func geomFromTextSQL(value string, srid uint64) string {
+// On MySQL servers with a geographic SRID the value is read longitude-first
+// via the 'axis-order=long-lat' option (audit P6-3).
+func geomFromTextSQL(value string, srid uint64, serverFlavor string) string {
 	if srid == 0 {
 		return fmt.Sprintf("ST_GeomFromText(%v)", value)
 	}
-	return fmt.Sprintf("ST_GeomFromText(%v, %d)", value, srid)
+	return fmt.Sprintf("ST_GeomFromText(%v, %d%v)", value, srid, axisOrderSQL(srid, serverFlavor))
 }
 
 // geomFromWKBSQL creates a geometry expression from a raw WKB BLOB column
 // with the layer SRID when one is configured, symmetric to geomFromTextSQL.
 // ST_GeomFromWKB is the documented MySQL/MariaDB constructor for WKB values;
 // without it, spatial predicates would rely on implicit BLOB->geometry
-// coercion whose behavior differs between server versions.
-func geomFromWKBSQL(value string, srid uint64) string {
+// coercion whose behavior differs between server versions. On MySQL servers
+// with a geographic SRID the value is read longitude-first via the
+// 'axis-order=long-lat' option (audit P6-3).
+func geomFromWKBSQL(value string, srid uint64, serverFlavor string) string {
 	if srid == 0 {
 		return fmt.Sprintf("ST_GeomFromWKB(%v)", value)
 	}
-	return fmt.Sprintf("ST_GeomFromWKB(%v, %d)", value, srid)
+	return fmt.Sprintf("ST_GeomFromWKB(%v, %d%v)", value, srid, axisOrderSQL(srid, serverFlavor))
 }
 
 // mosBoundsSQL builds a coarse indexed filter for the raw bounds stored

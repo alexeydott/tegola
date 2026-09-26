@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-spatial/geom/encoding/mvt"
+	"github.com/go-spatial/tegola/atlas"
 	"github.com/go-spatial/tegola/cache"
 )
 
@@ -149,7 +150,7 @@ func TestRenderTileForCacheCachesOnlySuccessfulMVT(t *testing.T) {
 			})
 
 			req := httptest.NewRequest(http.MethodGet, "/maps/m/l/1/0/0", nil)
-			res := renderTileForCache(req, handler, cacher, key, true)
+			res := renderTileForCache(req.Context(), req, handler, cacher, key, true)
 
 			if res.status != tc.status {
 				t.Fatalf("rendered status = %d, want %d", res.status, tc.status)
@@ -193,7 +194,7 @@ func TestRenderTileForCacheSkipsStaleWrites(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/maps/m/l/1/0/0", nil)
-	renderTileForCache(req, handler, cacher, key, true)
+	renderTileForCache(req.Context(), req, handler, cacher, key, true)
 
 	if got := cacher.setCount(key.String()); got != 0 {
 		t.Fatalf("cacher.Set calls = %d, want 0 (stale render must not write)", got)
@@ -208,7 +209,7 @@ func TestTileRenderGroupSharesResults(t *testing.T) {
 	var results []*tileRenderResult
 
 	// a single render result is shared by all concurrent callers
-	fn := func() *tileRenderResult {
+	fn := func(context.Context) *tileRenderResult {
 		mu.Lock()
 		calls++
 		mu.Unlock()
@@ -257,7 +258,7 @@ func TestTileRenderGroupWaiterUnblocksOnContextCancel(t *testing.T) {
 	leaderDone := make(chan struct{})
 	go func() {
 		defer close(leaderDone)
-		_, _ = group.do(context.Background(), "k", func() *tileRenderResult {
+		_, _ = group.do(context.Background(), "k", func(context.Context) *tileRenderResult {
 			close(started)
 			<-release
 			return &tileRenderResult{status: http.StatusOK, body: []byte("tile")}
@@ -269,7 +270,7 @@ func TestTileRenderGroupWaiterUnblocksOnContextCancel(t *testing.T) {
 	defer cancel()
 	waiterDone := make(chan *tileRenderResult, 1)
 	go func() {
-		res, _ := group.do(ctx, "k", func() *tileRenderResult {
+		res, _ := group.do(ctx, "k", func(context.Context) *tileRenderResult {
 			t.Error("waiter must not run its own render")
 			return nil
 		})
@@ -293,5 +294,165 @@ func TestTileRenderGroupWaiterUnblocksOnContextCancel(t *testing.T) {
 	case <-leaderDone:
 	case <-timeAfter(t):
 		t.Fatal("leader did not finish")
+	}
+}
+
+// waitForRenderRefs waits until the in-flight render call for key has exactly
+// want waiting requests attached.
+func waitForRenderRefs(t *testing.T, group *tileRenderGroup, key string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		group.mu.Lock()
+		refs := -1
+		if call, ok := group.calls[key]; ok {
+			refs = call.refs
+		}
+		group.mu.Unlock()
+		if refs == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("render refs = %d, want %d", refs, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestTileRenderGroupWaiterGetsFullResultAfterLeaderCancel verifies the core
+// P5-1 invariant at the group level: the initiator of a shared render
+// disconnecting must not abort the render a live waiter depends on. The
+// waiter receives the complete tile, never an empty/aborted result.
+func TestTileRenderGroupWaiterGetsFullResultAfterLeaderCancel(t *testing.T) {
+	var group tileRenderGroup
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+	go func() {
+		_, _ = group.do(leaderCtx, "k", func(ctx context.Context) *tileRenderResult {
+			close(started)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return &tileRenderResult{canceled: true}
+			}
+			return &tileRenderResult{status: http.StatusOK, body: []byte("tile")}
+		})
+	}()
+	<-started
+
+	waiterDone := make(chan *tileRenderResult, 1)
+	go func() {
+		res, _ := group.do(context.Background(), "k", func(context.Context) *tileRenderResult {
+			t.Error("waiter must not run its own render")
+			return nil
+		})
+		waiterDone <- res
+	}()
+	waitForRenderRefs(t, &group, "k", 2)
+
+	// the initiator disconnects while the waiter is still live
+	cancelLeader()
+
+	// release the render; the live waiter must receive the complete tile
+	close(release)
+	select {
+	case res := <-waiterDone:
+		if res == nil || res.canceled || string(res.body) != "tile" {
+			t.Fatalf("waiter result = %+v, want complete tile", res)
+		}
+	case <-timeAfter(t):
+		t.Fatal("waiter never received the shared result")
+	}
+}
+
+// TestTileRenderGroupCancelsRenderWhenAllWaitersLeave verifies the flip side
+// of the P5-1 detached-render contract: once every request waiting on a shared
+// render has disconnected, the detached render is canceled instead of running
+// to completion for nobody.
+func TestTileRenderGroupCancelsRenderWhenAllWaitersLeave(t *testing.T) {
+	var group tileRenderGroup
+	started := make(chan struct{})
+	renderEnded := make(chan struct{})
+
+	fn := func(ctx context.Context) *tileRenderResult {
+		close(started)
+		<-ctx.Done() // the detached render only ends when it is canceled
+		close(renderEnded)
+		return &tileRenderResult{canceled: true}
+	}
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel1()
+	defer cancel2()
+	res1 := make(chan *tileRenderResult, 1)
+	res2 := make(chan *tileRenderResult, 1)
+	go func() {
+		res, _ := group.do(ctx1, "k", fn)
+		res1 <- res
+	}()
+	<-started
+	go func() {
+		res, _ := group.do(ctx2, "k", fn)
+		res2 <- res
+	}()
+	waitForRenderRefs(t, &group, "k", 2)
+
+	// every waiter disconnects
+	cancel1()
+	cancel2()
+
+	select {
+	case <-renderEnded:
+	case <-timeAfter(t):
+		t.Fatal("detached render was not canceled after all waiters left")
+	}
+	for _, ch := range []chan *tileRenderResult{res1, res2} {
+		select {
+		case res := <-ch:
+			if res == nil || !res.canceled {
+				t.Fatalf("disconnected request result = %+v, want canceled", res)
+			}
+		case <-timeAfter(t):
+			t.Fatal("disconnected request never unblocked")
+		}
+	}
+}
+
+// TestTileCacheAbandonedRenderYieldsErrorNotEmptyOK verifies that when the
+// bounded shared-render timeout abandons a render, the live request receives a
+// proper 5xx error and never an empty 200 (P5-1).
+func TestTileCacheAbandonedRenderYieldsErrorNotEmptyOK(t *testing.T) {
+	prevTimeout := tileRenderTimeout
+	tileRenderTimeout = 50 * time.Millisecond
+	defer func() { tileRenderTimeout = prevTimeout }()
+
+	prevPrefix := URIPrefix
+	URIPrefix = "/"
+	defer func() { URIPrefix = prevPrefix }()
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// a render that never finishes on its own; only the bounded render
+		// timeout can end it
+		<-r.Context().Done()
+	})
+
+	cacher := newFakeTileCache()
+	a := &atlas.Atlas{}
+	a.SetCache(cacher)
+	handler := TileCacheHandler(a, next)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/maps/m/l/1/0/0", nil))
+
+	// the render was abandoned; a live request must get a proper error
+	if rec.Code == http.StatusOK {
+		t.Fatalf("abandoned render served with 200 and %d bytes; want 5xx error", rec.Body.Len())
+	}
+	if rec.Code < 500 {
+		t.Fatalf("abandoned render status = %d, want 5xx", rec.Code)
 	}
 }

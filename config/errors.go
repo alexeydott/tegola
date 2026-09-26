@@ -120,6 +120,26 @@ func (e ErrOverlappingLayerZooms) Error() string {
 	return fmt.Sprintf("config: overlapping zooms for layer (%s) and layer (%s)", e.ProviderLayer1, e.ProviderLayer2)
 }
 
+type ErrMapNameDuplicate struct {
+	MapName string
+}
+
+func (e ErrMapNameDuplicate) Error() string {
+	return fmt.Sprintf("config: map name (%s) is defined more than once. map names must be unique", e.MapName)
+}
+
+type ErrInvalidLayerZoomRange struct {
+	MapName       string
+	ProviderLayer string
+	MinZoom       uint
+	MaxZoom       uint
+}
+
+func (e ErrInvalidLayerZoomRange) Error() string {
+	return fmt.Sprintf("config: for map (%s) provider layer (%s) min_zoom (%d) is greater than max_zoom (%d)",
+		e.MapName, e.ProviderLayer, e.MinZoom, e.MaxZoom)
+}
+
 type ErrInvalidLayerZoom struct {
 	ProviderLayer string
 	MinZoom       bool

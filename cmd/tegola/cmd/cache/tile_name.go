@@ -70,7 +70,7 @@ func tileNameCommand(cmd *cobra.Command, args []string) (err error) {
 		}
 	}()
 
-	log.Info("zoom list: ", zooms)
+	log.Infof("zoom list: %v", zooms)
 	tilechannel := generateTilesForTileName(ctx, tileNameTile, explicit, zooms)
 
 	// start up workers

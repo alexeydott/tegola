@@ -167,6 +167,8 @@ func (co *cache) Purge(ctx context.Context, key *tegolaCache.Key) error {
 	co.durationSeconds.With(lbs).Observe(time.Since(now).Seconds())
 	if err != nil {
 		co.errors.With(lbs).Add(1)
+		co.inFlightGauge.Dec()
+		return err
 	}
 	co.inFlightGauge.Dec()
 	return nil

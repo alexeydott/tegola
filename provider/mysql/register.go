@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysqlDriver "github.com/go-sql-driver/mysql"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
@@ -22,6 +24,58 @@ import (
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/mapplgis"
 )
+
+// buildDSN formats the MySQL connection DSN with the vendored
+// go-sql-driver/mysql Config so credential and database values containing
+// special characters are escaped correctly (audit P6-4). multiStatements is
+// deliberately not enabled: layer SQL is always executed as a single
+// statement.
+func buildDSN(user, password, host string, port int, database, tlsConfig string, timeout time.Duration) string {
+	cfg := mysqlDriver.Config{
+		User:      user,
+		Passwd:    password,
+		Net:       "tcp",
+		Addr:      net.JoinHostPort(host, strconv.Itoa(port)),
+		DBName:    database,
+		ParseTime: true,
+		TLSConfig: tlsConfig,
+		Timeout:   timeout,
+	}
+	return cfg.FormatDSN()
+}
+
+// dsnOptions reads the optional connection settings tls and timeout
+// (audit P6-4). tls maps to the go-sql-driver TLSConfig name ("true",
+// "false", "preferred", "skip-verify" or a registered tls.Config name).
+// timeout is a Go duration string ("500ms", "10s"); a bare integer is
+// accepted as seconds. The zero values mean "driver default".
+func dsnOptions(config dict.Dicter) (tlsConfig string, timeout time.Duration, err error) {
+	tlsDefault := ""
+	if tlsConfig, err = config.String(ConfigKeyTLS, &tlsDefault); err != nil {
+		return "", 0, fmt.Errorf("mysql provider invalid %v: %w", ConfigKeyTLS, err)
+	}
+
+	timeoutStr := ""
+	if timeoutStr, err = config.String(ConfigKeyTimeout, &timeoutStr); err != nil {
+		// a bare integer is accepted as seconds
+		if n, ierr := config.Int(ConfigKeyTimeout, nil); ierr == nil {
+			if n < 0 {
+				return "", 0, fmt.Errorf("mysql provider invalid %v: negative duration", ConfigKeyTimeout)
+			}
+			return tlsConfig, time.Duration(n) * time.Second, nil
+		}
+		return "", 0, fmt.Errorf("mysql provider invalid %v: %w", ConfigKeyTimeout, err)
+	}
+	if timeoutStr != "" {
+		if timeout, err = time.ParseDuration(timeoutStr); err != nil {
+			return "", 0, fmt.Errorf("mysql provider invalid %v: %w", ConfigKeyTimeout, err)
+		}
+		if timeout < 0 {
+			return "", 0, fmt.Errorf("mysql provider invalid %v: negative duration", ConfigKeyTimeout)
+		}
+	}
+	return tlsConfig, timeout, nil
+}
 
 // ErrMissingLayerName is returned when a layer config is missing the 'name' key
 var ErrMissingLayerName = errors.New("mysql: layer is missing 'name'")
@@ -46,8 +100,11 @@ func serverFlavorFromVersion(v string) string {
 
 // detectServerFlavor queries the server version and maps it to a flavor.
 func detectServerFlavor(db *sql.DB) (string, error) {
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
 	var version string
-	if err := db.QueryRow("SELECT VERSION()").Scan(&version); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
 		return "", fmt.Errorf("error querying server version: %v", err)
 	}
 	return serverFlavorFromVersion(version), nil
@@ -107,7 +164,10 @@ func sampleGeometryQuery(qtext string) string {
 // sql.ErrNoRows when the query yields no rows at all, and the decode error
 // only when every sampled row failed to decode.
 func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosCfg codec.MOSConfig) (geo geom.Geometry, headerSRID uint64, err error) {
-	rows, err := db.Query(sampleGeometryQuery(qtext))
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, sampleGeometryQuery(qtext))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -183,7 +243,10 @@ func shouldProbeTableSRIDs(geometryFormat string, headerSRID uint64) bool {
 // controlled error advising an explicit srid/crs_defn, mirroring the PostGIS
 // Find_SRID mixed-SRID failure documented in docs/crs.md.
 func checkTableSRIDs(db *sql.DB, tablename, geomFieldname, layerName string) error {
-	rows, err := db.Query(sridConsistencySQL(tablename, geomFieldname))
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, sridConsistencySQL(tablename, geomFieldname))
 	if err != nil {
 		return fmt.Errorf("layer '%v' (table %v): cannot determine the geometry column SRIDs: %w", layerName, tablename, err)
 	}
@@ -286,8 +349,14 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	// per provider/layer via crs_defn, matching the other standard providers.
 	basic.RegisterBuiltinProj4SRIDs()
 
-	dsn := fmt.Sprintf("%v:%v@tcp(%v:%v)/%v?parseTime=true&multiStatements=true",
-		user, password, host, port, database)
+	// optional TLS config name and dial timeout, forwarded to the driver
+	// via the formatted DSN below (audit P6-4).
+	tlsConfig, connTimeout, err := dsnOptions(config)
+	if err != nil {
+		return nil, err
+	}
+
+	dsn := buildDSN(user, password, host, port, database, tlsConfig, connTimeout)
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -414,6 +483,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			geomFieldname:  geomFieldname,
 			srid:           uint64(lcrs.SRID),
 			geometryFormat: geometryFormat,
+			serverFlavor:   serverFlavor,
 			crsExplicit:    sridExplicit || lcrs.Explicit,
 			mosConfig:      mosCfg,
 		}
@@ -748,6 +818,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		p.layers[layer.name] = layer
 	}
 
+	// audit P6-19: raw geometry formats without a bounds-backed filter are
+	// fully scanned on every tile request; warn once per affected layer.
+	for _, msg := range rawGeometryBoundsWarnings(p.layers) {
+		log.Warn(msg)
+	}
+
 	// track the provider so we can clean it up later
 	providersMu.Lock()
 	providers = append(providers, p)
@@ -765,7 +841,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 // sample column names for diagnostics. SystemInfo rows are skipped, never
 // applied: SQL-sample detection carries no projection contract.
 func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string, geometryFormat string, serverFlavor string) ([]string, codec.SQLGeometryContract, error) {
-	rows, err := db.Query(probeSQL)
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, probeSQL)
 	if err != nil {
 		return nil, codec.SQLGeometryContract{}, err
 	}
@@ -824,9 +903,9 @@ func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string, geomet
 
 // showIndexRow is one parsed row of SHOW INDEX output.
 type showIndexRow struct {
-	keyName     string
-	seqInIndex  int
-	columnName  string
+	keyName    string
+	seqInIndex int
+	columnName string
 }
 
 // parseShowIndexRows scans arbitrary SHOW INDEX result rows (the column set
@@ -894,8 +973,11 @@ func parseShowIndexRows(rows *sql.Rows) ([]showIndexRow, error) {
 // It runs exactly once per tablename layer at provider registration; tile
 // requests never repeat this discovery.
 func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
 	// DDL columns.
-	colRows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %v", quoteIdentifier(tablename)))
+	colRows, err := db.QueryContext(ctx, fmt.Sprintf("SHOW COLUMNS FROM %v", quoteIdentifier(tablename)))
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list columns of table %v: %v", tablename, err)
 	}
@@ -915,7 +997,7 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 		return mapplgis.Info{}, fmt.Errorf("error iterating columns of table %v: %v", tablename, err)
 	}
 
-	idxRows, err := db.Query(fmt.Sprintf("SHOW INDEX FROM %v", quoteIdentifier(tablename)))
+	idxRows, err := db.QueryContext(ctx, fmt.Sprintf("SHOW INDEX FROM %v", quoteIdentifier(tablename)))
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list indexes of table %v: %v", tablename, err)
 	}
@@ -958,7 +1040,7 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 	// literal of the MapplGIS contract; OKEY the required primary key.
 	fetch := func() (*mos.SystemInfo, error) {
 		var blob []byte
-		err := db.QueryRow(fmt.Sprintf(
+		err := db.QueryRowContext(ctx, fmt.Sprintf(
 			"SELECT %v FROM %v WHERE OKEY = 1 AND %v IS NOT NULL LIMIT 1",
 			quoteIdentifier(mapplgis.GeometryField), quoteIdentifier(tablename), quoteIdentifier(mapplgis.GeometryField),
 		)).Scan(&blob)

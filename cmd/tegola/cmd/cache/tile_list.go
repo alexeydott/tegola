@@ -88,7 +88,7 @@ func tileListCommand(cmd *cobra.Command, args []string) (err error) {
 		defer func() { _ = tileListFile.Close() }()
 	}
 
-	log.Info("zoom list: ", zooms)
+	log.Infof("zoom list: %v", zooms)
 
 	tilechannel := generateTilesForTileList(ctx, in, explicit, zooms, format)
 

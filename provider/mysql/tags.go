@@ -3,6 +3,7 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -82,7 +83,19 @@ func convertTagValue(v interface{}, cat mysqlTypeCategory) (interface{}, error) 
 		}
 		return nil, fmt.Errorf("cannot parse %q as int", s)
 	case typeCategoryFloat:
-		return strconv.ParseFloat(s, 64)
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse %q as float", s)
+		}
+		// Audit P6-12: DECIMAL columns can carry more precision than float64's
+		// 53-bit mantissa (e.g. 20-digit numerics), and ParseFloat silently
+		// rounds those. Keep the numeric tag only when the decimal value
+		// survives the float64 round trip unchanged; otherwise keep the exact
+		// decimal text as a string tag instead of losing digits.
+		if !decimalRoundTripsFloat64(s, f) {
+			return s, nil
+		}
+		return f, nil
 	case typeCategoryTime:
 		// Normalize common textual date/time values to the same RFC3339 form
 		// used by the typed time.Time path. Keep unknown representations as
@@ -107,4 +120,20 @@ func convertTagValue(v interface{}, cat mysqlTypeCategory) (interface{}, error) 
 // value using the column's declared type.
 func tagValueFromColumn(ct *sql.ColumnType, v interface{}) (interface{}, error) {
 	return convertTagValue(v, categoryFromDatabaseTypeName(ct.DatabaseTypeName()))
+}
+
+// decimalRoundTripsFloat64 reports whether parsing s as float64 and formatting
+// the result back yields the same decimal value as s. Presentation differences
+// that do not change the value (trailing zeros, exponent notation, sign of
+// zero) are ignored; digit loss from the binary rounding is not.
+func decimalRoundTripsFloat64(s string, f float64) bool {
+	repr := strconv.FormatFloat(f, 'f', -1, 64)
+	if r1, ok := new(big.Rat).SetString(s); ok {
+		if r2, ok := new(big.Rat).SetString(repr); ok {
+			return r1.Cmp(r2) == 0
+		}
+	}
+	// forms big.Rat cannot parse (hex floats, Inf, NaN): fall back to a plain
+	// textual comparison of input and shortest round-trip representation
+	return s == repr
 }

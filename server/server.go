@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/dimfeld/httptreemux"
 
@@ -186,8 +187,11 @@ func scheme(r *http.Request) string {
 		return ProxyProtocol
 	}
 
-	if r.Header.Get(HeaderXForwardedProto) != "" {
-		return r.Header.Get(HeaderXForwardedProto)
+	// trust the forwarded proto header only when it names a real scheme;
+	// anything else (javascript:, //evil, ...) falls through to the request's
+	// own scheme so it cannot inject URLs into the tile URL templates (P6-34)
+	if fwdProto := strings.ToLower(r.Header.Get(HeaderXForwardedProto)); fwdProto == "http" || fwdProto == "https" {
+		return fwdProto
 	}
 
 	if r.TLS != nil {

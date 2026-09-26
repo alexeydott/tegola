@@ -6,17 +6,13 @@ import (
 	"log"
 )
 
+// PLonToX projects a WGS84 longitude to a Web Mercator x coordinate.
+//
+// NaN input propagates to NaN output (audit P5-14): an invalid longitude
+// yields an invalid x and must never be silently replaced with a finite
+// value such as x = 0.
 func PLonToX(lon float64) float64 {
-	rad := DegToRad(lon)
-	val := rad * EarthRadius
-	if math.IsNaN(val) {
-		log.Println("We have an issue with lon", lon,
-			"rad", rad,
-			"val = EarthRadius * rad", val,
-		)
-		return 0
-	}
-	return val
+	return DegToRad(lon) * EarthRadius
 }
 
 // MaxLatitude is the largest absolute latitude Web Mercator can represent; the
@@ -89,12 +85,23 @@ func PToLonLat(c ...float64) ([]float64, error) {
 }
 
 // PToXY given a set of coordinates (lon,lat) it will convert them to X,Y coordinates. If more then lon/lat is given (i.e. z, and m) they will be returned untransformed.
+//
+// NaN contract (audit P5-14): if either the longitude or the latitude is NaN,
+// the whole point is invalid and BOTH x and y are returned as NaN. Invalid
+// input yields invalid output; it is never silently clamped to a valid
+// location such as the equator.
 func PToXY(c ...float64) ([]float64, error) {
 	if len(c) < 2 {
 		return c, ErrCoordsRequire2Values
 	}
 	// log.Println("Lon/Lat", c)
 	//x, y := PLonToX(c[0]), PLatToY(c[1])
+
+	if math.IsNaN(c[0]) || math.IsNaN(c[1]) {
+		crds := []float64{math.NaN(), math.NaN()}
+		crds = append(crds, c[2:]...)
+		return crds, nil
+	}
 
 	crds := []float64{PLonToX(c[0]), PLatToY(c[1])}
 	crds = append(crds, c[2:]...)
