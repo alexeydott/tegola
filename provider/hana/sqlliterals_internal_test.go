@@ -91,6 +91,25 @@ func TestGenMVTSQLStringLiteralEscaping(t *testing.T) {
 	}
 }
 
+// TestSQLStringLiteral pins the audit P5-8 helper contract: values are
+// wrapped as single-quoted literals with inner single quotes doubled.
+func TestSQLStringLiteral(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"plain", "'plain'"},
+		{"we'ird", "'we''ird'"},
+		{"'", "''''"},
+		{"", "''"},
+	}
+	for _, tc := range tests {
+		if got := sqlStringLiteral(tc.in); got != tc.want {
+			t.Fatalf("sqlStringLiteral(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestQuoteTokenIdentifier(t *testing.T) {
 	tests := []struct {
 		name string

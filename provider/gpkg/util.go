@@ -26,6 +26,19 @@ func sqliteReadOnlyDSN(path string) string {
 	return "file:" + path + "?mode=ro&_busy_timeout=5000"
 }
 
+// escapeSQLStringLiteral escapes a value for interpolation inside a
+// single-quoted SQL string literal (audit P5-8): single quotes are
+// doubled so they cannot terminate the literal early.
+func escapeSQLStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlStringLiteral wraps s as a complete single-quoted SQL string
+// literal with escaping applied (audit P5-8 helper contract).
+func sqlStringLiteral(s string) string {
+	return "'" + escapeSQLStringLiteral(s) + "'"
+}
+
 // isQuotedIdentifierValue reports whether v is one complete quoted
 // identifier spanning the whole value (audit P5-10 pass-through rule):
 // first and last byte are the same identifier-quote character and the

@@ -991,7 +991,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, terr)
 				}
 				if !exists {
-					return nil, fmt.Errorf("for layer (%v) %v: table %q has no RTree spatial index %q; native GeoPackage layers require the spatial index for tile queries - create it with SELECT CreateRTreeIndex('%v','%v') (or export the data with the rtree extension enabled)", i, layerName, tablename, rtreeName, tablename, layer.geomFieldname)
+					return nil, fmt.Errorf("for layer (%v) %v: table %q has no RTree spatial index %q; native GeoPackage layers require the spatial index for tile queries - create it with SELECT CreateRTreeIndex(%v,%v) (or export the data with the rtree extension enabled)", i, layerName, tablename, rtreeName, sqlStringLiteral(tablename), sqlStringLiteral(layer.geomFieldname))
 				}
 
 				// audit P5-5: the RTree join keys on the table rowid. The

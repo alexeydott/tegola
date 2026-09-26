@@ -90,6 +90,12 @@ func escapeSQLStringLiteral(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
 
+// sqlStringLiteral wraps s as a complete single-quoted SQL string
+// literal with escaping applied (audit P5-8 helper contract).
+func sqlStringLiteral(s string) string {
+	return "'" + escapeSQLStringLiteral(s) + "'"
+}
+
 // isQuotedIdentifierValue reports whether name is already wrapped in one
 // complete identifier quote pair (double quote or backtick, with doubled
 // quote escapes) spanning the whole value (audit P5-10 contract). A
@@ -501,12 +507,12 @@ func genMVTSQL(l *Layer, fields []string, buffer uint, clipGeometry bool) (sql s
 	}
 
 	if len(flds) == 0 {
-		sql = fmt.Sprintf(`SELECT ST_AsMVT(%v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v') FROM (%v)`, geomFieldName, buffer, clip, geomFieldName, escapeSQLStringLiteral(l.Name()), escapeSQLStringLiteral(l.GeomFieldName()), l.sql)
+		sql = fmt.Sprintf(`SELECT ST_AsMVT(%v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => %v, geom_name => %v) FROM (%v)`, geomFieldName, buffer, clip, geomFieldName, sqlStringLiteral(l.Name()), sqlStringLiteral(l.GeomFieldName()), l.sql)
 	} else {
 		if l.IDFieldName() != "" {
-			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v', feature_id_name => '%v') FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, escapeSQLStringLiteral(l.Name()), escapeSQLStringLiteral(l.GeomFieldName()), escapeSQLStringLiteral(l.IDFieldName()), l.sql)
+			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => %v, geom_name => %v, feature_id_name => %v) FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, sqlStringLiteral(l.Name()), sqlStringLiteral(l.GeomFieldName()), sqlStringLiteral(l.IDFieldName()), l.sql)
 		} else {
-			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v') FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, escapeSQLStringLiteral(l.Name()), escapeSQLStringLiteral(l.GeomFieldName()), l.sql)
+			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => %v, geom_name => %v) FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, sqlStringLiteral(l.Name()), sqlStringLiteral(l.GeomFieldName()), l.sql)
 		}
 	}
 	return sql, nil

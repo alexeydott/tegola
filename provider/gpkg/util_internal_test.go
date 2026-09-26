@@ -17,6 +17,26 @@ import (
 // out of the quoted identifier. The matrix
 // goes through replaceTokens so it fails against the pre-fix raw
 // substitution.
+// TestSQLStringLiteral pins the audit P5-8 helper contract: values are
+// wrapped as single-quoted literals with inner single quotes doubled,
+// e.g. for the CreateRTreeIndex hint arguments in registration errors.
+func TestSQLStringLiteral(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"gpkgTestPoints", "'gpkgTestPoints'"},
+		{"we'ird", "'we''ird'"},
+		{"'", "''''"},
+		{"", "''"},
+	}
+	for _, tc := range tests {
+		if got := sqlStringLiteral(tc.in); got != tc.want {
+			t.Fatalf("sqlStringLiteral(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestIdentTokenQuoting(t *testing.T) {
 	type tcase struct {
 		value    string
