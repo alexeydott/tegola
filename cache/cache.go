@@ -66,6 +66,24 @@ func ParseKey(str string) (*Key, error) {
 		zxy = keyParts
 	}
 
+	// map/layer names parsed from key strings are a trust boundary (P5-17):
+	// empty, "." and ".." components would escape the cache root or silently
+	// collapse when Key.String joins the key into a cache path. Programmatic
+	// keys keep Key.String's synthetic empty-name behavior (load-bearing for
+	// tests and multilevel cache); only names actually parsed here are checked.
+	switch len(keyParts) {
+	case 5:
+		if err = validateKeyName(str, "map", key.MapName); err == nil {
+			err = validateKeyName(str, "layer", key.LayerName)
+		}
+	case 4:
+		err = validateKeyName(str, "map", key.MapName)
+	}
+	if err != nil {
+		log.Printf("cache: invalid file key: %s", err.Error())
+		return nil, err
+	}
+
 	// parse our URL vals into integers
 	var placeholder uint64
 	placeholder, err = strconv.ParseUint(zxy[0], 10, 32)
@@ -113,6 +131,16 @@ func ParseKey(str string) (*Key, error) {
 	key.Y = uint(placeholder)
 
 	return &key, nil
+}
+
+// validateKeyName rejects map/layer name components that are empty or path
+// elements ("." / ".."): joining such a name into a cache path would escape
+// the cache root or silently collapse (P5-17).
+func validateKeyName(path, kind, val string) error {
+	if val == "" || val == "." || val == ".." {
+		return ErrInvalidKeyName{path: path, key: kind, val: val}
+	}
+	return nil
 }
 
 type Key struct {
