@@ -408,6 +408,26 @@ func (sys *System) readUnits(vertical bool) (float64, float64, error) {
 	return to, from, nil
 }
 
+// getFloatParam returns the numeric value of a PROJ.4 parameter. present is
+// false when the parameter is absent; a hard error is returned when the key is
+// present but its value does not parse as a finite float (P6-8). The previous
+// GetAsFloat calls ignored parse errors and silently left the field at zero,
+// building a geometrically wrong system that still looked valid.
+func (sys *System) getFloatParam(key string) (value float64, present bool, err error) {
+	if !sys.ProjString.ContainsKey(key) {
+		return 0.0, false, nil
+	}
+	s, ok := sys.ProjString.GetAsString(key)
+	if !ok {
+		return 0.0, true, merror.New(merror.InvalidProjectionSyntax, key)
+	}
+	f, perr := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if perr != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0.0, true, merror.New(merror.InvalidProjectionSyntax, s)
+	}
+	return f, true, nil
+}
+
 func (sys *System) processMisc() error {
 
 	/* Set PIN->geoc coordinate system */
@@ -422,7 +442,11 @@ func (sys *System) processMisc() error {
 	/* Longitude center for wrapping */
 	sys.IsLongWrapSet = sys.ProjString.ContainsKey("lon_wrap")
 	if sys.IsLongWrapSet {
-		sys.LongWrapCenter, _ = sys.ProjString.GetAsFloat("lon_wrap")
+		lonWrap, _, err := sys.getFloatParam("lon_wrap")
+		if err != nil {
+			return err
+		}
+		sys.LongWrapCenter = lonWrap
 		/* Don't accept excessive values otherwise we might perform badly */
 		/* when correcting longitudes around it */
 		/* The test is written this way to error on long_wrap_center "=" NaN */
@@ -437,33 +461,51 @@ func (sys *System) processMisc() error {
 	}
 
 	/* Central meridian */
-	f, ok := sys.ProjString.GetAsFloat("lon_0")
+	lam0, ok, err := sys.getFloatParam("lon_0")
+	if err != nil {
+		return err
+	}
 	if ok {
-		sys.Lam0 = f * support.DegToRad
+		sys.Lam0 = lam0 * support.DegToRad
 	}
 
 	/* Central latitude */
-	f, ok = sys.ProjString.GetAsFloat("lat_0")
+	phi0, ok, err := sys.getFloatParam("lat_0")
+	if err != nil {
+		return err
+	}
 	if ok {
-		sys.Phi0 = f * support.DegToRad
+		sys.Phi0 = phi0 * support.DegToRad
 	}
 
 	/* False easting and northing */
-	f, ok = sys.ProjString.GetAsFloat("x_0")
-	if ok {
-		sys.X0 = f
+	x0, ok, err := sys.getFloatParam("x_0")
+	if err != nil {
+		return err
 	}
-	f, ok = sys.ProjString.GetAsFloat("y_0")
 	if ok {
-		sys.Y0 = f
+		sys.X0 = x0
 	}
-	f, ok = sys.ProjString.GetAsFloat("z_0")
-	if ok {
-		sys.Z0 = f
+	y0, ok, err := sys.getFloatParam("y_0")
+	if err != nil {
+		return err
 	}
-	f, ok = sys.ProjString.GetAsFloat("t_0")
 	if ok {
-		sys.T0 = f
+		sys.Y0 = y0
+	}
+	z0, ok, err := sys.getFloatParam("z_0")
+	if err != nil {
+		return err
+	}
+	if ok {
+		sys.Z0 = z0
+	}
+	t0, ok, err := sys.getFloatParam("t_0")
+	if err != nil {
+		return err
+	}
+	if ok {
+		sys.T0 = t0
 	}
 
 	err = sys.processScaling()
@@ -482,10 +524,18 @@ func (sys *System) processMisc() error {
 func (sys *System) processScaling() error {
 
 	/* General scaling factor */
-	if sys.ProjString.ContainsKey("k_0") {
-		sys.K0, _ = sys.ProjString.GetAsFloat("k_0")
-	} else if sys.ProjString.ContainsKey("k") {
-		sys.K0, _ = sys.ProjString.GetAsFloat("k")
+	k0, ok, err := sys.getFloatParam("k_0")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		k0, ok, err = sys.getFloatParam("k")
+		if err != nil {
+			return err
+		}
+	}
+	if ok {
+		sys.K0 = k0
 	} else {
 		sys.K0 = 1.0
 	}
