@@ -788,7 +788,10 @@ func mosProbeSQL(l *Layer) string {
 func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	probeSQL := mosProbeSQL(l)
 
-	rows, err := p.pool.Query(context.Background(), probeSQL)
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, probeSQL)
 	if err != nil {
 		return err
 	}
@@ -1047,7 +1050,10 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 	// 7.2.3: the probe statement carries no query arguments; no args —
 	// never pass nil here: pgx variadic treats a lone nil as one query
 	// argument ("expected 0 arguments, got 1")
-	rows, err := p.pool.Query(context.Background(), probeSQL)
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, probeSQL)
 	if err != nil {
 		return nil, codec.SQLGeometryContract{}, err
 	}
@@ -1128,7 +1134,10 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 
 	probeSQL, args := geomTypeProbeSQL(l, extractQueryParamValues(pname, maps, l))
 
-	rows, err := p.pool.Query(context.Background(), probeSQL, args...)
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, probeSQL, args...)
 	if err != nil {
 		return err
 	}
@@ -1557,7 +1566,9 @@ func CreateProvider(
 			if serr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: invalid table name %q: %w", i, lName, tblName, serr)
 			}
-			detected, derr := inferTableSRID(context.Background(), p.pool, schema, table, geomfld)
+			dctx, dcancel := codec.NewInspectionContext()
+			detected, derr := inferTableSRID(dctx, p.pool, schema, table, geomfld)
+			dcancel()
 			if derr != nil {
 				return nil, fmt.Errorf(
 					"for layer (%v) %v: unable to auto-detect source SRID from PostGIS metadata; set srid or crs_defn explicitly: %w",
@@ -1585,7 +1596,9 @@ func CreateProvider(
 		// spatial table, so a layer pointing at one must be discovered here
 		// and served via the MOS path. Custom SQL is never auto-detected.
 		if tblSchema != "" {
-			isMappl, derr := detectMapplGIS(context.Background(), p.pool, &l, tblSchema, tblTable)
+			mctx, mcancel := codec.NewInspectionContext()
+			isMappl, derr := detectMapplGIS(mctx, p.pool, &l, tblSchema, tblTable)
+			mcancel()
 			if derr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %v", i, lName, derr)
 			}

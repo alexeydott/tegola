@@ -14,11 +14,13 @@ package geometrycodec
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
@@ -32,6 +34,19 @@ import (
 // is z=0/x=0/y=0, i.e. the full extent (same formula the runtime token
 // replacement uses at a tile, see e.g. provider/*/util.go replaceTokens).
 const probeWebMercatorMax = 20037508.342789244
+
+// InspectionQueryTimeout bounds registration-time probe and sample queries
+// (audit P5-16): a hung or pathological database must not stall provider
+// registration forever. It is the budget for one probe query, not for the
+// whole registration.
+const InspectionQueryTimeout = 30 * time.Second
+
+// NewInspectionContext returns a context carrying InspectionQueryTimeout for
+// one registration-time probe/sample query (audit P5-16). The caller must
+// call the returned cancel function.
+func NewInspectionContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), InspectionQueryTimeout)
+}
 
 // z0/0/0 Web Mercator reference values for the scale/pixel tokens. Computed
 // exactly like the runtime token replacement (pixel width over 256px tiles,

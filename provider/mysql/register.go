@@ -100,8 +100,11 @@ func serverFlavorFromVersion(v string) string {
 
 // detectServerFlavor queries the server version and maps it to a flavor.
 func detectServerFlavor(db *sql.DB) (string, error) {
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
 	var version string
-	if err := db.QueryRow("SELECT VERSION()").Scan(&version); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
 		return "", fmt.Errorf("error querying server version: %v", err)
 	}
 	return serverFlavorFromVersion(version), nil
@@ -161,7 +164,10 @@ func sampleGeometryQuery(qtext string) string {
 // sql.ErrNoRows when the query yields no rows at all, and the decode error
 // only when every sampled row failed to decode.
 func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosCfg codec.MOSConfig) (geo geom.Geometry, headerSRID uint64, err error) {
-	rows, err := db.Query(sampleGeometryQuery(qtext))
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, sampleGeometryQuery(qtext))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -237,7 +243,10 @@ func shouldProbeTableSRIDs(geometryFormat string, headerSRID uint64) bool {
 // controlled error advising an explicit srid/crs_defn, mirroring the PostGIS
 // Find_SRID mixed-SRID failure documented in docs/crs.md.
 func checkTableSRIDs(db *sql.DB, tablename, geomFieldname, layerName string) error {
-	rows, err := db.Query(sridConsistencySQL(tablename, geomFieldname))
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, sridConsistencySQL(tablename, geomFieldname))
 	if err != nil {
 		return fmt.Errorf("layer '%v' (table %v): cannot determine the geometry column SRIDs: %w", layerName, tablename, err)
 	}
@@ -832,7 +841,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 // sample column names for diagnostics. SystemInfo rows are skipped, never
 // applied: SQL-sample detection carries no projection contract.
 func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string, geometryFormat string, serverFlavor string) ([]string, codec.SQLGeometryContract, error) {
-	rows, err := db.Query(probeSQL)
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, probeSQL)
 	if err != nil {
 		return nil, codec.SQLGeometryContract{}, err
 	}
@@ -961,8 +973,11 @@ func parseShowIndexRows(rows *sql.Rows) ([]showIndexRow, error) {
 // It runs exactly once per tablename layer at provider registration; tile
 // requests never repeat this discovery.
 func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
 	// DDL columns.
-	colRows, err := db.Query(fmt.Sprintf("SHOW COLUMNS FROM %v", quoteIdentifier(tablename)))
+	colRows, err := db.QueryContext(ctx, fmt.Sprintf("SHOW COLUMNS FROM %v", quoteIdentifier(tablename)))
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list columns of table %v: %v", tablename, err)
 	}
@@ -982,7 +997,7 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 		return mapplgis.Info{}, fmt.Errorf("error iterating columns of table %v: %v", tablename, err)
 	}
 
-	idxRows, err := db.Query(fmt.Sprintf("SHOW INDEX FROM %v", quoteIdentifier(tablename)))
+	idxRows, err := db.QueryContext(ctx, fmt.Sprintf("SHOW INDEX FROM %v", quoteIdentifier(tablename)))
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list indexes of table %v: %v", tablename, err)
 	}
@@ -1025,7 +1040,7 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 	// literal of the MapplGIS contract; OKEY the required primary key.
 	fetch := func() (*mos.SystemInfo, error) {
 		var blob []byte
-		err := db.QueryRow(fmt.Sprintf(
+		err := db.QueryRowContext(ctx, fmt.Sprintf(
 			"SELECT %v FROM %v WHERE OKEY = 1 AND %v IS NOT NULL LIMIT 1",
 			quoteIdentifier(mapplgis.GeometryField), quoteIdentifier(tablename), quoteIdentifier(mapplgis.GeometryField),
 		)).Scan(&blob)

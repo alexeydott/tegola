@@ -68,7 +68,10 @@ func genSQL(
 			return "", err
 		}
 
-		rows, err := pool.Query(context.Background(), sql)
+		ictx, icancel := codec.NewInspectionContext()
+		defer icancel()
+
+		rows, err := pool.Query(ictx, sql)
 		if err != nil {
 			return "", err
 		}
