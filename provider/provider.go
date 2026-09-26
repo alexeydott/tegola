@@ -26,7 +26,7 @@ const (
 	TypeMvt
 
 	// TypeAll should be all the types
-	TypeAll = TypeStd & TypeMvt
+	TypeAll = TypeStd | TypeMvt
 )
 
 var webmercatorGrid = slippy.NewGrid(3857, 0)
