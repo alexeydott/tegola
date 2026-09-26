@@ -319,6 +319,12 @@ func ParseDict(v interface{}) (*Dict, error) {
 // values such as "cdn.example.com:443" must not fall through to net/url's
 // scheme:opaque parsing (which would leave Host empty and quietly drop the
 // setting).
+//
+// An empty value ("", "   ", or an env placeholder that expands to an empty
+// string) is not a configuration error: it matches upstream's behavior of an
+// empty URL, where the server derives the host from the incoming request
+// (see cmd/tegola/cmd/server.go, which only sets server.HostName when the
+// parsed URL has a host). ParseURL returns (nil, nil) for it.
 func ParseURL(v any) (*url.URL, error) {
 	if v == nil {
 		return nil, nil
@@ -332,6 +338,15 @@ func ParseURL(v any) (*url.URL, error) {
 	val, err := replaceEnvVar(val)
 	if err != nil {
 		return nil, err
+	}
+
+	// An empty hostname means "use the request host" (upstream behavior), not
+	// a fatal config error. This keeps templated configs such as
+	// `hostname = "${TEGOLA_HOSTNAME}"` working when the variable is set to an
+	// empty string (common in Docker/Helm templates). Unset variables still
+	// fail above with ErrEnvVar, matching upstream.
+	if strings.TrimSpace(val) == "" {
+		return nil, nil
 	}
 
 	return parseHostName(val)

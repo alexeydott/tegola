@@ -103,6 +103,16 @@ func TestParseURLHostName(t *testing.T) {
 			in:      "not a host",
 			wantErr: true,
 		},
+		// IPv6 literals must survive the synthetic "://" + s parse: net/url
+		// keeps the brackets in Host.
+		"ipv6 literal": {
+			in:       "[::1]",
+			expected: &url.URL{Host: "[::1]"},
+		},
+		"ipv6 literal with port": {
+			in:       "[::1]:8080",
+			expected: &url.URL{Host: "[::1]:8080"},
+		},
 	}
 
 	for name, tc := range tests {
@@ -119,6 +129,33 @@ func TestParseURLHostName(t *testing.T) {
 			}
 			if diff := deep.Equal(got, tc.expected); diff != nil {
 				t.Errorf("result mismatch for %q: %v", tc.in, diff)
+			}
+		})
+	}
+}
+
+// An empty webserver.hostname means "derive the host from the request" and
+// must parse to (nil, nil) without error - both for literal empty values and
+// for env placeholders that expand to an empty string. This matches upstream,
+// where an empty URL leaves server.HostName unset. Unset env variables remain
+// an error (ErrEnvVar) in both upstream and the fork.
+func TestParseURLHostNameEmpty(t *testing.T) {
+	t.Setenv("TEGOLA_TEST_EMPTY_HOSTNAME", "")
+
+	tests := map[string]any{
+		"empty string":       "",
+		"whitespace only":    "   ",
+		"empty env variable": "${TEGOLA_TEST_EMPTY_HOSTNAME}",
+	}
+
+	for name, in := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := env.ParseURL(in)
+			if err != nil {
+				t.Fatalf("expected nil error for %q, got %v", in, err)
+			}
+			if got != nil {
+				t.Fatalf("expected nil url for %q, got %q", in, got)
 			}
 		})
 	}

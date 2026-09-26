@@ -61,6 +61,16 @@ func TestURLUnmarshalTOML(t *testing.T) {
 			in:       nil,
 			expected: env.URL{},
 		},
+		// An empty hostname means "use the request host" (upstream behavior):
+		// it decodes to a zero URL without error instead of a fatal config error.
+		"empty hostname": {
+			in:       "",
+			expected: env.URL{},
+		},
+		"whitespace hostname": {
+			in:       "   ",
+			expected: env.URL{},
+		},
 	}
 
 	for name, tc := range tests {
