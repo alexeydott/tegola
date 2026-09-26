@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"context"
+	"errors"
 	"sort"
 	"testing"
 
@@ -122,6 +124,90 @@ func TestDriversFilterAllTypeCombos(t *testing.T) {
 				if got[i] != tc.Expected[i] {
 					t.Fatalf("Drivers(%v): expected %v, got %v", tc.Filters, tc.Expected, got)
 				}
+			}
+		})
+	}
+}
+
+// fakes for TestIsTileJSONV3Compatible asserting the LayerFielder contract.
+
+type fakeStdFielder struct{}
+
+func (fakeStdFielder) Layers() ([]LayerInfo, error) { return nil, nil }
+func (fakeStdFielder) TileFeatures(context.Context, string, Tile, Params, func(*Feature) error) error {
+	return nil
+}
+func (fakeStdFielder) LayerFields(context.Context, string) (map[string]any, error) { return nil, nil }
+
+type fakeStdPlain struct{}
+
+func (fakeStdPlain) Layers() ([]LayerInfo, error) { return nil, nil }
+func (fakeStdPlain) TileFeatures(context.Context, string, Tile, Params, func(*Feature) error) error {
+	return nil
+}
+
+type fakeMVTFielder struct{}
+
+func (fakeMVTFielder) Layers() ([]LayerInfo, error) { return nil, nil }
+func (fakeMVTFielder) MVTForLayers(context.Context, Tile, Params, []Layer) ([]byte, error) {
+	return nil, nil
+}
+func (fakeMVTFielder) LayerFields(context.Context, string) (map[string]any, error) { return nil, nil }
+
+type fakeMVTPlain struct{}
+
+func (fakeMVTPlain) Layers() ([]LayerInfo, error) { return nil, nil }
+func (fakeMVTPlain) MVTForLayers(context.Context, Tile, Params, []Layer) ([]byte, error) {
+	return nil, nil
+}
+
+// TestIsTileJSONV3Compatible (audit P6-5) guards the MVT branch of
+// TilerUnion.IsTileJSONV3Compatible: it asserted tu.Std.(LayerFielder) while
+// Std is nil for MVT providers, so every MVT provider was rejected
+// regardless of whether it implemented LayerFielder.
+func TestIsTileJSONV3Compatible(t *testing.T) {
+	tests := map[string]struct {
+		TU      TilerUnion
+		WantOK  bool
+		WantErr error
+	}{
+		"mvt with LayerFielder": {
+			TU:     TilerUnion{Mvt: fakeMVTFielder{}},
+			WantOK: true,
+		},
+		"mvt without LayerFielder": {
+			TU:      TilerUnion{Mvt: fakeMVTPlain{}},
+			WantOK:  false,
+			WantErr: ErrNotTileJSONV3Compatible,
+		},
+		"std with LayerFielder": {
+			TU:     TilerUnion{Std: fakeStdFielder{}},
+			WantOK: true,
+		},
+		"std without LayerFielder": {
+			TU:      TilerUnion{Std: fakeStdPlain{}},
+			WantOK:  false,
+			WantErr: ErrNotTileJSONV3Compatible,
+		},
+		"no provider": {
+			TU:      TilerUnion{},
+			WantOK:  false,
+			WantErr: ErrNoProvider,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := tc.TU.IsTileJSONV3Compatible()
+			if tc.WantErr != nil {
+				if !errors.Is(err, tc.WantErr) {
+					t.Fatalf("expected error %v, got %v", tc.WantErr, err)
+				}
+			} else if err != nil {
+				t.Fatalf("expected nil error, got %v", err)
+			}
+			if got != tc.WantOK {
+				t.Fatalf("expected compatible=%v, got %v", tc.WantOK, got)
 			}
 		})
 	}

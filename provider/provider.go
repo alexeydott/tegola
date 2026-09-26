@@ -163,7 +163,7 @@ func (tu TilerUnion) IsTileJSONV3Compatible() (bool, error) {
 		return true, nil
 	}
 	if tu.Mvt != nil {
-		if _, ok := tu.Std.(LayerFielder); !ok {
+		if _, ok := tu.Mvt.(LayerFielder); !ok {
 			return false, ErrNotTileJSONV3Compatible
 		}
 		return true, nil
