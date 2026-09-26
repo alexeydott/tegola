@@ -662,41 +662,50 @@ func detectMapplGIS(ctx context.Context, pool *connectionPoolCollector, l *Layer
 	return true, nil
 }
 
-// inspectMOSLayerGeomType samples the first rows of the layer's SQL and
-// derives the geometry type from the first decodable MOS geometry. The
-// MapplGIS LayerInfo blob is metadata: rows carrying it are skipped without
-// applying anything (audit A-01 — custom SQL never auto-applies system
-// info; detection belongs to the registration-time table contract).
-func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
-	// neutralize tokens that could filter out all rows during inspection
-	allZoomsSQL := "ANY('{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24}')"
-	sql := strings.Replace(l.sql, "!ZOOM!", allZoomsSQL, 1)
-	sql = strings.ReplaceAll(sql, conf.BboxToken, "TRUE")
-
-	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
-	sql, err := replaceTokens(sql, l, tile, true)
-	if err != nil {
-		return err
+// mosProbeSQL builds the shared bounds-contract probe query for a MOS
+// layer's custom SQL (audit R1). The SQL is prepared with the documented
+// codec.PrepareProbeSQL token order — !BBOX!/!BOX! neutralize to "1=1"
+// (never "TRUE", so tokens inside SQL function arguments stay syntactically
+// valid) and zoom/position placeholders expand permissively — then wrapped
+// in the shared InspectionSampleLimit sample window
+// (docs/provider-contract.md). Custom parameter tokens are stripped for
+// inspection; if the query cannot run without them the user must set
+// geometry_type in the config.
+func mosProbeSQL(l *Layer) string {
+	probeGeomType := ""
+	if l.geomType != nil {
+		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
-
-	args := make([]any, 0)
+	sql := codec.PrepareProbeSQL(l.sql, l.geomField, l.idField, probeGeomType)
 	sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
+	return codec.WrapProbeSQL(sql)
+}
 
-	// Cap the inspection at the shared sample window (docs/provider-contract.md)
-	sql = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sql), ";"))
-	sql = fmt.Sprintf("SELECT * FROM (%v) AS mos_inspection LIMIT %v", sql, codec.InspectionSampleLimit)
+// inspectMOSLayerGeomType samples the first rows of the layer's SQL and
+// derives the geometry type from the first decodable MOS geometry.
+func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
+	probeSQL := mosProbeSQL(l)
 
-	rows, err := p.pool.Query(context.Background(), sql, args...)
+	rows, err := p.pool.Query(context.Background(), probeSQL)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
+	return inspectMOSGeomTypeRows(l, probeSQL, rows)
+}
+
+// inspectMOSGeomTypeRows derives the layer geometry type from sampled probe
+// rows. The MapplGIS LayerInfo blob is metadata: rows carrying it are
+// skipped without applying anything (audit A-01 — custom SQL never
+// auto-applies system info; detection belongs to the registration-time
+// table contract).
+func inspectMOSGeomTypeRows(l *Layer, probeSQL string, rows pgx.Rows) error {
 	fdescs := rows.FieldDescriptions()
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
-			return fmt.Errorf("error running SQL: %v ; %w", sql, err)
+			return fmt.Errorf("error running SQL: %v ; %w", probeSQL, err)
 		}
 
 		for i := range vals {
@@ -1009,8 +1018,6 @@ func probeSQLContractRows(l *Layer, rows pgx.Rows) ([]string, codec.SQLGeometryC
 // inspectLayerGeomType sets the geomType field on the layer by running the SQL
 // and reading the geom type in the result set
 func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.Map) error {
-	var err error
-
 	// Raw geometry formats (wkb/wkt/mos) carry non-PostGIS values in the
 	// geometry column, so ST_GeometryType-based inspection cannot work.
 	// For MOS the type is derived after decoding the first real geometry.
@@ -1031,6 +1038,27 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 	//
 	// case insensitive search
 
+	probeSQL, args := geomTypeProbeSQL(l, extractQueryParamValues(pname, maps, l))
+
+	rows, err := p.pool.Query(context.Background(), probeSQL, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	return inspectGeomTypeRows(l, probeSQL, rows)
+}
+
+// geomTypeProbeSQL builds the shared bounds-contract probe query for native
+// geometry-type inspection (audit R1). The ST_AsBinary → ST_GeometryType
+// rewrite keeps the historical sniffing strategy (go-spatial/tegola#180);
+// token neutralization then follows the documented codec.PrepareProbeSQL
+// order — !BBOX!/!BOX! become "1=1" (never "TRUE", all occurrences) and
+// zoom/position placeholders expand permissively (all occurrences, not just
+// the first) — before custom parameters are substituted with live $N
+// arguments. The query is wrapped in the shared InspectionSampleLimit
+// sample window (docs/provider-contract.md).
+func geomTypeProbeSQL(l *Layer, params provider.Params) (string, []any) {
 	re := regexp.MustCompile(`(?i)ST_AsBinary`)
 	sql := re.ReplaceAllString(l.sql, "ST_GeometryType")
 
@@ -1039,30 +1067,14 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 		sql = fmt.Sprintf("SELECT ST_GeometryType(%v) FROM (%v) as q", l.geomField, sql)
 	}
 
-	// we only need a single result set to sniff out the geometry type
-	sql = fmt.Sprintf("%v LIMIT 1", sql)
-
-	// if a !ZOOM! token exists, all features could be filtered out so we don't have a geometry to inspect it's type.
-	// address this by replacing the !ZOOM! token with an ANY statement which includes all zooms
-	sql = strings.Replace(
-		sql,
-		"!ZOOM!",
-		"ANY('{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24}')",
-		1,
-	)
-
-	// we need a tile to run our sql through the replacer
-	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
-
-	// normal replacer
-	sql, err = replaceTokens(sql, l, tile, true)
-	if err != nil {
-		return err
+	probeGeomType := ""
+	if l.geomType != nil {
+		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
+	sql = codec.PrepareProbeSQL(sql, l.geomField, l.idField, probeGeomType)
 
-	// substitute default values to parameter
-	params := extractQueryParamValues(pname, maps, l)
-
+	// substitute default values for custom parameters; the generated $N
+	// placeholders are passed to the probe query as live arguments
 	args := make([]any, 0)
 	sql = params.ReplaceParams(sql, &args)
 
@@ -1073,18 +1085,19 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 		sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
 	}
 
-	rows, err := p.pool.Query(context.Background(), sql, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
+	return codec.WrapProbeSQL(sql), args
+}
 
+// inspectGeomTypeRows sniffs the geometry type from sampled probe rows,
+// matching either the geometry column (ST_GeometryType-rewritten values) or
+// the st_geometrytype result column produced by the AsMVTGeom wrap.
+func inspectGeomTypeRows(l *Layer, probeSQL string, rows pgx.Rows) error {
 	// fetch rows FieldDescriptions. this gives us the OID for the data types returned to aid in decoding
 	fdescs := rows.FieldDescriptions()
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
-			return fmt.Errorf("error running SQL: %v ; %w", sql, err)
+			return fmt.Errorf("error running SQL: %v ; %w", probeSQL, err)
 		}
 
 		// iterate the values returned from our row, sniffing for the geomField or st_geometrytype field name

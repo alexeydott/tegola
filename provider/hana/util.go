@@ -335,8 +335,10 @@ func getBBoxFilter(dbVersion uint, geomField string, srid uint64) string {
 }
 
 func getGeometryColumnSRID(pool *connectionPoolCollector, dbVersion uint, sql string, geomFieldName string) (srid int, err error) {
-	sqlQuery := sanitizeSQL(sql)
-	sqlQuery = strings.Replace(sqlQuery, bboxToken, "1=1", -1)
+	// Shared bounds-contract probe preparation (audit R1): neutralizes
+	// !BBOX!/!BOX! to "1=1" and expands zoom/position placeholders
+	// permissively so the sample cannot be filtered out by tile tokens.
+	sqlQuery := codec.PrepareProbeSQL(sql, geomFieldName, "", "")
 
 	sqlQuery = fmt.Sprintf("SELECT %[1]v.ST_SRID() FROM %[2]v WHERE %[1]v IS NOT NULL LIMIT 1", quoteIdentifier(geomFieldName), sqlQuery)
 	err = pool.QueryRow(sqlQuery).Scan(&srid)
