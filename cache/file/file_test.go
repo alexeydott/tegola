@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -461,5 +462,103 @@ func TestExpirationPurgeErrorIsReturned(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expired file still exists after cleanup, stat error = %v", err)
+	}
+}
+
+// TestSetConcurrentSameKeyUsesUniqueTempFiles guards against concurrent Set
+// calls for the same key corrupting each other through a shared temp file.
+func TestSetConcurrentSameKeyUsesUniqueTempFiles(t *testing.T) {
+	basepath := t.TempDir()
+	fc, err := file.New(dict.Dict{
+		file.ConfigKeyBasepath: basepath,
+	})
+	if err != nil {
+		t.Fatalf("file.New() error = %v", err)
+	}
+
+	key := cache.Key{Z: 0, X: 1, Y: 2}
+
+	const workers = 8
+	payloads := make(map[string]bool, workers)
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		payload := fmt.Sprintf("tile-payload-%d", i)
+		payloads[payload] = true
+
+		wg.Add(1)
+		go func(val []byte) {
+			defer wg.Done()
+			if err := fc.Set(context.Background(), &key, val); err != nil {
+				errs <- err
+			}
+		}([]byte(payload))
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent Set() error = %v", err)
+	}
+
+	// the surviving value must be exactly one of the written payloads
+	got, hit, err := fc.Get(context.Background(), &key)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !hit {
+		t.Fatal("Get() reported a miss after concurrent Set() calls")
+	}
+	if !payloads[string(got)] {
+		t.Errorf("Get() returned %q, which is none of the written payloads", string(got))
+	}
+
+	// no temporary files may be left behind
+	tmpDir := filepath.Dir(filepath.Join(basepath, key.String()))
+	leftovers, err := filepath.Glob(filepath.Join(tmpDir, "*-tmp-*"))
+	if err != nil {
+		t.Fatalf("Glob() error = %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Errorf("temporary files left behind: %v", leftovers)
+	}
+}
+
+// TestPurgeConcurrentIsIdempotent guards against racing purges: concurrent
+// Purge calls for one key must all succeed even when the file disappears
+// between the existence check and the removal.
+func TestPurgeConcurrentIsIdempotent(t *testing.T) {
+	basepath := t.TempDir()
+	fc, err := file.New(dict.Dict{
+		file.ConfigKeyBasepath: basepath,
+	})
+	if err != nil {
+		t.Fatalf("file.New() error = %v", err)
+	}
+
+	key := cache.Key{Z: 0, X: 1, Y: 2}
+	if err := fc.Set(context.Background(), &key, []byte("tile")); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := fc.Purge(context.Background(), &key); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent Purge() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(basepath, key.String())); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("tile should be gone after purge, stat error = %v", err)
 	}
 }

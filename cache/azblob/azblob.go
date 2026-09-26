@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strings"
 
 	"github.com/Azure/azure-storage-blob-go/2017-07-29/azblob"
 
@@ -103,6 +104,9 @@ func New(config dict.Dicter) (cache.Interface, error) {
 	// container
 	uStr, err := config.String(ConfigKeyContainerUrl, nil)
 	if err != nil {
+		return nil, err
+	}
+	if err = validateContainerURL(uStr); err != nil {
 		return nil, err
 	}
 	u, err := url.Parse(uStr)
@@ -252,9 +256,37 @@ func (azb *Cache) Purge(ctx context.Context, key *cache.Key) error {
 			azblob.BlobAccessConditions{})
 
 	if err != nil {
+		// a blob that is already gone is successfully purged
+		resErr, ok := err.(azblob.ResponseError)
+		if ok && resErr.Response().StatusCode == http.StatusNotFound {
+			return nil
+		}
+
 		return err
 	}
 
+	return nil
+}
+
+// validateContainerURL checks that the configured container URL is an absolute
+// http(s) URL with a host and a container path before it is used. The path must
+// identify a container (one or more segments); query parameters are allowed
+// since SAS tokens are commonly embedded in the URL.
+func validateContainerURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", ConfigKeyContainerUrl, err)
+	}
+	if !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("%s must be an absolute http(s) URL, got %q", ConfigKeyContainerUrl, rawURL)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s must contain a host, got %q", ConfigKeyContainerUrl, rawURL)
+	}
+	p := strings.Trim(u.Path, "/")
+	if p == "" {
+		return fmt.Errorf("%s must contain the container path, got %q", ConfigKeyContainerUrl, rawURL)
+	}
 	return nil
 }
 

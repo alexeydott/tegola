@@ -38,7 +38,23 @@ server.err.log
 server.out.log
 test-mysql.toml
 tegola.config.toml
-cache/
+# Runtime artifacts of the file cache and other cache backends. Go sources in
+# the cache/ package tree must NOT be ignored. Git cannot re-include files
+# inside a fully ignored directory, so `cache/*` closes the directory level
+# and the negations below re-open only the Go packages (root *.go + backend
+# package dirs). Runtime tiles land at cache/<map>/<layer>/<z>/<x>/<y> with
+# arbitrary names/depths and stay ignored at any shape. When adding a new
+# cache backend package, add a matching !cache/<pkg>/ line below.
+cache/*
+!cache/*.go
+!cache/azblob/
+!cache/file/
+!cache/gcs/
+!cache/memory/
+!cache/multilevel/
+!cache/redis/
+!cache/s3/
+# regenerated runtime tiles of cache/file tests (tracked fixture stays tracked)
 cache/file/testfiles/tegola-cache/
 kaliningrad_oblast_32634.gpkg
 testdata/multi-provider-test/serve.log

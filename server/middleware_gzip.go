@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/go-spatial/tegola/internal/log"
 )
 
 // GZipHandler is responsible for determining if the incoming request should be served gzipped data.
@@ -29,7 +31,9 @@ func GZipHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(&gzipDecompressResponseWriter{resp: w}, r)
+		decompress := &gzipDecompressResponseWriter{resp: w}
+		next.ServeHTTP(decompress, r)
+		decompress.finish()
 	})
 }
 
@@ -122,10 +126,16 @@ func (w *gzipResponseWriter) WriteHeader(status int) {
 }
 
 // gzipDecompressResponseWriter is responsible for decompressing successful
-// responses that contain the pre-compressed tile body.
+// responses that contain the pre-compressed tile body. The compressed body is
+// buffered and decompressed in one piece once the handler has finished: a gzip
+// stream may be written with several Write calls, and decompressing per-Write
+// only works for single-write bodies. The decompressed body is sent with an
+// accurate Content-Length.
 type gzipDecompressResponseWriter struct {
-	status int
-	resp   http.ResponseWriter
+	status    int
+	committed bool
+	resp      http.ResponseWriter
+	buf       bytes.Buffer
 }
 
 func (w *gzipDecompressResponseWriter) Header() http.Header {
@@ -139,21 +149,16 @@ func (w *gzipDecompressResponseWriter) Write(b []byte) (int, error) {
 
 	//	check that we have an OK response, if not, don't process the body
 	if !statusCanHaveBody(w.status) {
+		if !w.committed {
+			w.resp.WriteHeader(w.status)
+			w.committed = true
+		}
 		return w.resp.Write(b)
 	}
 
-	//	setup new gzip reader
-	r, err := gzip.NewReader(bytes.NewReader(b))
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = r.Close() }()
-
-	_, err = io.Copy(w.resp, r)
-	if err != nil {
-		return 0, err
-	}
-	return len(b), nil
+	//	buffer the compressed bytes; the gzip stream can span multiple writes
+	//	and is decompressed as a whole in finish()
+	return w.buf.Write(b)
 }
 
 func (w *gzipDecompressResponseWriter) WriteHeader(i int) {
@@ -163,7 +168,54 @@ func (w *gzipDecompressResponseWriter) WriteHeader(i int) {
 	w.resp.Header().Del("Content-Length")
 	w.resp.Header().Del("Content-Encoding")
 	w.status = i
-	w.resp.WriteHeader(i)
+}
+
+// finish flushes the decompressed response. It must be called after the
+// wrapped handler has returned, before any other handler writes to the
+// underlying ResponseWriter.
+func (w *gzipDecompressResponseWriter) finish() {
+	if w.status == 0 || w.committed {
+		return
+	}
+
+	if !statusCanHaveBody(w.status) {
+		w.resp.WriteHeader(w.status)
+		w.committed = true
+		return
+	}
+
+	body, err := decompressGzip(w.buf.Bytes())
+	if err != nil {
+		// per the middleware contract all body-carrying responses are
+		// pre-compressed by the handler; anything else is a broken response
+		log.Errorf("gzip middleware: error decompressing response: %v", err)
+		http.Error(w.resp, "error decompressing response", http.StatusInternalServerError)
+		w.committed = true
+		return
+	}
+
+	w.resp.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.resp.WriteHeader(w.status)
+	w.committed = true
+	if len(body) > 0 {
+		_, _ = w.resp.Write(body)
+	}
+}
+
+// decompressGzip decodes a complete gzip stream. An empty input is treated as
+// an empty body.
+func decompressGzip(compressed []byte) ([]byte, error) {
+	if len(compressed) == 0 {
+		return nil, nil
+	}
+
+	r, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.Close() }()
+
+	return io.ReadAll(r)
 }
 
 func statusCanHaveBody(status int) bool {
