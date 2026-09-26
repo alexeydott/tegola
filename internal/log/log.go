@@ -101,6 +101,22 @@ func ParseLogLevel(level string) slog.Level {
 	}
 }
 
+// splitLogArgs derives the log message and slog attributes from a print-style
+// argument list: a string first argument is the message and the remaining
+// arguments are passed through as slog attributes. Any other shape (empty
+// argument list, non-string first argument) falls back to fmt.Sprint of the
+// whole list with no attributes so that odd call shapes cannot panic and the
+// message is never duplicated into the attributes (part13 P6-30).
+func splitLogArgs(args []any) (msg string, attrs []any) {
+	if len(args) == 0 {
+		return "", nil
+	}
+	if s, ok := args[0].(string); ok {
+		return s, args[1:]
+	}
+	return fmt.Sprint(args...), nil
+}
+
 // TODO: remove those methods and use slog straight up
 func Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
@@ -108,13 +124,8 @@ func Errorf(format string, args ...any) {
 }
 
 func Error(args ...any) {
-	if len(args) > 0 {
-		if msg, ok := args[0].(string); ok {
-			slog.Error(msg, args...)
-			return
-		}
-	}
-	slog.Error(fmt.Sprint(args...))
+	msg, attrs := splitLogArgs(args)
+	slog.Error(msg, attrs...)
 }
 
 func Warnf(format string, args ...any) {
@@ -123,7 +134,8 @@ func Warnf(format string, args ...any) {
 }
 
 func Warn(args ...any) {
-	slog.Warn(args[0].(string), args...)
+	msg, attrs := splitLogArgs(args)
+	slog.Warn(msg, attrs...)
 }
 
 func Infof(format string, args ...any) {
@@ -132,7 +144,8 @@ func Infof(format string, args ...any) {
 }
 
 func Info(args ...any) {
-	slog.Info(args[0].(string), args...)
+	msg, attrs := splitLogArgs(args)
+	slog.Info(msg, attrs...)
 }
 
 func Debugf(format string, args ...any) {
@@ -141,5 +154,6 @@ func Debugf(format string, args ...any) {
 }
 
 func Debug(args ...any) {
-	slog.Debug(args[0].(string), args...)
+	msg, attrs := splitLogArgs(args)
+	slog.Debug(msg, attrs...)
 }

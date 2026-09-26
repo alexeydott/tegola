@@ -34,7 +34,8 @@ in-tree for each.
 
 ## Candidates for upstream PR
 
-Beyond the two bugs in the table above, the audit (`tegola_review_part12.md`, section 0.8)
+Beyond the two bugs in the table above, the audit (`tegola_review_part12.md`, section 0.8;
+full report committed in-tree at [`docs/audit/tegola_review_part12.md`](docs/audit/tegola_review_part12.md))
 lists the following items as upstream pull-request candidates. Sending them upstream
 lowers the future cost of syncing this fork.
 
@@ -69,8 +70,17 @@ release chronology are **GitHub Releases** and **tags**.
 ## Linting (CI)
 
 `govet`, `errcheck`, `staticcheck`, `sqlclosecheck`, and `rowserrcheck` are enabled
-in `.golangci.yml` (test files are linted as well, `tests: true`); CI runs
-golangci-lint v2.13.2 via the `lint` job in `.github/workflows/on_pr_push.yml`.
+in `.golangci.yml` (test files are linted as well, `tests: true`). CI is fully
+configured in `.github/workflows/on_pr_push.yml` (triggered on push and pull
+request): `build_ui`, `test` (Ubuntu, `go test -mod vendor ./...` with a
+`CGO_ENABLED` 0/1 matrix and the dockerised test services), `module-modes`,
+`docker-build`, `lint` (`gofmt -s` check plus golangci-lint v2.13.2 running
+`./...`), and `govulncheck`. Green CI runs, however, cannot be relied on for
+this fork (GitHub Actions quota - see `part10 A16` below), so the standing
+enforcement policy is **local re-verification on the exact SHA**:
+`go test -mod vendor -count=1 ./...` with `CGO_ENABLED=0` and `CGO_ENABLED=1`,
+plus `golangci-lint run ./...`. This section and the A16 row state one truth:
+the workflow defines *what* is checked, local runs are the *enforcement*.
 Two targeted `errcheck` exclusions are recorded here: `(*database/sql.Rows).Close`
 and `(io.Closer).Close` (cleanup in tests and deferred probe closes are
 uninteresting error paths). The exclusions are safe because the dedicated
@@ -78,8 +88,12 @@ uninteresting error paths). The exclusions are safe because the dedicated
 space: a `*sql.Rows` that is never closed, closed twice, or iterated past a
 silent query error is still reported. The row-`Close`/`Err` hygiene findings
 the audit recorded in `provider/hana`, `provider/mysql`, `provider/gpkg`,
-`provider/postgis`, and `server/` were all fixed in the part12 wave; the
-exclusions remain only for uninteresting test/probe cleanup error paths.
+`provider/postgis`, and `server/` were fixed in the part12 wave and later
+waves; re-verified in part13: every `*sql.Rows.Close()` site in
+`provider/hana` and `provider/mysql` is guarded (`defer func() { _ = rows.Close() }()`
+or an explicitly checked call), so nothing in those providers is excluded
+from the hygiene rules any more. The errcheck exclusions remain only for
+uninteresting test/probe cleanup error paths.
 
 Honest limitation: `errcheck` only catches *ignored* (unchecked) errors. It does **not**
 catch the "error is checked, then deliberately swallowed as a cache miss" bug class (the
@@ -103,4 +117,5 @@ The following items were identified in the fork-vs-upstream audit but are intent
 | part12 0.6b | `provider/gpkg` raw-table SQL relies on the GeoPackage RTree without checking that the RTree entry exists (same as upstream). An existence probe (`SELECT` from `gpkg_contents`/`pg_class`) would change query plans and performance relative to upstream behaviour, so this is tracked as upstream debt instead of a fork fix. |
 | 3.6 | `basic/line.go` simplification correctness: line simplification does not check point intersection ("malformed geoprocessing with providers of type not mvt_postgis", an open upstream bug noted in v0.21.0). Geometry behavior is left unchanged until a test corpus exists. |
 | part10 A15 | External dependency portability - `third_party` `replace` directives complicate out-of-tree consumption. |
-| part10 A16 | CI green-status runs are unavailable for this fork (no GitHub Actions quota), so the standing policy is local re-verification on the exact pushed SHA: `go test -mod vendor -count=1 ./...` with `CGO_ENABLED=0` and `CGO_ENABLED=1`, plus `golangci-lint run ./...`. |
+| part10 A16 | Green CI runs are unavailable for this fork (no GitHub Actions quota), so the standing policy is local re-verification on the exact pushed SHA: `go test -mod vendor -count=1 ./...` with `CGO_ENABLED=0` and `CGO_ENABLED=1`, plus `golangci-lint run ./...`. Not a contradiction with "Linting (CI)" above: the workflow defines what is checked, this row records that the runs themselves cannot be relied upon. |
+| part13 P6.5 | HANA scale tokens: `!PIXEL_WIDTH!` and `!SCALE_DENOMINATOR!` in `provider/hana/util.go` (`replaceTokens`, TODOs next to the token definitions and the `// TODO: Always convert to meter if we support different projections` note) compute pixel width and scale denominator assuming WebMercator meters and 256x256 tiles regardless of the configured layer CRS; `// TODO: it's currently assumed the tile will always be in WebMercator` is the same debt. Deferred: the fix needs per-CRS scale math and the provider is owned outside this wave. Same debt class as the postgis scale-token work recorded in the part12 audit. |
