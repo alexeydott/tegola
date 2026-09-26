@@ -1314,7 +1314,10 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 
 	now := time.Now()
 
-	extent, _ := getTileExtent(tile, true)
+	extent, _, err := getTileExtent(tile, true)
+	if err != nil {
+		return fmt.Errorf("error getting tile extent for layer (%v): %w", layer, err)
+	}
 	srid := plyr.SRID()
 	rows, err := p.pool.QueryContextWithBBox(ctx, sqlQuery, extent, srid, false)
 
@@ -1462,7 +1465,10 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 
 		now := time.Now()
 
-		extent, _ := getTileExtent(tile, false)
+		extent, _, err := getTileExtent(tile, false)
+		if err != nil {
+			return nil, fmt.Errorf("error getting tile extent for layer (%v): %w", l.Name(), err)
+		}
 		srid := l.SRID()
 		rows, err := p.pool.QueryContextWithBBox(ctx, sqlQuery, extent, srid, true)
 

@@ -405,7 +405,10 @@ func getLayerFields(pool *connectionPoolCollector, l *Layer, sql string) ([]Fiel
 		return nil, err
 	}
 
-	extent, _ := getTileExtent(tile, false)
+	extent, _, err := getTileExtent(tile, false)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := getLayerRows(pool, sql, extent, l.SRID(), withBBox)
 	if err != nil {
 		return nil, err
@@ -619,19 +622,46 @@ func getGeometryColumnSRID(pool *connectionPoolCollector, dbVersion uint, sql st
 	return srid, err
 }
 
-func getTileExtent(tile provider.Tile, withBuffer bool) (*geom.Extent, uint64) {
+// getTileExtent returns the tile extent (buffered and clamped to the
+// WebMercator range when withBuffer is set) together with its SRID.
+// provider.Tile's Extent()/BufferedExtent() accessors cannot report
+// errors, so a nil or non-finite extent is rejected here with a clear
+// error instead of flowing into the query builder and panicking or
+// silently producing an invalid bbox (audit P6-20).
+func getTileExtent(tile provider.Tile, withBuffer bool) (*geom.Extent, uint64, error) {
 	if withBuffer {
 		extent, srid := tile.BufferedExtent()
+		if err := validateTileExtent(extent); err != nil {
+			return nil, 0, err
+		}
 
 		minx := math.Max(-20037508.3427892, extent[0])
 		miny := math.Max(-20037508.3427892, extent[1])
 		maxx := math.Min(20037508.3427892, extent[2])
 		maxy := math.Min(20037508.3427892, extent[3])
 
-		return geom.NewExtent([2]float64{minx, miny}, [2]float64{maxx, maxy}), srid
+		return geom.NewExtent([2]float64{minx, miny}, [2]float64{maxx, maxy}), srid, nil
 	}
 
-	return tile.Extent()
+	extent, srid := tile.Extent()
+	if err := validateTileExtent(extent); err != nil {
+		return nil, 0, err
+	}
+	return extent, srid, nil
+}
+
+// validateTileExtent rejects nil and non-finite tile extents with a clear
+// error (audit P6-20).
+func validateTileExtent(extent *geom.Extent) error {
+	if extent == nil {
+		return fmt.Errorf("tile extent is nil")
+	}
+	for i, v := range [4]float64{extent[0], extent[1], extent[2], extent[3]} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("tile extent coordinate %v is not finite (%v)", i, v)
+		}
+	}
+	return nil
 }
 
 func sanitizeSQL(sql string) string {
@@ -655,7 +685,10 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 		geoType string
 	)
 
-	extent, _ := getTileExtent(tile, false)
+	extent, _, terr := getTileExtent(tile, false)
+	if terr != nil {
+		return "", terr
+	}
 	// TODO: Always convert to meter if we support different projections
 	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
 	pixelHeight := (extent.MaxY() - extent.MinY()) / 256
@@ -671,7 +704,10 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 	// bounds fields with MOS raw scaling instead. Custom SQL for MOS is
 	// required to carry the token (RequireBBoxCustomSQL).
 	if l.geometryFormat == codec.FormatMOS {
-		bboxExtent, _ := getTileExtent(tile, withBuffer)
+		bboxExtent, _, berr := getTileExtent(tile, withBuffer)
+		if berr != nil {
+			return "", berr
+		}
 		sourceExtent, cerr := basic.FromWebMercatorExtent(srid, bboxExtent)
 		if cerr != nil {
 			return "", fmt.Errorf("error converting tile extent: %w", cerr)
