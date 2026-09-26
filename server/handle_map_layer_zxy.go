@@ -61,48 +61,167 @@ const (
 )
 
 type tileUpdateCoordinator struct {
-	mu    sync.Mutex
-	locks map[string]*tileUpdateLock
+	mu        sync.Mutex
+	metatiles map[string]*metatileState
 }
 
-type tileUpdateLock struct {
-	mu   sync.Mutex
+// metatileState tracks the update and render state for one metatile (a
+// metatileSize x metatileSize group of tiles sharing a cache key prefix).
+type metatileState struct {
+	// key is the coordinator map key this state was created for.
+	key string
+	// sem serializes metatile cache mutations ( ?tile=update / ?tile=getupdated
+	// and ?dirty regeneration ). Ordinary cache reads and miss renders never
+	// take it, so cache hits are always served without waiting on anyone.
+	sem chan struct{}
+	// refs counts outstanding holders of this state: mutation holders and
+	// waiters plus in-flight miss renders that keep the state alive for
+	// generation checks. The entry is dropped when refs falls to zero.
 	refs int
+	// generation is bumped at the start and at the end of every cache
+	// mutation. Miss renders snapshot it before rendering and refuse to write
+	// their result when it changed in the meantime, so a render started before
+	// ?tile=update can never overwrite the freshly regenerated tiles with
+	// stale bytes.
+	generation uint64
+	// updates counts in-flight metatile update operations ( ?tile=update and
+	// ?tile=getupdated ) and backs the ?tile=status "updating" flag. Ordinary
+	// requests are deliberately not counted: they do not update anything.
+	updates int
+	// mutations counts all in-flight cache mutations ( updates plus ?dirty ),
+	// including those not reported as "updating".
+	mutations int
+}
+
+// metatileSnapshot captures the mutation state of a metatile at a point in
+// time so a miss render can later decide whether its result is still fresh.
+type metatileSnapshot struct {
+	state *metatileState
+	gen   uint64
 }
 
 func newTileUpdateCoordinator() *tileUpdateCoordinator {
-	return &tileUpdateCoordinator{locks: make(map[string]*tileUpdateLock)}
+	return &tileUpdateCoordinator{metatiles: make(map[string]*metatileState)}
 }
 
-func (l *tileUpdateCoordinator) acquire(key string) func() {
-	l.mu.Lock()
-	lock := l.locks[key]
-	if lock == nil {
-		lock = &tileUpdateLock{}
-		l.locks[key] = lock
+// retain returns the state for key, creating it when needed, and registers a
+// reference. Every retain must be paired with a release.
+func (c *tileUpdateCoordinator) retain(key string) *metatileState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.retainLocked(key)
+}
+
+func (c *tileUpdateCoordinator) retainLocked(key string) *metatileState {
+	state := c.metatiles[key]
+	if state == nil {
+		state = &metatileState{key: key, sem: make(chan struct{}, 1)}
+		c.metatiles[key] = state
 	}
-	lock.refs++
-	l.mu.Unlock()
+	state.refs++
+	return state
+}
 
-	lock.mu.Lock()
-
-	return func() {
-		lock.mu.Unlock()
-		l.mu.Lock()
-		lock.refs--
-		if lock.refs == 0 {
-			delete(l.locks, key)
-		}
-		l.mu.Unlock()
+func (c *tileUpdateCoordinator) release(key string, state *metatileState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state.refs--
+	if state.refs == 0 && c.metatiles[key] == state {
+		delete(c.metatiles, key)
 	}
 }
 
-func (l *tileUpdateCoordinator) locked(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+// acquire locks the metatile for a cache mutation. The returned release
+// function is safe to call more than once. Waiting for the lock honors ctx
+// cancellation, so a canceled request never stays stuck in the wait queue.
+func (c *tileUpdateCoordinator) acquire(ctx context.Context, key string) (state *metatileState, release func(), err error) {
+	state = c.retain(key)
 
-	lock := l.locks[key]
-	return lock != nil && lock.refs > 0
+	select {
+	case state.sem <- struct{}{}:
+	case <-ctx.Done():
+		c.release(key, state)
+		return nil, nil, ctx.Err()
+	}
+
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			<-state.sem
+			c.release(key, state)
+		})
+	}
+	return state, release, nil
+}
+
+// beginUpdate marks the start of a metatile update operation ( ?tile=update or
+// ?tile=getupdated ). It must run while holding the metatile lock and be
+// paired with endUpdate.
+func (c *tileUpdateCoordinator) beginUpdate(state *metatileState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state.mutations++
+	state.generation++
+	state.updates++
+}
+
+// endUpdate marks the end of a metatile update operation.
+func (c *tileUpdateCoordinator) endUpdate(state *metatileState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state.mutations--
+	state.generation++
+	state.updates--
+}
+
+// beginRegeneration marks the start of a ?dirty regeneration (a cache mutation
+// that is not reported as "updating"). It must run while holding the metatile
+// lock and be paired with endRegeneration.
+func (c *tileUpdateCoordinator) beginRegeneration(state *metatileState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state.mutations++
+	state.generation++
+}
+
+// endRegeneration marks the end of a ?dirty regeneration.
+func (c *tileUpdateCoordinator) endRegeneration(state *metatileState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state.mutations--
+	state.generation++
+}
+
+// snapshot captures the metatile generation for a later stable check. The
+// state must be retained by the caller while the snapshot is in use.
+func (c *tileUpdateCoordinator) snapshot(state *metatileState) metatileSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return metatileSnapshot{state: state, gen: state.generation}
+}
+
+// stable reports whether the metatile cache was left untouched since the
+// snapshot was taken: no mutation ran or is running and the generation did
+// not move. Miss renders use it to avoid writing stale bytes over tiles
+// regenerated while they were rendering.
+func (c *tileUpdateCoordinator) stable(snap metatileSnapshot) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := snap.state
+	if state == nil {
+		return false
+	}
+	return state.mutations == 0 && state.generation == snap.gen && c.metatiles[state.key] == state
+}
+
+// isUpdating reports whether a metatile update operation ( ?tile=update or
+// ?tile=getupdated ) is currently in flight for key. Ordinary requests and
+// ?dirty regenerations are not reported as updating.
+func (c *tileUpdateCoordinator) isUpdating(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.metatiles[key]
+	return state != nil && state.updates > 0
 }
 
 // parseURI reads the request URI and extracts the various values for the request
@@ -218,28 +337,15 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	{
 		// Check to see that the zxy is within the bounds of the map.
-		// TODO(@ear7h): use a more efficient version of Intersect that doesn't
-		// make a new extent
-		ext3857, err := slippy.Extent(webmercatorGrid, tile)
+		inBounds, err := tileWithinMapBounds(&m, tile)
 		if err != nil {
-			msg := fmt.Sprintf("map (%v -- %v) does not contains tile at %v/%v/%v. Unable to generate extent.", req.mapName, m.Bounds, req.z, req.x, req.y)
-			log.Debug(msg, err)
+			msg := fmt.Sprintf("map (%v -- %v) does not contains tile at %v/%v/%v. %v", req.mapName, m.Bounds, req.z, req.x, req.y, err)
+			log.Debug(msg)
 			http.Error(w, msg, http.StatusNotFound)
 			return
 		}
-
-		points4326, err := proj.Inverse(proj.WebMercator, ext3857[:])
-		if err != nil {
-			msg := fmt.Sprintf("Unable to convert 3857 to 4326 for map (%v -- %v) and tile %v/%v/%v -- %v.", req.mapName, m.Bounds, req.z, req.x, req.y, ext3857)
-			log.Error(msg)
-			http.Error(w, msg, http.StatusNotFound)
-			return
-		}
-
-		ext4326 := &geom.Extent{}
-		copy(ext4326[:], points4326)
-		if !extentsIntersect(m.Bounds, ext4326) {
-			msg := fmt.Sprintf("map (%v -- %v) does not contains tile at %v/%v/%v -- %v", req.mapName, m.Bounds, req.z, req.x, req.y, ext4326)
+		if !inBounds {
+			msg := fmt.Sprintf("map (%v -- %v) does not contains tile at %v/%v/%v", req.mapName, m.Bounds, req.z, req.x, req.y)
 			log.Debug(msg)
 			http.Error(w, msg, http.StatusNotFound)
 			return
@@ -261,6 +367,16 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "tile operations cannot be combined with debug", http.StatusBadRequest)
 			return
 		}
+
+		// tile operations drive cache maintenance and are disabled by default;
+		// when enabled they require the configured token and are rate limited.
+		release, err := gateTileOperation(r, operation[0] != tileOperationStatus)
+		if err != nil {
+			log.Debugf("tile operation %v denied for map %v: %v", operation[0], req.mapName, err)
+			writeTileOperationDenied(w, err)
+			return
+		}
+		defer release()
 
 		if err := req.serveTileOperation(w, r, m, tile, operation[0]); err != nil {
 			switch {
@@ -379,7 +495,7 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 			X:        tile.X,
 			Y:        tile.Y,
 			Cached:   cached,
-			Updating: tileUpdateLocks.locked(metatileKey),
+			Updating: tileUpdateLocks.isUpdating(metatileKey),
 			Metatile: [4]uint{baseX, baseY, endX - baseX + 1, endY - baseY + 1},
 		}
 
@@ -413,10 +529,16 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 		return fmt.Errorf("parse tile parameters: %w", err)
 	}
 
-	unlock := tileUpdateLocks.acquire(metatileKey)
-	defer unlock()
-
 	ctx := context.WithValue(r.Context(), observability.ObserveCtxKey(observability.ObserveVarMapName), m.Name)
+
+	state, unlock, err := tileUpdateLocks.acquire(ctx, metatileKey)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	tileUpdateLocks.beginUpdate(state)
+	defer tileUpdateLocks.endUpdate(state)
+
 	maxXY := uint(maths.Exp2(uint64(tile.Z)) - 1)
 	baseX := (tile.X / metatileSize) * metatileSize
 	baseY := (tile.Y / metatileSize) * metatileSize
@@ -431,6 +553,25 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 			}
 
 			current := slippy.Tile{Z: tile.Z, X: x, Y: y}
+
+			// only render and cache metatile tiles that fall within the map's
+			// bounds; the requested tile is checked before we get here and
+			// outside tiles would otherwise be encoded and cached needlessly
+			inBounds, err := tileWithinMapBounds(&m, current)
+			if err != nil {
+				if current == tile {
+					return err
+				}
+				log.Debugf("map (%v) does not contain tile %d/%d/%d: %v", req.mapName, current.Z, current.X, current.Y, err)
+				continue
+			}
+			if !inBounds {
+				if current == tile {
+					return fmt.Errorf("map (%v -- %v) does not contain tile at %d/%d/%d", req.mapName, m.Bounds, current.Z, current.X, current.Y)
+				}
+				continue
+			}
+
 			encoded, err := m.Encode(ctx, current, params)
 			if err != nil {
 				return fmt.Errorf("encode tile %d/%d/%d: %w", current.Z, current.X, current.Y, err)
@@ -486,6 +627,27 @@ func metatileLockKeyForCacheKey(key *cache.Key) string {
 	baseX := (key.X / metatileSize) * metatileSize
 	baseY := (key.Y / metatileSize) * metatileSize
 	return fmt.Sprintf("%s/%s/%d/%d/%d", key.MapName, key.LayerName, key.Z, baseX, baseY)
+}
+
+// tileWithinMapBounds reports whether the given tile intersects the map's
+// configured bounds. Maps without bounds contain every tile. Errors indicate
+// the tile extent could not be computed or projected.
+func tileWithinMapBounds(m *atlas.Map, tile slippy.Tile) (bool, error) {
+	// TODO(@ear7h): use a more efficient version of Intersect that doesn't
+	// make a new extent
+	ext3857, err := slippy.Extent(webmercatorGrid, tile)
+	if err != nil {
+		return false, fmt.Errorf("unable to generate extent for tile %d/%d/%d: %w", tile.Z, tile.X, tile.Y, err)
+	}
+
+	points4326, err := proj.Inverse(proj.WebMercator, ext3857[:])
+	if err != nil {
+		return false, fmt.Errorf("unable to convert 3857 to 4326 for tile %d/%d/%d: %w", tile.Z, tile.X, tile.Y, err)
+	}
+
+	ext4326 := &geom.Extent{}
+	copy(ext4326[:], points4326)
+	return extentsIntersect(m.Bounds, ext4326), nil
 }
 
 // extentsIntersect reports whether a and b overlap. It matches the boolean

@@ -2,42 +2,60 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/go-spatial/geom/encoding/mvt"
+	"github.com/go-spatial/tegola/cache"
 )
 
-func TestTileCacheResponseWriterCachesImplicitSuccessfulWrite(t *testing.T) {
-	var cached bytes.Buffer
-	recorder := httptest.NewRecorder()
-	writer := newTileCacheResponseWriter(recorder, &cached)
+func TestRenderTileForCacheCachesImplicitSuccessfulWrite(t *testing.T) {
+	cacher := newFakeTileCache()
+	key := &cache.Key{MapName: "m", LayerName: "l", Z: 4, X: 3, Y: 2}
 
-	body := []byte("tile")
-	if n, err := writer.Write(body); err != nil {
-		t.Fatal(err)
-	} else if n != len(body) {
-		t.Fatalf("Write returned %d bytes, want %d", n, len(body))
-	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", mvt.MimeType)
+		// no explicit WriteHeader: net/http semantics imply 200
+		_, _ = w.Write([]byte("tile"))
+	})
 
-	if recorder.Code != 200 {
-		t.Fatalf("response status = %d, want 200", recorder.Code)
+	req := httptest.NewRequest(http.MethodGet, "/maps/m/l/4/3/2", nil)
+	res := renderTileForCache(req, handler, cacher, key, true)
+
+	if res.status != http.StatusOK {
+		t.Fatalf("rendered status = %d, want 200", res.status)
 	}
-	if !bytes.Equal(cached.Bytes(), body) {
-		t.Fatalf("cached body = %q, want %q", cached.Bytes(), body)
+	if !bytes.Equal(res.body, []byte("tile")) {
+		t.Fatalf("rendered body = %q, want %q", res.body, "tile")
 	}
-	if !bytes.Equal(recorder.Body.Bytes(), body) {
-		t.Fatalf("response body = %q, want %q", recorder.Body.Bytes(), body)
+	if got := cacher.setCount(key.String()); got != 1 {
+		t.Fatalf("cacher.Set calls = %d, want 1", got)
 	}
 }
 
 func TestTileUpdateCoordinatorSerializesMetatileWork(t *testing.T) {
 	coordinator := newTileUpdateCoordinator()
-	unlock := coordinator.acquire("map/layer/4/8/8")
+	const lockKey = "map/layer/4/8/8"
+
+	state, unlock, err := coordinator.acquire(context.Background(), lockKey)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer coordinator.release(lockKey, state)
 
 	acquired := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		otherUnlock := coordinator.acquire("map/layer/4/8/8")
+		otherState, otherUnlock, err := coordinator.acquire(context.Background(), lockKey)
+		if err != nil {
+			t.Errorf("second acquire: %v", err)
+			close(done)
+			return
+		}
+		defer coordinator.release(lockKey, otherState)
 		close(acquired)
 		otherUnlock()
 		close(done)
@@ -55,5 +73,41 @@ func TestTileUpdateCoordinatorSerializesMetatileWork(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("same-metatile work did not acquire the lock after release")
+	}
+}
+
+func TestTileUpdateCoordinatorAcquireHonorsContextCancel(t *testing.T) {
+	coordinator := newTileUpdateCoordinator()
+	const lockKey = "map/layer/4/8/8"
+
+	state, unlock, err := coordinator.acquire(context.Background(), lockKey)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer coordinator.release(lockKey, state)
+	defer unlock()
+
+	// a waiter whose context is canceled must leave the queue immediately
+	// instead of blocking until the lock is free
+	ctx, cancel := context.WithCancel(context.Background())
+	waitErr := make(chan error, 1)
+	go func() {
+		waitState, waitUnlock, err := coordinator.acquire(ctx, lockKey)
+		if err == nil {
+			defer coordinator.release(lockKey, waitState)
+			waitUnlock()
+		}
+		waitErr <- err
+	}()
+
+	cancel()
+
+	select {
+	case err := <-waitErr:
+		if err == nil {
+			t.Fatal("canceled acquire returned nil error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled acquire stayed queued")
 	}
 }

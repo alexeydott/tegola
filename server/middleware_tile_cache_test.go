@@ -148,6 +148,7 @@ func TestMiddlewareTileCacheHandlerIgnoreParams(t *testing.T) {
 
 func TestMiddlewareTileCacheHandlerDirtyRegenerates(t *testing.T) {
 	server.URIPrefix = "/"
+	enableTileOperations(t, serverTileOpsTestConfig())
 	a := newTestMapWithLayers(testLayer1)
 	cacher, _ := memory.New(nil)
 	a.SetCache(cacher)
@@ -159,6 +160,7 @@ func TestMiddlewareTileCacheHandlerDirtyRegenerates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		r.Header.Set(server.TileOperationsTokenHeader, testTileOpsToken)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, r)
 		return w
@@ -180,6 +182,7 @@ func TestMiddlewareTileCacheHandlerDirtyRegenerates(t *testing.T) {
 
 func TestTileOperationsRegenerateMetatile(t *testing.T) {
 	server.URIPrefix = "/"
+	enableTileOperations(t, serverTileOpsTestConfig())
 	a := newTestMapWithLayers(testLayer1)
 	cacher, _ := memory.New(nil)
 	a.SetCache(cacher)
@@ -191,6 +194,7 @@ func TestTileOperationsRegenerateMetatile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		r.Header.Set(server.TileOperationsTokenHeader, testTileOpsToken)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, r)
 		return w
@@ -217,6 +221,7 @@ func TestTileOperationsRegenerateMetatile(t *testing.T) {
 		t.Fatal(err)
 	}
 	compressedStatusRequest.Header.Set("Accept-Encoding", "gzip")
+	compressedStatusRequest.Header.Set(server.TileOperationsTokenHeader, testTileOpsToken)
 	compressedStatusRecorder := httptest.NewRecorder()
 	router.ServeHTTP(compressedStatusRecorder, compressedStatusRequest)
 	if compressedStatusRecorder.Header().Get("Content-Encoding") != "gzip" {
