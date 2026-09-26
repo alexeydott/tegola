@@ -45,8 +45,6 @@ github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyR
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b/go.mod h1:1KcenG0jGWcpt8ov532z81sp/kMMUG485J2InIOyADM=
 github.com/akrylysov/algnhsa v1.1.0 h1:G0SoP16tMRyiism7VNc3JFA0wq/cVgEkp/ExMVnc6PQ=
 github.com/akrylysov/algnhsa v1.1.0/go.mod h1:+bOweRs/WBu5awl+ifCoSYAuKVPAmoTk8XOMrZ1xwiw=
-github.com/arolek/p v0.0.0-20191103215535-df3c295ed582 h1:DugKk4B3PpqfZ1QunDSPqNZDAErQmdCgwurloi1Axaw=
-github.com/arolek/p v0.0.0-20191103215535-df3c295ed582/go.mod h1:JPNItmi3yb44Q5QWM+Kh5n9oeRhfcJzPNS90mbLo25U=
 github.com/aws/aws-lambda-go v1.55.1 h1:We2cCp4BwqqH/JW+bEEo1FhgG71rslvjfi4y7KmlrR0=
 github.com/aws/aws-lambda-go v1.55.1/go.mod h1:V+NzkHNR6vBC8C1PDloqSLE+7jYWFiPvJJFiCiTm8nE=
 github.com/aws/aws-sdk-go v1.55.8 h1:JRmEUbU52aJQZ2AjX4q4Wu7t4uZjOu71uyNmaWlUkJQ=

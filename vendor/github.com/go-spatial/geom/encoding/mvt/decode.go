@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/ioutil"
 
-	"github.com/arolek/p"
 	"github.com/go-spatial/geom"
 	vectorTile "github.com/go-spatial/geom/encoding/mvt/vector_tile"
 	"github.com/go-spatial/geom/winding"
@@ -62,7 +61,8 @@ func DecodeByte(b []byte) (*Tile, error) {
 
 func decodeLayer(pb *vectorTile.Tile_Layer, dst *Layer) error {
 	dst.Name = *pb.Name
-	dst.extent = p.Int(int(*pb.Extent))
+	extent := int(*pb.Extent)
+	dst.extent = &extent
 
 	dst.features = make([]Feature, len(pb.Features))
 
