@@ -10,6 +10,44 @@ import (
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
+// TestIdentTokenQuoting pins the cross-provider !ID_FIELD!/!GEOM_FIELD!
+// token quoting contract (audit P5-10, shorthand "!ID!/!GEOM!"): unquoted values are quoted per identifier part,
+// values wrapped in one complete quote pair pass through verbatim, and
+// hostile values can never break out of the quoted identifier. The matrix
+// goes through replaceTokens so it fails against the pre-fix raw
+// substitution.
+func TestIdentTokenQuoting(t *testing.T) {
+	type tcase struct {
+		value    string
+		expected string
+	}
+	tests := map[string]tcase{
+		"plain":           {value: "feature_id", expected: "`feature_id`"},
+		"qualified":       {value: "schema.table.col", expected: "`schema`.`table`.`col`"},
+		"already-quoted":  {value: `"my.col"`, expected: `"my.col"`},
+		"already-escaped": {value: "`a``b`", expected: "`a``b`"},
+		"hostile-semi":    {value: "a;b--", expected: "`a;b--`"},
+		"hostile-quote":   {value: `a"b`, expected: "`a\"b`"},
+		"quote-shaped":    {value: "`x`;DROP`", expected: "```x``;DROP```"},
+		"mixed-qualified": {value: `"my schema".col`, expected: "\"my schema\".`col`"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			layer := Layer{idFieldname: tc.value, geomFieldname: tc.value}
+			tile := provider.NewTile(0, 0, 0, 0, tegola.WebMercator)
+			ext, _ := tile.BufferedExtent()
+			out, err := replaceTokens("SELECT !ID_FIELD!, !GEOM_FIELD! FROM t", &layer, tile, ext)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			want := "SELECT " + tc.expected + ", " + tc.expected + " FROM t"
+			if out != want {
+				t.Errorf("value %q:\n want %v\n  got %v", tc.value, want, out)
+			}
+		})
+	}
+}
+
 func TestReplaceTokens(t *testing.T) {
 	type tcase struct {
 		qtext    string
@@ -108,9 +146,10 @@ func TestReplaceTokens(t *testing.T) {
 				geomType:      geom.Point{},
 			},
 			tile: provider.NewTile(11, 1070, 676, 64, tegola.WebMercator),
-			expected: `SELECT feature_id, shape, 'POINT',
-				11, 1070, 676, 11,
-				76.43702829, 76.43702829, 272989.38673277`,
+			// P5-10: !ID_FIELD!/!GEOM_FIELD! substitute quoted identifiers.
+			expected: "SELECT `feature_id`, `shape`, 'POINT',\n" +
+				"				11, 1070, 676, 11,\n" +
+				"				76.43702829, 76.43702829, 272989.38673277",
 		},
 	}
 
