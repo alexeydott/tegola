@@ -273,9 +273,11 @@ func (c *Config) Validate() error {
 			mapsWithCustomParams = append(mapsWithCustomParams, string(m.Name))
 		}
 
-		if _, ok := mapLayers[string(m.Name)]; !ok {
-			mapLayers[string(m.Name)] = map[string]provider.MapLayer{}
+		// map names must be unique (part13 P6-29)
+		if _, ok := mapLayers[string(m.Name)]; ok {
+			return ErrMapNameDuplicate{MapName: string(m.Name)}
 		}
+		mapLayers[string(m.Name)] = map[string]provider.MapLayer{}
 
 		if m.TileJSONVersion != "" &&
 			!slices.Contains(
@@ -359,6 +361,16 @@ func (c *Config) Validate() error {
 				l.MaxZoom = &ph
 				// set in underlying config struct
 				c.Maps[mapKey].Layers[layerKey].MaxZoom = &ph
+			}
+
+			// reject inverted zoom ranges (part13 P6-29)
+			if *l.MinZoom > *l.MaxZoom {
+				return ErrInvalidLayerZoomRange{
+					MapName:       string(m.Name),
+					ProviderLayer: string(l.ProviderLayer),
+					MinZoom:       uint(*l.MinZoom),
+					MaxZoom:       uint(*l.MaxZoom),
+				}
 			}
 
 			// check if we already have this layer

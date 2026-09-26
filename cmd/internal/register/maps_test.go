@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-spatial/tegola/atlas"
 	"github.com/go-spatial/tegola/cmd/internal/register"
+	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/env"
 	"github.com/go-spatial/tegola/mapbox/tilejson"
@@ -144,6 +145,59 @@ func TestMaps(t *testing.T) {
 				},
 			},
 			expectedErr: provider.ErrNotTileJSONV3Compatible,
+		},
+		"duplicate map names rejected": {
+			maps: []provider.Map{
+				{
+					Name: "foo",
+					Layers: []provider.MapLayer{
+						{
+							ProviderLayer: "test.debug-tile-outline",
+						},
+					},
+				},
+				{
+					Name: "foo",
+					Layers: []provider.MapLayer{
+						{
+							ProviderLayer: "test.debug-tile-outline",
+						},
+					},
+				},
+			},
+			providers: []dict.Dict{
+				{
+					"name": "test",
+					"type": "debug",
+				},
+			},
+			expectedErr: config.ErrMapNameDuplicate{MapName: "foo"},
+		},
+		"layer with inverted zooms rejected": {
+			maps: []provider.Map{
+				{
+					Name: "foo",
+					Layers: []provider.MapLayer{
+						{
+							ProviderLayer: "test.debug-tile-outline",
+							MinZoom:       env.UintPtr(10),
+							MaxZoom:       env.UintPtr(5),
+						},
+					},
+				},
+			},
+			providers: []dict.Dict{
+				{
+					"name": "test",
+					"type": "debug",
+				},
+			},
+			expectedErr: config.ErrInvalidLayerZoomRange{
+				MapName:       "foo",
+				ProviderLayer: "test.debug-tile-outline",
+				MinZoom:       10,
+				MaxZoom:       5,
+			},
 		},
 		"success": {
 			maps: []provider.Map{},
