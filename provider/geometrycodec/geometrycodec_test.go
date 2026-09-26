@@ -126,10 +126,10 @@ func TestValidateRawCustomSQL(t *testing.T) {
 
 func TestRequireBBoxCustomSQL(t *testing.T) {
 	type tcase struct {
-		layerName   string
+		layerName    string
 		boundsBacked bool
-		sql         string
-		expectedErr []string
+		sql          string
+		expectedErr  []string
 	}
 
 	fn := func(tc tcase) func(*testing.T) {
@@ -335,24 +335,24 @@ func TestBuildBoundsPredicate(t *testing.T) {
 
 	tests := map[string]tcase{
 		"crs mode no scaling": {
-			fields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
-			extent: extent,
-			mode:   geometrycodec.BoundsSourceCRS,
+			fields:   geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+			extent:   extent,
+			mode:     geometrycodec.BoundsSourceCRS,
 			expected: "MAXX >= 10 AND MINX <= 30 AND MAXY >= 20 AND MINY <= 40",
 		},
 		"mos mode scales and rounds": {
-			fields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
-			extent: extent,
-			mode:   geometrycodec.BoundsMOSRaw,
+			fields:    geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+			extent:    extent,
+			mode:      geometrycodec.BoundsMOSRaw,
 			mosConfig: geometrycodec.MOSConfig{Precision: 0, UnitFactor: 1},
-			expected: "MAXX >= 10 AND MINX <= 30 AND MAXY >= 20 AND MINY <= 40",
+			expected:  "MAXX >= 10 AND MINX <= 30 AND MAXY >= 20 AND MINY <= 40",
 		},
 		"mos mode fractional precision floors and ceils": {
-			fields: geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
-			extent: geom.NewExtent([2]float64{10.4, 20.4}, [2]float64{30.4, 40.4}),
-			mode:   geometrycodec.BoundsMOSRaw,
+			fields:    geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
+			extent:    geom.NewExtent([2]float64{10.4, 20.4}, [2]float64{30.4, 40.4}),
+			mode:      geometrycodec.BoundsMOSRaw,
 			mosConfig: geometrycodec.MOSConfig{Precision: 1, UnitFactor: 1},
-			expected: "MAXX >= 104 AND MINX <= 304 AND MAXY >= 204 AND MINY <= 404",
+			expected:  "MAXX >= 104 AND MINX <= 304 AND MAXY >= 204 AND MINY <= 404",
 		},
 		"mos mode invalid scale errors": {
 			fields:    geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
@@ -368,10 +368,10 @@ func TestBuildBoundsPredicate(t *testing.T) {
 			expectErr: true,
 		},
 		"quoting applied": {
-			fields: geometrycodec.BBoxFields{"min x", "max x", "min y", "max y"},
-			extent: extent,
-			mode:   geometrycodec.BoundsSourceCRS,
-			quote:  func(s string) string { return "`" + s + "`" },
+			fields:   geometrycodec.BBoxFields{"min x", "max x", "min y", "max y"},
+			extent:   extent,
+			mode:     geometrycodec.BoundsSourceCRS,
+			quote:    func(s string) string { return "`" + s + "`" },
 			expected: "`max x` >= 10 AND `min x` <= 30 AND `max y` >= 20 AND `min y` <= 40",
 		},
 	}
@@ -1301,4 +1301,119 @@ func TestWarnNonMetricScaleTokens(t *testing.T) {
 	if geometrycodec.WarnNonMetricScaleTokens("l", "SELECT * FROM t WHERE !BBOX!", 4326, nil, nil) {
 		t.Fatal("SQL without scale tokens must not warn")
 	}
+}
+
+// TestPrepareProbeSQLComparisonNeutralization (audit P6-9) pins the
+// comparison-level token neutralization: a !ZOOM!/!X!/!Y! comparison must
+// collapse to the permissive "1=1" predicate no matter which side of the
+// operator the token is on. The token-left form ("!ZOOM! >= 5") used to
+// fall through to the bare "0" substitution, so the probe became "0 >= 5"
+// and silently sampled zero rows.
+func TestPrepareProbeSQLComparisonNeutralization(t *testing.T) {
+	tcs := map[string]struct {
+		custom string
+		want   string
+	}{
+		"token-left zoom comparison": {
+			custom: "SELECT * FROM t WHERE !ZOOM! >= 5",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"token-left zoom lower and upper bound": {
+			custom: "SELECT * FROM t WHERE !ZOOM! >= 1 AND !ZOOM! <= 20",
+			want:   "SELECT * FROM t WHERE 1=1 AND 1=1",
+		},
+		"token-left position comparisons": {
+			custom: "SELECT * FROM t WHERE !X! <= 100 AND !Y! = 3",
+			want:   "SELECT * FROM t WHERE 1=1 AND 1=1",
+		},
+		"token-right position comparisons": {
+			custom: "SELECT * FROM t WHERE cx = !X! AND cy = !Y!",
+			want:   "SELECT * FROM t WHERE 1=1 AND 1=1",
+		},
+		"numeric operand left of the token": {
+			custom: "SELECT * FROM t WHERE 5 <= !X!",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"token-to-token comparison": {
+			custom: "SELECT * FROM t WHERE !X! = !Y!",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"arithmetic tail after the token is consumed": {
+			custom: "SELECT * FROM t WHERE cx = !X! + 1",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"arithmetic operand is consumed": {
+			custom: "SELECT * FROM t WHERE !X! = cy + 1",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"string operand is consumed": {
+			custom: "SELECT * FROM t WHERE !X! = 'west'",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"schema-qualified operand is consumed": {
+			custom: "SELECT * FROM t WHERE t.mx = !X!",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"BETWEEN continuation is consumed": {
+			custom: "SELECT * FROM t WHERE !X! = y BETWEEN 1 AND 2",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"IS NULL continuation is consumed": {
+			custom: "SELECT * FROM t WHERE !X! = y IS NULL",
+			want:   "SELECT * FROM t WHERE 1=1",
+		},
+		"function-call left operand falls back to bare substitution": {
+			// the neutralization must never cut an expression apart: when the
+			// operand is a function call the comparison is left to the safe
+			// bare-token fallback (same SQL as before P6-9).
+			custom: "SELECT * FROM t WHERE f(x) >= !X!",
+			want:   "SELECT * FROM t WHERE f(x) >= 0",
+		},
+		"bare non-comparison tokens keep the numeric fallback": {
+			custom: "SELECT !X! AS tile_x, !ZOOM! AS tile_zoom FROM t",
+			want:   "SELECT 0 AS tile_x, 0 AS tile_zoom FROM t",
+		},
+		"comparisons without tokens are untouched": {
+			custom: "SELECT * FROM t WHERE owner != 'x' AND id = 3",
+			want:   "SELECT * FROM t WHERE owner != 'x' AND id = 3",
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			got := geometrycodec.PrepareProbeSQL(tc.custom, "geom", "okey", "Point")
+			if got != tc.want {
+				t.Fatalf("PrepareProbeSQL(%q)\n got %q\nwant %q", tc.custom, got, tc.want)
+			}
+		})
+	}
+
+	// zoom comparisons with the token on the right keep the permissive full
+	// zoom range (contract of TestPrepareProbeSQLNeutralization).
+	t.Run("right-side zoom comparisons keep the full range", func(t *testing.T) {
+		for _, custom := range []string{
+			"SELECT * FROM t WHERE z = !ZOOM!",
+			"SELECT * FROM t WHERE 5 <= !ZOOM!",
+		} {
+			got := geometrycodec.PrepareProbeSQL(custom, "geom", "okey", "Point")
+			if !strings.Contains(got, "IN (0,1,2,") {
+				t.Fatalf("PrepareProbeSQL(%q) = %q, want permissive zoom range", custom, got)
+			}
+		}
+	})
+
+	// every occurrence is neutralized, on both sides, in one query.
+	t.Run("every comparison occurrence is neutralized", func(t *testing.T) {
+		custom := "SELECT * FROM t WHERE !ZOOM! >= 1 AND max_zoom <= !ZOOM! AND cx = !X! AND !Y! = cy"
+		got := geometrycodec.PrepareProbeSQL(custom, "geom", "okey", "Point")
+		if n := strings.Count(got, "1=1"); n != 3 {
+			t.Fatalf("PrepareProbeSQL(%q) = %q, want three permissive predicates", custom, got)
+		}
+		if strings.Contains(got, "!") {
+			t.Fatalf("PrepareProbeSQL(%q) = %q, want no leftover tokens", custom, got)
+		}
+		if !strings.Contains(got, "max_zoom IN (0,1,2,") {
+			t.Fatalf("PrepareProbeSQL(%q) = %q, want right-side zoom range preserved", custom, got)
+		}
+	})
 }
