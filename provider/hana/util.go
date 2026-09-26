@@ -565,27 +565,26 @@ func toPlanarEquivalenSrid(srid uint64) uint64 {
 	return PLANAR_SRID_OFFSET + srid
 }
 
-func fromWebMercator(srid uint64, geometry geom.Geometry) (geom.Geometry, error) {
-	if isPlanarEquivalentSrid(srid) {
-		return basic.FromWebMercator(srid-PLANAR_SRID_OFFSET, geometry)
-	}
-
-	return basic.FromWebMercator(srid, geometry)
-}
-
+// getBBoxCoordinates returns the lower-left and upper-right corners of the
+// axis-aligned bounding box enclosing the tile extent after transformation
+// into the target CRS (audit P5-15). The tile's full perimeter is sampled
+// and transformed and min/max is taken: converting only the two opposite
+// corners under-covers the tile footprint in rotated or polar projections
+// and the bbox predicate then drops valid features.
 func getBBoxCoordinates(extent *geom.Extent, srid uint64) (geom.Point, geom.Point, error) {
-	// TODO: it's currently assumed the tile will always be in WebMercator. Need to support different projections
-	minGeo, err := fromWebMercator(srid, geom.Point{extent.MinX(), extent.MinY()})
+	// The planar-equivalent offset only encodes the round-earth SRID;
+	// transform with the effective SRID.
+	effective := srid
+	if isPlanarEquivalentSrid(srid) {
+		effective = srid - PLANAR_SRID_OFFSET
+	}
+
+	sourceExtent, err := basic.FromWebMercatorExtent(effective, extent)
 	if err != nil {
 		return geom.Point{}, geom.Point{}, fmt.Errorf("Error trying to convert tile point: %w ", err)
 	}
 
-	maxGeo, err := fromWebMercator(srid, geom.Point{extent.MaxX(), extent.MaxY()})
-	if err != nil {
-		return geom.Point{}, geom.Point{}, fmt.Errorf("Error trying to convert tile point: %w ", err)
-	}
-
-	return minGeo.(geom.Point), maxGeo.(geom.Point), nil
+	return geom.Point{sourceExtent.MinX(), sourceExtent.MinY()}, geom.Point{sourceExtent.MaxX(), sourceExtent.MaxY()}, nil
 }
 
 func getBBoxFilter(dbVersion uint, geomField string, srid uint64) string {
