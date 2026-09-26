@@ -2,13 +2,13 @@ package hana
 
 import (
 	"context"
-	"time"
+
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
-// InspectionQueryTimeout bounds registration-time probe, sample, and
-// metadata queries so a hanging query cannot stall provider creation
-// indefinitely (audit P5-16).
-const InspectionQueryTimeout = 30 * time.Second
+// InspectionQueryTimeout is the shared cross-provider probe timeout
+// (provider/geometrycodec); aliased here so hana probes cannot drift.
+const InspectionQueryTimeout = codec.InspectionQueryTimeout
 
 // NewInspectionContext derives a probe context carrying
 // InspectionQueryTimeout from parent. A nil parent means
