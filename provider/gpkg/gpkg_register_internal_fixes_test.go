@@ -303,9 +303,10 @@ func captureWarns(t *testing.T, f func()) string {
 	return buf.String()
 }
 
-// TestInspectCustomSQLSampleMixedHeaderSRS covers the P5-9 analog for the
+// TestInspectCustomSQLSampleMixedHeaderSRS covers the P5-9 contract for the
 // gpkg custom SQL sample: rows mixing geometry-header SRS ids must keep the
-// first decodable sample row's SRS id and skip rows with a different one,
+// first non-zero header SRS id (which locks the layer SRS and defines the
+// sample) and skip rows with a different non-zero one,
 // warning about the mix instead of silently first-row-wins. Pre-fix: no
 // warning was emitted and the first row won silently.
 func TestInspectCustomSQLSampleMixedHeaderSRS(t *testing.T) {
@@ -339,12 +340,63 @@ func TestInspectCustomSQLSampleMixedHeaderSRS(t *testing.T) {
 		t.Fatal("inspectCustomSQLSample returned nil firstHeader")
 	}
 	if firstHeader.SRSId() != 3857 {
-		t.Errorf("firstHeader.SRSId() = %d, expected 3857 (first decodable row defines the SRS)", firstHeader.SRSId())
+		t.Errorf("firstHeader.SRSId() = %d, expected 3857 (first non-zero header SRS locks the layer SRS)", firstHeader.SRSId())
 	}
 	if got := fmt.Sprintf("%v", firstGeom); got != "[1 1]" {
-		t.Errorf("firstGeom = %v, expected [1 1] (first decodable row's geometry)", got)
+		t.Errorf("firstGeom = %v, expected [1 1] (locking row's geometry)", got)
 	}
-	if !strings.Contains(out, "mixed geometry-header SRS IDs") {
+	if !strings.Contains(out, "geometry-header SRS ID") || !strings.Contains(out, "skipping the row") {
 		t.Errorf("expected mixed-SRS warning in logs, got: %s", out)
+	}
+}
+
+// TestInspectCustomSQLSampleZeroHeaderSRIDDoesNotLock pins the audit P5-9
+// zero rule: header SRS id 0 (undefined) rows are always processed and
+// never lock the layer SRS, so a zero row before the first non-zero row
+// cannot mask the lock. Pre-fix: the first row's (zero) header defined the
+// sample, the 4326 row was skipped as "mixed", and the layer SRS resolved
+// to 0.
+func TestInspectCustomSQLSampleZeroHeaderSRIDDoesNotLock(t *testing.T) {
+	db := newGpkgMetadataDB(t)
+	if _, err := db.Exec("CREATE TABLE zerofirst (geom BLOB)"); err != nil {
+		t.Fatalf("create zerofirst: %v", err)
+	}
+	for i, blob := range [][]byte{
+		gpkgBlob(0, 1, 1),
+		gpkgBlob(4326, 2, 2),
+		gpkgBlob(0, 3, 3),
+		gpkgBlob(3857, 4, 4),
+	} {
+		if _, err := db.Exec("INSERT INTO zerofirst (geom) VALUES (?)", blob); err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	layer := Layer{name: "zerofirst_layer", geometryFormat: GeometryFormatGPKG, geomFieldname: "geom"}
+	var (
+		firstGeom   geom.Geometry
+		firstHeader *BinaryHeader
+		gerr        error
+	)
+	out := captureWarns(t, func() {
+		firstGeom, firstHeader, _, gerr = inspectCustomSQLSample(db, &layer, "SELECT geom FROM zerofirst LIMIT 16;")
+	})
+	if gerr != nil {
+		t.Fatalf("inspectCustomSQLSample errored = %v", gerr)
+	}
+	if firstHeader == nil {
+		t.Fatal("inspectCustomSQLSample returned nil firstHeader")
+	}
+	if firstHeader.SRSId() != 4326 {
+		t.Errorf("firstHeader.SRSId() = %d, expected 4326 (first non-zero header SRS locks; zero rows never lock)", firstHeader.SRSId())
+	}
+	if got := fmt.Sprintf("%v", firstGeom); got != "[2 2]" {
+		t.Errorf("firstGeom = %v, expected [2 2] (locking row's geometry)", got)
+	}
+	if !strings.Contains(out, "SRS ID 3857") {
+		t.Errorf("expected per-row warning naming the skipped row's SRS ID 3857, got: %s", out)
+	}
+	if strings.Contains(out, "SRS ID 0") {
+		t.Errorf("zero-header rows must not be warned about as mixed, got: %s", out)
 	}
 }

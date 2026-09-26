@@ -1251,12 +1251,15 @@ func Cleanup() {
 // scanned: MOS system-info blobs are recognized as metadata and skipped (no
 // auto-detection for custom SQL — audit A-01), and the first decodable
 // geometry infers the layer's geometry type. For native GeoPackage geometry
-// the first row's binary header and geometry are returned. sysInfoCRSApplied
+// the first row carrying a non-zero binary-header SRS id locks the layer SRS
+// and defines the returned sample header/geometry (audit P5-9). sysInfoCRSApplied
 // is always false: kept in the signature for callers that treat the SRID as
 // already resolved when a system-info projection was applied.
 func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom geom.Geometry, firstHeader *BinaryHeader, sysInfoCRSApplied bool, err error) {
 	layerName := layer.Name()
 	log.Debugf("qtext: %v", qtext)
+
+	var lockedSRS int32
 
 	inspectRows, qerr := db.Query(qtext)
 	if qerr != nil {
@@ -1306,16 +1309,28 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 			// keep scanning the sample window for a real sample geometry.
 			continue
 		}
-		// audit P5-9 analog: a custom SQL result set may mix per-row
-		// geometry-header SRS ids. The first decodable sample row defines
-		// the layer SRS; rows carrying a different header SRS id are
-		// skipped with a warning instead of silently first-row-wins.
-		if firstHeader != nil && h != nil && h.SRSId() != firstHeader.SRSId() {
-			log.Warnf("layer '%v': custom SQL sample rows carry mixed geometry-header SRS IDs (%d and %d); keeping %d and ignoring rows with other SRS IDs",
-				layerName, firstHeader.SRSId(), h.SRSId(), firstHeader.SRSId())
-			continue
+		// audit P5-9: a custom SQL result set may mix per-row
+		// geometry-header SRS ids. The first row with a non-zero header
+		// SRS id locks the layer SRS and defines the sample; rows carrying
+		// a different non-zero header SRS id are skipped with a per-row
+		// warning instead of silently first-row-wins. Header SRS id 0
+		// (undefined) never locks and its rows are always processed, so a
+		// zero row before the locking row cannot mask it.
+		if h != nil {
+			srs := h.SRSId()
+			if srs != 0 && lockedSRS == 0 {
+				lockedSRS = srs
+				firstHeader = h
+				firstGeom = geo
+				continue
+			}
+			if srs != 0 && srs != lockedSRS {
+				log.Warnf("layer '%v': custom SQL sample row carries geometry-header SRS ID %d, but the layer SRS is locked to %d by an earlier sample row; skipping the row",
+					layerName, srs, lockedSRS)
+				continue
+			}
 		}
-		if firstHeader == nil {
+		if firstHeader == nil && lockedSRS == 0 {
 			firstHeader = h
 		}
 		if firstGeom == nil {
