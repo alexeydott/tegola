@@ -153,6 +153,11 @@ type GCSCache struct {
 	// tests can substitute a fake backend (to exercise cache misses and transient
 	// backend failures) without a live GCS connection.
 	newReader func(ctx context.Context, key string) (io.ReadCloser, error)
+
+	// deleteObject removes the object identified by key. When nil, objects are
+	// deleted via Bucket. It exists as a field so tests can exercise the purge
+	// paths (missing object, backend failure) without a live GCS connection.
+	deleteObject func(ctx context.Context, key string) error
 }
 
 // openReader opens the object named k and returns a reader over its contents. A
@@ -164,6 +169,17 @@ func (gcsCache *GCSCache) openReader(ctx context.Context, k string) (io.ReadClos
 		return gcsCache.newReader(ctx, k)
 	}
 	return gcsCache.Bucket.Object(k).NewReader(ctx)
+}
+
+// removeObject deletes the object named k. Deleting an object that does not
+// exist reports storage.ErrObjectNotExist (the client maps both HTTP 404 and
+// gRPC NotFound onto it); any other error is a backend failure and is surfaced
+// to callers.
+func (gcsCache *GCSCache) removeObject(ctx context.Context, k string) error {
+	if gcsCache.deleteObject != nil {
+		return gcsCache.deleteObject(ctx, k)
+	}
+	return gcsCache.Bucket.Object(k).Delete(ctx)
 }
 
 func (gcsCache *GCSCache) Get(ctx context.Context, key *cache.Key) ([]byte, bool, error) {
@@ -222,10 +238,13 @@ func (gcsCache *GCSCache) Purge(ctx context.Context, key *cache.Key) error {
 	// object keys always use forward slashes regardless of the OS
 	// separator (P6-33)
 	k := path.Join(gcsCache.Basepath, key.String())
-	obj := gcsCache.Bucket.Object(k)
 
-	if err := obj.Delete(ctx); err != nil {
-		return err
+	if err := gcsCache.removeObject(ctx, k); err != nil {
+		// purging an object that is already gone is a no-op success so Purge
+		// stays idempotent (P5-13)
+		if !errors.Is(err, storage.ErrObjectNotExist) {
+			return err
+		}
 	}
 
 	log.Infof("PURGE %s\n", k)
