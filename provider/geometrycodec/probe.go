@@ -372,6 +372,15 @@ var degreesCRS = map[int]struct{}{
 	4326: {}, 4269: {}, 4258: {}, 4490: {}, 4214: {}, 4674: {}, 4230: {}, 4267: {},
 }
 
+// IsGeographicSRID reports whether the SRID is one of the common geographic
+// (degrees) CRS codes in degreesCRS. Providers use it to apply
+// axis-order-sensitive SQL for MySQL's latitude-first geographic SRS
+// metadata (audit P6-3) and to detect non-metric scale tokens.
+func IsGeographicSRID(srid uint64) bool {
+	_, ok := degreesCRS[int(srid)]
+	return ok
+}
+
 // crsDefnConfigKey mirrors crsconfig.KeyCRSDefn ("crs_defn"), referenced by
 // literal to keep this package independent of crsconfig.
 const crsDefnConfigKey = "crs_defn"

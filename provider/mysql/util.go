@@ -8,8 +8,8 @@ import (
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 // replaceTokens replaces tile and layer metadata tokens in a SQL query.
@@ -87,40 +87,58 @@ func boundsSQLForLayer(layer *Layer, bboxExtent *geom.Extent) (string, error) {
 		geomRef := quoteIdentifier(layer.geomFieldname)
 		switch layer.geometryFormat {
 		case GeometryFormatWKT:
-			geomRef = geomFromTextSQL(geomRef, layer.srid)
+			geomRef = geomFromTextSQL(geomRef, layer.srid, layer.serverFlavor)
 		case GeometryFormatWKB:
-			geomRef = geomFromWKBSQL(geomRef, layer.srid)
+			geomRef = geomFromWKBSQL(geomRef, layer.srid, layer.serverFlavor)
 		}
 		return fmt.Sprintf(
 			"ST_Intersects(%v, %v)",
 			geomRef,
-			geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid),
+			geomFromTextSQL(fmt.Sprintf("'%v'", wktPolygon(bboxExtent)), layer.srid, layer.serverFlavor),
 		), nil
 	}
 	return "1=1", nil
+}
+
+// axisOrderSQL returns the ST_GeomFromText/ST_GeomFromWKB axis-order option
+// for MySQL servers with a geographic (degrees) SRID. MySQL 8 interprets
+// such values latitude-first per its SRS metadata, while tegola writes WKT
+// and bbox polygons longitude-first, so without 'axis-order=long-lat' bbox
+// filters and stored geometries disagree (audit P6-3). MariaDB does not
+// support the options argument, and projected SRIDs have no axis order, so
+// both keep the plain constructor form.
+func axisOrderSQL(srid uint64, serverFlavor string) string {
+	if serverFlavor == GeometryFormatMySQL && codec.IsGeographicSRID(srid) {
+		return ", 'axis-order=long-lat'"
+	}
+	return ""
 }
 
 // geomFromTextSQL creates a geometry expression with the layer SRID when one
 // is configured. MySQL and MariaDB otherwise assign SRID 0 to WKT values;
 // comparing that value with a geometry column that has a non-zero SRID can
 // fail with a different-SRID error instead of applying the spatial filter.
-func geomFromTextSQL(value string, srid uint64) string {
+// On MySQL servers with a geographic SRID the value is read longitude-first
+// via the 'axis-order=long-lat' option (audit P6-3).
+func geomFromTextSQL(value string, srid uint64, serverFlavor string) string {
 	if srid == 0 {
 		return fmt.Sprintf("ST_GeomFromText(%v)", value)
 	}
-	return fmt.Sprintf("ST_GeomFromText(%v, %d)", value, srid)
+	return fmt.Sprintf("ST_GeomFromText(%v, %d%v)", value, srid, axisOrderSQL(srid, serverFlavor))
 }
 
 // geomFromWKBSQL creates a geometry expression from a raw WKB BLOB column
 // with the layer SRID when one is configured, symmetric to geomFromTextSQL.
 // ST_GeomFromWKB is the documented MySQL/MariaDB constructor for WKB values;
 // without it, spatial predicates would rely on implicit BLOB->geometry
-// coercion whose behavior differs between server versions.
-func geomFromWKBSQL(value string, srid uint64) string {
+// coercion whose behavior differs between server versions. On MySQL servers
+// with a geographic SRID the value is read longitude-first via the
+// 'axis-order=long-lat' option (audit P6-3).
+func geomFromWKBSQL(value string, srid uint64, serverFlavor string) string {
 	if srid == 0 {
 		return fmt.Sprintf("ST_GeomFromWKB(%v)", value)
 	}
-	return fmt.Sprintf("ST_GeomFromWKB(%v, %d)", value, srid)
+	return fmt.Sprintf("ST_GeomFromWKB(%v, %d%v)", value, srid, axisOrderSQL(srid, serverFlavor))
 }
 
 // mosBoundsSQL builds a coarse indexed filter for the raw bounds stored

@@ -131,6 +131,76 @@ func TestMySQLBBoxWKBUsesGeomFromWKB(t *testing.T) {
 	}
 }
 
+// TestMySQLAxisOrderLongLatForGeographicSRIDs (audit P6-3) pins the geometry
+// constructor SQL for geographic SRIDs: MySQL 8 SRS metadata stores
+// geographic coordinates latitude-first, while tegola writes WKT and bbox
+// polygons longitude-first, so on MySQL servers the constructors must carry
+// the 'axis-order=long-lat' option or bbox filters and stored geometries
+// disagree. MariaDB (no options argument support) and projected SRIDs keep
+// the plain constructor form.
+func TestMySQLAxisOrderLongLatForGeographicSRIDs(t *testing.T) {
+	tile := provider.NewTile(0, 0, 0, 0, 4326)
+	extent, _ := tile.BufferedExtent()
+
+	tcs := []struct {
+		name     string
+		flavor   string
+		srid     uint64
+		format   string
+		wantCol  string
+		wantAxis bool
+	}{
+		{"mysql geographic wkt", GeometryFormatMySQL, 4326, GeometryFormatWKT, "ST_GeomFromText(`geom`, 4326", true},
+		{"mysql projected wkt", GeometryFormatMySQL, 3857, GeometryFormatWKT, "ST_GeomFromText(`geom`, 3857", false},
+		{"mariadb geographic wkt", GeometryFormatMariaDB, 4326, GeometryFormatWKT, "ST_GeomFromText(`geom`, 4326", false},
+		{"mysql geographic wkb", GeometryFormatMySQL, 4326, GeometryFormatWKB, "ST_GeomFromWKB(`geom`, 4326", true},
+		{"mariadb geographic wkb", GeometryFormatMariaDB, 4326, GeometryFormatWKB, "ST_GeomFromWKB(`geom`, 4326", false},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			layer := &Layer{
+				geomFieldname:  "geom",
+				geometryFormat: tc.format,
+				srid:           tc.srid,
+				serverFlavor:   tc.flavor,
+			}
+			query := mustReplaceTokens(t, "WHERE !BBOX!", layer, tile, extent)
+
+			colExpr := tc.wantCol + ")"
+			if tc.wantAxis {
+				colExpr = tc.wantCol + ", 'axis-order=long-lat')"
+			}
+			if !strings.Contains(query, colExpr) {
+				t.Fatalf("geometry column expression %q missing in query: %q", colExpr, query)
+			}
+
+			polyExpr := "ST_GeomFromText('POLYGON"
+			if !strings.Contains(query, polyExpr) {
+				t.Fatalf("bbox polygon expression missing in query: %q", query)
+			}
+			wantSrid := strconv.FormatUint(tc.srid, 10)
+			if tc.wantAxis {
+				polyExpr = ", " + wantSrid + ", 'axis-order=long-lat')"
+				if !strings.Contains(query, polyExpr) {
+					t.Fatalf("bbox polygon expression missing axis-order option in query: %q", query)
+				}
+				if n := strings.Count(query, "'axis-order=long-lat'"); n != 2 {
+					t.Fatalf("expected axis-order on both constructors (%d) in query: %q", n, query)
+				}
+			} else {
+				if strings.Contains(query, "axis-order") {
+					t.Fatalf("axis-order leaked into %s SRID %d query: %q", tc.flavor, tc.srid, query)
+				}
+				polyExpr = ", " + wantSrid + ")"
+				if !strings.Contains(query, polyExpr) {
+					t.Fatalf("bbox polygon expression missing SRID %q in query: %q", polyExpr, query)
+				}
+			}
+		})
+	}
+}
+
 func TestMySQLBBoxSyntheticSRIDDisablesDatabaseSpatialPredicate(t *testing.T) {
 	srid, err := basic.RegisterProj4Defn("+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
 	if err != nil {
@@ -1531,8 +1601,8 @@ type rowsStubRows struct {
 	next    int
 }
 
-func (r *rowsStubRows) Columns() []string         { return r.columns }
-func (r *rowsStubRows) Close() error              { return nil }
+func (r *rowsStubRows) Columns() []string { return r.columns }
+func (r *rowsStubRows) Close() error      { return nil }
 func (r *rowsStubRows) Next(dest []driver.Value) error {
 	if r.next >= len(r.rows) {
 		return io.EOF

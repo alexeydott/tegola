@@ -414,6 +414,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			geomFieldname:  geomFieldname,
 			srid:           uint64(lcrs.SRID),
 			geometryFormat: geometryFormat,
+			serverFlavor:   serverFlavor,
 			crsExplicit:    sridExplicit || lcrs.Explicit,
 			mosConfig:      mosCfg,
 		}
@@ -824,9 +825,9 @@ func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string, geomet
 
 // showIndexRow is one parsed row of SHOW INDEX output.
 type showIndexRow struct {
-	keyName     string
-	seqInIndex  int
-	columnName  string
+	keyName    string
+	seqInIndex int
+	columnName string
 }
 
 // parseShowIndexRows scans arbitrary SHOW INDEX result rows (the column set

@@ -86,6 +86,24 @@ same value set:
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
 - `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; `mos_precision` (optional) is the number of decimal digits they carry and `mos_units` (optional) their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`, default `m`; the default `mos_precision` is paired with the units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`, `km`→`5` via `DefaultMOSPrecisionForUnits`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
 
+### Geographic SRIDs and MySQL axis order
+
+MySQL 8 interprets geometry values for geographic SRIDs (e.g. `4326`)
+latitude-first according to its SRS metadata, while tegola writes WKT and
+`!BBOX!` polygons longitude-first. For `wkt`/`wkb` layers on MySQL with a
+geographic SRID the provider therefore builds
+`ST_GeomFromText(value, srid, 'axis-order=long-lat')` /
+`ST_GeomFromWKB(value, srid, 'axis-order=long-lat')` (both for the geometry
+column and the tile bbox polygon) so the filter and the stored data agree.
+MariaDB does not support the options argument and projected SRIDs have no
+axis order — both keep the plain constructor form. (MySQL 5.7 does not
+accept the options argument either; use a projected SRID or MariaDB there.)
+
+Geometry *reads* are decoded in Go from the raw column values and are
+unaffected. Custom SQL that returns `ST_AsBinary(geom)` for a geographic
+SRID should pass the same option — `ST_AsBinary(geom, 'axis-order=long-lat')`
+— so the emitted WKB is longitude-first like everything tegola consumes.
+
 ## MOS geometry format
 
 The native MOS blob layout (little-endian) starts with a 10-byte geometry

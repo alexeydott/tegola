@@ -27,6 +27,12 @@ type Layer struct {
 	// "mysql", "mariadb", "wkb", "wkt", "mos"); used to build !BBOX! for text
 	// geometry columns.
 	geometryFormat string
+	// serverFlavor records the server flavor detected at registration
+	// ("mysql" or "mariadb"). MySQL 8 stores geographic SRS geometry
+	// latitude-first per its SRS metadata while tegola writes WKT and bbox
+	// polygons longitude-first, so geometry constructors for geographic
+	// SRIDs must carry 'axis-order=long-lat' on MySQL only (audit P6-3).
+	serverFlavor string
 	// deferredInspection is set for tile-dependent custom SQL whose geometry
 	// type cannot be inferred safely during provider startup.
 	deferredInspection bool
