@@ -223,7 +223,7 @@ func seedPurgeCommand(_ *cobra.Command, _ []string) (err error) {
 
 	grid := slippy.NewGrid(proj.EPSGCode(cacheBoundsSRID), 0)
 
-	log.Info("zoom list: ", zooms)
+	log.Infof("zoom list: %v", zooms)
 	tileChannel := generateTilesForBounds(ctx, seedPurgeBounds, zooms, grid)
 
 	return doWork(ctx, tileChannel, seedPurgeMaps, cacheConcurrency, seedPurgeWorker)
