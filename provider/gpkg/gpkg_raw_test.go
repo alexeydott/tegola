@@ -43,7 +43,7 @@ func newRawFixture(t *testing.T, tables []string) rawFixture {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	for _, ddl := range tables {
 		if _, err := db.Exec(ddl); err != nil {
@@ -824,7 +824,7 @@ func insertRows(t *testing.T, path, table string, cols []string, rows [][]interf
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	for _, row := range rows {
 		if len(row) != len(cols) {

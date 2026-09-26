@@ -1470,6 +1470,9 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 		} else {
 			return nil, fmt.Errorf("unable to read the result set for layer (%v)", l.Name())
 		}
+		if err := rows.Err(); err != nil {
+			return []byte{}, err
+		}
 
 		totalSeconds += time.Since(now).Seconds()
 
@@ -1542,19 +1545,18 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 	if err != nil {
 		return meta, nil, fmt.Errorf("unable to list columns of table %v: %w", qtn, err)
 	}
+	defer func() { _ = colRows.Close() }()
+
 	for colRows.Next() {
 		var name string
 		if serr := colRows.Scan(&name); serr != nil {
-			colRows.Close()
 			return meta, nil, fmt.Errorf("unable to scan columns of table %v: %w", qtn, serr)
 		}
 		meta.Columns = append(meta.Columns, name)
 	}
 	if err := colRows.Err(); err != nil {
-		colRows.Close()
 		return meta, nil, fmt.Errorf("error iterating columns of table %v: %w", qtn, err)
 	}
-	colRows.Close()
 	if len(meta.Columns) == 0 {
 		return meta, nil, fmt.Errorf("table %v does not exist", qtn)
 	}
@@ -1577,19 +1579,18 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 	if err != nil {
 		return meta, nil, fmt.Errorf("unable to list primary key of table %v: %w", qtn, err)
 	}
+	defer func() { _ = pkRows.Close() }()
+
 	for pkRows.Next() {
 		var name string
 		if serr := pkRows.Scan(&name); serr != nil {
-			pkRows.Close()
 			return meta, nil, fmt.Errorf("unable to scan primary key of table %v: %w", qtn, serr)
 		}
 		meta.PrimaryKeyColumns = append(meta.PrimaryKeyColumns, name)
 	}
 	if err := pkRows.Err(); err != nil {
-		pkRows.Close()
 		return meta, nil, fmt.Errorf("error iterating primary key of table %v: %w", qtn, err)
 	}
-	pkRows.Close()
 
 	// Every index with its ordered column list.
 	idxArgs := []interface{}{}
@@ -1609,12 +1610,13 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 	if err != nil {
 		return meta, nil, fmt.Errorf("unable to list indexes of table %v: %w", qtn, err)
 	}
+	defer func() { _ = idxRows.Close() }()
+
 	indexes := make(map[string]*mapplgis.IndexMeta)
 	var order []string
 	for idxRows.Next() {
 		var idxName, colName string
 		if serr := idxRows.Scan(&idxName, &colName); serr != nil {
-			idxRows.Close()
 			return meta, nil, fmt.Errorf("unable to scan indexes of table %v: %w", qtn, serr)
 		}
 		idx, ok := indexes[idxName]
@@ -1626,10 +1628,8 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 		idx.Columns = append(idx.Columns, colName)
 	}
 	if err := idxRows.Err(); err != nil {
-		idxRows.Close()
 		return meta, nil, fmt.Errorf("error iterating indexes of table %v: %w", qtn, err)
 	}
-	idxRows.Close()
 	for _, name := range order {
 		meta.Indexes = append(meta.Indexes, *indexes[name])
 	}

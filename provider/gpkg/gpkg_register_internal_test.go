@@ -37,7 +37,7 @@ func TestTableColumnsAndPK(t *testing.T) {
 			if err != nil {
 				t.Fatalf("problem opening in-memory db: %v", err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 
 			if _, err := db.Exec(tc.createSQL); err != nil {
 				t.Fatalf("problem creating table: %v", err)
@@ -150,7 +150,7 @@ func TestFeatureTableMetaData(t *testing.T) {
 			if err != nil {
 				panic(fmt.Sprintf("problem opening gpkg %v, err: %v", tc.gpkgPath, err))
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 
 			ftmd, err := featureTableMetaData(db)
 			if err != nil {

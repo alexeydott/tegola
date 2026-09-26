@@ -416,7 +416,7 @@ func TestTileFeaturesWKBInMemoryFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// The fake server returns both rows for any query, so the SQL !BBOX!
 	// predicate cannot be what filters: the exact in-memory filter is
@@ -468,7 +468,7 @@ func TestGeomTypeFromColumnSkipsSystemInfoBlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	geo, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
@@ -494,7 +494,7 @@ func TestGeomTypeFromColumnOnlySystemInfoRowsYieldsErrNoRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	_, _, err = geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != sql.ErrNoRows {
@@ -511,7 +511,7 @@ func TestGeomTypeFromColumnSkipsNullGeometryRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	geo, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
@@ -617,7 +617,7 @@ func TestTileFeaturesRetriesBeforeEmittingFeatures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &retryTestDriver{failInitial: tc.failInitial, failRead: tc.failRead}
 			p, db := newRetryTestProvider(t, d)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 
 			var got []provider.Feature
 			err := p.TileFeatures(context.Background(), "test", provider.NewTile(0, 0, 0, 0, 4326), nil,
@@ -821,7 +821,7 @@ func TestDecodeGeometryAutoFallback(t *testing.T) {
 	}
 
 	// explicit wkb format
-	srid, geo, err = decodeGeometry(wkb, GeometryFormatWKB, GeometryFormatMySQL, codec.DefaultMOSConfig())
+	_, geo, err = decodeGeometry(wkb, GeometryFormatWKB, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1328,7 +1328,7 @@ func ensureLiveTestTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to open live test connection: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	_, err = db.Exec("CREATE TABLE IF NOT EXISTS `lines` (" +
 		"`id` BIGINT NOT NULL PRIMARY KEY," +
 		"`geom` GEOMETRY," +
@@ -1466,7 +1466,7 @@ func TestExplicitGeometryTypeMixedContentPermitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := &Provider{
 		db: db,
@@ -1577,7 +1577,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rs.Close()
+		defer func() { _ = rs.Close() }()
 		got, err := parseShowIndexRows(rs)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -1610,7 +1610,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rs.Close()
+		defer func() { _ = rs.Close() }()
 		got, err := parseShowIndexRows(rs)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -1637,7 +1637,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rs.Close()
+		defer func() { _ = rs.Close() }()
 		got, err := parseShowIndexRows(rs)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -1664,7 +1664,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rs.Close()
+		defer func() { _ = rs.Close() }()
 		if _, err := parseShowIndexRows(rs); err == nil {
 			t.Fatal("expected an error parsing a malformed Seq_in_index, got nil")
 		}
@@ -1678,7 +1678,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rs.Close()
+		defer func() { _ = rs.Close() }()
 		if _, err := parseShowIndexRows(rs); err == nil {
 			t.Fatal("expected an error for a result without Column_name, got nil")
 		}
@@ -1694,7 +1694,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rs.Close()
+		defer func() { _ = rs.Close() }()
 		got, err := parseShowIndexRows(rs)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)

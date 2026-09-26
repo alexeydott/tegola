@@ -899,7 +899,8 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list columns of table %v: %v", tablename, err)
 	}
-	defer colRows.Close()
+	defer func() { _ = colRows.Close() }()
+
 	var meta mapplgis.TableMeta
 	for colRows.Next() {
 		var field, colType string
@@ -913,22 +914,20 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 	if err := colRows.Err(); err != nil {
 		return mapplgis.Info{}, fmt.Errorf("error iterating columns of table %v: %v", tablename, err)
 	}
-	_ = colRows.Close()
 
 	idxRows, err := db.Query(fmt.Sprintf("SHOW INDEX FROM %v", quoteIdentifier(tablename)))
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list indexes of table %v: %v", tablename, err)
 	}
+	defer func() { _ = idxRows.Close() }()
+
 	parsed, perr := parseShowIndexRows(idxRows)
 	if perr != nil {
-		_ = idxRows.Close()
 		return mapplgis.Info{}, fmt.Errorf("table %v: %v", tablename, perr)
 	}
 	if err := idxRows.Err(); err != nil {
-		_ = idxRows.Close()
 		return mapplgis.Info{}, fmt.Errorf("error iterating indexes of table %v: %v", tablename, err)
 	}
-	_ = idxRows.Close()
 
 	indexes := make(map[string]*mapplgis.IndexMeta)
 	for _, row := range parsed {

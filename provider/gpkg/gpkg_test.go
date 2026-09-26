@@ -789,7 +789,7 @@ func TestOpenNonExistantFile(t *testing.T) {
 		NONEXISTANTFILE = "testdata/nonexistant.gpkg"
 	)
 
-	os.Remove(NONEXISTANTFILE)
+	_ = os.Remove(NONEXISTANTFILE)
 	fn := func(tc tcase) func(*testing.T) {
 		return func(t *testing.T) {
 			_, err := gpkg.NewTileProvider(tc.config, nil)

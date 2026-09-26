@@ -174,6 +174,8 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, er
 	if err != nil {
 		return nil, fmt.Errorf("table %q index lookup: %v", tablename, err)
 	}
+	defer func() { _ = indexRows.Close() }()
+
 	type indexInfo struct {
 		seq     int
 		name    string
@@ -185,17 +187,12 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, er
 	for indexRows.Next() {
 		var idx indexInfo
 		if err := indexRows.Scan(&idx.seq, &idx.name, &idx.unique, &idx.origin, &idx.partial); err != nil {
-			_ = indexRows.Close()
 			return nil, fmt.Errorf("table %q index scan: %v", tablename, err)
 		}
 		indexes = append(indexes, idx)
 	}
 	if err := indexRows.Err(); err != nil {
-		_ = indexRows.Close()
 		return nil, fmt.Errorf("table %q index rows: %v", tablename, err)
-	}
-	if err := indexRows.Close(); err != nil {
-		return nil, fmt.Errorf("table %q index close: %v", tablename, err)
 	}
 
 	var result []mapplgis.IndexMeta
@@ -205,11 +202,12 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, er
 		if err != nil {
 			return nil, fmt.Errorf("table %q index_info %q: %v", tablename, idx.name, err)
 		}
+		defer func() { _ = infoRows.Close() }()
+
 		for infoRows.Next() {
 			var seqno int
 			var cid, name sql.NullString
 			if err := infoRows.Scan(&seqno, &cid, &name); err != nil {
-				_ = infoRows.Close()
 				return nil, fmt.Errorf("table %q index_info %q scan: %v", tablename, idx.name, err)
 			}
 			if name.Valid && name.String != "" {
@@ -217,11 +215,7 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, er
 			}
 		}
 		if err := infoRows.Err(); err != nil {
-			_ = infoRows.Close()
 			return nil, fmt.Errorf("table %q index_info %q rows: %v", tablename, idx.name, err)
-		}
-		if err := infoRows.Close(); err != nil {
-			return nil, fmt.Errorf("table %q index_info %q close: %v", tablename, idx.name, err)
 		}
 		result = append(result, meta)
 	}
