@@ -83,6 +83,44 @@ func quoteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// escapeSQLStringLiteral escapes a value for interpolation inside a
+// single-quoted SQL string literal (audit P5-8): single quotes are
+// doubled so they cannot terminate the literal early.
+func escapeSQLStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// identAlreadyQuoted reports whether name is already wrapped in one
+// complete double-quote pair (with "" escapes) spanning the whole
+// value (audit P5-10 contract).
+func identAlreadyQuoted(name string) bool {
+	if len(name) < 2 || name[0] != '"' {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if name[i] == '"' {
+			if i+1 < len(name) && name[i+1] == '"' {
+				i++
+				continue
+			}
+			return i == len(name)-1
+		}
+	}
+	return false
+}
+
+// quoteTokenIdent quotes an identifier substituted for the !ID_FIELD! /
+// !GEOM_FIELD! SQL tokens (audit P5-10 contract): values already wrapped
+// in a complete quote pair pass through verbatim; the empty string (the
+// no-id-field sentinel) passes through unchanged; everything else is
+// quoted as a single HANA identifier.
+func quoteTokenIdent(name string) string {
+	if name == "" || identAlreadyQuoted(name) {
+		return name
+	}
+	return quoteIdentifier(name)
+}
+
 // validateIdentName rejects empty identifier names before they can be
 // quoted into SQL (audit P5-12). Quoting cannot express an empty
 // identifier: `""` would become the literal two-character name `""`
@@ -408,12 +446,12 @@ func genMVTSQL(l *Layer, fields []string, buffer uint, clipGeometry bool) (sql s
 	}
 
 	if len(flds) == 0 {
-		sql = fmt.Sprintf(`SELECT ST_AsMVT(%v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v') FROM (%v)`, geomFieldName, buffer, clip, geomFieldName, l.Name(), l.GeomFieldName(), l.sql)
+		sql = fmt.Sprintf(`SELECT ST_AsMVT(%v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v') FROM (%v)`, geomFieldName, buffer, clip, geomFieldName, escapeSQLStringLiteral(l.Name()), escapeSQLStringLiteral(l.GeomFieldName()), l.sql)
 	} else {
 		if l.IDFieldName() != "" {
-			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v', feature_id_name => '%v') FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, l.Name(), l.GeomFieldName(), l.IDFieldName(), l.sql)
+			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v', feature_id_name => '%v') FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, escapeSQLStringLiteral(l.Name()), escapeSQLStringLiteral(l.GeomFieldName()), escapeSQLStringLiteral(l.IDFieldName()), l.sql)
 		} else {
-			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v') FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, l.Name(), l.GeomFieldName(), l.sql)
+			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v') FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, escapeSQLStringLiteral(l.Name()), escapeSQLStringLiteral(l.GeomFieldName()), l.sql)
 		}
 	}
 	return sql, nil
@@ -594,8 +632,8 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 		zToken, strconv.FormatUint(uint64(z), 10),
 		xToken, strconv.FormatUint(uint64(x), 10),
 		yToken, strconv.FormatUint(uint64(y), 10),
-		idFieldToken, l.IDFieldName(),
-		geomFieldToken, l.geomField,
+		idFieldToken, quoteTokenIdent(l.IDFieldName()),
+		geomFieldToken, quoteTokenIdent(l.geomField),
 		geomTypeToken, geoType,
 		scaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		pixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
