@@ -590,6 +590,32 @@ func quoteIdentifier(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
+// quoteTokenIdentifier quotes an identifier substituted for an
+// !ID_FIELD!/!GEOM_FIELD! SQL token (audit P5-10). Values the user already
+// wrapped in a complete quote pair (backticks or double quotes) pass through
+// verbatim for backward compatibility; anything else is quoted with
+// quoteIdentifier, which escapes embedded backticks and quotes qualified
+// names per part so hostile names cannot break out of the identifier.
+func quoteTokenIdentifier(name string) string {
+	if isQuotedIdentifierValue(name) {
+		return name
+	}
+	return quoteIdentifier(name)
+}
+
+// isQuotedIdentifierValue reports whether name is already wrapped in a
+// complete quote pair (backticks or double quotes). Semantics are kept
+// identical to the postgis provider's token quoting (audit P5-10).
+func isQuotedIdentifierValue(name string) bool {
+	if len(name) < 2 {
+		return false
+	}
+	if name[0] != '`' && name[0] != '"' {
+		return false
+	}
+	return name[len(name)-1] == name[0]
+}
+
 // wktPolygon formats an extent as a WKT POLYGON string for use with
 // ST_GeomFromText in the !BBOX! replacement.
 func wktPolygon(ext *geom.Extent) string {

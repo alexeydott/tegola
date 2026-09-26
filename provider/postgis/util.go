@@ -239,8 +239,8 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 		config.ScaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		config.PixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
 		config.PixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-		config.IdFieldToken, lyr.IDFieldName(),
-		config.GeomFieldToken, lyr.GeomFieldName(),
+		config.IdFieldToken, quoteTokenIdentifier(lyr.IDFieldName()),
+		config.GeomFieldToken, quoteTokenIdentifier(lyr.GeomFieldName()),
 		config.GeomTypeToken, geoType,
 	)
 
@@ -253,6 +253,36 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 // embedded quotes (SQL standard identifier escaping).
 func pgQuoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// quoteTokenIdentifier quotes an identifier substituted for an
+// !ID_FIELD!/!GEOM_FIELD! SQL token (audit P5-10). Values the user already
+// wrapped in a complete quote pair (double quotes or backticks) pass through
+// verbatim for backward compatibility; qualified names are quoted per part
+// so table-qualified fields keep working; anything else is escaped with
+// pgQuoteIdent so hostile names cannot break out of the identifier.
+func quoteTokenIdentifier(name string) string {
+	if isQuotedIdentifierValue(name) {
+		return name
+	}
+	parts := strings.Split(name, ".")
+	for i := range parts {
+		parts[i] = pgQuoteIdent(parts[i])
+	}
+	return strings.Join(parts, ".")
+}
+
+// isQuotedIdentifierValue reports whether name is already wrapped in a
+// complete quote pair (double quotes or backticks). Semantics are kept
+// identical to the mysql provider's token quoting (audit P5-10).
+func isQuotedIdentifierValue(name string) bool {
+	if len(name) < 2 {
+		return false
+	}
+	if name[0] != '`' && name[0] != '"' {
+		return false
+	}
+	return name[len(name)-1] == name[0]
 }
 
 // extractQueryParamValues finds default values for SQL tokens and constructs query parameter values out of them

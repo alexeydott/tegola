@@ -1194,8 +1194,10 @@ func TestReplaceTokens(t *testing.T) {
 	}
 
 	got = mustReplaceTokens(t, "!ID_FIELD!-!GEOM_FIELD!", layer, tile, ext)
-	if got != "fid-geom" {
-		t.Errorf("expected fid-geom, got: %v", got)
+	// audit P5-10: identifier tokens are now quoted; this used to insert
+	// raw "fid-geom" and allowed identifier breakout
+	if got != "`fid`-`geom`" {
+		t.Errorf("expected `fid`-`geom`, got: %v", got)
 	}
 
 	got = mustReplaceTokens(t, "!GEOM_TYPE!", layer, tile, ext)

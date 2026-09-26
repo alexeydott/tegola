@@ -130,6 +130,47 @@ func TestReplaceTokens(t *testing.T) {
 	}
 }
 
+// TestReplaceTokensQuotesIdentifierTokens (audit P5-10) pins identifier
+// quoting for !ID_FIELD!/!GEOM_FIELD! substitution in the postgis provider:
+// plain and
+// qualified names are quoted per part, values already wrapped in a complete
+// quote pair pass through verbatim (backward compatibility), and hostile
+// names cannot break out of the quoted identifier.
+func TestReplaceTokensQuotesIdentifierTokens(t *testing.T) {
+	tile := provider.NewTile(0, 0, 0, 0, tegola.WebMercator)
+
+	cases := []struct {
+		name      string
+		idField   string
+		geomField string
+		want      string
+	}{
+		{"plain name", "fid", "geom", `SELECT "fid", "geom" FROM t`},
+		{"qualified name", "t.fid", "db.t.geom", `SELECT "t"."fid", "db"."t"."geom" FROM t`},
+		{"already double quoted", `"fid"`, `"t"."geom"`, `SELECT "fid", "t"."geom" FROM t`},
+		{"already backtick quoted", "`fid`", "`geom`", "SELECT `fid`, `geom` FROM t"},
+		{"hostile input", `we"ird`, `ge"om`, `SELECT "we""ird", "ge""om" FROM t`},
+		{"unbalanced quote", `"fid`, `ge"om"`, `SELECT """fid", "ge""om""" FROM t`},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sql, err := replaceTokens(
+				"SELECT !ID_FIELD!, !GEOM_FIELD! FROM t",
+				&Layer{idField: c.idField, geomField: c.geomField, srid: tegola.WebMercator},
+				tile,
+				false,
+			)
+			if err != nil {
+				t.Fatalf("replaceTokens returned error: %v", err)
+			}
+			if sql != c.want {
+				t.Fatalf("identifier tokens not quoted safely:\n got %q\nwant %q", sql, c.want)
+			}
+		})
+	}
+}
+
 func TestReplaceTokensSyntheticSRIDUsesDatabaseSRIDZero(t *testing.T) {
 	srid, err := basic.RegisterProj4Defn("+proj=merc +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
 	if err != nil {

@@ -57,8 +57,8 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		config.ScaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		config.PixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
 		config.PixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-		config.IdFieldToken, layer.idFieldname,
-		config.GeomFieldToken, layer.geomFieldname,
+		config.IdFieldToken, quoteTokenIdentifier(layer.idFieldname),
+		config.GeomFieldToken, quoteTokenIdentifier(layer.geomFieldname),
 		config.GeomTypeToken, geomType,
 	)
 
