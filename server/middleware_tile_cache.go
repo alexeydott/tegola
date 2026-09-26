@@ -48,11 +48,14 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 		dirty := query.Get(QueryKeyDirty)
 		forceRegenerate := hasDirty && (dirty == "" || dirty == "1" || strings.EqualFold(dirty, "true"))
 
-		// The ?dirty parameter drives cache maintenance: it is gated like the
-		// ?tile= operations (disabled by default, token + rate limit when
-		// enabled). Only the regenerating variant needs a concurrency slot.
-		if hasDirty {
-			release, err := gateTileOperation(r, forceRegenerate && len(query) == 1)
+		// The regenerating ?dirty variant ( ?dirty, ?dirty=1, ?dirty=true )
+		// drives cache maintenance: it is gated like the ?tile= operations
+		// (disabled by default, token + rate limit when enabled). Only that
+		// variant is an operation; a falsy value (?dirty=0, ?dirty=false)
+		// requests no regeneration, trips no gate and is served as an
+		// ordinary cache query.
+		if forceRegenerate {
+			release, err := gateTileOperation(r, len(query) == 1)
 			if err != nil {
 				log.Debugf("cache middleware: dirty regeneration denied for %v: %v", r.URL.Path, err)
 				writeTileOperationDenied(w, err)
@@ -83,8 +86,13 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 			return
 		}
 
-		// Preserve the existing behavior for ordinary query parameters.
-		if r.URL.RawQuery != "" {
+		// Preserve the existing behavior for ordinary query parameters. A
+		// falsy ?dirty value does not count: it is inert, so the request is
+		// served exactly like one without the parameter.
+		if hasDirty {
+			query.Del(QueryKeyDirty)
+		}
+		if len(query) > 0 || (r.URL.RawQuery != "" && !hasDirty) {
 			next.ServeHTTP(w, r)
 			return
 		}
