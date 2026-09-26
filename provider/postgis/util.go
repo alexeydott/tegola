@@ -13,8 +13,8 @@ import (
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/internal/env"
 	"github.com/go-spatial/tegola/internal/log"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/tracelog"
@@ -346,8 +346,6 @@ func decipherFields(
 	descriptions []pgconn.FieldDescription,
 	values []any,
 ) (gid uint64, geom []byte, tags map[string]any, err error) {
-	var ok bool
-
 	tags = make(map[string]any)
 
 	var idParsed bool
@@ -372,7 +370,15 @@ func decipherFields(
 
 		switch descName {
 		case geomFieldname:
-			if geom, ok = values[i].([]byte); !ok {
+			// pgx returns Go strings for text/varchar geometry columns
+			// (geometry_format="wkt" reads WKT from such columns), while bytea
+			// columns come back as []byte; accept both (audit P6-2).
+			switch gval := values[i].(type) {
+			case []byte:
+				geom = gval
+			case string:
+				geom = []byte(gval)
+			default:
 				return 0, nil, nil, fmt.Errorf(
 					"unable to convert geometry field (%v) into bytes",
 					geomFieldname,

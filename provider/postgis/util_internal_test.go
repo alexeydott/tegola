@@ -11,6 +11,8 @@ import (
 	"github.com/go-spatial/tegola/internal/ttools"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // TestGenSQLRawFormat covers the R3-08 provider-level regression for the
@@ -362,5 +364,68 @@ func TestDecipherFields(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+// TestDecipherFieldsGeometryValueTypes (audit P6-2) covers the geometry value
+// types decipherFields must accept. pgx returns Go strings (not []byte) for
+// text/varchar columns, so geometry_format="wkt" layers reading WKT from a
+// text column broke with "unable to convert geometry field into bytes".
+// Both []byte and string values must be accepted; anything else errors.
+func TestDecipherFieldsGeometryValueTypes(t *testing.T) {
+	ctx := t.Context()
+	descriptions := []pgconn.FieldDescription{
+		{Name: "geom", DataTypeOID: pgtype.TextOID},
+		{Name: "id", DataTypeOID: pgtype.Int8OID},
+	}
+	const wkt = "POINT(1 2)"
+
+	type tcase struct {
+		geomValue any
+		wantGeom  []byte
+		wantErr   bool
+	}
+
+	tests := map[string]tcase{
+		"geometry as []byte": {
+			geomValue: []byte(wkt),
+			wantGeom:  []byte(wkt),
+		},
+		"geometry as string": {
+			geomValue: wkt,
+			wantGeom:  []byte(wkt),
+		},
+		"geometry as unsupported type errors": {
+			geomValue: int64(3),
+			wantErr:   true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			gid, geom, _, err := decipherFields(
+				ctx,
+				"geom",
+				"id",
+				nil,
+				descriptions,
+				[]any{tc.geomValue, int64(7)},
+			)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got none (geom=%q)", geom)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gid != 7 {
+				t.Errorf("gid: expected 7, got %v", gid)
+			}
+			if string(geom) != string(tc.wantGeom) {
+				t.Errorf("geom: expected %q, got %q", tc.wantGeom, geom)
+			}
+		})
 	}
 }
