@@ -341,6 +341,18 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			if vals[i] == nil {
 				if cols[i] == pLayer.geomFieldname {
 					skipRow = true
+					continue
+				}
+				if cols[i] == pLayer.idFieldname {
+					// P6-11: a NULL feature id would silently become ID 0 and
+					// collapse distinct features into one in the MVT.
+					// provider.Feature.ID is a plain uint64, so a feature
+					// without an id cannot be represented; skip the row and
+					// warn instead (documented choice).
+					p.warnOnce("null-feature-id:"+pLayer.name,
+						"gpkg layer '%v': NULL feature id in column %q; skipping row",
+						pLayer.name, pLayer.idFieldname)
+					skipRow = true
 				}
 				continue
 			}
