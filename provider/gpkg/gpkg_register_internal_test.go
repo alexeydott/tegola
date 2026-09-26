@@ -157,13 +157,19 @@ func TestFeatureTableMetaData(t *testing.T) {
 				t.Errorf("unexpected error, expected nil got %v", err)
 			}
 
-			for tname, ftd := range ftmd {
+			for tname, ftds := range ftmd {
 				expectedFtd, ok := tc.expectedFtd[tname]
 				if !ok {
 					t.Errorf(" %v in featureTableDetails, expected true got false", tname)
+					continue
 				}
-				if pass, errstr := ftdEqual(tname, ftd, expectedFtd); !pass {
-					t.Error(errstr)
+				if len(ftds) != 1 {
+					t.Errorf("%v geometry columns = %v, expected 1 (fixtures carry a single geometry column per table)", tname, len(ftds))
+				}
+				for _, ftd := range ftds {
+					if pass, errstr := ftdEqual(tname, ftd, expectedFtd); !pass {
+						t.Error(errstr)
+					}
 				}
 			}
 		}

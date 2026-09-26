@@ -18,6 +18,114 @@ func sqliteQuoteIdent(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
+// sqliteReadOnlyDSN builds the sqlite3 DSN used to open GeoPackage files.
+// The provider never writes to a GeoPackage, so the database is opened in
+// read-only mode (audit P6-16); _busy_timeout keeps reads patient against a
+// file locked by another process.
+func sqliteReadOnlyDSN(path string) string {
+	return "file:" + path + "?mode=ro&_busy_timeout=5000"
+}
+
+// escapeSQLStringLiteral escapes a value for interpolation inside a
+// single-quoted SQL string literal (audit P5-8): single quotes are
+// doubled so they cannot terminate the literal early.
+func escapeSQLStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlStringLiteral wraps s as a complete single-quoted SQL string
+// literal with escaping applied (audit P5-8 helper contract).
+func sqlStringLiteral(s string) string {
+	return "'" + escapeSQLStringLiteral(s) + "'"
+}
+
+// isQuotedIdentifierValue reports whether v is one complete quoted
+// identifier spanning the whole value (audit P5-10 pass-through rule):
+// first and last byte are the same identifier-quote character and the
+// closing quote at the end is the actual terminator (doubled quote
+// characters inside count as escapes). Only the identifier quote
+// characters (double quote, backtick) qualify; a single-quote pair is a
+// SQL string literal, never an identifier, so it is never passed through.
+// A value like "`x';DROP`" is NOT a complete pair and is quoted normally
+// instead of being passed through as SQL text.
+func isQuotedIdentifierValue(v string) bool {
+	if len(v) < 2 {
+		return false
+	}
+	q := v[0]
+	if q != '"' && q != '`' {
+		return false
+	}
+	if v[len(v)-1] != q {
+		return false
+	}
+	for i := 1; i < len(v); i++ {
+		if v[i] == q {
+			if i+1 < len(v) && v[i+1] == q {
+				i++ // doubled quote escape
+				continue
+			}
+			return i == len(v)-1
+		}
+	}
+	return false
+}
+
+// splitIdentDots splits a possibly qualified identifier at top-level dots,
+// keeping dots that sit inside quoted segments ("a.b".c has one dot). An
+// unclosed quote keeps the remainder in the current part, so hostile values
+// are never split into injection-shaped pieces.
+func splitIdentDots(v string) []string {
+	var parts []string
+	var cur strings.Builder
+	var quote byte
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case quote != 0:
+			cur.WriteByte(c)
+			if c == quote {
+				if i+1 < len(v) && v[i+1] == quote {
+					cur.WriteByte(quote)
+					i++
+					continue
+				}
+				quote = 0
+			}
+		case c == '"' || c == '`' || c == '\'':
+			quote = c
+			cur.WriteByte(c)
+		case c == '.':
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	parts = append(parts, cur.String())
+	return parts
+}
+
+// quoteTokenIdentifier prepares a configured !ID_FIELD!/!GEOM_FIELD!
+// token value for interpolation into SQLite SQL text (audit P5-10,
+// shorthand "!ID!/!GEOM!"). A value already wrapped in one complete
+// identifier quote pair passes through verbatim; anything else is quoted
+// per identifier part (schema.table.col => `schema`.`table`.`col`) with
+// embedded quote characters made inert.
+func quoteTokenIdentifier(v string) string {
+	if isQuotedIdentifierValue(v) {
+		return v
+	}
+	parts := splitIdentDots(v)
+	for i := range parts {
+		if isQuotedIdentifierValue(parts[i]) {
+			continue
+		}
+		parts[i] = sqliteQuoteIdent(parts[i])
+	}
+	return strings.Join(parts, ".")
+}
+
 // replaceTokens replaces tile and layer metadata tokens in a SQL query.
 //
 // bboxExtent must be the tile's buffered extent transformed to the layer's
@@ -65,8 +173,8 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		config.ScaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		config.PixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
 		config.PixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-		config.IdFieldToken, layer.idFieldname,
-		config.GeomFieldToken, layer.geomFieldname,
+		config.IdFieldToken, quoteTokenIdentifier(layer.idFieldname),
+		config.GeomFieldToken, quoteTokenIdentifier(layer.geomFieldname),
 		config.GeomTypeToken, geomType,
 	)
 

@@ -10,6 +10,68 @@ import (
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
+// TestIdentTokenQuoting pins the cross-provider !ID_FIELD!/!GEOM_FIELD!
+// token quoting contract (audit P5-10, shorthand "!ID!/!GEOM!"): unquoted values are quoted per identifier part,
+// values wrapped in one complete identifier quote pair (double quote or
+// backtick) pass through verbatim, and hostile values can never break
+// out of the quoted identifier. The matrix
+// goes through replaceTokens so it fails against the pre-fix raw
+// substitution.
+// TestSQLStringLiteral pins the audit P5-8 helper contract: values are
+// wrapped as single-quoted literals with inner single quotes doubled,
+// e.g. for the CreateRTreeIndex hint arguments in registration errors.
+func TestSQLStringLiteral(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"gpkgTestPoints", "'gpkgTestPoints'"},
+		{"we'ird", "'we''ird'"},
+		{"'", "''''"},
+		{"", "''"},
+	}
+	for _, tc := range tests {
+		if got := sqlStringLiteral(tc.in); got != tc.want {
+			t.Fatalf("sqlStringLiteral(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestIdentTokenQuoting(t *testing.T) {
+	type tcase struct {
+		value    string
+		expected string
+	}
+	tests := map[string]tcase{
+		"plain":                              {value: "feature_id", expected: "`feature_id`"},
+		"qualified":                          {value: "schema.table.col", expected: "`schema`.`table`.`col`"},
+		"already-quoted":                     {value: `"my.col"`, expected: `"my.col"`},
+		"already-escaped":                    {value: "`a``b`", expected: "`a``b`"},
+		"backtick-quoted":                    {value: "`my.col`", expected: "`my.col`"},
+		"single-quoted-is-not-an-identifier": {value: "'my.col'", expected: "`'my.col'`"},
+		"quote-shaped-single":                {value: "'x';DROP'", expected: "`'x';DROP'`"},
+		"hostile-semi":                       {value: "a;b--", expected: "`a;b--`"},
+		"hostile-quote":                      {value: `a"b`, expected: "`a\"b`"},
+		"quote-shaped":                       {value: "`x`;DROP`", expected: "```x``;DROP```"},
+		"mixed-qualified":                    {value: `"my schema".col`, expected: "\"my schema\".`col`"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			layer := Layer{idFieldname: tc.value, geomFieldname: tc.value}
+			tile := provider.NewTile(0, 0, 0, 0, tegola.WebMercator)
+			ext, _ := tile.BufferedExtent()
+			out, err := replaceTokens("SELECT !ID_FIELD!, !GEOM_FIELD! FROM t", &layer, tile, ext)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			want := "SELECT " + tc.expected + ", " + tc.expected + " FROM t"
+			if out != want {
+				t.Errorf("value %q:\n want %v\n  got %v", tc.value, want, out)
+			}
+		})
+	}
+}
+
 func TestReplaceTokens(t *testing.T) {
 	type tcase struct {
 		qtext    string
@@ -108,9 +170,10 @@ func TestReplaceTokens(t *testing.T) {
 				geomType:      geom.Point{},
 			},
 			tile: provider.NewTile(11, 1070, 676, 64, tegola.WebMercator),
-			expected: `SELECT feature_id, shape, 'POINT',
-				11, 1070, 676, 11,
-				76.43702829, 76.43702829, 272989.38673277`,
+			// P5-10: !ID_FIELD!/!GEOM_FIELD! substitute quoted identifiers.
+			expected: "SELECT `feature_id`, `shape`, 'POINT',\n" +
+				"				11, 1070, 676, 11,\n" +
+				"				76.43702829, 76.43702829, 272989.38673277",
 		},
 	}
 
@@ -122,6 +185,15 @@ func TestReplaceTokens(t *testing.T) {
 func TestTrimTrailingSemicolon(t *testing.T) {
 	if got := trimTrailingSemicolon(" SELECT * FROM features ;  "); got != "SELECT * FROM features" {
 		t.Fatalf("trimTrailingSemicolon() = %q", got)
+	}
+}
+
+// P6-16: GeoPackage files must be opened read-only, with a busy timeout.
+func TestSQLiteReadOnlyDSN(t *testing.T) {
+	got := sqliteReadOnlyDSN(`C:\data\file.gpkg`)
+	want := `file:C:\data\file.gpkg?mode=ro&_busy_timeout=5000`
+	if got != want {
+		t.Fatalf("sqliteReadOnlyDSN() = %q, want %q", got, want)
 	}
 }
 

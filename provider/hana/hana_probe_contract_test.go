@@ -29,13 +29,16 @@ type contractStubDriver struct {
 	// closes, when non-nil, is incremented by every driver rows Close
 	// (audit N10 close-tracking).
 	closes *int32
+	// ctxLog, when non-nil, records the context every query executes
+	// under (audit P5-16 probe-context deadlines).
+	ctxLog *[]context.Context
 	// typeNames, when set, backs ColumnTypeDatabaseTypeName; when absent
 	// the stub reports no database types (pre-N10 stub behavior).
 	typeNames []string
 }
 
 func (d *contractStubDriver) Open(string) (driver.Conn, error) {
-	return &contractStubConn{columns: d.columns, rows: d.rows, queryLog: d.queryLog, closes: d.closes, typeNames: d.typeNames}, nil
+	return &contractStubConn{columns: d.columns, rows: d.rows, queryLog: d.queryLog, closes: d.closes, ctxLog: d.ctxLog, typeNames: d.typeNames}, nil
 }
 
 type contractStubConn struct {
@@ -43,15 +46,21 @@ type contractStubConn struct {
 	rows      [][]driver.Value
 	queryLog  *[]string
 	closes    *int32
+	ctxLog    *[]context.Context
 	typeNames []string
 }
 
-func (c *contractStubConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("not supported") }
-func (c *contractStubConn) Close() error                        { return nil }
-func (c *contractStubConn) Begin() (driver.Tx, error)           { return nil, errors.New("not supported") }
-func (c *contractStubConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+func (c *contractStubConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("not supported")
+}
+func (c *contractStubConn) Close() error              { return nil }
+func (c *contractStubConn) Begin() (driver.Tx, error) { return nil, errors.New("not supported") }
+func (c *contractStubConn) QueryContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
 	if c.queryLog != nil {
 		*c.queryLog = append(*c.queryLog, query)
+	}
+	if c.ctxLog != nil {
+		*c.ctxLog = append(*c.ctxLog, ctx)
 	}
 	return &contractStubRows{columns: c.columns, rows: c.rows, closes: c.closes, typeNames: c.typeNames}, nil
 }
@@ -135,6 +144,26 @@ func openContractStubCounting(t *testing.T, columns []string, rows [][]driver.Va
 	return db, closes
 }
 
+// openContractStubCtxs is openContractStub plus a recorder for the context
+// every query executes under (audit P5-16). Every column reports the BLOB
+// database type so field introspection succeeds.
+func openContractStubCtxs(t *testing.T, columns []string, rows [][]driver.Value) (*sql.DB, *[]context.Context) {
+	t.Helper()
+	ctxLog := &[]context.Context{}
+	typeNames := make([]string, len(columns))
+	for i := range typeNames {
+		typeNames[i] = "BLOB"
+	}
+	driverName := "tegola_hana_contract_test_" + strconv.FormatUint(atomic.AddUint64(&contractDriverSeq, 1), 10)
+	sql.Register(driverName, &contractStubDriver{columns: columns, rows: rows, ctxLog: ctxLog, typeNames: typeNames})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db, ctxLog
+}
+
 // hanaProbeFixture converts shared fixture rows to driver values.
 func hanaProbeFixture(rows [][]interface{}) [][]driver.Value {
 	out := make([][]driver.Value, len(rows))
@@ -163,10 +192,10 @@ func TestProbeMOSCustomSQLContract(t *testing.T) {
 		db := openContractStub(t, columns, hanaProbeFixture(rows))
 		p := Provider{pool: &connectionPoolCollector{pool: db}}
 		layer := &Layer{
-			name:          "probe_layer",
-			geomField:     "geom",
-			bboxFields:    codec.DefaultBBoxFields(),
-			mosConfig:     mosfixture.Config(),
+			name:           "probe_layer",
+			geomField:      "geom",
+			bboxFields:     codec.DefaultBBoxFields(),
+			mosConfig:      mosfixture.Config(),
 			geometryFormat: format,
 		}
 		cols, contract, err := p.probeMOSCustomSQLContract(layer, "SELECT * FROM probe_table")

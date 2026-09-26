@@ -53,7 +53,11 @@ type featureTableDetails struct {
 	geomFieldname string
 	geomType      geom.Geometry
 	srid          uint64
-	bbox          *geom.Extent
+	// srsIDRaw is the raw SRS id from the metadata (audit P6-14): 0
+	// (undefined), negatives (cartesian engineering CRS) and NULL are
+	// preserved so the fallback to web mercator can be warned about.
+	srsIDRaw sql.NullInt64
+	bbox     *geom.Extent
 }
 
 // Creates a config instance of the type NewTileProvider() requires including all available feature
@@ -61,7 +65,7 @@ type featureTableDetails struct {
 //	tables in the gpkg at 'gpkgPath'.
 func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 	// Get all feature tables
-	db, err := sql.Open("sqlite3", gpkgPath)
+	db, err := sql.Open("sqlite3", sqliteReadOnlyDSN(gpkgPath))
 	if err != nil {
 		return nil, err
 	}
@@ -86,10 +90,21 @@ func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 	conf["filepath"] = gpkgPath
 	conf["layers"] = make([]map[string]interface{}, len(tnames))
 	for i, tablename := range tnames {
-		// Use all columns besides the primary key (id) and geometry columns in "fields"
-		propFields := make([]string, 0, len(ftMetaData[tablename].colNames))
-		for _, colName := range ftMetaData[tablename].colNames {
-			if colName != ftMetaData[tablename].idFieldname && colName != ftMetaData[tablename].geomFieldname {
+		// Use all columns besides the primary key (id) and geometry columns
+		// in "fields". A table may carry multiple geometry columns; all of
+		// them are excluded and the first (sorted by name) drives the
+		// single generated layer, matching pickGeometryColumn's implicit
+		// selection.
+		details := ftMetaData[tablename]
+		d := details[0]
+		geomCols := make(map[string]struct{}, len(details))
+		for _, det := range details {
+			geomCols[strings.ToLower(det.geomFieldname)] = struct{}{}
+		}
+		propFields := make([]string, 0, len(d.colNames))
+		for _, colName := range d.colNames {
+			_, isGeom := geomCols[strings.ToLower(colName)]
+			if colName != d.idFieldname && !isGeom {
 				propFields = append(propFields, colName)
 			}
 		}
@@ -97,7 +112,7 @@ func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 		lconf := make(map[string]interface{})
 		lconf["name"] = tablename
 		lconf["tablename"] = tablename
-		lconf["id_fieldname"] = ftMetaData[tablename].idFieldname
+		lconf["id_fieldname"] = d.idFieldname
 		lconf["fields"] = propFields
 		conf["layers"].([]map[string]interface{})[i] = lconf
 	}
@@ -163,6 +178,69 @@ func tableColumnsAndPK(db *sql.DB, tablename string) ([]string, []string, error)
 	sort.Strings(colNames)
 
 	return colNames, pkColumns, nil
+}
+
+// rowidAliasColumn returns the name of the table's rowid-alias column (a
+// single INTEGER PRIMARY KEY column) per the SQLite alias rules: declared
+// type exactly INTEGER and the sole primary-key column. Returns "" when the
+// table has no rowid alias (audit P5-5).
+func rowidAliasColumn(db *sql.DB, tablename string) (string, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%v);", quoteIdent(tablename)))
+	if err != nil {
+		return "", fmt.Errorf("table %q column lookup: %v", tablename, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type columnInfo struct {
+		name  string
+		ctype string
+		pk    int
+	}
+	var cols []columnInfo
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return "", fmt.Errorf("table %q column scan: %v", tablename, err)
+		}
+		cols = append(cols, columnInfo{name: name, ctype: ctype, pk: pk})
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("table %q column rows: %v", tablename, err)
+	}
+
+	var pkCols []columnInfo
+	for _, col := range cols {
+		if col.pk > 0 {
+			pkCols = append(pkCols, col)
+		}
+	}
+	// Single-column INTEGER PRIMARY KEY only; composite keys and non-INT
+	// types never alias the rowid. The declared type must be exactly
+	// "INTEGER" (case-insensitive) per the SQLite alias rules.
+	if len(pkCols) == 1 && pkCols[0].pk == 1 && strings.EqualFold(pkCols[0].ctype, "INTEGER") {
+		return pkCols[0].name, nil
+	}
+	return "", nil
+}
+
+// rtreeTableExists reports whether the RTree spatial index table used by
+// the native tile query JOIN is present (audit P5-5). Real GeoPackages
+// carry it as a virtual table registered via gpkg_extensions; either way
+// sqlite_master is the authoritative check for what the query can join.
+func rtreeTableExists(db *sql.DB, rtreeName string) (bool, error) {
+	var one int
+	err := db.QueryRow("SELECT 1 FROM sqlite_master WHERE lower(name) = lower(?)", rtreeName).Scan(&one)
+	switch {
+	case err == sql.ErrNoRows:
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("spatial index %q lookup: %v", rtreeName, err)
+	}
+	return true, nil
 }
 
 // tableIndexedColumns returns one IndexMeta per table index with its
@@ -343,15 +421,22 @@ func matchBoundColumns(colNames []string, fields codec.BBoxFields) *[4]string {
 	return &matched
 }
 
-// Collect meta data about all feature tables in opened gpkg.
-func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) {
+// Collect meta data about all feature tables in opened gpkg. A table may
+// carry multiple geometry columns (one gpkg_geometry_columns row each), so
+// entries are keyed by table name and list one detail per geometry column,
+// sorted by column name for deterministic selection.
+func featureTableMetaData(gpkg *sql.DB) (map[string][]featureTableDetails, error) {
 	// this query is used to read the metadata from the gpkg_contents and
 	// gpkg_geometry_columns tables for tables that store geographic
 	// features. Column names and the primary key are read via
 	// PRAGMA table_info (see tableColumnsAndPK).
+	//
+	// SRID source (audit P6-13): gpkg_geometry_columns.srs_id is the
+	// authoritative, per-geometry-column value; gpkg_contents.srs_id may be
+	// NULL and serves only as a fallback.
 	qtext := `
 		SELECT
-			c.table_name, c.min_x, c.min_y, c.max_x, c.max_y, c.srs_id, gc.column_name, gc.geometry_type_name
+			c.table_name, c.min_x, c.min_y, c.max_x, c.max_y, COALESCE(gc.srs_id, c.srs_id), gc.column_name, gc.geometry_type_name
 		FROM
 			gpkg_contents c JOIN gpkg_geometry_columns gc ON c.table_name = gc.table_name
 		WHERE
@@ -365,7 +450,7 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 	defer func() { _ = rows.Close() }()
 
 	// container for tracking metadata for each table with a geometry
-	geomTableDetails := make(map[string]featureTableDetails)
+	geomTableDetails := make(map[string][]featureTableDetails)
 
 	// iterate each row extracting meta data about each table
 	for rows.Next() {
@@ -376,6 +461,7 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 		if err = rows.Scan(&tablename, &minX, &minY, &maxX, &maxY, &srid, &geomCol, &geomType); err != nil {
 			return nil, err
 		}
+		srsIDRaw := srid
 
 		// map the returned geom type to a tegola geom type
 		tg, err := geomNameToGeom(geomType.String)
@@ -407,21 +493,70 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 			pkCol = pkColumns[0]
 		}
 
-		geomTableDetails[tablename.String] = featureTableDetails{
+		geomTableDetails[tablename.String] = append(geomTableDetails[tablename.String], featureTableDetails{
 			colNames:      colNames,
 			idFieldname:   pkCol,
 			geomFieldname: geomCol.String,
 			geomType:      tg,
 			srid:          sridVal,
+			srsIDRaw:      srsIDRaw,
 			// the extent of the layer's features
 			bbox: bbox,
-		}
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
+	// deterministic geometry-column order (audit P6-13): a table with
+	// multiple geometry columns must always resolve to the same entry.
+	for _, details := range geomTableDetails {
+		sort.Slice(details, func(i, j int) bool { return details[i].geomFieldname < details[j].geomFieldname })
+	}
+
 	return geomTableDetails, nil
+}
+
+// pickGeometryColumn selects the gpkg_geometry_columns entry a layer uses
+// as its geometry column (audit P6-13). A table can carry multiple
+// geometry columns; the configured geometry_fieldname picks the column
+// (case-insensitively). When the name is not explicitly configured, the
+// first entry (sorted by column name) is used and the ambiguity is warned
+// about; an explicit name that matches no geometry column is an error.
+func pickGeometryColumn(cols []featureTableDetails, configured string, explicit bool) (featureTableDetails, error) {
+	for _, d := range cols {
+		if strings.EqualFold(d.geomFieldname, configured) {
+			return d, nil
+		}
+	}
+
+	names := make([]string, len(cols))
+	for i := range cols {
+		names[i] = cols[i].geomFieldname
+	}
+	if !explicit {
+		if len(cols) > 1 {
+			log.Warnf("table has multiple geometry columns (%v); using %q - configure geometry_fieldname to select another",
+				strings.Join(names, ", "), cols[0].geomFieldname)
+		}
+		return cols[0], nil
+	}
+	return featureTableDetails{}, fmt.Errorf("table has no geometry column %q (available: %v)", configured, strings.Join(names, ", "))
+}
+
+// warnSRSIDFallback warns when an SRID source is missing, 0 (undefined per
+// the GeoPackage spec) or negative (cartesian engineering CRS) and the
+// layer therefore falls back to the configured/default SRID instead of
+// silently pretending the data is web mercator (audit P6-14).
+func warnSRSIDFallback(layerName, source string, srsID sql.NullInt64, fallback uint64) {
+	switch {
+	case !srsID.Valid:
+		log.Warnf("layer %q: %s is NULL; falling back to srid %d (configure srid explicitly to override)", layerName, source, fallback)
+	case srsID.Int64 == 0:
+		log.Warnf("layer %q: %s is 0 (undefined per the GeoPackage spec); falling back to srid %d - if the data is longitude/latitude, configure srid 4326", layerName, source, fallback)
+	case srsID.Int64 < 0:
+		log.Warnf("layer %q: %s is %d (cartesian engineering CRS); falling back to srid %d - configure srid explicitly if this is wrong", layerName, source, srsID.Int64, fallback)
+	}
 }
 
 // hasGpkgMetadataTables reports whether the file has the GeoPackage metadata
@@ -527,7 +662,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, ErrInvalidFilePath{filepath}
 	}
 
-	db, err := sql.Open("sqlite3", filepath)
+	db, err := sql.Open("sqlite3", sqliteReadOnlyDSN(filepath))
 	if err != nil {
 		return nil, err
 	}
@@ -542,7 +677,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	// are only required for gpkg-format layers; raw-format (wkb/wkt/mos)
 	// layers read plain SQLite tables, so an empty metadata map is used
 	// when those tables are absent.
-	geomTableDetails := make(map[string]featureTableDetails)
+	geomTableDetails := make(map[string][]featureTableDetails)
 	hasMetadata, merr := hasGpkgMetadataTables(db)
 	if merr != nil {
 		return nil, merr
@@ -556,10 +691,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 	// provider-level srid/crs_defn via the shared CRS contract. An explicit
 	// value must take precedence over any SRID inferred from the GPKG itself
-	// (gpkg_contents.srs_id or the per-row WKB header), since that inferred
-	// data is not always reliable (e.g. GPKGs produced by third-party
-	// conversion tools such as DWG exporters commonly leave those fields at 0
-	// or set them to a non-standard code).
+	// (gpkg_geometry_columns.srs_id or the per-row WKB header), since that
+	// inferred data is not always reliable (e.g. GPKGs produced by
+	// third-party conversion tools such as DWG exporters commonly leave
+	// those fields at 0 or set them to a non-standard code).
 	pcrs, perr := crsconfig.ResolveProvider(config, DefaultSRID)
 	if perr != nil {
 		return nil, perr
@@ -654,6 +789,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		if err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 		}
+		// P6-13: an explicitly configured geometry_fieldname picks the
+		// geometry column when a table carries several.
+		_, geomFieldErr := layerConf.String(ConfigKeyGeomField, nil)
+		geomFieldnameExplicit := geomFieldErr == nil
 
 		tagFieldnames, err := layerConf.StringSlice(ConfigKeyFields)
 		if err != nil { // empty slices are okay
@@ -728,14 +867,17 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				if cerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, cerr)
 				}
+				// P6-17: column-name lookups are case-insensitive; SQLite
+				// column names can differ in case from the configured
+				// names.
 				colSet := make(map[string]struct{}, len(colNames))
 				for _, c := range colNames {
-					colSet[c] = struct{}{}
+					colSet[strings.ToLower(c)] = struct{}{}
 				}
-				if _, ok := colSet[layer.geomFieldname]; !ok {
+				if _, ok := colSet[strings.ToLower(layer.geomFieldname)]; !ok {
 					return nil, fmt.Errorf("for layer (%v) %v: table %q has no geometry column %q", i, layerName, tablename, layer.geomFieldname)
 				}
-				if _, ok := colSet[layer.idFieldname]; !ok {
+				if _, ok := colSet[strings.ToLower(layer.idFieldname)]; !ok {
 					if len(pkColumns) == 0 {
 						return nil, fmt.Errorf("for layer (%v) %v: table %q has no id column %q", i, layerName, tablename, layer.idFieldname)
 					}
@@ -758,6 +900,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				if layer.boundFieldnames != nil {
 					log.Debugf("layer (%v): table %q carries raw bounds columns; enabling SQL bounds filter", layerName, tablename)
+				} else {
+					// audit P6-19: without bounds columns every tile request
+					// scans the whole table and filters features in memory.
+					log.Warnf("layer '%v': table %q has no bounds columns (minx/maxx/miny/maxy or configured bbox_*_fieldname); every tile request will full-table-scan %q and filter in memory - add bounds columns and configure bbox_*_fieldname to avoid the per-tile scan cost", layerName, tablename, tablename)
 				}
 				// bboxFields mirrors the detected (or resolved) bounds
 				// columns so tag exclusion and the predicate builder share
@@ -787,17 +933,30 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					log.Debugf("layer '%v': table %q detected as MapplGIS", layerName, tablename)
 				}
 			} else {
-				d, ok := geomTableDetails[tablename]
+				geomCols, ok := geomTableDetails[tablename]
 				if !ok {
 					return nil, fmt.Errorf("table %q does not exist", tablename)
 				}
+				// P6-13: a table can carry multiple geometry columns; the
+				// configured geometry_fieldname picks the column.
+				d, derr := pickGeometryColumn(geomCols, layer.geomFieldname, geomFieldnameExplicit)
+				if derr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, derr)
+				}
 
 				// an explicit provider-level srid always wins over the value inferred from
-				// gpkg_contents.srs_id; the inferred value is only used as a fallback when
+				// gpkg_geometry_columns.srs_id; the inferred value is only used as a fallback when
 				// the user did not configure anything explicitly.
 				layerSRID := p.srid
-				if !providerSRIDExplicit && d.srid > 0 {
-					layerSRID = d.srid
+				if !providerSRIDExplicit {
+					if d.srid > 0 {
+						layerSRID = d.srid
+					} else {
+						// audit P6-14: GeoPackage SRS IDs 0 (undefined) and
+						// -1 (cartesian engineering CRS) must not silently
+						// fall back to web mercator.
+						warnSRSIDFallback(layerName, "gpkg_geometry_columns.srs_id", d.srsIDRaw, layerSRID)
+					}
 				}
 
 				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
@@ -820,6 +979,45 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.bboxFields, err = codec.ResolveBBoxFields(config, layerConf, layerName)
 				if err != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, err)
+				}
+
+				// audit P5-5: the tile query JOINs the RTree spatial index
+				// table - verify at registration that it exists, failing
+				// with a clear error instead of a cryptic "no such table"
+				// per tile request.
+				rtreeName := fmt.Sprintf("rtree_%v_%v", tablename, layer.geomFieldname)
+				exists, terr := rtreeTableExists(db, rtreeName)
+				if terr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, terr)
+				}
+				if !exists {
+					return nil, fmt.Errorf("for layer (%v) %v: table %q has no RTree spatial index %q; native GeoPackage layers require the spatial index for tile queries - create it with SELECT CreateRTreeIndex(%v,%v) (or export the data with the rtree extension enabled)", i, layerName, tablename, rtreeName, sqlStringLiteral(tablename), sqlStringLiteral(layer.geomFieldname))
+				}
+
+				// audit P5-5: the RTree join keys on the table rowid. The
+				// configured id column only feeds feature IDs; when it is
+				// not the rowid alias (INTEGER PRIMARY KEY) its values may
+				// not match rowids and may not be unique.
+				alias, aerr := rowidAliasColumn(db, tablename)
+				if aerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, aerr)
+				}
+				colNames, _, cerr := tableColumnsAndPK(db, tablename)
+				if cerr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, cerr)
+				}
+				idFound := false
+				for _, c := range colNames {
+					if strings.EqualFold(c, layer.idFieldname) {
+						idFound = true
+						break
+					}
+				}
+				if !idFound {
+					return nil, fmt.Errorf("for layer (%v) %v: table %q has no id column %q", i, layerName, tablename, layer.idFieldname)
+				}
+				if alias == "" || !strings.EqualFold(alias, layer.idFieldname) {
+					log.Warnf("layer '%v': table %q id column %q is not an INTEGER PRIMARY KEY (rowid alias); the RTree join keys on rowid and feature IDs come from %q, which may be non-unique or mismatched", layerName, tablename, layer.idFieldname, layer.idFieldname)
 				}
 			}
 
@@ -950,10 +1148,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				continue
 			}
 
-			// Get geometry type & srid from geometry of first row. For raw
-			// formats the whole sample window is scanned because MOS
-			// system-info blobs may be stored at any position before or
-			// after the first decodable geometry.
+			// Get geometry type & srid from the sample window (bounded by
+			// the LIMIT below). For raw formats the whole window is scanned
+			// because MOS system-info blobs may be stored at any position
+			// before or after the first decodable geometry; for GPKG the
+			// window is scanned so mixed geometry-header SRS ids can be
+			// detected and warned about (audit P5-9).
 			qgeom := quoteIdent(layer.geomFieldname)
 			qtext := fmt.Sprintf("SELECT %[1]v FROM (%[2]v) WHERE %[1]v IS NOT NULL LIMIT %[4]v;", qgeom, inspectionSQL, qgeom, codec.InspectionSampleLimit)
 
@@ -988,8 +1188,15 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					break
 				}
 				layerSRID := p.srid
-				if !providerSRIDExplicit && firstHeader != nil && firstHeader.SRSId() > 0 {
-					layerSRID = uint64(firstHeader.SRSId())
+				if !providerSRIDExplicit {
+					if firstHeader != nil && firstHeader.SRSId() > 0 {
+						layerSRID = uint64(firstHeader.SRSId())
+					} else if firstHeader != nil {
+						// audit P6-14: header SRS IDs 0/-1 must not silently
+						// fall back to web mercator.
+						warnSRSIDFallback(layerName, "geometry header SRS ID",
+							sql.NullInt64{Int64: int64(firstHeader.SRSId()), Valid: true}, layerSRID)
+					}
 				}
 
 				lcrs, rerr := crsconfig.ResolveLayer(layerConf, int(layerSRID))
@@ -1044,12 +1251,15 @@ func Cleanup() {
 // scanned: MOS system-info blobs are recognized as metadata and skipped (no
 // auto-detection for custom SQL — audit A-01), and the first decodable
 // geometry infers the layer's geometry type. For native GeoPackage geometry
-// the first row's binary header and geometry are returned. sysInfoCRSApplied
+// the first row carrying a non-zero binary-header SRS id locks the layer SRS
+// and defines the returned sample header/geometry (audit P5-9). sysInfoCRSApplied
 // is always false: kept in the signature for callers that treat the SRID as
 // already resolved when a system-info projection was applied.
 func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom geom.Geometry, firstHeader *BinaryHeader, sysInfoCRSApplied bool, err error) {
 	layerName := layer.Name()
 	log.Debugf("qtext: %v", qtext)
+
+	var lockedSRS int32
 
 	inspectRows, qerr := db.Query(qtext)
 	if qerr != nil {
@@ -1094,14 +1304,38 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 		if derr != nil {
 			return nil, nil, false, derr
 		}
-		firstHeader = h
 		if geo == nil {
 			// empty-geometry row (GeoPackage empty flag, audit N15):
-			// keep scanning for a real sample geometry.
+			// keep scanning the sample window for a real sample geometry.
 			continue
 		}
-		firstGeom = geo
-		break
+		// audit P5-9: a custom SQL result set may mix per-row
+		// geometry-header SRS ids. The first row with a non-zero header
+		// SRS id locks the layer SRS and defines the sample; rows carrying
+		// a different non-zero header SRS id are skipped with a per-row
+		// warning instead of silently first-row-wins. Header SRS id 0
+		// (undefined) never locks and its rows are always processed, so a
+		// zero row before the locking row cannot mask it.
+		if h != nil {
+			srs := h.SRSId()
+			if srs != 0 && lockedSRS == 0 {
+				lockedSRS = srs
+				firstHeader = h
+				firstGeom = geo
+				continue
+			}
+			if srs != 0 && srs != lockedSRS {
+				log.Warnf("layer '%v': custom SQL sample row carries geometry-header SRS ID %d, but the layer SRS is locked to %d by an earlier sample row; skipping the row",
+					layerName, srs, lockedSRS)
+				continue
+			}
+		}
+		if firstHeader == nil && lockedSRS == 0 {
+			firstHeader = h
+		}
+		if firstGeom == nil {
+			firstGeom = geo
+		}
 	}
 	if rerr := inspectRows.Err(); rerr != nil {
 		return nil, nil, false, fmt.Errorf("layer '%v' problem reading custom SQL rows: %v", layerName, rerr)

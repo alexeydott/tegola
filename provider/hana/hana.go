@@ -22,9 +22,9 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/mapplgis"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -49,6 +49,12 @@ func (c connectionPoolCollector) Close() {
 
 func (c connectionPoolCollector) QueryRow(query string, args ...any) *sql.Row {
 	return c.pool.QueryRow(query, args...)
+}
+
+// QueryRowContext mirrors QueryRow for registration-time probes that must
+// run under the inspection timeout (audit P5-16).
+func (c connectionPoolCollector) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return c.pool.QueryRowContext(ctx, query, args...)
 }
 
 func (c connectionPoolCollector) QueryContext(ctx context.Context, query string) (*sql.Rows, error) {
@@ -440,7 +446,10 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 	}
 
 	var dbVersion string
-	if err := conn.QueryRow(`SELECT VERSION FROM "SYS"."M_DATABASE"`).Scan(&dbVersion); err != nil {
+	// audit P5-16: the version probe runs under the inspection timeout.
+	vctx, vcancel := NewInspectionContext(context.Background())
+	defer vcancel()
+	if err := conn.QueryRowContext(vctx, `SELECT VERSION FROM "SYS"."M_DATABASE"`).Scan(&dbVersion); err != nil {
 		return nil, err
 	}
 
@@ -519,16 +528,34 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			return nil, fmt.Errorf("for layer (%v) %v %v field had the following error: %w", i, lName, ConfigKeyFields, err)
 		}
 
+		// Audit P5-12: reject empty field names before they are quoted
+		// into SQL at registration.
+		for _, f := range fields {
+			if err := validateIdentName(f); err != nil {
+				return nil, fmt.Errorf("for layer (%v) %v %v: %w", i, lName, ConfigKeyFields, err)
+			}
+		}
+
 		geomfld := "geom"
 		geomfld, err = layer.String(ConfigKeyGeomField, &geomfld)
 		if err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v : %w", i, lName, err)
+		}
+		if err := validateIdentName(geomfld); err != nil {
+			return nil, fmt.Errorf("for layer (%v) %v %v: %w", i, lName, ConfigKeyGeomField, err)
 		}
 
 		idfld := ""
 		idfld, err = layer.String(ConfigKeyFeatureIDField, &idfld)
 		if err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v : %w", i, lName, err)
+		}
+		// An empty id field is the documented "no id column" sentinel and
+		// stays valid; an explicitly empty quoted name ("") does not.
+		if idfld != "" {
+			if err := validateIdentName(idfld); err != nil {
+				return nil, fmt.Errorf("for layer (%v) %v %v: %w", i, lName, ConfigKeyFeatureIDField, err)
+			}
 		}
 		if idfld == geomfld {
 			return nil, fmt.Errorf("for layer (%v) %v: %v (%v) and %v field (%v) is the same", i, lName, ConfigKeyGeomField, geomfld, ConfigKeyFeatureIDField, idfld)
@@ -596,6 +623,11 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			tblName, err = layer.String(ConfigKeyTablename, &lName)
 			if err != nil {
 				return nil, fmt.Errorf("for %v layer (%v) %v has an error: %w", i, lName, ConfigKeyTablename, err)
+			}
+			// Audit P5-12: reject empty table names at registration; the
+			// quoted-identifier parts are validated by quoteTableName.
+			if err := validateTableName(tblName); err != nil {
+				return nil, fmt.Errorf("for %v layer (%v) %v: %w", i, lName, ConfigKeyTablename, err)
 			}
 		}
 
@@ -981,7 +1013,9 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 
 	// The prepared probe contains no bbox placeholders, so it must run
 	// without extent binding (withBBox=false).
-	rows, err := getLayerRows(p.pool, sqlQuery, nil, l.SRID(), false)
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	rows, err := getLayerRows(ctx, p.pool, sqlQuery, nil, l.SRID(), false)
 	if err != nil {
 		return err
 	}
@@ -1068,7 +1102,10 @@ func mosProbeSQL(l *Layer) string {
 func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	sqlQuery := mosProbeSQL(l)
 
-	rows, err := p.pool.QueryContext(context.Background(), sqlQuery)
+	// audit P5-16: the sample probe runs under the inspection timeout.
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	rows, err := p.pool.QueryContext(ctx, sqlQuery)
 	if err != nil {
 		return err
 	}
@@ -1158,7 +1195,10 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 	// neutralize so a leftover placeholder cannot break the probe statement
 	probeSQL = provider.ParameterTokenRegexp.ReplaceAllString(probeSQL, "")
 
-	rows, err := p.pool.QueryContext(context.Background(), probeSQL)
+	// audit P5-16: the sample probe runs under the inspection timeout.
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	rows, err := p.pool.QueryContext(ctx, probeSQL)
 	if err != nil {
 		return nil, codec.SQLGeometryContract{}, err
 	}
@@ -1291,7 +1331,10 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 
 	now := time.Now()
 
-	extent, _ := getTileExtent(tile, true)
+	extent, _, err := getTileExtent(tile, true)
+	if err != nil {
+		return fmt.Errorf("error getting tile extent for layer (%v): %w", layer, err)
+	}
 	srid := plyr.SRID()
 	rows, err := p.pool.QueryContextWithBBox(ctx, sqlQuery, extent, srid, false)
 
@@ -1439,7 +1482,10 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 
 		now := time.Now()
 
-		extent, _ := getTileExtent(tile, false)
+		extent, _, err := getTileExtent(tile, false)
+		if err != nil {
+			return nil, fmt.Errorf("error getting tile extent for layer (%v): %w", l.Name(), err)
+		}
 		srid := l.SRID()
 		rows, err := p.pool.QueryContextWithBBox(ctx, sqlQuery, extent, srid, true)
 
@@ -1513,19 +1559,15 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 	var meta mapplgis.TableMeta
 
 	qtn := quoteTableName(tblName)
-	// HANA catalog views are scoped by schema name; derive it from the
-	// (already quoted) table name. Unqualified tables resolve against the
-	// connection's CURRENT SCHEMA and are matched accordingly.
-	var schemaName string
-	var bareTableName string
-	if parts := strings.Split(tblName, "."); len(parts) >= 2 {
-		schemaName = strings.Trim(parts[0], `"`)
-		// The last part is the bare table identifier; trim per part so a
-		// fully quoted name like `"schema"."table"` does not keep embedded
-		// quote characters in the catalog predicate argument.
-		bareTableName = strings.Trim(parts[len(parts)-1], `"`)
-	} else {
-		bareTableName = strings.Trim(tblName, `"`)
+	// HANA catalog views are scoped by schema name; derive it with the
+	// quote-aware parser so dots inside quoted identifiers are not treated
+	// as separators (audit P5-3). Unqualified tables resolve against the
+	// connection's CURRENT SCHEMA and are matched accordingly. The parsed
+	// parts are only used as catalog predicate arguments (bound as
+	// parameters), never interpolated into SQL.
+	schemaName, bareTableName, err := splitQualifiedTableName(tblName)
+	if err != nil {
+		return meta, nil, fmt.Errorf("invalid table name %q: %w", tblName, err)
 	}
 
 	// DDL columns.
@@ -1667,6 +1709,10 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 // the self-described projection to the layer unless the CRS config was
 // explicit, so the subsequent SRID resolution sees a resolved value.
 func detectMapplGIS(ctx context.Context, pool *connectionPoolCollector, l *Layer, tblName string) (bool, error) {
+	// audit P5-16: the metadata probes run under the inspection timeout,
+	// honoring the plumbed parent context (nil means Background).
+	ctx, cancel := NewInspectionContext(ctx)
+	defer cancel()
 	meta, fetch, err := collectMapplGISMeta(ctx, pool, tblName)
 	if err != nil {
 		return false, err

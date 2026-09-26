@@ -17,9 +17,10 @@ import (
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/env"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/crsconfig"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 const (
@@ -49,7 +50,10 @@ func isSelectQuery(sql string) bool {
 // A closing quote followed by trailing content is rejected, so hostile
 // input like `"a"; DROP ...` never parses as a valid quoted identifier.
 func parseQuotedIdent(name string) bool {
-	if len(name) < 2 || name[0] != '"' {
+	// Audit P5-12: an empty quoted identifier `""` has no name content and
+	// is not a valid identifier, so the minimum accepted form is 3 bytes
+	// (`"x"`); `""""` (a single literal quote as the name) stays valid.
+	if len(name) < 3 || name[0] != '"' {
 		return false
 	}
 	for i := 1; i < len(name); {
@@ -80,19 +84,247 @@ func quoteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// escapeSQLStringLiteral escapes a value for interpolation inside a
+// single-quoted SQL string literal (audit P5-8): single quotes are
+// doubled so they cannot terminate the literal early.
+func escapeSQLStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlStringLiteral wraps s as a complete single-quoted SQL string
+// literal with escaping applied (audit P5-8 helper contract).
+func sqlStringLiteral(s string) string {
+	return "'" + escapeSQLStringLiteral(s) + "'"
+}
+
+// isQuotedIdentifierValue reports whether name is already wrapped in one
+// complete identifier quote pair (double quote or backtick, with doubled
+// quote escapes) spanning the whole value (audit P5-10 contract). A
+// single-quote pair is a SQL string literal, never an identifier, so it
+// is never passed through.
+func isQuotedIdentifierValue(name string) bool {
+	if len(name) < 2 {
+		return false
+	}
+	q := name[0]
+	if q != '"' && q != '`' {
+		return false
+	}
+	if name[len(name)-1] != q {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if name[i] == q {
+			if i+1 < len(name) && name[i+1] == q {
+				i++
+				continue
+			}
+			return i == len(name)-1
+		}
+	}
+	return false
+}
+
+// splitIdentDots splits a possibly qualified identifier at top-level
+// dots, keeping dots that sit inside quoted segments ("a.b".c has one
+// dot). An unclosed quote keeps the remainder in the current part, so
+// hostile values are never split into injection-shaped pieces. This is
+// the lenient token-value counterpart of the strict parseIdentParts
+// registration parser (audit P5-3).
+func splitIdentDots(v string) []string {
+	var parts []string
+	var cur strings.Builder
+	var quote byte
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case quote != 0:
+			cur.WriteByte(c)
+			if c == quote {
+				if i+1 < len(v) && v[i+1] == quote {
+					cur.WriteByte(quote)
+					i++
+					continue
+				}
+				quote = 0
+			}
+		case c == '"' || c == '`' || c == '\'':
+			quote = c
+			cur.WriteByte(c)
+		case c == '.':
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	parts = append(parts, cur.String())
+	return parts
+}
+
+// quoteTokenIdentifier quotes an identifier substituted for the
+// !ID_FIELD! / !GEOM_FIELD! SQL tokens (audit P5-10 contract): values
+// already wrapped in a complete identifier quote pair pass through
+// verbatim; the empty string (the no-id-field sentinel) passes through
+// unchanged; everything else is quoted per identifier part
+// (schema.table.col => "schema"."table"."col"), so dots inside quoted
+// parts survive and hostile values can never escape the quoting.
+func quoteTokenIdentifier(name string) string {
+	if name == "" || isQuotedIdentifierValue(name) {
+		return name
+	}
+	parts := splitIdentDots(name)
+	for i := range parts {
+		if isQuotedIdentifierValue(parts[i]) {
+			continue
+		}
+		parts[i] = quoteIdentifier(parts[i])
+	}
+	return strings.Join(parts, ".")
+}
+
+// validateIdentName rejects empty identifier names before they can be
+// quoted into SQL (audit P5-12). Quoting cannot express an empty
+// identifier: `""` would become the literal two-character name `""`
+// after quoting, so empty names must be refused at registration instead.
+func validateIdentName(name string) error {
+	if name == "" {
+		return fmt.Errorf("identifier name is empty; expected a non-empty identifier name")
+	}
+	if name == `""` {
+		return fmt.Errorf(`identifier %q is empty; expected a non-empty identifier name`, name)
+	}
+	return nil
+}
+
+// parseIdentParts splits a possibly qualified HANA identifier into its
+// unquoted parts (audit P5-3). Quoted parts may contain dots and
+// escaped double quotes (""); empty parts, unterminated quotes,
+// unexpected characters after a closing quote, quotes inside bare
+// parts, and more than two parts (schema.table) are rejected.
+func parseIdentParts(name string) ([]string, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("invalid identifier %q: identifier is empty", name)
+	}
+
+	var parts []string
+	var cur strings.Builder
+	inQuote := false
+	closedQuote := false // the current part just closed its quotes
+
+	flush := func() error {
+		if cur.Len() == 0 {
+			return fmt.Errorf("invalid identifier %q: empty name part", name)
+		}
+		parts = append(parts, cur.String())
+		cur.Reset()
+		closedQuote = false
+		if len(parts) > 2 {
+			return fmt.Errorf("invalid identifier %q: expected at most schema.table (2 parts), got %d", name, len(parts))
+		}
+		return nil
+	}
+
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case inQuote:
+			if c == '"' {
+				if i+1 < len(name) && name[i+1] == '"' {
+					// escaped quote inside a quoted part
+					cur.WriteByte('"')
+					i++
+					continue
+				}
+				inQuote = false
+				closedQuote = true
+				continue
+			}
+			cur.WriteByte(c)
+		case c == '.':
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		case c == '"':
+			if cur.Len() > 0 || closedQuote {
+				return nil, fmt.Errorf("invalid identifier %q: unexpected quote", name)
+			}
+			inQuote = true
+		case closedQuote:
+			return nil, fmt.Errorf("invalid identifier %q: unexpected content after closing quote", name)
+		default:
+			if cur.Len() == 0 && (c == ' ' || c == '\t') {
+				return nil, fmt.Errorf("invalid identifier %q: unexpected whitespace", name)
+			}
+			cur.WriteByte(c)
+		}
+	}
+	if inQuote {
+		return nil, fmt.Errorf("invalid identifier %q: unterminated quoted identifier", name)
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return parts, nil
+}
+
+// splitQualifiedTableName splits a qualified HANA table reference into
+// its unquoted schema and bare table name parts (audit P5-3). An
+// unqualified name yields an empty schema (resolved against the
+// connection's CURRENT SCHEMA by the callers).
+func splitQualifiedTableName(name string) (schema string, table string, err error) {
+	parts, err := parseIdentParts(name)
+	if err != nil {
+		return "", "", err
+	}
+	if len(parts) == 2 {
+		return parts[0], parts[1], nil
+	}
+	return "", parts[0], nil
+}
+
+// validateTableName validates a configured table name at registration
+// (audit P5-3/P5-12): empty names are rejected and non-subquery names
+// must parse as (quoted) schema.table parts.
+func validateTableName(name string) error {
+	if err := validateIdentName(name); err != nil {
+		return err
+	}
+	if strings.Contains(name, " ") {
+		// subquery form (see quoteTableName), passed through verbatim
+		return nil
+	}
+	if _, err := parseIdentParts(name); err != nil {
+		return err
+	}
+	return nil
+}
+
+// quoteTableName quotes a possibly qualified HANA table name (audit
+// P5-3). Names containing whitespace are treated as subqueries (e.g.
+// "(SELECT * FROM tbl) x") and passed through verbatim. Other names
+// are split with the quote-aware parseIdentParts (so dots inside
+// quoted identifiers are not treated as separators) and each part is
+// quoted; on a parse error the whole name is quoted as a single
+// identifier, which is safe but -- unlike the old strings.Split -- can
+// never split a hostile name into injection-shaped parts.
 func quoteTableName(name string) string {
 	if strings.Contains(name, " ") {
 		return name
 	}
 
-	strs := strings.Split(name, ".")
-	nstrs := len(strs)
+	parts, err := parseIdentParts(name)
+	if err != nil {
+		return quoteIdentifier(name)
+	}
+
+	nstrs := len(parts)
 	if nstrs == 1 {
-		return quoteIdentifier(strs[0])
+		return quoteIdentifier(parts[0])
 	}
 
 	ret := ""
-	for i, s := range strs {
+	for i, s := range parts {
 		ret = ret + quoteIdentifier(s)
 		if i != nstrs-1 {
 			ret = ret + "."
@@ -105,7 +337,9 @@ func quoteTableName(name string) string {
 func hasSrsPlanarEquivalent(pool *connectionPoolCollector, srid uint64) (bool, error) {
 	var numSRIDs int = 0
 	sql := "SELECT COUNT(*) FROM SYS.ST_SPATIAL_REFERENCE_SYSTEMS WHERE SRS_ID = ?"
-	if err := pool.QueryRow(sql, toPlanarEquivalenSrid(srid)).Scan(&numSRIDs); err != nil {
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	if err := pool.QueryRowContext(ctx, sql, toPlanarEquivalenSrid(srid)).Scan(&numSRIDs); err != nil {
 		return false, fmt.Errorf("planar equivalent lookup for srid %v failed: %w", srid, err)
 	}
 	return numSRIDs > 0, nil
@@ -122,7 +356,9 @@ func isSrsRoundEarth(pool *connectionPoolCollector, srid uint64) (bool, error) {
 
 	sql := "SELECT TO_BOOLEAN(ROUND_EARTH) FROM SYS.ST_SPATIAL_REFERENCE_SYSTEMS WHERE SRS_ID = ?"
 	var ret bool = false
-	if err := pool.QueryRow(sql, srid).Scan(&ret); err != nil {
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	if err := pool.QueryRowContext(ctx, sql, srid).Scan(&ret); err != nil {
 		return false, fmt.Errorf("round-earth lookup for srid %v failed: %w", srid, err)
 	}
 	return ret, nil
@@ -144,8 +380,11 @@ func getLayerSQL(tblname string) string {
 	return fmt.Sprintf(`SELECT * FROM %[1]v LIMIT 0;`, quotedTblName)
 }
 
-func getLayerRows(pool *connectionPoolCollector, sql string, extent *geom.Extent, srid uint64, withBBox bool) (*sql.Rows, error) {
-	ctx := context.Background()
+// getLayerRows runs a registration-time probe query under the supplied
+// context. Callers create the context via NewInspectionContext (audit
+// P5-16) and own its cancelation: the returned rows stay live past this
+// function, so no cancel may run before the caller closes them.
+func getLayerRows(ctx context.Context, pool *connectionPoolCollector, sql string, extent *geom.Extent, srid uint64, withBBox bool) (*sql.Rows, error) {
 	if withBBox {
 		rows, err := pool.QueryContextWithBBox(ctx, sql, extent, srid, false)
 		if err := ctxErr(ctx, err); err != nil {
@@ -173,8 +412,15 @@ func getLayerFields(pool *connectionPoolCollector, l *Layer, sql string) ([]Fiel
 		return nil, err
 	}
 
-	extent, _ := getTileExtent(tile, false)
-	rows, err := getLayerRows(pool, sql, extent, l.SRID(), withBBox)
+	extent, _, err := getTileExtent(tile, false)
+	if err != nil {
+		return nil, err
+	}
+	// audit P5-16: the metadata probe runs under the inspection timeout;
+	// the deferred cancel stays live until this function's rows are closed.
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	rows, err := getLayerRows(ctx, pool, sql, extent, l.SRID(), withBBox)
 	if err != nil {
 		return nil, err
 	}
@@ -276,12 +522,12 @@ func genMVTSQL(l *Layer, fields []string, buffer uint, clipGeometry bool) (sql s
 	}
 
 	if len(flds) == 0 {
-		sql = fmt.Sprintf(`SELECT ST_AsMVT(%v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v') FROM (%v)`, geomFieldName, buffer, clip, geomFieldName, l.Name(), l.GeomFieldName(), l.sql)
+		sql = fmt.Sprintf(`SELECT ST_AsMVT(%v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => %v, geom_name => %v) FROM (%v)`, geomFieldName, buffer, clip, geomFieldName, sqlStringLiteral(l.Name()), sqlStringLiteral(l.GeomFieldName()), l.sql)
 	} else {
 		if l.IDFieldName() != "" {
-			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v', feature_id_name => '%v') FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, l.Name(), l.GeomFieldName(), l.IDFieldName(), l.sql)
+			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => %v, geom_name => %v, feature_id_name => %v) FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, sqlStringLiteral(l.Name()), sqlStringLiteral(l.GeomFieldName()), sqlStringLiteral(l.IDFieldName()), l.sql)
 		} else {
-			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => '%v', geom_name => '%v') FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, l.Name(), l.GeomFieldName(), l.sql)
+			sql = fmt.Sprintf(`SELECT ST_AsMVT(%v, %v.ST_AsMVTGeom(bounds => NEW ST_LINESTRING($4, $3), buffer => %v, clipgeom => %v) AS %v, layer_name => %v, geom_name => %v) FROM (%v)`, strings.Join(flds, ","), geomFieldName, buffer, clip, geomFieldName, sqlStringLiteral(l.Name()), sqlStringLiteral(l.GeomFieldName()), l.sql)
 		}
 	}
 	return sql, nil
@@ -333,27 +579,26 @@ func toPlanarEquivalenSrid(srid uint64) uint64 {
 	return PLANAR_SRID_OFFSET + srid
 }
 
-func fromWebMercator(srid uint64, geometry geom.Geometry) (geom.Geometry, error) {
-	if isPlanarEquivalentSrid(srid) {
-		return basic.FromWebMercator(srid-PLANAR_SRID_OFFSET, geometry)
-	}
-
-	return basic.FromWebMercator(srid, geometry)
-}
-
+// getBBoxCoordinates returns the lower-left and upper-right corners of the
+// axis-aligned bounding box enclosing the tile extent after transformation
+// into the target CRS (audit P5-15). The tile's full perimeter is sampled
+// and transformed and min/max is taken: converting only the two opposite
+// corners under-covers the tile footprint in rotated or polar projections
+// and the bbox predicate then drops valid features.
 func getBBoxCoordinates(extent *geom.Extent, srid uint64) (geom.Point, geom.Point, error) {
-	// TODO: it's currently assumed the tile will always be in WebMercator. Need to support different projections
-	minGeo, err := fromWebMercator(srid, geom.Point{extent.MinX(), extent.MinY()})
+	// The planar-equivalent offset only encodes the round-earth SRID;
+	// transform with the effective SRID.
+	effective := srid
+	if isPlanarEquivalentSrid(srid) {
+		effective = srid - PLANAR_SRID_OFFSET
+	}
+
+	sourceExtent, err := basic.FromWebMercatorExtent(effective, extent)
 	if err != nil {
 		return geom.Point{}, geom.Point{}, fmt.Errorf("Error trying to convert tile point: %w ", err)
 	}
 
-	maxGeo, err := fromWebMercator(srid, geom.Point{extent.MaxX(), extent.MaxY()})
-	if err != nil {
-		return geom.Point{}, geom.Point{}, fmt.Errorf("Error trying to convert tile point: %w ", err)
-	}
-
-	return minGeo.(geom.Point), maxGeo.(geom.Point), nil
+	return geom.Point{sourceExtent.MinX(), sourceExtent.MinY()}, geom.Point{sourceExtent.MaxX(), sourceExtent.MaxY()}, nil
 }
 
 func getBBoxFilter(dbVersion uint, geomField string, srid uint64) string {
@@ -384,23 +629,52 @@ func getGeometryColumnSRID(pool *connectionPoolCollector, dbVersion uint, sql st
 	sqlQuery := codec.PrepareProbeSQL(sql, geomFieldName, "", "")
 
 	sqlQuery = fmt.Sprintf("SELECT %[1]v.ST_SRID() FROM %[2]v WHERE %[1]v IS NOT NULL LIMIT 1", quoteIdentifier(geomFieldName), sqlQuery)
-	err = pool.QueryRow(sqlQuery).Scan(&srid)
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	err = pool.QueryRowContext(ctx, sqlQuery).Scan(&srid)
 	return srid, err
 }
 
-func getTileExtent(tile provider.Tile, withBuffer bool) (*geom.Extent, uint64) {
+// getTileExtent returns the tile extent (buffered and clamped to the
+// WebMercator range when withBuffer is set) together with its SRID.
+// provider.Tile's Extent()/BufferedExtent() accessors cannot report
+// errors, so a nil or non-finite extent is rejected here with a clear
+// error instead of flowing into the query builder and panicking or
+// silently producing an invalid bbox (audit P6-20).
+func getTileExtent(tile provider.Tile, withBuffer bool) (*geom.Extent, uint64, error) {
 	if withBuffer {
 		extent, srid := tile.BufferedExtent()
+		if err := validateTileExtent(extent); err != nil {
+			return nil, 0, err
+		}
 
 		minx := math.Max(-20037508.3427892, extent[0])
 		miny := math.Max(-20037508.3427892, extent[1])
 		maxx := math.Min(20037508.3427892, extent[2])
 		maxy := math.Min(20037508.3427892, extent[3])
 
-		return geom.NewExtent([2]float64{minx, miny}, [2]float64{maxx, maxy}), srid
+		return geom.NewExtent([2]float64{minx, miny}, [2]float64{maxx, maxy}), srid, nil
 	}
 
-	return tile.Extent()
+	extent, srid := tile.Extent()
+	if err := validateTileExtent(extent); err != nil {
+		return nil, 0, err
+	}
+	return extent, srid, nil
+}
+
+// validateTileExtent rejects nil and non-finite tile extents with a clear
+// error (audit P6-20).
+func validateTileExtent(extent *geom.Extent) error {
+	if extent == nil {
+		return fmt.Errorf("tile extent is nil")
+	}
+	for i, v := range [4]float64{extent[0], extent[1], extent[2], extent[3]} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("tile extent coordinate %v is not finite (%v)", i, v)
+		}
+	}
+	return nil
 }
 
 func sanitizeSQL(sql string) string {
@@ -424,7 +698,10 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 		geoType string
 	)
 
-	extent, _ := getTileExtent(tile, false)
+	extent, _, terr := getTileExtent(tile, false)
+	if terr != nil {
+		return "", terr
+	}
 	// TODO: Always convert to meter if we support different projections
 	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
 	pixelHeight := (extent.MaxY() - extent.MinY()) / 256
@@ -440,7 +717,10 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 	// bounds fields with MOS raw scaling instead. Custom SQL for MOS is
 	// required to carry the token (RequireBBoxCustomSQL).
 	if l.geometryFormat == codec.FormatMOS {
-		bboxExtent, _ := getTileExtent(tile, withBuffer)
+		bboxExtent, _, berr := getTileExtent(tile, withBuffer)
+		if berr != nil {
+			return "", berr
+		}
 		sourceExtent, cerr := basic.FromWebMercatorExtent(srid, bboxExtent)
 		if cerr != nil {
 			return "", fmt.Errorf("error converting tile extent: %w", cerr)
@@ -462,8 +742,8 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 		zToken, strconv.FormatUint(uint64(z), 10),
 		xToken, strconv.FormatUint(uint64(x), 10),
 		yToken, strconv.FormatUint(uint64(y), 10),
-		idFieldToken, l.IDFieldName(),
-		geomFieldToken, l.geomField,
+		idFieldToken, quoteTokenIdentifier(l.IDFieldName()),
+		geomFieldToken, quoteTokenIdentifier(l.geomField),
 		geomTypeToken, geoType,
 		scaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		pixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
@@ -707,6 +987,30 @@ func readRowValues(ctx context.Context, l *Layer, descriptions []FieldDescriptio
 			continue
 		}
 
+		// Feature id column (audit P6-10/P6-11): the id is extracted for
+		// every storage type. Numeric id columns previously fell through
+		// into the tags map and every feature got duplicate ID 0. A NULL
+		// id skips the row with a warning (the same strategy the gpkg
+		// provider uses): NULL ids must never silently become duplicate
+		// ID 0 features.
+		if desc.isFeatureId && !idFieldParsed {
+			idVal, ok := featureIDValue(rowValues[i])
+			if !ok {
+				layerName := ""
+				if l != nil {
+					layerName = l.name
+				}
+				log.Warnf("skipping feature with NULL id field '%v' in layer '%v' (audit P6-11)", fieldName, layerName)
+				return 0, nil, nil, nil
+			}
+			gid, err = convertToUInt64(idVal)
+			if err != nil {
+				return 0, nil, nil, fmt.Errorf("feature id field '%v': %w", fieldName, err)
+			}
+			idFieldParsed = true
+			continue
+		}
+
 		switch desc.dataType {
 		case DtBoolean:
 			boolValue := *(rowValues[i].(*sql.NullBool))
@@ -773,15 +1077,7 @@ func readRowValues(ctx context.Context, l *Layer, descriptions []FieldDescriptio
 		case DtNVarchar, DtVarchar, DtShorttext, DtAlphanum, DtChar, DtNChar:
 			strValue := *(rowValues[i].(*sql.NullString))
 			if strValue.Valid {
-				if !idFieldParsed && desc.isFeatureId {
-					gid, err = convertToUInt64(strValue.String)
-					if err != nil {
-						return 0, nil, nil, err
-					}
-					idFieldParsed = true
-				} else {
-					tags[fieldName] = strValue.String
-				}
+				tags[fieldName] = strValue.String
 			}
 		case DtBinary, DtVarbinary:
 			binValue := *(rowValues[i].(*driver.NullBytes))
@@ -827,33 +1123,72 @@ func readRowValues(ctx context.Context, l *Layer, descriptions []FieldDescriptio
 	return gid, geom, tags, nil
 }
 
+// featureIDValue unwraps a typed row scan target (see setupRowValues)
+// into its underlying feature id value (audit P6-10/P6-11). The second
+// result is false for NULL values, which must never silently become
+// duplicate ID 0 features. Unlike probeRawValue it reports NULL-ness
+// explicitly instead of passing the scan-target pointer through.
+func featureIDValue(v interface{}) (interface{}, bool) {
+	switch val := v.(type) {
+	case *sql.NullString:
+		return val.String, val.Valid
+	case *sql.NullInt64:
+		return val.Int64, val.Valid
+	case *sql.NullInt32:
+		return val.Int32, val.Valid
+	case *sql.NullInt16:
+		return val.Int16, val.Valid
+	case *sql.NullByte:
+		return val.Byte, val.Valid
+	case *sql.NullFloat64:
+		return val.Float64, val.Valid
+	case *driver.NullDecimal:
+		if !val.Valid {
+			return nil, false
+		}
+		r := (*big.Rat)(val.Decimal)
+		f, _ := r.Float64()
+		return f, true
+	case *driver.NullBytes:
+		if !val.Valid {
+			return nil, false
+		}
+		return append([]byte(nil), val.Bytes...), true
+	case *driver.NullLob:
+		if !val.Valid {
+			return nil, false
+		}
+		if w, ok := val.Lob.Writer().(*bytes.Buffer); ok {
+			return append([]byte(nil), w.Bytes()...), true
+		}
+		return nil, false
+	case *interface{}:
+		return featureIDValue(*val)
+	}
+	return v, v != nil
+}
+
+// convertToUInt64 converts a feature id value to uint64 by delegating to
+// the shared provider.ConvertFeatureID (audit P6-10 cross-provider ID
+// contract): every provider converts id types identically and the shared
+// validation policy lives in one place (provider/feature.go). The
+// sql.NullString and int16 shapes are unwrapped/widened first because
+// ConvertFeatureID does not handle those two scan-target shapes.
 func convertToUInt64(v interface{}) (intv uint64, err error) {
 	switch aval := v.(type) {
-	case float64:
-		return uint64(aval), nil
-	case int64:
-		return uint64(aval), nil
-	case uint64:
-		return aval, nil
-	case uint:
-		return uint64(aval), nil
-	case int8:
-		return uint64(aval), nil
-	case uint8:
-		return uint64(aval), nil
-	case uint16:
-		return uint64(aval), nil
-	case int32:
-		return uint64(aval), nil
-	case uint32:
-		return uint64(aval), nil
-	case string:
-		return strconv.ParseUint(aval, 10, 64)
 	case sql.NullString:
-		return strconv.ParseUint(aval.String, 10, 64)
-	default:
-		return intv, fmt.Errorf("unable to convert field into a uint64")
+		if !aval.Valid {
+			return 0, fmt.Errorf("unable to convert field into a uint64: feature id is NULL")
+		}
+		v = aval.String
+	case int16:
+		v = int64(aval)
 	}
+	gid, cerr := provider.ConvertFeatureID(v)
+	if cerr != nil {
+		return 0, fmt.Errorf("unable to convert field into a uint64: %w", cerr)
+	}
+	return gid, nil
 }
 
 // extractQueryParamValues finds default values for SQL tokens and constructs query parameter values out of them

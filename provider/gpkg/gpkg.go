@@ -5,6 +5,7 @@ package gpkg
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,7 +19,6 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-
 )
 
 const (
@@ -275,10 +275,14 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				selectClause += fmt.Sprintf(", l.%v", quoteIdent(tf))
 			}
 
-			// l - layer table, si - spatial index; ORDER BY keeps row
-			// order deterministic so concurrent requests stream identical
-			// rows (stable MVT output).
-			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.%v = si.id WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
+			// l - layer table, si - spatial index. The RTree's id is the
+			// table rowid (audit P5-5): join on l.rowid directly so the
+			// join is deterministic regardless of the configured id
+			// column (which only feeds feature IDs and is verified at
+			// registration). ORDER BY keeps row order deterministic so
+			// concurrent requests stream identical rows (stable MVT
+			// output); rowid breaks ties for non-unique id columns.
+			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.rowid = si.id WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v, l.rowid", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
 
 			// bounds predicate build errors are fail-closed (A12): surface
 			// them instead of silently running unfiltered SQL.
@@ -339,20 +343,35 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 
 		for i := range cols {
 			if vals[i] == nil {
-				if cols[i] == pLayer.geomFieldname {
+				// P6-17: column-name lookups are case-insensitive because
+				// SQLite column names can differ in case from the
+				// configured names.
+				if strings.EqualFold(cols[i], pLayer.geomFieldname) {
+					skipRow = true
+					continue
+				}
+				if strings.EqualFold(cols[i], pLayer.idFieldname) {
+					// P6-11: a NULL feature id would silently become ID 0 and
+					// collapse distinct features into one in the MVT.
+					// provider.Feature.ID is a plain uint64, so a feature
+					// without an id cannot be represented; skip the row and
+					// warn instead (documented choice).
+					p.warnOnce("null-feature-id:"+pLayer.name,
+						"gpkg layer '%v': NULL feature id in column %q; skipping row",
+						pLayer.name, pLayer.idFieldname)
 					skipRow = true
 				}
 				continue
 			}
 
-			switch cols[i] {
-			case pLayer.idFieldname:
+			switch {
+			case strings.EqualFold(cols[i], pLayer.idFieldname):
 				feature.ID, err = provider.ConvertFeatureID(vals[i])
 				if err != nil {
 					return err
 				}
 
-			case pLayer.geomFieldname:
+			case strings.EqualFold(cols[i], pLayer.geomFieldname):
 				// The MOS layer self-description blob (MapplGIS LayerInfo)
 				// is metadata, never a feature. System-info parameters are
 				// finalized at registration (canonical one-time detection,
@@ -421,7 +440,12 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				// Grab any non-nil, non-id, non-bounding box, & non-geometry column as a tag
 				switch v := vals[i].(type) {
 				case []uint8:
-					feature.Tags[cols[i]] = string(v)
+					// P6-18: BLOB tag values are arbitrary binary and
+					// string(v) would emit invalid UTF-8 strings in the
+					// MVT. Encode them as standard base64 (lossless and
+					// cheap) so tags remain valid strings (documented
+					// choice over dropping the tag).
+					feature.Tags[cols[i]] = base64.StdEncoding.EncodeToString(v)
 				case string:
 					feature.Tags[cols[i]] = v
 				case int64:
