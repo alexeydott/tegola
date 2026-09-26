@@ -17,6 +17,7 @@ import (
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/env"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/crsconfig"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
@@ -938,6 +939,30 @@ func readRowValues(ctx context.Context, l *Layer, descriptions []FieldDescriptio
 			continue
 		}
 
+		// Feature id column (audit P6-10/P6-11): the id is extracted for
+		// every storage type. Numeric id columns previously fell through
+		// into the tags map and every feature got duplicate ID 0. A NULL
+		// id skips the row with a warning (the same strategy the gpkg
+		// provider uses): NULL ids must never silently become duplicate
+		// ID 0 features.
+		if desc.isFeatureId && !idFieldParsed {
+			idVal, ok := featureIDValue(rowValues[i])
+			if !ok {
+				layerName := ""
+				if l != nil {
+					layerName = l.name
+				}
+				log.Warnf("skipping feature with NULL id field '%v' in layer '%v' (audit P6-11)", fieldName, layerName)
+				return 0, nil, nil, nil
+			}
+			gid, err = convertToUInt64(idVal)
+			if err != nil {
+				return 0, nil, nil, fmt.Errorf("feature id field '%v': %w", fieldName, err)
+			}
+			idFieldParsed = true
+			continue
+		}
+
 		switch desc.dataType {
 		case DtBoolean:
 			boolValue := *(rowValues[i].(*sql.NullBool))
@@ -1004,15 +1029,7 @@ func readRowValues(ctx context.Context, l *Layer, descriptions []FieldDescriptio
 		case DtNVarchar, DtVarchar, DtShorttext, DtAlphanum, DtChar, DtNChar:
 			strValue := *(rowValues[i].(*sql.NullString))
 			if strValue.Valid {
-				if !idFieldParsed && desc.isFeatureId {
-					gid, err = convertToUInt64(strValue.String)
-					if err != nil {
-						return 0, nil, nil, err
-					}
-					idFieldParsed = true
-				} else {
-					tags[fieldName] = strValue.String
-				}
+				tags[fieldName] = strValue.String
 			}
 		case DtBinary, DtVarbinary:
 			binValue := *(rowValues[i].(*driver.NullBytes))
@@ -1058,33 +1075,72 @@ func readRowValues(ctx context.Context, l *Layer, descriptions []FieldDescriptio
 	return gid, geom, tags, nil
 }
 
+// featureIDValue unwraps a typed row scan target (see setupRowValues)
+// into its underlying feature id value (audit P6-10/P6-11). The second
+// result is false for NULL values, which must never silently become
+// duplicate ID 0 features. Unlike probeRawValue it reports NULL-ness
+// explicitly instead of passing the scan-target pointer through.
+func featureIDValue(v interface{}) (interface{}, bool) {
+	switch val := v.(type) {
+	case *sql.NullString:
+		return val.String, val.Valid
+	case *sql.NullInt64:
+		return val.Int64, val.Valid
+	case *sql.NullInt32:
+		return val.Int32, val.Valid
+	case *sql.NullInt16:
+		return val.Int16, val.Valid
+	case *sql.NullByte:
+		return val.Byte, val.Valid
+	case *sql.NullFloat64:
+		return val.Float64, val.Valid
+	case *driver.NullDecimal:
+		if !val.Valid {
+			return nil, false
+		}
+		r := (*big.Rat)(val.Decimal)
+		f, _ := r.Float64()
+		return f, true
+	case *driver.NullBytes:
+		if !val.Valid {
+			return nil, false
+		}
+		return append([]byte(nil), val.Bytes...), true
+	case *driver.NullLob:
+		if !val.Valid {
+			return nil, false
+		}
+		if w, ok := val.Lob.Writer().(*bytes.Buffer); ok {
+			return append([]byte(nil), w.Bytes()...), true
+		}
+		return nil, false
+	case *interface{}:
+		return featureIDValue(*val)
+	}
+	return v, v != nil
+}
+
+// convertToUInt64 converts a feature id value to uint64 by delegating to
+// the shared provider.ConvertFeatureID (audit P6-10 cross-provider ID
+// contract): every provider converts id types identically and the shared
+// validation policy lives in one place (provider/feature.go). The
+// sql.NullString and int16 shapes are unwrapped/widened first because
+// ConvertFeatureID does not handle those two scan-target shapes.
 func convertToUInt64(v interface{}) (intv uint64, err error) {
 	switch aval := v.(type) {
-	case float64:
-		return uint64(aval), nil
-	case int64:
-		return uint64(aval), nil
-	case uint64:
-		return aval, nil
-	case uint:
-		return uint64(aval), nil
-	case int8:
-		return uint64(aval), nil
-	case uint8:
-		return uint64(aval), nil
-	case uint16:
-		return uint64(aval), nil
-	case int32:
-		return uint64(aval), nil
-	case uint32:
-		return uint64(aval), nil
-	case string:
-		return strconv.ParseUint(aval, 10, 64)
 	case sql.NullString:
-		return strconv.ParseUint(aval.String, 10, 64)
-	default:
-		return intv, fmt.Errorf("unable to convert field into a uint64")
+		if !aval.Valid {
+			return 0, fmt.Errorf("unable to convert field into a uint64: feature id is NULL")
+		}
+		v = aval.String
+	case int16:
+		v = int64(aval)
 	}
+	gid, cerr := provider.ConvertFeatureID(v)
+	if cerr != nil {
+		return 0, fmt.Errorf("unable to convert field into a uint64: %w", cerr)
+	}
+	return gid, nil
 }
 
 // extractQueryParamValues finds default values for SQL tokens and constructs query parameter values out of them
