@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func TestRenderTileForCacheCachesImplicitSuccessfulWrite(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/maps/m/l/4/3/2", nil)
-	res := renderTileForCache(req, handler, cacher, key, true)
+	res := renderTileForCache(req.Context(), req, handler, cacher, key, true)
 
 	if res.status != http.StatusOK {
 		t.Fatalf("rendered status = %d, want 200", res.status)
@@ -109,5 +110,110 @@ func TestTileUpdateCoordinatorAcquireHonorsContextCancel(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("canceled acquire stayed queued")
+	}
+}
+
+// blockingSetCache wraps a cache.Interface and stalls the first Set call after
+// arm until the gate opens, modeling a cache write that is delayed in flight.
+type blockingSetCache struct {
+	cache.Interface
+	mu         sync.Mutex
+	armed      bool
+	setEntered chan struct{}
+	gate       chan struct{}
+}
+
+func newBlockingSetCache(under cache.Interface) *blockingSetCache {
+	return &blockingSetCache{
+		Interface:  under,
+		setEntered: make(chan struct{}),
+		gate:       make(chan struct{}),
+	}
+}
+
+func (b *blockingSetCache) arm() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.armed = true
+}
+
+func (b *blockingSetCache) Set(ctx context.Context, key *cache.Key, val []byte) error {
+	b.mu.Lock()
+	block := b.armed
+	b.armed = false
+	b.mu.Unlock()
+	if block {
+		b.setEntered <- struct{}{}
+		select {
+		case <-b.gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return b.Interface.Set(ctx, key, val)
+}
+
+// TestStaleRenderWriteCannotClobberNewerGeneration reproduces the P5-2 race
+// deterministically through a controlled seam: a miss render whose cache
+// write is delayed in flight (after its generation check) while a metatile
+// mutation regenerates the metatile. The stale render's delayed write must
+// never land on top of the newer generation's tiles.
+func TestStaleRenderWriteCannotClobberNewerGeneration(t *testing.T) {
+	under := newFakeTileCache()
+	cacher := newBlockingSetCache(under)
+	cacher.arm()
+	key := &cache.Key{MapName: "m", LayerName: "l", Z: 1, X: 0, Y: 0}
+	lockKey := metatileLockKeyForCacheKey(key)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", mvt.MimeType)
+		_, _ = w.Write([]byte("stale"))
+	})
+
+	renderDone := make(chan struct{})
+	go func() {
+		defer close(renderDone)
+		req := httptest.NewRequest(http.MethodGet, "/maps/m/l/1/0/0", nil)
+		renderTileForCache(context.Background(), req, handler, cacher, key, true)
+	}()
+
+	// the stale render has passed its generation check and its cache write is
+	// now delayed in flight
+	<-cacher.setEntered
+
+	// a metatile mutation ( ?tile=update / ?dirty contract ) regenerates the
+	// metatile now and writes the fresh tile
+	mutationDone := make(chan struct{})
+	go func() {
+		defer close(mutationDone)
+		ctx := context.Background()
+		state, unlock, err := tileUpdateLocks.acquire(ctx, lockKey)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer unlock()
+		tileUpdateLocks.beginRegeneration(state)
+		defer tileUpdateLocks.endRegeneration(state)
+		if err := cacher.Set(ctx, key, []byte("fresh")); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	// give the mutation time to run: without the atomic write claim it
+	// completes and stores "fresh" while the stale write is still in flight
+	time.Sleep(100 * time.Millisecond)
+
+	// release the delayed stale write and let everything settle
+	close(cacher.gate)
+	<-renderDone
+	<-mutationDone
+
+	cached, hit, err := under.Get(context.Background(), key)
+	if err != nil || !hit {
+		t.Fatalf("Get = %q, %v, %v; want cached tile", cached, hit, err)
+	}
+	if !bytes.Equal(cached, []byte("fresh")) {
+		t.Fatalf("cached tile = %q, want %q (the newer generation's write must win)", cached, "fresh")
 	}
 }

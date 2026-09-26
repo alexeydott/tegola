@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -254,5 +255,73 @@ func TestTileOperationsRateLimitEnforced(t *testing.T) {
 
 	if codes[0] != http.StatusTooManyRequests && codes[1] != http.StatusTooManyRequests {
 		t.Errorf("rate limit of 1 per minute was not enforced: statuses %v", codes)
+	}
+}
+
+// TestFalsyDirtyValuesBypassDisabledOperationsGate verifies P5-6: a ?dirty
+// query that does not actually request regeneration (?dirty=0, ?dirty=false,
+// ...) behaves as an ordinary cache query. It must not trip the tile
+// operations gate, even when tile operations are disabled.
+func TestFalsyDirtyValuesBypassDisabledOperationsGate(t *testing.T) {
+	a := newTestMapWithLayers(testLayer1)
+	_, router := newTileOpsTestServer(t, a)
+	enableTileOperations(t, server.TileOperationsConfig{})
+
+	// one tile per case so every first request is a cache miss
+	for i, op := range []string{"?dirty=0", "?dirty=false", "?dirty=FALSE", "?dirty=no"} {
+		base := fmt.Sprintf("/maps/test-map/test-layer/4/2/%d.pbf", i)
+		w := tileOpsRequest(router, base+op, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200 (%s)", op, w.Code, w.Body.String())
+		}
+		if got := w.Header().Get("Tegola-Cache"); got != "MISS" {
+			t.Errorf("%s: Tegola-Cache = %q, want MISS", op, got)
+		}
+
+		// a falsy ?dirty is inert: the repeat request is an ordinary cache hit
+		w = tileOpsRequest(router, base+op, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s repeat: status = %d, want 200 (%s)", op, w.Code, w.Body.String())
+		}
+		if got := w.Header().Get("Tegola-Cache"); got != "HIT" {
+			t.Errorf("%s repeat: Tegola-Cache = %q, want HIT", op, got)
+		}
+	}
+
+	// absent ?dirty keeps behaving as an ordinary cache query
+	base := "/maps/test-map/test-layer/4/2/8.pbf"
+	w := tileOpsRequest(router, base, "")
+	if w.Code != http.StatusOK || w.Header().Get("Tegola-Cache") != "MISS" {
+		t.Errorf("absent dirty: status/cache = %d/%q, want 200/MISS", w.Code, w.Header().Get("Tegola-Cache"))
+	}
+
+	// the regenerating variants are still refused while disabled
+	for _, op := range []string{"?dirty=1", "?dirty=true", "?dirty", "?dirty=TRUE"} {
+		w := tileOpsRequest(router, "/maps/test-map/test-layer/4/2/9.pbf"+op, testTileOpsToken)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want 403 (%s)", op, w.Code, w.Body.String())
+		}
+	}
+}
+
+// TestFalsyDirtyValuesNotGatedWhenOperationsEnabled verifies P5-6 from the
+// other side: even with tile operations enabled, only the regenerating ?dirty
+// variant requires the token. A falsy value is served to anyone as an
+// ordinary cache query.
+func TestFalsyDirtyValuesNotGatedWhenOperationsEnabled(t *testing.T) {
+	a := newTestMapWithLayers(testLayer1)
+	_, router := newTileOpsTestServer(t, a)
+	enableTileOperations(t, serverTileOpsTestConfig())
+
+	// no token: falsy ?dirty is not an operation
+	w := tileOpsRequest(router, "/maps/test-map/test-layer/4/2/0.pbf?dirty=0", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("?dirty=0 without token: status = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+
+	// no token: regenerating ?dirty still requires authentication
+	w = tileOpsRequest(router, "/maps/test-map/test-layer/4/2/0.pbf?dirty=true", "")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("?dirty=true without token: status = %d, want 403 (%s)", w.Code, w.Body.String())
 	}
 }

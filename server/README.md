@@ -30,12 +30,14 @@ Access-Control-Allow-Origin = "*"
 
 The tile endpoints accept maintenance parameters: `?tile=update` and `?tile=getupdated` (cache regeneration), `?tile=status` (cache state) and `?dirty=true` (force regeneration, bypassing the cache). These can trigger up to 64 tile renders and cache writes per request, so they are **disabled by default** and, when enabled, require an authentication token.
 
-- `enabled` (bool): [Optional] Enables the tile maintenance parameters above. Defaults to `false`. When disabled, any request carrying `?tile=...` or `?dirty` is rejected with `403 Forbidden` — the parameters are not silently ignored — and no tile is rendered or written to the cache. Ordinary tile serving is unaffected.
+- `enabled` (bool): [Optional] Enables the tile maintenance parameters above. Defaults to `false`. When disabled, any request carrying `?tile=...` or a regenerating `?dirty` (see below) is rejected with `403 Forbidden` — the parameters are not silently ignored — and no tile is rendered or written to the cache. Ordinary tile serving is unaffected.
 - `token` (string): [Required when `enabled` is true] Shared secret clients must send in the `X-Tegola-Tile-Operations-Token` header. A missing or wrong token yields `403 Forbidden`; if `enabled` is true and no token is configured, all tile operations fail closed with `403`.
 - `rate_per_minute` (int): [Optional] Maximum number of tile-operation requests accepted per minute. Defaults to `60`. Requests over the limit receive `429 Too Many Requests`.
 - `max_concurrent` (int): [Optional] Maximum number of tile operations executing at the same time. Defaults to `4`. Additional mutating requests (`?tile=update`, `?tile=getupdated`, `?dirty=true`) receive `503 Service Unavailable`; `?tile=status` is exempt from the concurrency slot as it never renders.
 
 Note: `max_concurrent` limits tile *operations*; requests over the limit fail fast rather than queue, so a burst of cache-maintenance traffic cannot exhaust the server.
+
+Note: only the regenerating `?dirty` variants (`?dirty`, `?dirty=1`, `?dirty=true`, case-insensitive) are tile operations. Falsy values such as `?dirty=0` or `?dirty=false` request no regeneration: they are treated exactly like a request without the parameter, are served as ordinary cache queries, and never require the token or the `enabled` gate.
 
 ## Local development of the embedded viewer
 
