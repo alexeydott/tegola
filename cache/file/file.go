@@ -193,14 +193,15 @@ func (fc *Cache) Set(ctx context.Context, key *cache.Key, val []byte) error {
 
 // renameWithRetry renames oldPath to newPath, retrying briefly when the
 // destination is momentarily busy (windows can report "Access is denied" while
-// a concurrent rename onto the same destination is still completing).
+// a concurrent rename onto the same destination is still completing, and while
+// scanners briefly hold the freshly replaced file).
 func renameWithRetry(oldPath, newPath string) error {
 	var err error
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 10; i++ {
 		if err = os.Rename(oldPath, newPath); err == nil {
 			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	return err
 }
@@ -218,14 +219,29 @@ func (fc *Cache) Purge(ctx context.Context, key *cache.Key) error {
 	}
 
 	// remove the file. a concurrent purge may have removed it already, which
-	// is not an error. on windows a delete racing another delete can also
-	// fail transiently while the file disappears, so as long as the file is
-	// gone afterwards the purge succeeded
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-			return err
-		}
+	// is not an error
+	if err := removeIfPresent(path); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+// removeIfPresent deletes path and reports success when the file is gone
+// afterwards. Concurrent deletes of one file can fail transiently on windows
+// ("Access is denied" while a competing delete is still completing), so the
+// removal is retried briefly before giving up.
+func removeIfPresent(path string) error {
+	var err error
+	for i := 0; i < 10; i++ {
+		if err = os.Remove(path); err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	// last resort: the file may have disappeared while the final removal failed
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		return nil
+	}
+	return err
 }
