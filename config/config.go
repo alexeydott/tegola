@@ -73,13 +73,26 @@ type Config struct {
 
 // Webserver represents the config options for the webserver part of Tegola
 type Webserver struct {
-	HostName      env.URL    `toml:"hostname"`
-	Port          env.String `toml:"port"`
-	URIPrefix     env.String `toml:"uri_prefix"`
-	Headers       env.Dict   `toml:"headers"`
-	SSLCert       env.String `toml:"ssl_cert"`
-	SSLKey        env.String `toml:"ssl_key"`
-	ProxyProtocol env.String `toml:"proxy_protocol"`
+	HostName       env.URL              `toml:"hostname"`
+	Port           env.String           `toml:"port"`
+	URIPrefix      env.String           `toml:"uri_prefix"`
+	Headers        env.Dict             `toml:"headers"`
+	SSLCert        env.String           `toml:"ssl_cert"`
+	SSLKey         env.String           `toml:"ssl_key"`
+	ProxyProtocol  env.String           `toml:"proxy_protocol"`
+	TileOperations TileOperationsConfig `toml:"tile_operations"`
+}
+
+// TileOperationsConfig configures the privileged tile operation endpoints
+// (?tile=update, ?tile=getupdated and the ?tile=dirty parameter). The feature
+// is disabled by default and, when enabled, additionally requires the
+// configured token (or the admin listener). See server/tile_operations.go for
+// the enforcement semantics and server/README.md for the documentation.
+type TileOperationsConfig struct {
+	Enabled       bool       `toml:"enabled"`
+	Token         env.String `toml:"token"`
+	RatePerMinute env.Int    `toml:"rate_per_minute"`
+	MaxConcurrent env.Int    `toml:"max_concurrent"`
 }
 
 // ValidateAndRegisterParams ensures configured params don't conflict with existing

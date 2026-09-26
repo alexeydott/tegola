@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-spatial/cobra"
 	"github.com/go-spatial/tegola/atlas"
+	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/internal/build"
 	gdcmd "github.com/go-spatial/tegola/internal/cmd"
 	"github.com/go-spatial/tegola/internal/log"
@@ -72,6 +73,11 @@ var serverCmd = &cobra.Command{
 			server.ProxyProtocol = string(conf.Webserver.ProxyProtocol)
 		}
 
+		// wire the privileged tile operations gate ([webserver.tile_operations]).
+		// Disabled unless enabled = true is configured; zero rate/concurrent
+		// values are resolved to the server-side defaults (server/tile_operations.go).
+		server.TileOperations = configureTileOperations(conf.Webserver.TileOperations)
+
 		if conf.Webserver.SSLCert+conf.Webserver.SSLKey != "" {
 			if conf.Webserver.SSLCert == "" {
 				// error
@@ -109,6 +115,20 @@ func resolveServerPort(flagSet bool, flagPort, configPort string) string {
 		return configPort
 	}
 	return flagPort
+}
+
+// configureTileOperations maps the [webserver.tile_operations] config section
+// onto the server's tile operation gate. The feature stays disabled unless
+// enabled = true is set. Zero rate/concurrent values are passed through as-is;
+// the server resolves them to its defaults (60 requests/minute, 4 concurrent
+// operations) — see server/tile_operations.go.
+func configureTileOperations(t config.TileOperationsConfig) server.TileOperationsConfig {
+	return server.TileOperationsConfig{
+		Enabled:       t.Enabled,
+		Token:         string(t.Token),
+		RatePerMinute: int(t.RatePerMinute),
+		MaxConcurrent: int(t.MaxConcurrent),
+	}
 }
 
 func shutdown(srv *http.Server) {

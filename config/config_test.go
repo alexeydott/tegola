@@ -111,6 +111,19 @@ func TestParse(t *testing.T) {
 	}
 
 	tests := map[string]tcase{
+		"webserver tile operations section": {
+			configPath: "testdata/webserver_tile_operations.toml",
+			expected: config.Config{
+				Webserver: config.Webserver{
+					TileOperations: config.TileOperationsConfig{
+						Enabled:       true,
+						Token:         "s3cret",
+						RatePerMinute: 120,
+						MaxConcurrent: 8,
+					},
+				},
+			},
+		},
 		"happy path": {
 			configPath: "testdata/happy_path.toml",
 			expected: config.Config{
