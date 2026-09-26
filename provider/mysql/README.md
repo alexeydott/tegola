@@ -174,6 +174,10 @@ SRID resolution order (highest priority first):
 
 When the layer SRID differs from Web Mercator, tile bounding boxes are reprojected into the layer SRID before the `!BBOX!` filter is applied, and geometries are delivered to the MVT encoder with their true SRID. The full CRS contract (config keys, precedence, synthetic SRIDs, `!BBOX!` semantics) is documented in [docs/crs.md](../../docs/crs.md) and is shared by all standard providers.
 
+### Deferred custom SQL and mixed SRIDs
+
+Tile-dependent custom SQL (queries containing `!X!`/`!Y!`/`!Z!` and friends) defers geometry inspection to the first query. Without an explicitly configured CRS, the first non-zero native geometry header SRID seen in the results establishes the canonical layer CRS. Rows carrying a *different* header SRID are skipped with a per-row warning instead of being silently interpreted as if they carried the canonical SRID; rows without a header SRID (0) are always processed. Mixed-SRID results are therefore not supported on deferred custom SQL layers — configure `srid`/`crs_defn` explicitly if the source mixes SRIDs.
+
 ### Reprojection
 
 Reprojection between the layer SRID and Web Mercator uses the vendored `go-spatial/proj` library. Any SRID can be made available in two ways:

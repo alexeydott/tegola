@@ -424,17 +424,28 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 
 				// Match startup inspection for deferred custom SQL: when no
 				// CRS was configured, a native geometry header is the only
-				// available source-CRS declaration.
-				if pLayer.deferredInspection && !pLayer.crsExplicit && srid > 0 && pLayer.srid != srid {
-					pLayer.srid = srid
-					if pLayer.srid != tileSRID {
-						sourceBBox, err := basic.FromWebMercatorExtent(pLayer.srid, webMercatorBBox)
-						if err != nil {
-							return fmt.Errorf("convert tile extent for geometry header SRID %d: %w", srid, err)
+				// available source-CRS declaration. The first non-zero
+				// header SRID establishes the canonical layer CRS; rows
+				// carrying a different SRID are skipped with a warning
+				// instead of being silently mislabeled (audit P5-9).
+				if pLayer.deferredInspection && !pLayer.crsExplicit && srid > 0 {
+					switch pLayer.resolveDeferredHeaderSRID(srid) {
+					case deferredSRIDAdopt:
+						if pLayer.srid != tileSRID {
+							sourceBBox, err := basic.FromWebMercatorExtent(pLayer.srid, webMercatorBBox)
+							if err != nil {
+								return fmt.Errorf("convert tile extent for geometry header SRID %d: %w", srid, err)
+							}
+							tileBBox = sourceBBox
+						} else {
+							tileBBox = webMercatorBBox
 						}
-						tileBBox = sourceBBox
-					} else {
-						tileBBox = webMercatorBBox
+					case deferredSRIDSkip:
+						log.Warnf("mysql provider: layer %v: skipping row with geometry header SRID %d; the layer CRS was established as SRID %d from the first sampled row (mixed SRIDs are not supported in deferred custom SQL)", pLayer.Name(), srid, pLayer.srid)
+						skipRow = true
+					}
+					if skipRow {
+						break
 					}
 				}
 
