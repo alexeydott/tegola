@@ -5,6 +5,9 @@ package gpkg_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
+	"fmt"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -259,4 +262,92 @@ func fetchOneFeature(t *testing.T, p provider.Tiler, layer string) provider.Feat
 		t.Fatalf("feature count = %v, want 1", len(got))
 	}
 	return got[0]
+}
+
+// gpkgPointBlob crafts a GeoPackage binary geometry blob: 8-byte header
+// (magic 'GP', version 0, flags 0x01 = little-endian + no envelope) plus a
+// little-endian WKB point body.
+func gpkgPointBlob(t *testing.T, srid int32, x, y float64) []byte {
+	t.Helper()
+	hdr := make([]byte, 8)
+	hdr[0], hdr[1], hdr[2], hdr[3] = 'G', 'P', 0, 0x01
+	binary.LittleEndian.PutUint32(hdr[4:8], uint32(srid))
+	return append(hdr, wkbGeomBytes(t, geom.Point{x, y})...)
+}
+
+// TestGeometryColumnSelectedByConfig exercises audit P6-13 end to end: a
+// table with multiple geometry columns must serve the column named by
+// geometry_fieldname (with its own SRID), not whichever column won the old
+// last-one-wins metadata map, and an explicit unknown geometry column must
+// fail registration with a clear error.
+func TestGeometryColumnSelectedByConfig(t *testing.T) {
+	ddl := `
+		CREATE TABLE dual (fid INTEGER PRIMARY KEY, geom_a BLOB, geom_b BLOB, note TEXT);
+		CREATE TABLE gpkg_contents (table_name TEXT NOT NULL, data_type TEXT NOT NULL, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER);
+		CREATE TABLE gpkg_geometry_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL, geometry_type_name TEXT NOT NULL, srs_id INTEGER NOT NULL, z TINYINT NOT NULL, m TINYINT NOT NULL);
+		CREATE TABLE rtree_dual_geom_a (id INTEGER, minx DOUBLE, maxx DOUBLE, miny DOUBLE, maxy DOUBLE);
+		CREATE TABLE rtree_dual_geom_b (id INTEGER, minx DOUBLE, maxx DOUBLE, miny DOUBLE, maxy DOUBLE);`
+	fx := newRawFixture(t, []string{ddl})
+	insertRows(t, fx.path, "dual",
+		[]string{"fid", "geom_a", "geom_b", "note"},
+		[][]interface{}{
+			{1, gpkgPointBlob(t, 3857, 1, 1), gpkgPointBlob(t, 4326, 2, 2), "note"},
+		})
+	insertRows(t, fx.path, "gpkg_contents",
+		[]string{"table_name", "data_type", "min_x", "min_y", "max_x", "max_y", "srs_id"},
+		[][]interface{}{{"dual", "features", 0.0, 0.0, 10.0, 10.0, nil}})
+	insertRows(t, fx.path, "gpkg_geometry_columns",
+		[]string{"table_name", "column_name", "geometry_type_name", "srs_id", "z", "m"},
+		[][]interface{}{
+			// inserted out of name order: pre-fix the map kept geom_b
+			{"dual", "geom_b", "POINT", 4326, 0, 0},
+			{"dual", "geom_a", "POINT", 3857, 0, 0},
+		})
+	for _, rt := range []string{"rtree_dual_geom_a", "rtree_dual_geom_b"} {
+		insertRows(t, fx.path, rt,
+			[]string{"id", "minx", "maxx", "miny", "maxy"},
+			[][]interface{}{{1, 0.0, 10.0, 0.0, 10.0}})
+	}
+
+	conf := dict.Dict{
+		"filepath": fx.path,
+		"srid":     3857,
+		"layers": []map[string]interface{}{
+			{
+				"name":               "dual_layer",
+				"tablename":          "dual",
+				"id_fieldname":       "fid",
+				"geometry_fieldname": "geom_a",
+				"fields":             []string{"note"},
+			},
+		},
+	}
+	p, err := gpkg.NewTileProvider(conf, nil)
+	if err != nil {
+		t.Fatalf("NewTileProvider: %v", err)
+	}
+	t.Cleanup(gpkg.Cleanup)
+
+	f := fetchOneFeature(t, p, "dual_layer")
+	want := geom.Point{1, 1}
+	if fmt.Sprintf("%v", f.Geometry) != fmt.Sprintf("%v", want) {
+		t.Errorf("geometry = %v (%T), expected %v (geom_a blob; pre-P6-13 the last gpkg_geometry_columns row won and geom_b was served)",
+			f.Geometry, f.Geometry, want)
+	}
+
+	// explicit unknown geometry column: clear registration error
+	conf["layers"] = []map[string]interface{}{
+		{
+			"name":               "bad_layer",
+			"tablename":          "dual",
+			"id_fieldname":       "fid",
+			"geometry_fieldname": "geom_no_such",
+			"fields":             []string{"note"},
+		},
+	}
+	if _, err := gpkg.NewTileProvider(conf, nil); err == nil {
+		t.Fatal("NewTileProvider with unknown geometry_fieldname errored = false, expected true")
+	} else if !strings.Contains(err.Error(), "no geometry column") {
+		t.Errorf("error = %q, expected it to name the missing geometry column", err.Error())
+	}
 }

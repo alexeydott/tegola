@@ -147,3 +147,124 @@ func TestFeatureTableMetaDataSkipsOrphanEntry(t *testing.T) {
 		t.Errorf("len(result) = %v, want 1", len(ftmd))
 	}
 }
+
+// TestFeatureTableMetaDataPerGeometryColumn exercises audit P6-13: the SRID
+// must come from gpkg_geometry_columns.srs_id (per geometry column) with
+// gpkg_contents.srs_id only as fallback, and a table with multiple geometry
+// columns must yield one detail entry per column.
+func TestFeatureTableMetaDataPerGeometryColumn(t *testing.T) {
+	db := newGpkgMetadataDB(t)
+
+	// make gc.srs_id nullable so the COALESCE fallback path is reachable
+	// (the shared helper declares it NOT NULL).
+	if _, err := db.Exec(`
+		DROP TABLE gpkg_geometry_columns;
+		CREATE TABLE gpkg_geometry_columns (
+			table_name TEXT NOT NULL,
+			column_name TEXT NOT NULL,
+			geometry_type_name TEXT NOT NULL,
+			srs_id INTEGER,
+			z TINYINT NOT NULL,
+			m TINYINT NOT NULL);`); err != nil {
+		t.Fatal(err)
+	}
+
+	// dual: two geometry columns, each with its own authoritative srs_id;
+	// gpkg_contents.srs_id is NULL and must NOT override the per-column
+	// values.
+	if _, err := db.Exec(`CREATE TABLE dual (fid INTEGER, geom_a BLOB, geom_b BLOB);`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO gpkg_contents (table_name, data_type, min_x, min_y, max_x, max_y, srs_id)
+		VALUES ('dual', 'features', 0, 0, 10, 10, NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	// inserted out of name order on purpose: resolution must sort
+	if _, err := db.Exec(`INSERT INTO gpkg_geometry_columns VALUES
+		('dual', 'geom_b', 'POINT', 4326, 0, 0),
+		('dual', 'geom_a', 'POINT', 3857, 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// lone: gc.srs_id is NULL → falls back to gpkg_contents.srs_id
+	if _, err := db.Exec(`CREATE TABLE lone (fid INTEGER, geom BLOB);`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO gpkg_contents (table_name, data_type, min_x, min_y, max_x, max_y, srs_id)
+		VALUES ('lone', 'features', 0, 0, 1, 1, 2154)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO gpkg_geometry_columns VALUES ('lone', 'geom', 'POINT', NULL, 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	ftmd, err := featureTableMetaData(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dual := ftmd["dual"]
+	if len(dual) != 2 {
+		t.Fatalf("dual geometry columns = %d, expected 2 (pre-P6-13 the map overwrote entries)", len(dual))
+	}
+	if dual[0].geomFieldname != "geom_a" || dual[0].srid != 3857 {
+		t.Errorf("dual[0] = %+v, expected geom_a/srid 3857 (sorted by column name, srs_id from gpkg_geometry_columns)", dual[0])
+	}
+	if dual[1].geomFieldname != "geom_b" || dual[1].srid != 4326 {
+		t.Errorf("dual[1] = %+v, expected geom_b/srid 4326 (sorted by column name, srs_id from gpkg_geometry_columns)", dual[1])
+	}
+
+	lone := ftmd["lone"]
+	if len(lone) != 1 {
+		t.Fatalf("lone geometry columns = %d, expected 1", len(lone))
+	}
+	if lone[0].srid != 2154 {
+		t.Errorf("lone srid = %d, expected 2154 (COALESCE fallback to gpkg_contents.srs_id)", lone[0].srid)
+	}
+}
+
+// TestPickGeometryColumn exercises the per-configuration geometry column
+// selection introduced by audit P6-13.
+func TestPickGeometryColumn(t *testing.T) {
+	cols := []featureTableDetails{
+		{geomFieldname: "geom_a", srid: 3857},
+		{geomFieldname: "geom_b", srid: 4326},
+	}
+
+	// explicit match is case-insensitive
+	got, err := pickGeometryColumn(cols, "Geom_A", true)
+	if err != nil {
+		t.Fatalf("explicit case-insensitive match errored: %v", err)
+	}
+	if got.geomFieldname != "geom_a" {
+		t.Errorf("picked %q, expected geom_a", got.geomFieldname)
+	}
+
+	// explicit mismatch is a clear error naming the available columns
+	_, err = pickGeometryColumn(cols, "nope", true)
+	if err == nil {
+		t.Fatal("explicit unknown column errored = false, expected true")
+	}
+	if !strings.Contains(err.Error(), "no geometry column") || !strings.Contains(err.Error(), "geom_a, geom_b") {
+		t.Errorf("error = %q, expected it to name the missing and available columns", err.Error())
+	}
+
+	// implicit pick on an ambiguous table: first entry, no error
+	got, err = pickGeometryColumn(cols, "whatever", false)
+	if err != nil {
+		t.Fatalf("implicit pick errored: %v", err)
+	}
+	if got.geomFieldname != "geom_a" {
+		t.Errorf("implicit pick = %q, expected geom_a (first entry)", got.geomFieldname)
+	}
+
+	// implicit pick of a single-column table ignores the configured name
+	single := []featureTableDetails{{geomFieldname: "the_geom", srid: 4326}}
+	got, err = pickGeometryColumn(single, "whatever", false)
+	if err != nil {
+		t.Fatalf("implicit single pick errored: %v", err)
+	}
+	if got.geomFieldname != "the_geom" {
+		t.Errorf("implicit single pick = %q, expected the_geom", got.geomFieldname)
+	}
+}

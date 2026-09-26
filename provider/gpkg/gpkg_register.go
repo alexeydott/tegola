@@ -86,10 +86,21 @@ func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 	conf["filepath"] = gpkgPath
 	conf["layers"] = make([]map[string]interface{}, len(tnames))
 	for i, tablename := range tnames {
-		// Use all columns besides the primary key (id) and geometry columns in "fields"
-		propFields := make([]string, 0, len(ftMetaData[tablename].colNames))
-		for _, colName := range ftMetaData[tablename].colNames {
-			if colName != ftMetaData[tablename].idFieldname && colName != ftMetaData[tablename].geomFieldname {
+		// Use all columns besides the primary key (id) and geometry columns
+		// in "fields". A table may carry multiple geometry columns; all of
+		// them are excluded and the first (sorted by name) drives the
+		// single generated layer, matching pickGeometryColumn's implicit
+		// selection.
+		details := ftMetaData[tablename]
+		d := details[0]
+		geomCols := make(map[string]struct{}, len(details))
+		for _, det := range details {
+			geomCols[strings.ToLower(det.geomFieldname)] = struct{}{}
+		}
+		propFields := make([]string, 0, len(d.colNames))
+		for _, colName := range d.colNames {
+			_, isGeom := geomCols[strings.ToLower(colName)]
+			if colName != d.idFieldname && !isGeom {
 				propFields = append(propFields, colName)
 			}
 		}
@@ -97,7 +108,7 @@ func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 		lconf := make(map[string]interface{})
 		lconf["name"] = tablename
 		lconf["tablename"] = tablename
-		lconf["id_fieldname"] = ftMetaData[tablename].idFieldname
+		lconf["id_fieldname"] = d.idFieldname
 		lconf["fields"] = propFields
 		conf["layers"].([]map[string]interface{})[i] = lconf
 	}
@@ -343,15 +354,22 @@ func matchBoundColumns(colNames []string, fields codec.BBoxFields) *[4]string {
 	return &matched
 }
 
-// Collect meta data about all feature tables in opened gpkg.
-func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) {
+// Collect meta data about all feature tables in opened gpkg. A table may
+// carry multiple geometry columns (one gpkg_geometry_columns row each), so
+// entries are keyed by table name and list one detail per geometry column,
+// sorted by column name for deterministic selection.
+func featureTableMetaData(gpkg *sql.DB) (map[string][]featureTableDetails, error) {
 	// this query is used to read the metadata from the gpkg_contents and
 	// gpkg_geometry_columns tables for tables that store geographic
 	// features. Column names and the primary key are read via
 	// PRAGMA table_info (see tableColumnsAndPK).
+	//
+	// SRID source (audit P6-13): gpkg_geometry_columns.srs_id is the
+	// authoritative, per-geometry-column value; gpkg_contents.srs_id may be
+	// NULL and serves only as a fallback.
 	qtext := `
 		SELECT
-			c.table_name, c.min_x, c.min_y, c.max_x, c.max_y, c.srs_id, gc.column_name, gc.geometry_type_name
+			c.table_name, c.min_x, c.min_y, c.max_x, c.max_y, COALESCE(gc.srs_id, c.srs_id), gc.column_name, gc.geometry_type_name
 		FROM
 			gpkg_contents c JOIN gpkg_geometry_columns gc ON c.table_name = gc.table_name
 		WHERE
@@ -365,7 +383,7 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 	defer func() { _ = rows.Close() }()
 
 	// container for tracking metadata for each table with a geometry
-	geomTableDetails := make(map[string]featureTableDetails)
+	geomTableDetails := make(map[string][]featureTableDetails)
 
 	// iterate each row extracting meta data about each table
 	for rows.Next() {
@@ -407,7 +425,7 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 			pkCol = pkColumns[0]
 		}
 
-		geomTableDetails[tablename.String] = featureTableDetails{
+		geomTableDetails[tablename.String] = append(geomTableDetails[tablename.String], featureTableDetails{
 			colNames:      colNames,
 			idFieldname:   pkCol,
 			geomFieldname: geomCol.String,
@@ -415,13 +433,46 @@ func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) 
 			srid:          sridVal,
 			// the extent of the layer's features
 			bbox: bbox,
-		}
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
+	// deterministic geometry-column order (audit P6-13): a table with
+	// multiple geometry columns must always resolve to the same entry.
+	for _, details := range geomTableDetails {
+		sort.Slice(details, func(i, j int) bool { return details[i].geomFieldname < details[j].geomFieldname })
+	}
+
 	return geomTableDetails, nil
+}
+
+// pickGeometryColumn selects the gpkg_geometry_columns entry a layer uses
+// as its geometry column (audit P6-13). A table can carry multiple
+// geometry columns; the configured geometry_fieldname picks the column
+// (case-insensitively). When the name is not explicitly configured, the
+// first entry (sorted by column name) is used and the ambiguity is warned
+// about; an explicit name that matches no geometry column is an error.
+func pickGeometryColumn(cols []featureTableDetails, configured string, explicit bool) (featureTableDetails, error) {
+	for _, d := range cols {
+		if strings.EqualFold(d.geomFieldname, configured) {
+			return d, nil
+		}
+	}
+
+	names := make([]string, len(cols))
+	for i := range cols {
+		names[i] = cols[i].geomFieldname
+	}
+	if !explicit {
+		if len(cols) > 1 {
+			log.Warnf("table has multiple geometry columns (%v); using %q - configure geometry_fieldname to select another",
+				strings.Join(names, ", "), cols[0].geomFieldname)
+		}
+		return cols[0], nil
+	}
+	return featureTableDetails{}, fmt.Errorf("table has no geometry column %q (available: %v)", configured, strings.Join(names, ", "))
 }
 
 // hasGpkgMetadataTables reports whether the file has the GeoPackage metadata
@@ -542,7 +593,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	// are only required for gpkg-format layers; raw-format (wkb/wkt/mos)
 	// layers read plain SQLite tables, so an empty metadata map is used
 	// when those tables are absent.
-	geomTableDetails := make(map[string]featureTableDetails)
+	geomTableDetails := make(map[string][]featureTableDetails)
 	hasMetadata, merr := hasGpkgMetadataTables(db)
 	if merr != nil {
 		return nil, merr
@@ -556,10 +607,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 	// provider-level srid/crs_defn via the shared CRS contract. An explicit
 	// value must take precedence over any SRID inferred from the GPKG itself
-	// (gpkg_contents.srs_id or the per-row WKB header), since that inferred
-	// data is not always reliable (e.g. GPKGs produced by third-party
-	// conversion tools such as DWG exporters commonly leave those fields at 0
-	// or set them to a non-standard code).
+	// (gpkg_geometry_columns.srs_id or the per-row WKB header), since that
+	// inferred data is not always reliable (e.g. GPKGs produced by
+	// third-party conversion tools such as DWG exporters commonly leave
+	// those fields at 0 or set them to a non-standard code).
 	pcrs, perr := crsconfig.ResolveProvider(config, DefaultSRID)
 	if perr != nil {
 		return nil, perr
@@ -654,6 +705,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		if err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 		}
+		// P6-13: an explicitly configured geometry_fieldname picks the
+		// geometry column when a table carries several.
+		_, geomFieldErr := layerConf.String(ConfigKeyGeomField, nil)
+		geomFieldnameExplicit := geomFieldErr == nil
 
 		tagFieldnames, err := layerConf.StringSlice(ConfigKeyFields)
 		if err != nil { // empty slices are okay
@@ -790,13 +845,19 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					log.Debugf("layer '%v': table %q detected as MapplGIS", layerName, tablename)
 				}
 			} else {
-				d, ok := geomTableDetails[tablename]
+				geomCols, ok := geomTableDetails[tablename]
 				if !ok {
 					return nil, fmt.Errorf("table %q does not exist", tablename)
 				}
+				// P6-13: a table can carry multiple geometry columns; the
+				// configured geometry_fieldname picks the column.
+				d, derr := pickGeometryColumn(geomCols, layer.geomFieldname, geomFieldnameExplicit)
+				if derr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, derr)
+				}
 
 				// an explicit provider-level srid always wins over the value inferred from
-				// gpkg_contents.srs_id; the inferred value is only used as a fallback when
+				// gpkg_geometry_columns.srs_id; the inferred value is only used as a fallback when
 				// the user did not configure anything explicitly.
 				layerSRID := p.srid
 				if !providerSRIDExplicit && d.srid > 0 {
