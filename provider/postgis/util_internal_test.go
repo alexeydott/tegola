@@ -2,6 +2,7 @@ package postgis
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -427,5 +428,37 @@ func TestDecipherFieldsGeometryValueTypes(t *testing.T) {
 				t.Errorf("geom: expected %q, got %q", tc.wantGeom, geom)
 			}
 		})
+	}
+}
+
+// TestGIDRejectsInvalidIDs (audit P6-10) pins the feature-ID contract at the
+// PostGIS decipherFields call site: negative, fractional and out-of-range IDs
+// are rejected with an error instead of being wrapped (-1 → 2^64-1) or
+// truncated (1.5 → 1). gId shares the rules with provider.ConvertFeatureID.
+func TestGIDRejectsInvalidIDs(t *testing.T) {
+	for _, val := range []any{
+		float64(-1),
+		float64(1.5),
+		math.NaN(),
+		math.Pow(2, 64),
+		int64(-2),
+		int32(-3),
+		"-7",
+		nil,
+	} {
+		got, err := gId(val)
+		if err == nil {
+			t.Fatalf("gId(%v (%T)) = %d, want a rejection error", val, val, got)
+		}
+		if got != 0 {
+			t.Fatalf("gId(%v) = %d alongside error, want 0", val, got)
+		}
+	}
+
+	if got, err := gId(float64(3)); err != nil || got != 3 {
+		t.Fatalf("gId(3.0) = %d, %v, want 3, nil", got, err)
+	}
+	if got, err := gId("123"); err != nil || got != 123 {
+		t.Fatalf("gId(%q) = %d, %v, want 123, nil", "123", got, err)
 	}
 }

@@ -3,11 +3,87 @@ package provider
 import (
 	"context"
 	"errors"
+	"math"
 	"sort"
 	"testing"
 
 	"github.com/go-spatial/tegola/dict"
 )
+
+// TestConvertFeatureIDInvalidValues (audit P6-10) pins the feature-ID
+// conversion contract: values that do not fit a uint64 ID — negative,
+// fractional or out-of-range numbers — are rejected with an error instead
+// of being silently wrapped (-1 used to become 2^64-1) or truncated
+// (1.5 used to become 1).
+func TestConvertFeatureIDInvalidValues(t *testing.T) {
+	tcs := []struct {
+		name string
+		val  interface{}
+	}{
+		{"negative float", float64(-1)},
+		{"fractional float", float64(1.5)},
+		{"NaN float", math.NaN()},
+		{"+Inf float", math.Inf(1)},
+		{"float past uint64 range", math.Pow(2, 64)},
+		{"negative int64", int64(-1)},
+		{"negative int32", int32(-5)},
+		{"negative int8", int8(-1)},
+		{"negative numeric string", "-1"},
+		{"fractional numeric string", "1.5"},
+		{"non-numeric string", "abc"},
+		{"negative numeric bytes", []byte("-1")},
+		{"nil", nil},
+		{"unsupported type", struct{}{}},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ConvertFeatureID(tc.val)
+			if err == nil {
+				t.Fatalf("ConvertFeatureID(%v (%T)) = %d, want a rejection error", tc.val, tc.val, got)
+			}
+			if got != 0 {
+				t.Fatalf("ConvertFeatureID(%v) = %d alongside error, want 0", tc.val, got)
+			}
+		})
+	}
+}
+
+// TestConvertFeatureIDValidValues pins the values ConvertFeatureID must keep
+// accepting after the P6-10 hardening.
+func TestConvertFeatureIDValidValues(t *testing.T) {
+	tcs := []struct {
+		name string
+		val  interface{}
+		want uint64
+	}{
+		{"float64 integer", float64(42), 42},
+		{"float64 large integer", float64(1e18), 1000000000000000000},
+		{"int64", int64(7), 7},
+		{"int64 zero", int64(0), 0},
+		{"uint64 max", uint64(18446744073709551615), 18446744073709551615},
+		{"uint", uint(3), 3},
+		{"int8", int8(9), 9},
+		{"uint8", uint8(10), 10},
+		{"int32", int32(11), 11},
+		{"uint32", uint32(13), 13},
+		{"uint16", uint16(15), 15},
+		{"numeric string", "123", 123},
+		{"numeric bytes", []byte("456"), 456},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ConvertFeatureID(tc.val)
+			if err != nil {
+				t.Fatalf("ConvertFeatureID(%v (%T)) unexpected error: %v", tc.val, tc.val, err)
+			}
+			if got != tc.want {
+				t.Fatalf("ConvertFeatureID(%v (%T)) = %d, want %d", tc.val, tc.val, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestProviderFilterInclude(t *testing.T) {
 

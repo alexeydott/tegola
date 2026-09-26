@@ -453,31 +453,12 @@ func decipherFields(
 	return gid, geom, tags, nil
 }
 
+// gId converts a feature ID value to uint64. The conversion rules (audit
+// P6-10: reject negative, fractional and out-of-range IDs with a clear
+// error) live in provider.ConvertFeatureID so every provider call site
+// behaves identically.
 func gId(v any) (gid uint64, err error) {
-	switch aval := v.(type) {
-	case float64:
-		return uint64(aval), nil
-	case int64:
-		return uint64(aval), nil
-	case uint64:
-		return aval, nil
-	case uint:
-		return uint64(aval), nil
-	case int8:
-		return uint64(aval), nil
-	case uint8:
-		return uint64(aval), nil
-	case uint16:
-		return uint64(aval), nil
-	case int32:
-		return uint64(aval), nil
-	case uint32:
-		return uint64(aval), nil
-	case string:
-		return strconv.ParseUint(aval, 10, 64)
-	default:
-		return gid, fmt.Errorf("unable to convert field into a uint64")
-	}
+	return provider.ConvertFeatureID(v)
 }
 
 // ctxErr will check if the supplied context has an error (i.e. context canceled)
