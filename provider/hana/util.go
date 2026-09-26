@@ -461,12 +461,9 @@ func getTableFieldNames(pool *connectionPoolCollector, l *Layer, tblName string)
 
 func genSQL(l *Layer, tblName string, fieldNames []string, buffer bool, providerType string) (sql string, err error) {
 	fgeom := -1
-	fid := -1
 
 	for i, f := range fieldNames {
-		if f == l.idField {
-			fid = i
-		} else if f == l.geomField {
+		if f == l.geomField {
 			fgeom = i
 		}
 		fieldNames[i] = quoteIdentifier(fieldNames[i])
@@ -486,7 +483,13 @@ func genSQL(l *Layer, tblName string, fieldNames []string, buffer bool, provider
 		}
 	}
 
-	if fid == -1 && l.idField != "" {
+	// The id field is always appended to the SELECT list, even when the
+	// configured fields already contain it: the first occurrence feeds the
+	// feature id and later occurrences fall through into the tags map, so
+	// a configured id field is both the feature id and a tag. This mirrors
+	// the postgis provider contract ("the id has to be parsed once but it
+	// can also be a tag").
+	if l.idField != "" {
 		fieldNames = append(fieldNames, quoteIdentifier(l.idField))
 	}
 
@@ -579,6 +582,32 @@ func toPlanarEquivalenSrid(srid uint64) uint64 {
 	return PLANAR_SRID_OFFSET + srid
 }
 
+// transformSRID maps a layer SRID to the SRID that client-side coordinate
+// transforms must use. The planar-equivalent offset only encodes the
+// round-earth SRID of a HANA geometry column so the server-side predicates can
+// run planar; the stored coordinates are unchanged and registered CRS
+// transforms only know the effective (base) SRID. Synthetic CRS SRIDs pass
+// through untouched.
+func transformSRID(srid uint64) uint64 {
+	if isPlanarEquivalentSrid(srid) {
+		return srid - PLANAR_SRID_OFFSET
+	}
+	return srid
+}
+
+// tileBBoxInLayerCRS returns the buffered tile extent (WebMercator)
+// transformed into the layer's source CRS for the exact in-memory geometry
+// filter used with raw geometry formats. A planar-equivalent layer SRID is
+// normalized to its effective SRID first (transformSRID).
+func tileBBoxInLayerCRS(tile provider.Tile, layerSRID uint64) (*geom.Extent, error) {
+	bbox, _ := tile.BufferedExtent()
+	srid := transformSRID(layerSRID)
+	if srid == tegola.WebMercator {
+		return bbox, nil
+	}
+	return basic.FromWebMercatorExtent(srid, bbox)
+}
+
 // getBBoxCoordinates returns the lower-left and upper-right corners of the
 // axis-aligned bounding box enclosing the tile extent after transformation
 // into the target CRS (audit P5-15). The tile's full perimeter is sampled
@@ -588,10 +617,7 @@ func toPlanarEquivalenSrid(srid uint64) uint64 {
 func getBBoxCoordinates(extent *geom.Extent, srid uint64) (geom.Point, geom.Point, error) {
 	// The planar-equivalent offset only encodes the round-earth SRID;
 	// transform with the effective SRID.
-	effective := srid
-	if isPlanarEquivalentSrid(srid) {
-		effective = srid - PLANAR_SRID_OFFSET
-	}
+	effective := transformSRID(srid)
 
 	sourceExtent, err := basic.FromWebMercatorExtent(effective, extent)
 	if err != nil {
@@ -721,7 +747,10 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 		if berr != nil {
 			return "", berr
 		}
-		sourceExtent, cerr := basic.FromWebMercatorExtent(srid, bboxExtent)
+		// A planar-equivalent SRID only labels the round-earth SRID of a
+		// HANA geometry column and must be normalized before the
+		// conversion into the layer's source CRS.
+		sourceExtent, cerr := basic.FromWebMercatorExtent(transformSRID(srid), bboxExtent)
 		if cerr != nil {
 			return "", fmt.Errorf("error converting tile extent: %w", cerr)
 		}

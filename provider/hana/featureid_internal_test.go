@@ -77,6 +77,41 @@ func TestReadRowValuesStringID(t *testing.T) {
 	}
 }
 
+// TestReadRowValuesRepeatedIDOccurrenceIsTag pins the postgis provider
+// contract "the id has to be parsed once but it can also be a tag": the
+// row carries the id column twice (genSQL always appends it — see
+// TestGenSQLIdFieldAlsoTag), the first occurrence feeds the feature id
+// and the second occurrence falls through into the tags map. This is what
+// makes an explicitly configured id field appear in both the feature id
+// and the tags ("tablename query with fields and id as field").
+func TestReadRowValuesRepeatedIDOccurrenceIsTag(t *testing.T) {
+	l := &Layer{name: "lyr"}
+	descriptions := []FieldDescription{
+		{dataType: DtBigint, name: "id", isFeatureId: true},
+		{dataType: DtNVarchar, name: "scalerank"},
+		{dataType: DtBigint, name: "id"},
+	}
+	rowValues := []interface{}{
+		&sql.NullInt64{Int64: 42, Valid: true},
+		&sql.NullString{String: "X", Valid: true},
+		&sql.NullInt64{Int64: 42, Valid: true},
+	}
+
+	gid, _, tags, err := readRowValues(context.Background(), l, descriptions, rowValues)
+	if err != nil {
+		t.Fatalf("readRowValues errored = %v", err)
+	}
+	if gid != 42 {
+		t.Errorf("gid = %d, expected 42 (first id occurrence feeds the feature id)", gid)
+	}
+	if tags["id"] != int64(42) {
+		t.Errorf("tags[id] = %v, expected 42 (second id occurrence becomes a tag)", tags["id"])
+	}
+	if tags["scalerank"] != "X" {
+		t.Errorf("tags = %v, expected scalerank=X kept", tags)
+	}
+}
+
 // TestReadRowValuesNullIDSkipsRow pins the audit P6-11 hana part: a NULL
 // feature id must not silently become duplicate ID 0 - the row is skipped
 // (empty result, caller's len(geom)==0 continue seam) with a warning.

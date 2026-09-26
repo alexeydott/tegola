@@ -16,8 +16,6 @@ import (
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/geom/encoding/wkb"
 	"github.com/go-spatial/geom/encoding/wkt"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
@@ -1301,16 +1299,12 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 	// MapplGIS LayerInfo application does not mutate provider state.
 	mosCfg := plyr.mosConfig
 
-	// buffered tile extent in WebMercator, used by the exact in-memory
-	// filter for raw geometry formats.
-	tileBBox, _ := tile.BufferedExtent()
-	tileSRID := plyr.SRID()
-	if tileSRID != tegola.WebMercator {
-		sourceBBox, berr := basic.FromWebMercatorExtent(tileSRID, tileBBox)
-		if berr != nil {
-			return fmt.Errorf("error converting tile extent for layer (%v): %w", layer, berr)
-		}
-		tileBBox = sourceBBox
+	// buffered tile extent in the layer's source CRS, used by the exact
+	// in-memory filter for raw geometry formats. Planar-equivalent layer
+	// SRIDs are normalized inside tileBBoxInLayerCRS.
+	tileBBox, berr := tileBBoxInLayerCRS(tile, plyr.SRID())
+	if berr != nil {
+		return fmt.Errorf("error converting tile extent for layer (%v): %w", layer, berr)
 	}
 
 	sqlQuery, err := replaceTokens(p.dbVersion, plyr.sql, &plyr, plyr.GeomType(), plyr.SRID(), tile, true)
@@ -1419,7 +1413,7 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		// mos) and synthetic CRS layers whose SQL cannot use native spatial
 		// predicates; harmless for native geometry already filtered via
 		// !BBOX!.
-		if (codec.IsRawFormat(plyr.geometryFormat) || isSyntheticCRS(tileSRID)) &&
+		if (codec.IsRawFormat(plyr.geometryFormat) || isSyntheticCRS(plyr.SRID())) &&
 			!codec.GeometryIntersectsExtent(geometry, tileBBox) {
 			continue
 		}

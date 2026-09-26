@@ -6,6 +6,7 @@ import (
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/provider"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 func TestValidateCRSFormatCompatibility(t *testing.T) {
@@ -174,22 +175,22 @@ func TestGenSQLRawFormat(t *testing.T) {
 		{
 			name:           "native format uses spatial predicate",
 			geometryFormat: "",
-			expectedSQL:   `SELECT "id", "geom".ST_AsBinary()  AS "geom" FROM "tbl" WHERE !BBOX!`,
+			expectedSQL:    `SELECT "id", "geom".ST_AsBinary()  AS "geom", "id" FROM "tbl" WHERE !BBOX!`,
 		},
 		{
 			name:           "mos format selects raw blob without bbox predicate",
 			geometryFormat: "mos",
-			expectedSQL:   `SELECT "id", "geom" AS "geom" FROM "tbl" WHERE "geom" IS NOT NULL`,
+			expectedSQL:    `SELECT "id", "geom" AS "geom", "id" FROM "tbl" WHERE "geom" IS NOT NULL`,
 		},
 		{
 			name:           "wkb format selects raw value without bbox predicate",
 			geometryFormat: "wkb",
-			expectedSQL:   `SELECT "id", "geom" AS "geom" FROM "tbl" WHERE "geom" IS NOT NULL`,
+			expectedSQL:    `SELECT "id", "geom" AS "geom", "id" FROM "tbl" WHERE "geom" IS NOT NULL`,
 		},
 		{
 			name:           "wkt format selects raw value without bbox predicate",
 			geometryFormat: "wkt",
-			expectedSQL:   `SELECT "id", "geom" AS "geom" FROM "tbl" WHERE "geom" IS NOT NULL`,
+			expectedSQL:    `SELECT "id", "geom" AS "geom", "id" FROM "tbl" WHERE "geom" IS NOT NULL`,
 		},
 	}
 
@@ -210,6 +211,32 @@ func TestGenSQLRawFormat(t *testing.T) {
 				t.Errorf("incorrect sql,\n Expected \n \t%v\n Got \n \t%v", tc.expectedSQL, sql)
 			}
 		})
+	}
+}
+
+// TestGenSQLIdFieldAlsoTag pins the postgis provider contract "the id has
+// to be parsed once but it can also be a tag": when the configured fields
+// already contain the id field, genSQL must still append the id column to
+// the SELECT list so the row carries it twice. readRowValues consumes the
+// first occurrence as the feature id and the second occurrence becomes a
+// tags entry (see TestReadRowValuesRepeatedIDOccurrenceIsTag).
+// Pre-fix: the id column was emitted only once and an explicitly
+// configured id field never reached the tags map
+// (tablename query with fields and id as field regression).
+func TestGenSQLIdFieldAlsoTag(t *testing.T) {
+	l := &Layer{
+		name:      "layer",
+		geomField: "geom",
+		idField:   "id",
+		srid:      tegola.WebMercator,
+	}
+	sql, err := genSQL(l, "tbl", []string{"id", "scalerank"}, false, ProviderType)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := `SELECT "id", "scalerank", "geom".ST_AsBinary()  AS "geom", "id" FROM "tbl" WHERE !BBOX!`
+	if sql != expected {
+		t.Errorf("incorrect sql,\n Expected \n \t%v\n Got \n \t%v", expected, sql)
 	}
 }
 
@@ -251,5 +278,97 @@ func TestUppercaseTokens(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+// TestTransformSRID covers the SRID normalization contract for client-side
+// coordinate transforms: planar-equivalent layer SRIDs only label the
+// round-earth SRID of a HANA geometry column and must be mapped back to the
+// effective (base) SRID before any registered CRS conversion. Everything
+// else, including synthetic crs_defn SRIDs, passes through unchanged.
+func TestTransformSRID(t *testing.T) {
+	synthetic := basic.SyntheticSRIDMin + 1000
+
+	tests := map[string]struct{ srid, expected uint64 }{
+		"planar equivalent of wgs84":    {PLANAR_SRID_OFFSET + 4326, 4326},
+		"planar equivalent of webmerc":  {PLANAR_SRID_OFFSET + tegola.WebMercator, tegola.WebMercator},
+		"plain webmercator":             {tegola.WebMercator, tegola.WebMercator},
+		"plain wgs84":                   {4326, 4326},
+		"synthetic srid passes through": {synthetic, synthetic},
+		"zero srid passes through":      {0, 0},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := transformSRID(tc.srid)
+			if got != tc.expected {
+				t.Errorf("transformSRID(%v) = %v, want %v", tc.srid, got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestTileBBoxInLayerCRSPlanarEquivalentSRID ensures the in-memory tile
+// extent conversion for raw geometry formats uses the effective SRID: a
+// planar-equivalent layer SRID must convert exactly like its base SRID
+// instead of failing with "don't know how to convert from 1000004326".
+func TestTileBBoxInLayerCRSPlanarEquivalentSRID(t *testing.T) {
+	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
+
+	base, err := tileBBoxInLayerCRS(tile, 4326)
+	if err != nil {
+		t.Fatalf("unexpected error for base SRID: %v", err)
+	}
+
+	planar, err := tileBBoxInLayerCRS(tile, PLANAR_SRID_OFFSET+4326)
+	if err != nil {
+		t.Fatalf("planar-equivalent SRID must convert like its base SRID, got error: %v", err)
+	}
+	if *planar != *base {
+		t.Errorf("extent mismatch for planar-equivalent SRID,\n Expected \n \t%v\n Got \n \t%v", base, planar)
+	}
+
+	// WebMercator layers return the untransformed buffered extent.
+	raw, _ := tile.BufferedExtent()
+	wm, err := tileBBoxInLayerCRS(tile, tegola.WebMercator)
+	if err != nil {
+		t.Fatalf("unexpected error for webmercator: %v", err)
+	}
+	if *wm != *raw {
+		t.Errorf("webmercator extent must be unchanged,\n Expected \n \t%v\n Got \n \t%v", raw, wm)
+	}
+}
+
+// TestReplaceTokensMOSPlanarEquivalentSRID ensures the MOS raw-token branch
+// of replaceTokens converts the tile extent with the effective SRID: a
+// planar-equivalent layer SRID must produce the same !BBOX! predicate as its
+// base SRID instead of failing the conversion.
+func TestReplaceTokensMOSPlanarEquivalentSRID(t *testing.T) {
+	mkLayer := func(srid uint64) Layer {
+		return Layer{
+			name:           "mos",
+			geomField:      "geom",
+			srid:           srid,
+			geometryFormat: codec.FormatMOS,
+			bboxFields:     codec.DefaultBBoxFields(),
+			mosConfig:      codec.MOSConfig{Precision: 2, UnitFactor: 1},
+		}
+	}
+	const sql = "SELECT * FROM foo WHERE !BBOX!"
+	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
+
+	baseLayer := mkLayer(4326)
+	want, err := replaceTokens(2, sql, &baseLayer, baseLayer.GeomType(), baseLayer.SRID(), tile, true)
+	if err != nil {
+		t.Fatalf("unexpected error for base SRID: %v", err)
+	}
+
+	planarLayer := mkLayer(PLANAR_SRID_OFFSET + 4326)
+	got, err := replaceTokens(2, sql, &planarLayer, planarLayer.GeomType(), planarLayer.SRID(), tile, true)
+	if err != nil {
+		t.Fatalf("planar-equivalent SRID must not break MOS token replacement, got error: %v", err)
+	}
+	if got != want {
+		t.Errorf("predicate mismatch for planar-equivalent SRID,\n Expected \n \t%v\n Got \n \t%v", want, got)
 	}
 }
