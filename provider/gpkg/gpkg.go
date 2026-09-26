@@ -339,11 +339,14 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 
 		for i := range cols {
 			if vals[i] == nil {
-				if cols[i] == pLayer.geomFieldname {
+				// P6-17: column-name lookups are case-insensitive because
+				// SQLite column names can differ in case from the
+				// configured names.
+				if strings.EqualFold(cols[i], pLayer.geomFieldname) {
 					skipRow = true
 					continue
 				}
-				if cols[i] == pLayer.idFieldname {
+				if strings.EqualFold(cols[i], pLayer.idFieldname) {
 					// P6-11: a NULL feature id would silently become ID 0 and
 					// collapse distinct features into one in the MVT.
 					// provider.Feature.ID is a plain uint64, so a feature
@@ -357,14 +360,14 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				continue
 			}
 
-			switch cols[i] {
-			case pLayer.idFieldname:
+			switch {
+			case strings.EqualFold(cols[i], pLayer.idFieldname):
 				feature.ID, err = provider.ConvertFeatureID(vals[i])
 				if err != nil {
 					return err
 				}
 
-			case pLayer.geomFieldname:
+			case strings.EqualFold(cols[i], pLayer.geomFieldname):
 				// The MOS layer self-description blob (MapplGIS LayerInfo)
 				// is metadata, never a feature. System-info parameters are
 				// finalized at registration (canonical one-time detection,

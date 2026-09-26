@@ -144,3 +144,119 @@ func TestBlobTagBase64(t *testing.T) {
 		t.Errorf("blob tag %q is not valid UTF-8", got)
 	}
 }
+
+// TestMixedCaseColumnNames covers audit P6-17: column-name lookups must be
+// case-insensitive because SQLite column names can differ in case from the
+// configured names. Two seams: the registration colSet lookup (tablename
+// layers) and the id/geom scan dispatch (custom SQL layers, where the result
+// columns carry the table's own casing).
+func TestMixedCaseColumnNames(t *testing.T) {
+	// table columns deliberately differ in case from the configured names
+	fx := newRawFixture(t, []string{
+		"CREATE TABLE mixed (ID INTEGER, Geom BLOB, Name TEXT)",
+	})
+	insertRows(t, fx.path, "mixed", []string{"ID", "Geom", "Name"}, [][]interface{}{
+		{7, wkbGeomBytes(t, geom.Point{50, 50}), "kept"},
+	})
+
+	t.Run("tablename layer registration", func(t *testing.T) {
+		conf := dict.Dict{
+			"filepath": fx.path,
+			"layers": []map[string]interface{}{
+				{
+					"name":               "raw_layer",
+					"tablename":          "mixed",
+					"id_fieldname":       "id",
+					"geometry_fieldname": "geom",
+					"geometry_format":    "wkb",
+					"srid":               3857,
+					"fields":             []string{"name"},
+				},
+			},
+		}
+
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			// pre-fix the case-sensitive colSet lookup fails with
+			// "table ... has no geometry column ..."
+			t.Fatalf("NewTileProvider: %v", err)
+		}
+		t.Cleanup(gpkg.Cleanup)
+
+		f := fetchOneFeature(t, p, "raw_layer")
+		if f.ID != 7 {
+			t.Errorf("feature id = %v, want 7 (id column matched case-insensitively)", f.ID)
+		}
+		if f.Geometry == nil {
+			t.Errorf("feature geometry = nil, want decoded point (geom column matched case-insensitively)")
+		}
+		// the result columns carry the table's own casing
+		if f.Tags["Name"] != "kept" {
+			t.Errorf("feature tags = %v, want Name=kept", f.Tags)
+		}
+	})
+
+	t.Run("custom sql layer scan dispatch", func(t *testing.T) {
+		conf := dict.Dict{
+			"filepath": fx.path,
+			"layers": []map[string]interface{}{
+				{
+					"name":               "raw_layer",
+					"sql":                "SELECT * FROM mixed",
+					"id_fieldname":       "id",
+					"geometry_fieldname": "geom",
+					"geometry_format":    "wkb",
+					"srid":               3857,
+					"fields":             []string{"Name"},
+				},
+			},
+		}
+
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			t.Fatalf("NewTileProvider: %v", err)
+		}
+		t.Cleanup(gpkg.Cleanup)
+
+		f := fetchOneFeature(t, p, "raw_layer")
+		// SELECT * returns the table's own column casing, so the id/geom
+		// dispatch must compare case-insensitively (pre-fix the id lands
+		// in tags and the geometry is nil)
+		if f.ID != 7 {
+			t.Errorf("feature id = %v, want 7 (id column matched case-insensitively)", f.ID)
+		}
+		if f.Geometry == nil {
+			t.Errorf("feature geometry = nil, want decoded point (geom column matched case-insensitively)")
+		}
+		if f.Tags["Name"] != "kept" {
+			t.Errorf("feature tags = %v, want Name=kept", f.Tags)
+		}
+	})
+}
+
+// fetchOneFeature returns the single feature produced for a layer covering
+// the fixture point at (50, 50).
+func fetchOneFeature(t *testing.T, p provider.Tiler, layer string) provider.Feature {
+	t.Helper()
+
+	tile := MockTile{
+		srid: 3857,
+		bufferedExtent: geom.NewExtent(
+			[2]float64{0, 0},
+			[2]float64{100, 100},
+		),
+	}
+
+	var got []provider.Feature
+	err := p.TileFeatures(context.TODO(), layer, &tile, nil, func(f *provider.Feature) error {
+		got = append(got, *f)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("TileFeatures: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("feature count = %v, want 1", len(got))
+	}
+	return got[0]
+}

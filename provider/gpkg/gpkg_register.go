@@ -728,14 +728,17 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				if cerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, cerr)
 				}
+				// P6-17: column-name lookups are case-insensitive; SQLite
+				// column names can differ in case from the configured
+				// names.
 				colSet := make(map[string]struct{}, len(colNames))
 				for _, c := range colNames {
-					colSet[c] = struct{}{}
+					colSet[strings.ToLower(c)] = struct{}{}
 				}
-				if _, ok := colSet[layer.geomFieldname]; !ok {
+				if _, ok := colSet[strings.ToLower(layer.geomFieldname)]; !ok {
 					return nil, fmt.Errorf("for layer (%v) %v: table %q has no geometry column %q", i, layerName, tablename, layer.geomFieldname)
 				}
-				if _, ok := colSet[layer.idFieldname]; !ok {
+				if _, ok := colSet[strings.ToLower(layer.idFieldname)]; !ok {
 					if len(pkColumns) == 0 {
 						return nil, fmt.Errorf("for layer (%v) %v: table %q has no id column %q", i, layerName, tablename, layer.idFieldname)
 					}
