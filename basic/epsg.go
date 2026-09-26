@@ -342,13 +342,60 @@ func isSupportedProj4(proj4 string) (ok bool) {
 	// single fixed point (10, 50) incorrectly rejects valid definitions
 	// whose domain excludes that point.
 	lon, lat := proj4ProbePoint(proj4)
-	// forward then inverse must both succeed for a usable projection
+	// forward then inverse must both succeed and produce finite results
+	// (P6-8): a definition whose forward output overflows to Inf/NaN, or
+	// whose inverse silently returns NaN instead of an error, is not usable.
 	out, err := proj.Convert(probe, []float64{lon, lat})
 	if err != nil {
 		return false
 	}
-	_, err = proj.Inverse(probe, out)
-	return err == nil
+	if anyNonFinite(out) {
+		return false
+	}
+	back, err := proj.Inverse(probe, out)
+	if err != nil {
+		return false
+	}
+	if anyNonFinite(back) {
+		return false
+	}
+	// and the round trip must return close to the probe point (P6-8)
+	if math.Abs(normalizeLonDelta(back[0]-lon)) > proj4RoundTripTolerance {
+		return false
+	}
+	return math.Abs(back[1]-lat) <= proj4RoundTripTolerance
+}
+
+// proj4RoundTripTolerance bounds the forward-then-inverse error, in degrees,
+// accepted when validating a PROJ.4 definition. The vendored spherical-merc
+// forward/inverse path has a latitude-dependent round-trip artifact of up to
+// ~4e-4 deg on definitions mixing a spherical forward with an ellipsoidal
+// datum path (seen on EPSG:3785-style +towgs84 definitions at non-zero
+// latitudes), so 1e-3 deg is the practical floor. Genuinely broken
+// definitions fail by orders of magnitude (tens of degrees) or return
+// non-finite values.
+const proj4RoundTripTolerance = 1e-3
+
+// anyNonFinite reports whether the slice contains a NaN or Inf value.
+func anyNonFinite(v []float64) bool {
+	for _, f := range v {
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeLonDelta wraps a longitude difference into (-180, 180].
+func normalizeLonDelta(d float64) float64 {
+	d = math.Mod(d, 360)
+	switch {
+	case d > 180:
+		d -= 360
+	case d <= -180:
+		d += 360
+	}
+	return d
 }
 
 // probeCodeBase sits above every EPSG code space (standard codes are <= 7

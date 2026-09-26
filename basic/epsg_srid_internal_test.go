@@ -207,3 +207,33 @@ func TestIsSupportedProj4StillRejectsBrokenDefns(t *testing.T) {
 		}
 	}
 }
+
+// ---- P6-8: finite output and round-trip defense ----
+
+// TestIsSupportedProj4RejectsNonFiniteOutput guards P6-8: definitions whose
+// forward operation overflows to Inf/NaN without returning an error were
+// accepted as usable. The scale factor below is finite (so parameter parsing
+// accepts it) but overflows the forward easting to +Inf.
+func TestIsSupportedProj4RejectsNonFiniteOutput(t *testing.T) {
+	overflow := "+proj=merc +a=6370997 +b=6370997 +lon_0=0 +lat_0=50 +k_0=1.79e308 +units=m +no_defs"
+	if isSupportedProj4(overflow) {
+		t.Fatalf("definition %q produces non-finite output and must be rejected", overflow)
+	}
+}
+
+// TestIsSupportedProj4RejectsBrokenRoundTrip guards P6-8: the inverse of the
+// forward probe output must return close to the probe point. The false
+// northing below shifts the forward output so far that the inverse loses the
+// entire latitude (round trip returns (0, 0) for probe point (0, 50)) yet
+// both operations return no error.
+func TestIsSupportedProj4RejectsBrokenRoundTrip(t *testing.T) {
+	broken := "+proj=merc +a=6370997 +b=6370997 +lon_0=0 +lat_0=50 +y_0=1e308 +units=m +no_defs"
+	if isSupportedProj4(broken) {
+		t.Fatalf("definition %q does not round-trip its probe point and must be rejected", broken)
+	}
+	// the same definition with a sane false northing round-trips fine
+	good := "+proj=merc +a=6370997 +b=6370997 +lon_0=0 +lat_0=50 +y_0=1000 +units=m +no_defs"
+	if !isSupportedProj4(good) {
+		t.Fatalf("definition %q is valid and must be accepted", good)
+	}
+}
