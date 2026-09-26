@@ -19,25 +19,40 @@ func PLonToX(lon float64) float64 {
 	return val
 }
 
+// MaxLatitude is the largest absolute latitude Web Mercator can represent; the
+// projection runs to infinity at the poles and the standard web-mercator tiling
+// scheme stops at ±85.05112878°.
+const MaxLatitude = 85.05112878
+
+// PLatToY projects a WGS84 latitude to a Web Mercator y coordinate.
+//
+// Web Mercator is defined only for |lat| <= MaxLatitude (±85.05112878). Latitudes
+// beyond that range — including corrupt values such as |lat| > 90 — are clamped
+// to the nearest valid edge. Clamping was chosen over returning an error to keep
+// the function signature used throughout the render pipeline unchanged
+// (minimal-invasive fix, documented here per the audit).
+//
+// The previous behavior silently returned y = 0 (the equator) whenever the
+// projection math produced NaN (any |lat| > 90 makes log(tan(π/4 + rad/2))
+// NaN), drawing invalid coordinates on the equator. With clamping they land on
+// the map edge instead. A NaN input has no edge to clamp to and propagates as a
+// NaN y — visible downstream rather than collapsing to the equator. Valid
+// in-range latitudes are projected exactly as before.
 func PLatToY(lat float64) float64 {
+	if math.IsNaN(lat) {
+		return math.NaN()
+	}
+	if lat > MaxLatitude {
+		lat = MaxLatitude
+	} else if lat < -MaxLatitude {
+		lat = -MaxLatitude
+	}
 	rad := DegToRad(lat)
 	raddiv2 := rad / 2
 	radiv2p4 := PiDiv4 + raddiv2
 	tan := math.Tan(radiv2p4)
 	logTan := math.Log(tan)
-	val := EarthRadius * logTan
-	if math.IsNaN(val) {
-
-		log.Println("We have an issue with lat", lat,
-			"rad", rad,
-			"rad/2", raddiv2,
-			"tan(rad/2 + π/4)", radiv2p4,
-			"log(tan(…))", logTan,
-			"val = EarthRadius + log(…)", val,
-		)
-		return 0
-	}
-	return val
+	return EarthRadius * logTan
 }
 
 func PXToLon(x float64) float64 {
