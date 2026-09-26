@@ -29,10 +29,11 @@ linters:
       # new code should check Close explicitly.
       # (*database/sql.Rows).Close is the concrete DB-row equivalent of (io.Closer).Close
       # above (errcheck matches the concrete method, not the interface, so the interface
-      # exclusion does not cover it). The remaining unchecked Rows.Close calls live in
-      # provider/hana and provider/mysql, which are out of scope for this wave and are
-      # deliberately left un-refactored; they are excluded here rather than edited. This
-      # exclusion is recorded in UPSTREAM.md. sqlclosecheck and rowserrcheck are enabled
+      # exclusion does not cover it). All row Close/Err hygiene in the provider and
+      # server trees has been refactored to checked defer-closes (audit part12
+      # N10/N19), so the exclusion now only covers future uninteresting
+      # test/probe cleanup error paths. This exclusion is recorded in UPSTREAM.md.
+      # sqlclosecheck and rowserrcheck are enabled
       # alongside errcheck to still cover the class: they flag rows that are never closed
       # and iteration without a final rows.Err() check, which the errcheck exclusion hides.
       # Note the honest limitation documented in UPSTREAM.md:
