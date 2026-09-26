@@ -907,12 +907,89 @@ func TestQuoteIdentifier(t *testing.T) {
 		{"my`geom", "`my``geom`"},
 		{"t.Okey", "`t`.`Okey`"},
 		{"t.my`col", "`t`.`my``col`"},
+		// audit 0.6a: qualified names recurse across every dot, so
+		// schema.table.col and escaped backticks in any component quote
+		// correctly.
+		{"db.t.col", "`db`.`t`.`col`"},
+		{"db.t.my`col", "`db`.`t`.`my``col`"},
+		{"my`db.t.col", "`my``db`.`t`.`col`"},
 	}
 	for _, c := range cases {
 		if got := quoteIdentifier(c.in); got != c.want {
 			t.Errorf("quoteIdentifier(%q) = %v, expected %v", c.in, got, c.want)
 		}
 	}
+}
+
+// TestSRIDConsistencySQL verifies the mixed-SRID probe query quotes the
+// qualified geometry column and excludes NULL geometries.
+func TestSRIDConsistencySQL(t *testing.T) {
+	got := sridConsistencySQL("db.t", "db.t.my`geom")
+	want := "SELECT DISTINCT ST_SRID(`db`.`t`.`my``geom`) FROM `db`.`t` WHERE `db`.`t`.`my``geom` IS NOT NULL LIMIT 2"
+	if got != want {
+		t.Errorf("sridConsistencySQL:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+// TestShouldProbeTableSRIDs verifies when the mixed-SRID probe applies:
+// native geometry formats always; auto only when a native header was
+// actually decoded; textual/MOS geometries never.
+func TestShouldProbeTableSRIDs(t *testing.T) {
+	cases := []struct {
+		format string
+		srid   uint64
+		want   bool
+	}{
+		{GeometryFormatAuto, 0, false},
+		{GeometryFormatAuto, 4326, true},
+		{GeometryFormatMySQL, 0, true},
+		{GeometryFormatMySQL, 4326, true},
+		{GeometryFormatMariaDB, 3857, true},
+		{GeometryFormatWKB, 4326, false},
+		{GeometryFormatWKT, 4326, false},
+		{GeometryFormatMOS, 4326, false},
+	}
+	for _, c := range cases {
+		if got := shouldProbeTableSRIDs(c.format, c.srid); got != c.want {
+			t.Errorf("shouldProbeTableSRIDs(%q, %d) = %v, expected %v", c.format, c.srid, got, c.want)
+		}
+	}
+}
+
+// TestCheckTableSRIDs verifies the mixed-SRID guard: a single SRID (or
+// none) passes; two distinct SRIDs fail registration with the explicit
+// CRS advice.
+func TestCheckTableSRIDs(t *testing.T) {
+	t.Run("single srid", func(t *testing.T) {
+		db := openShowIndexStub(t, []string{"SRID"}, [][]driver.Value{{int64(4326)}})
+		defer func() { _ = db.Close() }()
+		if err := checkTableSRIDs(db, "t", "geom", "l"); err != nil {
+			t.Errorf("expected consistent SRIDs to pass, got: %v", err)
+		}
+	})
+
+	t.Run("no rows", func(t *testing.T) {
+		db := openShowIndexStub(t, []string{"SRID"}, nil)
+		defer func() { _ = db.Close() }()
+		if err := checkTableSRIDs(db, "t", "geom", "l"); err != nil {
+			t.Errorf("expected empty table to pass, got: %v", err)
+		}
+	})
+
+	t.Run("mixed srids", func(t *testing.T) {
+		db := openShowIndexStub(t, []string{"SRID"}, [][]driver.Value{{int64(4326)}, {int64(3857)}})
+		defer func() { _ = db.Close() }()
+		err := checkTableSRIDs(db, "t", "geom", "l")
+		if err == nil {
+			t.Fatalf("expected mixed SRIDs to fail registration")
+		}
+		if !strings.Contains(err.Error(), "mixes multiple SRIDs") {
+			t.Errorf("error should name the mixed-SRID problem, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), ConfigKeySRID) || !strings.Contains(err.Error(), ConfigKeyCRSDefn) {
+			t.Errorf("error should advise explicit %v/%v, got: %v", ConfigKeySRID, ConfigKeyCRSDefn, err)
+		}
+	})
 }
 
 // TestReplaceTokens exercises the SQL token replacement using a real tile.
