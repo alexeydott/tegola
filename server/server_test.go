@@ -269,7 +269,9 @@ func TestHTTPS(t *testing.T) {
 	defer func() {
 		server.SSLCert = ""
 		server.SSLKey = ""
-		srv.Shutdown(context.Background())
+		if err := srv.Shutdown(context.Background()); err != nil {
+			t.Errorf("error shutting down test server: %v", err)
+		}
 	}()
 
 	// Routes are registered synchronously inside Start before the listener is
