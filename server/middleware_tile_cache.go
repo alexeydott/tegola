@@ -124,7 +124,7 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 		// result with all concurrent requests for the same tile. The render is
 		// driven by a context detached from any single request, so a leader
 		// that disconnects cannot abort a render live waiters depend on.
-		res, _ := tileRenders.do(r.Context(), key.String(), func(renderCtx context.Context) *tileRenderResult {
+		res, shared := tileRenders.do(r.Context(), key.String(), func(renderCtx context.Context) *tileRenderResult {
 			return renderTileForCache(renderCtx, r, next, cacher, key, true)
 		})
 
@@ -140,6 +140,11 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 			log.Warnf("cache middleware: shared render for %v did not complete", r.URL.Path)
 			w.WriteHeader(http.StatusGatewayTimeout)
 			return
+		}
+		if shared {
+			// we waited on another request's render: report SHARED instead of
+			// the captured MISS so cache instrumentation can tell the two apart
+			res = res.waiterView()
 		}
 		res.writeTo(w)
 	})
@@ -169,6 +174,17 @@ func (res *tileRenderResult) writeTo(w http.ResponseWriter) {
 	if len(res.body) > 0 {
 		_, _ = w.Write(res.body)
 	}
+}
+
+// waiterView returns the result as seen by a request that waited on another
+// request's render: identical status, headers and body except that the
+// Tegola-Cache header reports SHARED instead of the captured MISS. The shared
+// result itself is left untouched for the leader and other waiters.
+func (res *tileRenderResult) waiterView() *tileRenderResult {
+	out := *res
+	out.header = res.header.Clone()
+	out.header.Set("Tegola-Cache", "SHARED")
+	return &out
 }
 
 // tileRenderCapture records a handler response instead of sending it. Headers
