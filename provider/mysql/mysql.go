@@ -505,6 +505,14 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 					// binary protocol; MVT has a native uint representation,
 					// matching what the []byte ParseUint fallback returns.
 					feature.Tags[cols[i]] = v
+				case float32:
+					// FLOAT arrives as typed float32 under the binary
+					// protocol; widen through its shortest decimal form so
+					// the tag equals the text protocol's float64 value
+					// instead of exposing float32 artifacts (1.10000002...).
+					if f64, cerr := strconv.ParseFloat(strconv.FormatFloat(float64(v), 'g', -1, 32), 64); cerr == nil {
+						feature.Tags[cols[i]] = f64
+					}
 				case string:
 					feature.Tags[cols[i]] = v
 				case float64:
