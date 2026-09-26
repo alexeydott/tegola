@@ -809,6 +809,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		p.layers[layer.name] = layer
 	}
 
+	// audit P6-19: raw geometry formats without a bounds-backed filter are
+	// fully scanned on every tile request; warn once per affected layer.
+	for _, msg := range rawGeometryBoundsWarnings(p.layers) {
+		log.Warn(msg)
+	}
+
 	// track the provider so we can clean it up later
 	providersMu.Lock()
 	providers = append(providers, p)

@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -63,6 +64,41 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	)
 
 	return tokenReplacer.Replace(qtext), nil
+}
+
+// rawGeometryBoundsWarning returns the registration-time warning for a
+// raw-geometry-format layer (wkb/wkt/mos) whose per-tile query has no
+// bounds-columns-backed server-side predicate: tegola scans the whole layer
+// source on every tile request and filters geometries in memory (or via a
+// non-indexable per-row predicate over raw geometry storage). Returns ""
+// when no warning is needed (audit P6-19).
+func rawGeometryBoundsWarning(layerName, geometryFormat string, boundsPredicateUsed bool) string {
+	if !codec.IsRawFormat(geometryFormat) || boundsPredicateUsed {
+		return ""
+	}
+	return fmt.Sprintf(
+		"layer (%v): geometry_format=%q stores raw geometry without bounds columns backing a server-side filter; every tile request scans the full table and filters geometries in memory (O(rows) per tile). Configure bounds columns (bbox_minx_fieldname/bbox_maxx_fieldname/bbox_miny_fieldname/bbox_maxy_fieldname) with a bounds-backed MOS query carrying !BBOX! so tile requests filter server-side, or use a native geometry column (audit P6-19)",
+		layerName, geometryFormat,
+	)
+}
+
+// rawGeometryBoundsWarnings returns the sorted set of registration-time
+// warnings for the configured layers (audit P6-19). MOS layers always
+// filter server-side over the configured bounds columns (the generated
+// table query and the required !BBOX! in custom SQL both expand to the
+// bounds-columns predicate); raw wkb/wkt storage cannot use such a
+// predicate and is fully scanned per tile.
+func rawGeometryBoundsWarnings(layers map[string]Layer) []string {
+	var msgs []string
+	for _, l := range layers {
+		boundsPredicateUsed := l.geometryFormat == codec.FormatMOS ||
+			codec.SQLHasBBoxToken(l.sql, config.BboxToken, "!BOX!")
+		if msg := rawGeometryBoundsWarning(l.name, l.geometryFormat, boundsPredicateUsed); msg != "" {
+			msgs = append(msgs, msg)
+		}
+	}
+	sort.Strings(msgs)
+	return msgs
 }
 
 // boundsSQLForLayer builds the !BBOX! replacement for a layer. MOS blobs are

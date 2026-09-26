@@ -270,6 +270,19 @@ is not yet resolved so a later
 geometry header can establish the source CRS without an incorrect startup
 assumption.
 
+## Raw geometry formats need bounds columns (audit P6-19)
+
+Layers using `geometry_format` `wkb`/`wkt`/`mos` store raw geometry, so a
+bounds predicate cannot be pushed down and evaluated cheaply: every tile
+request scans the full table and filters geometries in memory (O(rows) per
+tile). A registration-time warning is logged per affected layer. The
+recommended setup is the raw/MOS bounds-columns one: configure
+`bbox_minx_fieldname`/`bbox_maxx_fieldname`/`bbox_miny_fieldname`/
+`bbox_maxy_fieldname` (precomputed column bounds) and use a bounds-backed
+MOS custom query carrying `!BBOX!`, which expands to a server-side
+comparison over those columns. Alternatively use a native geometry column
+(`geometry_format` unset) so MySQL spatial predicates apply.
+
 ## Known limitations
 
 - Only 2D geometries are supported by the decoder for MVT encoding (matching MariaDB's capabilities).

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -265,6 +266,38 @@ func escapeSQLStringLiteral(s string) string {
 // escaping embedded quotes (audit P5-8).
 func sqlStringLiteral(s string) string {
 	return "'" + escapeSQLStringLiteral(s) + "'"
+}
+
+// rawGeometryBoundsWarning returns the registration-time warning for a
+// raw-geometry-format layer (wkb/wkt/mos) whose per-tile query has no
+// bounds-columns-backed server-side predicate: tegola scans the whole layer
+// source on every tile request and filters geometries in memory. Returns ""
+// when no warning is needed (audit P6-19).
+func rawGeometryBoundsWarning(layerName, geometryFormat string, boundsPredicateUsed bool) string {
+	if !codec.IsRawFormat(geometryFormat) || boundsPredicateUsed {
+		return ""
+	}
+	return fmt.Sprintf(
+		"layer (%v): geometry_format=%q stores raw geometry without bounds columns backing a server-side filter; every tile request scans the full table and filters geometries in memory (O(rows) per tile). Configure bounds columns (bbox_minx_fieldname/bbox_maxx_fieldname/bbox_miny_fieldname/bbox_maxy_fieldname) with a bounds-backed MOS query carrying !BBOX! so tile requests filter server-side, or use a native geometry column (audit P6-19)",
+		layerName, geometryFormat,
+	)
+}
+
+// rawGeometryBoundsWarnings returns the sorted set of registration-time
+// warnings for the configured layers (audit P6-19). For PostGIS only
+// bounds-backed custom SQL counts as a server-side filter for a raw-format
+// layer: its !BBOX! token expands to the bounds-columns predicate, while
+// the generated table SQL for raw formats carries no spatial filter at all.
+func rawGeometryBoundsWarnings(layers map[string]Layer) []string {
+	var msgs []string
+	for _, l := range layers {
+		boundsPredicateUsed := codec.SQLHasBBoxToken(l.sql, config.BboxToken, "!BOX!")
+		if msg := rawGeometryBoundsWarning(l.name, l.geometryFormat, boundsPredicateUsed); msg != "" {
+			msgs = append(msgs, msg)
+		}
+	}
+	sort.Strings(msgs)
+	return msgs
 }
 
 // buildMVTLayerSQL builds the per-layer ST_AsMVT subquery. The name,
