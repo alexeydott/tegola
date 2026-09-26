@@ -29,7 +29,10 @@ type TileURLTemplate struct {
 }
 
 func (t *TileURLTemplate) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + t.String() + `"`), nil
+	// marshal via encoding/json so the template string is escaped as
+	// a proper JSON string value (P6-32): embedding it raw breaks for
+	// templates containing quotes or backslashes
+	return json.Marshal(t.String())
 }
 
 func (t *TileURLTemplate) UnmarshalJSON(data []byte) error {
