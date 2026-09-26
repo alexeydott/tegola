@@ -1,6 +1,7 @@
 package gcs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -76,38 +77,55 @@ func New(config dict.Dicter) (cache.Interface, error) {
 		Y:         0,
 	}
 
-	// write gzip encoded test file
-	if err := gcsCache.Set(ctx, &key, testData); err != nil {
-		e := cache.ErrSettingToCache{
-			CacheType: CacheType,
-			Err:       err,
-		}
-
-		return nil, e
-	}
-
-	// read the test file
-	_, _, err = gcsCache.Get(ctx, &key)
-	if err != nil {
-		e := cache.ErrGettingFromCache{
-			CacheType: CacheType,
-			Err:       err,
-		}
-
-		return nil, e
-	}
-
-	// purge the test file
-	if err := gcsCache.Purge(ctx, &key); err != nil {
-		e := cache.ErrPurgingCache{
-			CacheType: CacheType,
-			Err:       err,
-		}
-
-		return nil, e
+	if err := selfTestCache(ctx, &gcsCache, &key, testData); err != nil {
+		return nil, err
 	}
 
 	return &gcsCache, nil
+}
+
+// selfTestCache confirms the cache is usable end to end: the test value must be
+// written, read back as an actual cache hit with identical bytes, and purged.
+// It runs once when the cache is created.
+func selfTestCache(ctx context.Context, c cache.Interface, key *cache.Key, data []byte) error {
+	// write gzip encoded test file
+	if err := c.Set(ctx, key, data); err != nil {
+		return cache.ErrSettingToCache{
+			CacheType: CacheType,
+			Err:       err,
+		}
+	}
+
+	// read the test file
+	got, hit, err := c.Get(ctx, key)
+	if err != nil {
+		return cache.ErrGettingFromCache{
+			CacheType: CacheType,
+			Err:       err,
+		}
+	}
+	if !hit {
+		return cache.ErrGettingFromCache{
+			CacheType: CacheType,
+			Err:       errors.New("cache self-test read did not hit"),
+		}
+	}
+	if !bytes.Equal(got, data) {
+		return cache.ErrGettingFromCache{
+			CacheType: CacheType,
+			Err:       errors.New("cache self-test read returned different data"),
+		}
+	}
+
+	// purge the test file
+	if err := c.Purge(ctx, key); err != nil {
+		return cache.ErrPurgingCache{
+			CacheType: CacheType,
+			Err:       err,
+		}
+	}
+
+	return nil
 }
 
 type GCSCache struct {

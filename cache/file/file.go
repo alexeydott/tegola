@@ -145,39 +145,64 @@ func (fc *Cache) Set(ctx context.Context, key *cache.Key, val []byte) error {
 		return err
 	}
 
-	// the tmpPath uses the destPath with a simple "-tmp" suffix. we're going to do
-	// a Rename at the end of this method and according to the os.Rename() docs:
-	// "If newpath already exists and is not a directory, Rename replaces it.
-	// OS-specific restrictions may apply when oldpath and newpath are in different directories"
 	destPath := filepath.Join(fc.Basepath, key.String())
-	tmpPath := destPath + "-tmp"
 
 	// the key can have a directory syntax so we need to makeAll
 	if err = os.MkdirAll(filepath.Dir(destPath), os.ModePerm); err != nil {
 		return err
 	}
 
-	// create the file
-	f, err := os.Create(tmpPath)
+	// write to a uniquely named temp file in the destination directory so
+	// concurrent writes of the same key cannot corrupt each other. we're going
+	// to do a Rename at the end of this method and according to the
+	// os.Rename() docs: "If newpath already exists and is not a directory,
+	// Rename replaces it. OS-specific restrictions may apply when oldpath and
+	// newpath are in different directories"
+	f, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+"-tmp-*")
 	if err != nil {
 		return err
 	}
+	tmpPath := f.Name()
 
 	// copy the contents
 	_, err = f.Write(val)
 	if err != nil {
 		// close the file, can't use 'defer f.Close()'' otherwise rename wont happen
-		f.Close() //nolint:errcheck
+		f.Close()          //nolint:errcheck
+		os.Remove(tmpPath) //nolint:errcheck // don't leave the temp file behind
 		return err
 	}
 
 	// close the file, can't use 'defer f.Close()'' otherwise rename wont happen
 	if err = f.Close(); err != nil {
+		os.Remove(tmpPath) //nolint:errcheck // don't leave the temp file behind
 		return err
 	}
 
-	// move the temp file to the destination
-	return os.Rename(tmpPath, destPath)
+	// move the temp file to the destination. on windows concurrent renames
+	// onto the same destination can fail transiently ("Access is denied")
+	// while a competing rename of the same destination completes, so retry
+	// briefly before giving up
+	if err = renameWithRetry(tmpPath, destPath); err != nil {
+		os.Remove(tmpPath) //nolint:errcheck // don't leave the temp file behind
+		return err
+	}
+
+	return nil
+}
+
+// renameWithRetry renames oldPath to newPath, retrying briefly when the
+// destination is momentarily busy (windows can report "Access is denied" while
+// a concurrent rename onto the same destination is still completing).
+func renameWithRetry(oldPath, newPath string) error {
+	var err error
+	for i := 0; i < 3; i++ {
+		if err = os.Rename(oldPath, newPath); err == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return err
 }
 
 func (fc *Cache) Purge(ctx context.Context, key *cache.Key) error {
@@ -192,6 +217,15 @@ func (fc *Cache) Purge(ctx context.Context, key *cache.Key) error {
 		return err
 	}
 
-	// remove the locker key on purge
-	return os.Remove(path)
+	// remove the file. a concurrent purge may have removed it already, which
+	// is not an error. on windows a delete racing another delete can also
+	// fail transiently while the file disappears, so as long as the file is
+	// gone afterwards the purge succeeded
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			return err
+		}
+	}
+
+	return nil
 }
