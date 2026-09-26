@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -306,8 +306,9 @@ func (s3c *Cache) Set(ctx context.Context, key *cache.Key, val []byte) error {
 		return nil
 	}
 
-	// add our basepath
-	k := filepath.Join(s3c.Basepath, key.String())
+	// add our basepath; S3 object keys always use forward slashes
+	// regardless of the OS separator (P6-33)
+	k := path.Join(s3c.Basepath, key.String())
 
 	input := s3.PutObjectInput{
 		Body:            aws.ReadSeekCloser(bytes.NewReader(val)),
@@ -323,7 +324,7 @@ func (s3c *Cache) Set(ctx context.Context, key *cache.Key, val []byte) error {
 		input.CacheControl = aws.String(s3c.CacheControl)
 	}
 
-	_, err = s3c.Client.PutObject(&input)
+	_, err = s3c.Client.PutObjectWithContext(ctx, &input)
 	if err != nil {
 		return err
 	}
@@ -334,8 +335,9 @@ func (s3c *Cache) Set(ctx context.Context, key *cache.Key, val []byte) error {
 func (s3c *Cache) Get(ctx context.Context, key *cache.Key) ([]byte, bool, error) {
 	var err error
 
-	// add our basepath
-	k := filepath.Join(s3c.Basepath, key.String())
+	// add our basepath; S3 object keys always use forward slashes
+	// regardless of the OS separator (P6-33)
+	k := path.Join(s3c.Basepath, key.String())
 
 	input := s3.GetObjectInput{
 		Bucket: aws.String(s3c.Bucket),
@@ -372,8 +374,9 @@ func (s3c *Cache) Get(ctx context.Context, key *cache.Key) ([]byte, bool, error)
 func (s3c *Cache) Purge(ctx context.Context, key *cache.Key) error {
 	var err error
 
-	// add our basepath
-	k := filepath.Join(s3c.Basepath, key.String())
+	// add our basepath; S3 object keys always use forward slashes
+	// regardless of the OS separator (P6-33)
+	k := path.Join(s3c.Basepath, key.String())
 
 	input := s3.DeleteObjectInput{
 		Bucket: aws.String(s3c.Bucket),

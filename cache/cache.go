@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -123,7 +124,11 @@ type Key struct {
 }
 
 func (k Key) String() string {
-	return filepath.Join(
+	// cache keys are object/path keys shared across backends and hosts:
+	// join with forward slashes regardless of the OS separator (P6-33).
+	// empty MapName/LayerName collapse away, which is load-bearing for
+	// synthetic (map-less) keys (P5-17).
+	return path.Join(
 		k.MapName,
 		k.LayerName,
 		strconv.FormatUint(uint64(k.Z), 10),

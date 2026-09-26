@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
-	"path/filepath"
+	"path"
 
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/cache"
@@ -167,7 +167,9 @@ func (gcsCache *GCSCache) openReader(ctx context.Context, k string) (io.ReadClos
 }
 
 func (gcsCache *GCSCache) Get(ctx context.Context, key *cache.Key) ([]byte, bool, error) {
-	k := filepath.Join(gcsCache.Basepath, key.String())
+	// object keys always use forward slashes regardless of the OS
+	// separator (P6-33)
+	k := path.Join(gcsCache.Basepath, key.String())
 
 	r, err := gcsCache.openReader(ctx, k)
 	switch {
@@ -193,7 +195,9 @@ func (gcsCache *GCSCache) Get(ctx context.Context, key *cache.Key) ([]byte, bool
 }
 
 func (gcsCache *GCSCache) Set(ctx context.Context, key *cache.Key, val []byte) error {
-	k := filepath.Join(gcsCache.Basepath, key.String())
+	// object keys always use forward slashes regardless of the OS
+	// separator (P6-33)
+	k := path.Join(gcsCache.Basepath, key.String())
 	obj := gcsCache.Bucket.Object(k)
 
 	// check for maxzoom
@@ -215,7 +219,9 @@ func (gcsCache *GCSCache) Set(ctx context.Context, key *cache.Key, val []byte) e
 }
 
 func (gcsCache *GCSCache) Purge(ctx context.Context, key *cache.Key) error {
-	k := filepath.Join(gcsCache.Basepath, key.String())
+	// object keys always use forward slashes regardless of the OS
+	// separator (P6-33)
+	k := path.Join(gcsCache.Basepath, key.String())
 	obj := gcsCache.Bucket.Object(k)
 
 	if err := obj.Delete(ctx); err != nil {
