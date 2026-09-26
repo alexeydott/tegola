@@ -4,7 +4,9 @@ package gpkg_test
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/dict"
@@ -74,5 +76,71 @@ func TestNullFeatureIDSkipped(t *testing.T) {
 	}
 	if names[0] != "kept" {
 		t.Errorf("feature tag name = %v, want kept", names[0])
+	}
+}
+
+// TestBlobTagBase64 covers audit P6-18: BLOB tag values are arbitrary
+// binary and must not be string()ed into the MVT as invalid UTF-8. The
+// chosen strategy is base64-encoding the raw bytes (lossless, cheap).
+func TestBlobTagBase64(t *testing.T) {
+	blob := []byte{0x00, 0xff, 0x41, 0x7f, 0xfe}
+	fx := newRawFixture(t, []string{
+		"CREATE TABLE items (id INTEGER PRIMARY KEY, geom BLOB, data BLOB)",
+	})
+	insertRows(t, fx.path, "items", []string{"geom", "data"}, [][]interface{}{
+		{wkbGeomBytes(t, geom.Point{50, 50}), blob},
+	})
+
+	conf := dict.Dict{
+		"filepath": fx.path,
+		"layers": []map[string]interface{}{
+			{
+				"name":               "raw_layer",
+				"tablename":          "items",
+				"id_fieldname":       "id",
+				"geometry_fieldname": "geom",
+				"geometry_format":    "wkb",
+				"srid":               3857,
+				"fields":             []string{"data"},
+			},
+		},
+	}
+
+	p, err := gpkg.NewTileProvider(conf, nil)
+	if err != nil {
+		t.Fatalf("NewTileProvider: %v", err)
+	}
+	t.Cleanup(gpkg.Cleanup)
+
+	tile := MockTile{
+		srid: 3857,
+		bufferedExtent: geom.NewExtent(
+			[2]float64{0, 0},
+			[2]float64{100, 100},
+		),
+	}
+
+	var tags []map[string]interface{}
+	err = p.TileFeatures(context.TODO(), "raw_layer", &tile, nil, func(f *provider.Feature) error {
+		tags = append(tags, f.Tags)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("TileFeatures: %v", err)
+	}
+	if len(tags) != 1 {
+		t.Fatalf("feature count = %v, want 1", len(tags))
+	}
+
+	want := base64.StdEncoding.EncodeToString(blob)
+	got, ok := tags[0]["data"].(string)
+	if !ok {
+		t.Fatalf("blob tag = %#v (%T), want a string", tags[0]["data"], tags[0]["data"])
+	}
+	if got != want {
+		t.Errorf("blob tag = %q, want %q (standard base64 of raw bytes)", got, want)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("blob tag %q is not valid UTF-8", got)
 	}
 }

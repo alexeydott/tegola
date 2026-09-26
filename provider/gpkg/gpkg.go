@@ -5,6 +5,7 @@ package gpkg
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,7 +19,6 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-
 )
 
 const (
@@ -433,7 +433,12 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				// Grab any non-nil, non-id, non-bounding box, & non-geometry column as a tag
 				switch v := vals[i].(type) {
 				case []uint8:
-					feature.Tags[cols[i]] = string(v)
+					// P6-18: BLOB tag values are arbitrary binary and
+					// string(v) would emit invalid UTF-8 strings in the
+					// MVT. Encode them as standard base64 (lossless and
+					// cheap) so tags remain valid strings (documented
+					// choice over dropping the tag).
+					feature.Tags[cols[i]] = base64.StdEncoding.EncodeToString(v)
 				case string:
 					feature.Tags[cols[i]] = v
 				case int64:
