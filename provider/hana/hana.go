@@ -617,7 +617,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			}
 			// Audit P5-12: reject empty table names at registration; the
 			// quoted-identifier parts are validated by quoteTableName.
-			if err := validateIdentName(tblName); err != nil {
+			if err := validateTableName(tblName); err != nil {
 				return nil, fmt.Errorf("for %v layer (%v) %v: %w", i, lName, ConfigKeyTablename, err)
 			}
 		}
@@ -1536,19 +1536,15 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 	var meta mapplgis.TableMeta
 
 	qtn := quoteTableName(tblName)
-	// HANA catalog views are scoped by schema name; derive it from the
-	// (already quoted) table name. Unqualified tables resolve against the
-	// connection's CURRENT SCHEMA and are matched accordingly.
-	var schemaName string
-	var bareTableName string
-	if parts := strings.Split(tblName, "."); len(parts) >= 2 {
-		schemaName = strings.Trim(parts[0], `"`)
-		// The last part is the bare table identifier; trim per part so a
-		// fully quoted name like `"schema"."table"` does not keep embedded
-		// quote characters in the catalog predicate argument.
-		bareTableName = strings.Trim(parts[len(parts)-1], `"`)
-	} else {
-		bareTableName = strings.Trim(tblName, `"`)
+	// HANA catalog views are scoped by schema name; derive it with the
+	// quote-aware parser so dots inside quoted identifiers are not treated
+	// as separators (audit P5-3). Unqualified tables resolve against the
+	// connection's CURRENT SCHEMA and are matched accordingly. The parsed
+	// parts are only used as catalog predicate arguments (bound as
+	// parameters), never interpolated into SQL.
+	schemaName, bareTableName, err := splitQualifiedTableName(tblName)
+	if err != nil {
+		return meta, nil, fmt.Errorf("invalid table name %q: %w", tblName, err)
 	}
 
 	// DDL columns.

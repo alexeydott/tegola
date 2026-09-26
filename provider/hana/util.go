@@ -97,19 +97,134 @@ func validateIdentName(name string) error {
 	return nil
 }
 
+// parseIdentParts splits a possibly qualified HANA identifier into its
+// unquoted parts (audit P5-3). Quoted parts may contain dots and
+// escaped double quotes (""); empty parts, unterminated quotes,
+// unexpected characters after a closing quote, quotes inside bare
+// parts, and more than two parts (schema.table) are rejected.
+func parseIdentParts(name string) ([]string, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("invalid identifier %q: identifier is empty", name)
+	}
+
+	var parts []string
+	var cur strings.Builder
+	inQuote := false
+	closedQuote := false // the current part just closed its quotes
+
+	flush := func() error {
+		if cur.Len() == 0 {
+			return fmt.Errorf("invalid identifier %q: empty name part", name)
+		}
+		parts = append(parts, cur.String())
+		cur.Reset()
+		closedQuote = false
+		if len(parts) > 2 {
+			return fmt.Errorf("invalid identifier %q: expected at most schema.table (2 parts), got %d", name, len(parts))
+		}
+		return nil
+	}
+
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case inQuote:
+			if c == '"' {
+				if i+1 < len(name) && name[i+1] == '"' {
+					// escaped quote inside a quoted part
+					cur.WriteByte('"')
+					i++
+					continue
+				}
+				inQuote = false
+				closedQuote = true
+				continue
+			}
+			cur.WriteByte(c)
+		case c == '.':
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		case c == '"':
+			if cur.Len() > 0 || closedQuote {
+				return nil, fmt.Errorf("invalid identifier %q: unexpected quote", name)
+			}
+			inQuote = true
+		case closedQuote:
+			return nil, fmt.Errorf("invalid identifier %q: unexpected content after closing quote", name)
+		default:
+			if cur.Len() == 0 && (c == ' ' || c == '\t') {
+				return nil, fmt.Errorf("invalid identifier %q: unexpected whitespace", name)
+			}
+			cur.WriteByte(c)
+		}
+	}
+	if inQuote {
+		return nil, fmt.Errorf("invalid identifier %q: unterminated quoted identifier", name)
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return parts, nil
+}
+
+// splitQualifiedTableName splits a qualified HANA table reference into
+// its unquoted schema and bare table name parts (audit P5-3). An
+// unqualified name yields an empty schema (resolved against the
+// connection's CURRENT SCHEMA by the callers).
+func splitQualifiedTableName(name string) (schema string, table string, err error) {
+	parts, err := parseIdentParts(name)
+	if err != nil {
+		return "", "", err
+	}
+	if len(parts) == 2 {
+		return parts[0], parts[1], nil
+	}
+	return "", parts[0], nil
+}
+
+// validateTableName validates a configured table name at registration
+// (audit P5-3/P5-12): empty names are rejected and non-subquery names
+// must parse as (quoted) schema.table parts.
+func validateTableName(name string) error {
+	if err := validateIdentName(name); err != nil {
+		return err
+	}
+	if strings.Contains(name, " ") {
+		// subquery form (see quoteTableName), passed through verbatim
+		return nil
+	}
+	if _, err := parseIdentParts(name); err != nil {
+		return err
+	}
+	return nil
+}
+
+// quoteTableName quotes a possibly qualified HANA table name (audit
+// P5-3). Names containing whitespace are treated as subqueries (e.g.
+// "(SELECT * FROM tbl) x") and passed through verbatim. Other names
+// are split with the quote-aware parseIdentParts (so dots inside
+// quoted identifiers are not treated as separators) and each part is
+// quoted; on a parse error the whole name is quoted as a single
+// identifier, which is safe but -- unlike the old strings.Split -- can
+// never split a hostile name into injection-shaped parts.
 func quoteTableName(name string) string {
 	if strings.Contains(name, " ") {
 		return name
 	}
 
-	strs := strings.Split(name, ".")
-	nstrs := len(strs)
+	parts, err := parseIdentParts(name)
+	if err != nil {
+		return quoteIdentifier(name)
+	}
+
+	nstrs := len(parts)
 	if nstrs == 1 {
-		return quoteIdentifier(strs[0])
+		return quoteIdentifier(parts[0])
 	}
 
 	ret := ""
-	for i, s := range strs {
+	for i, s := range parts {
 		ret = ret + quoteIdentifier(s)
 		if i != nstrs-1 {
 			ret = ret + "."
