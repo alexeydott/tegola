@@ -358,6 +358,7 @@ func (s3c *Cache) Get(ctx context.Context, key *cache.Key) ([]byte, bool, error)
 		}
 		return nil, false, err
 	}
+	defer result.Body.Close()
 
 	var buf bytes.Buffer
 	_, err = io.Copy(&buf, result.Body)
