@@ -174,6 +174,8 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, er
 	if err != nil {
 		return nil, fmt.Errorf("table %q index lookup: %v", tablename, err)
 	}
+	defer func() { _ = indexRows.Close() }()
+
 	type indexInfo struct {
 		seq     int
 		name    string
@@ -185,17 +187,12 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, er
 	for indexRows.Next() {
 		var idx indexInfo
 		if err := indexRows.Scan(&idx.seq, &idx.name, &idx.unique, &idx.origin, &idx.partial); err != nil {
-			_ = indexRows.Close()
 			return nil, fmt.Errorf("table %q index scan: %v", tablename, err)
 		}
 		indexes = append(indexes, idx)
 	}
 	if err := indexRows.Err(); err != nil {
-		_ = indexRows.Close()
 		return nil, fmt.Errorf("table %q index rows: %v", tablename, err)
-	}
-	if err := indexRows.Close(); err != nil {
-		return nil, fmt.Errorf("table %q index close: %v", tablename, err)
 	}
 
 	var result []mapplgis.IndexMeta
@@ -205,11 +202,12 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, er
 		if err != nil {
 			return nil, fmt.Errorf("table %q index_info %q: %v", tablename, idx.name, err)
 		}
+		defer func() { _ = infoRows.Close() }()
+
 		for infoRows.Next() {
 			var seqno int
 			var cid, name sql.NullString
 			if err := infoRows.Scan(&seqno, &cid, &name); err != nil {
-				_ = infoRows.Close()
 				return nil, fmt.Errorf("table %q index_info %q scan: %v", tablename, idx.name, err)
 			}
 			if name.Valid && name.String != "" {
@@ -217,11 +215,7 @@ func tableIndexedColumns(db *sql.DB, tablename string) ([]mapplgis.IndexMeta, er
 			}
 		}
 		if err := infoRows.Err(); err != nil {
-			_ = infoRows.Close()
 			return nil, fmt.Errorf("table %q index_info %q rows: %v", tablename, idx.name, err)
-		}
-		if err := infoRows.Close(); err != nil {
-			return nil, fmt.Errorf("table %q index_info %q close: %v", tablename, idx.name, err)
 		}
 		result = append(result, meta)
 	}
@@ -324,6 +318,29 @@ func detectBoundColumns(colNames []string) *[4]string {
 		fields[i] = actual
 	}
 	return &fields
+}
+
+// matchBoundColumns maps the configured bounds fields (bbox_*_fieldname,
+// layer > provider > defaults) to the table's actual column names
+// (case-insensitive, preserving the column's case for SQL quoting) in the
+// query field order [minx, maxx, miny, maxy]; nil unless the table carries
+// all four configured columns (audit N6: explicit configuration wins over
+// the legacy-name autodetection, so non-standard bounds columns still get
+// a SQL filter instead of a full table scan).
+func matchBoundColumns(colNames []string, fields codec.BBoxFields) *[4]string {
+	lookup := make(map[string]string, len(colNames))
+	for _, name := range colNames {
+		lookup[strings.ToLower(name)] = name
+	}
+	matched := [4]string{}
+	for i, key := range fields {
+		actual, ok := lookup[strings.ToLower(strings.TrimSpace(key))]
+		if !ok {
+			return nil
+		}
+		matched[i] = actual
+	}
+	return &matched
 }
 
 // Collect meta data about all feature tables in opened gpkg.
@@ -726,18 +743,25 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 						layerName, tablename, layer.idFieldname, pkColumns[0])
 					layer.idFieldname = pkColumns[0]
 				}
-				layer.boundFieldnames = detectBoundColumns(colNames)
+				bboxFields, berr := codec.ResolveBBoxFields(config, layerConf, layerName)
+				if berr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, berr)
+				}
+				// Explicitly configured bounds columns (bbox_*_fieldname)
+				// win over the legacy-name autodetection (audit N6): when
+				// the table carries all four configured columns they drive
+				// the SQL bounds filter, so rawBoundsSQL can avoid a full
+				// table scan for non-standard column names.
+				layer.boundFieldnames = matchBoundColumns(colNames, bboxFields)
+				if layer.boundFieldnames == nil {
+					layer.boundFieldnames = detectBoundColumns(colNames)
+				}
 				if layer.boundFieldnames != nil {
 					log.Debugf("layer (%v): table %q carries raw bounds columns; enabling SQL bounds filter", layerName, tablename)
 				}
 				// bboxFields mirrors the detected (or resolved) bounds
 				// columns so tag exclusion and the predicate builder share
-				// one contract; configured bbox_*_fieldname values win when
-				// the table carries the named columns.
-				bboxFields, berr := codec.ResolveBBoxFields(config, layerConf, layerName)
-				if berr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, berr)
-				}
+				// one contract.
 				if layer.boundFieldnames != nil {
 					layer.bboxFields = codec.BBoxFields(*layer.boundFieldnames)
 				} else {
@@ -1070,8 +1094,13 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 		if derr != nil {
 			return nil, nil, false, derr
 		}
-		firstGeom = geo
 		firstHeader = h
+		if geo == nil {
+			// empty-geometry row (GeoPackage empty flag, audit N15):
+			// keep scanning for a real sample geometry.
+			continue
+		}
+		firstGeom = geo
 		break
 	}
 	if rerr := inspectRows.Err(); rerr != nil {

@@ -2,7 +2,6 @@ package postgis_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -62,13 +61,13 @@ func TestSourceSRIDAutoDetect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	const tbl4326 = "tegola_srid_detect_4326"
 	const tblUnknown = "tegola_srid_detect_unknown"
 	drop := func() {
-		conn.Exec(ctx, "DROP TABLE IF EXISTS "+tbl4326)
-		conn.Exec(ctx, "DROP TABLE IF EXISTS "+tblUnknown)
+		_, _ = conn.Exec(ctx, "DROP TABLE IF EXISTS "+tbl4326)
+		_, _ = conn.Exec(ctx, "DROP TABLE IF EXISTS "+tblUnknown)
 	}
 	drop()
 	t.Cleanup(drop)
@@ -292,14 +291,12 @@ func TestTileFeatures(t *testing.T) {
 				}},
 			},
 			tile: provider.NewTile(1, 1, 1, 64, tegola.WebMercator),
-			expectedErr: errors.New(
-				fmt.Sprintf(
-					"for %v layer (land) %v: only one of %v or %v can be specified",
-					"postgis",
-					0,
-					postgis.ConfigKeyTablename,
-					postgis.ConfigKeySQL,
-				),
+			expectedErr: fmt.Errorf(
+				"for %v layer (land) %v: only one of %v or %v can be specified",
+				"postgis",
+				0,
+				postgis.ConfigKeyTablename,
+				postgis.ConfigKeySQL,
 			),
 			expectedFeatureCount: 0,
 		},

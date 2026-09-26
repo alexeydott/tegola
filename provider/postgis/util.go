@@ -91,7 +91,7 @@ func genSQL(
 		if f == l.geomField {
 			fgeom = i
 		}
-		flds[i] = fmt.Sprintf(`"%v"`, flds[i])
+		flds[i] = pgQuoteIdent(flds[i])
 	}
 
 	// rawGeometryFormat reports whether the geometry column carries a raw
@@ -102,28 +102,30 @@ func genSQL(
 	// to avoid field names possibly colliding with Postgres keywords,
 	// we wrap the field names in quotes
 
+	quotedGeom := pgQuoteIdent(l.geomField)
+
 	if fgeom == -1 {
 		if isMVT(providerType) {
-			flds = append(flds, fmt.Sprintf(`"%v" AS "%[1]v"`, l.geomField))
+			flds = append(flds, fmt.Sprintf(`%[1]v AS %[1]v`, quotedGeom))
 		} else if rawGeometryFormat {
 			// Raw geometry columns must bypass ST_AsBinary: MOS blobs and
 			// plain WKB/WKT values are not PostGIS geometry values and
 			// native spatial functions cannot be applied to them.
-			flds = append(flds, fmt.Sprintf(`"%v" AS "%[1]v"`, l.geomField))
+			flds = append(flds, fmt.Sprintf(`%[1]v AS %[1]v`, quotedGeom))
 		} else {
-			flds = append(flds, fmt.Sprintf(`ST_AsBinary("%v") AS "%[1]v"`, l.geomField))
+			flds = append(flds, fmt.Sprintf(`ST_AsBinary(%[1]v) AS %[1]v`, quotedGeom))
 		}
 	} else {
 		if isMVT(providerType) || rawGeometryFormat {
-			flds[fgeom] = fmt.Sprintf(`"%v" AS "%[1]v"`, l.geomField)
+			flds[fgeom] = fmt.Sprintf(`%[1]v AS %[1]v`, quotedGeom)
 		} else {
-			flds[fgeom] = fmt.Sprintf(`ST_AsBinary("%v") AS "%[1]v"`, l.geomField)
+			flds[fgeom] = fmt.Sprintf(`ST_AsBinary(%[1]v) AS %[1]v`, quotedGeom)
 		}
 	}
 
 	// add required id field
 	if l.idField != "" {
-		flds = append(flds, fmt.Sprintf(`"%v"`, l.idField))
+		flds = append(flds, pgQuoteIdent(l.idField))
 	}
 
 	selectClause := strings.Join(flds, ", ")
@@ -137,15 +139,15 @@ func genSQL(
 		// geometries: native spatial predicates (&&, ST_Intersects, ...)
 		// cannot be applied to them. Filtering is done in memory after
 		// decoding (see TileFeatures).
-		sqlTmpl = `SELECT %[1]v FROM %[2]v WHERE "%[3]v" IS NOT NULL`
+		sqlTmpl = `SELECT %[1]v FROM %[2]v WHERE %[3]v IS NOT NULL`
 	} else if basic.IsSyntheticSRID(l.srid) {
 		// A textual crs_defn is registered only in Tegola. Keep generated
 		// database comparisons in the unknown-SRS-safe SRID 0 domain; Atlas
 		// still interprets returned feature coordinates with l.srid.
-		sqlTmpl = `SELECT %[1]v FROM %[2]v WHERE ST_SetSRID("%[3]v",0) && ` + config.BboxToken
+		sqlTmpl = `SELECT %[1]v FROM %[2]v WHERE ST_SetSRID(%[3]v,0) && ` + config.BboxToken
 	}
 
-	return fmt.Sprintf(sqlTmpl, selectClause, tblname, l.geomField), nil
+	return fmt.Sprintf(sqlTmpl, selectClause, tblname, quotedGeom), nil
 }
 
 // replaceTokens replaces tokens in the provided SQL string

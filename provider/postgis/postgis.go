@@ -34,7 +34,7 @@ const Name = "postgis"
 
 const (
 	// We quote the field and table names to prevent colliding with postgres keywords.
-	stdSQL = `SELECT %[1]v FROM %[2]v WHERE "%[3]v" && ` + conf.BboxToken
+	stdSQL = `SELECT %[1]v FROM %[2]v WHERE %[3]v && ` + conf.BboxToken
 	mvtSQL = `SELECT %[1]v FROM %[2]v`
 
 	// SQL to get the column names, without hitting the information_schema.
@@ -425,12 +425,97 @@ func geometryFormatName(format string) string {
 
 // splitTableName splits an optionally schema-qualified table name into its
 // schema and table parts; the PostGIS default schema "public" is assumed
-// when no qualifier is present.
-func splitTableName(tbl string) (schema, table string) {
-	if i := strings.Index(tbl, "."); i >= 0 {
-		return tbl[:i], tbl[i+1:]
+// when no qualifier is present. Quoted identifiers ("...") are understood:
+// the split only happens at top-level dots, "" escapes are unquoted and
+// trailing garbage after a closing quote is rejected, so names containing
+// dots or quotes resolve correctly and cannot smuggle SQL into the
+// metadata lookups (audit N7). Unquoted input keeps the historical
+// first-dot split.
+func splitTableName(tbl string) (schema, table string, err error) {
+	if !strings.Contains(tbl, `"`) {
+		// no quoted identifiers: keep the historical first-dot split
+		if i := strings.Index(tbl, "."); i >= 0 {
+			return tbl[:i], tbl[i+1:], nil
+		}
+		return "public", tbl, nil
 	}
-	return "public", tbl
+
+	parts, perr := parseIdentParts(tbl)
+	if perr != nil {
+		return "", "", perr
+	}
+	switch len(parts) {
+	case 1:
+		return "public", parts[0], nil
+	case 2:
+		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("table name %q has more than two parts", tbl)
+	}
+}
+
+// parseIdentParts splits a possibly qualified identifier at top-level dots,
+// unquoting each "..." part ("" -> "). Bare parts pass through verbatim but
+// may not contain quotes; a quoted part must be followed by a separator or
+// the end of the input, and empty parts are rejected.
+func parseIdentParts(s string) ([]string, error) {
+	orig := s
+	var parts []string
+	for {
+		var part string
+		if strings.HasPrefix(s, `"`) {
+			s = s[1:]
+			var b strings.Builder
+			closed := false
+			for len(s) > 0 && !closed {
+				switch {
+				case s[0] == '"' && len(s) > 1 && s[1] == '"':
+					b.WriteByte('"')
+					s = s[2:]
+				case s[0] == '"':
+					s = s[1:]
+					closed = true
+				default:
+					b.WriteByte(s[0])
+					s = s[1:]
+				}
+			}
+			if !closed {
+				return nil, fmt.Errorf("unterminated quoted identifier in %q", orig)
+			}
+			part = b.String()
+			if part == "" {
+				return nil, fmt.Errorf("empty identifier in %q", orig)
+			}
+			if s != "" && s[0] != '.' {
+				return nil, fmt.Errorf("unexpected characters after quoted identifier in %q", orig)
+			}
+		} else {
+			var raw string
+			if i := strings.IndexByte(s, '.'); i >= 0 {
+				raw, s = s[:i], s[i:]
+			} else {
+				raw, s = s, ""
+			}
+			if raw == "" {
+				return nil, fmt.Errorf("empty identifier in %q", orig)
+			}
+			if strings.Contains(raw, `"`) {
+				return nil, fmt.Errorf("unexpected quote in identifier %q", raw)
+			}
+			part = raw
+		}
+		parts = append(parts, part)
+		if s == "" {
+			return parts, nil
+		}
+		// both branches leave a leading '.' separator (the quoted branch
+		// has already rejected anything else)
+		s = s[1:]
+		if s == "" {
+			return nil, fmt.Errorf("trailing dot in table name %q", orig)
+		}
+	}
 }
 
 // inferTableSRID looks up the source SRID of a native geometry column in the
@@ -438,11 +523,18 @@ func splitTableName(tbl string) (schema, table string) {
 // for table layers and is only consulted when neither the provider nor the
 // layer CRS was configured explicitly. Unknown tables and mixed-SRID columns
 // produce a controlled error instead of a silent default.
+// findSRIDQuery builds the PostGIS Find_SRID metadata lookup. The schema,
+// table and geometry column names travel as query parameters and never
+// enter the SQL text, so names containing quotes, dots, semicolons or
+// other special characters cannot inject SQL (audit N7).
+func findSRIDQuery(schema, table, geomField string) (string, []any) {
+	return `SELECT Find_SRID($1, $2, $3)`, []any{schema, table, geomField}
+}
+
 func inferTableSRID(ctx context.Context, pool *connectionPoolCollector, schema, table, geomField string) (uint64, error) {
 	var srid int
-	err := pool.QueryRow(ctx,
-		fmt.Sprintf("SELECT Find_SRID('%v', '%v', '%v')", schema, table, geomField),
-	).Scan(&srid)
+	query, args := findSRIDQuery(schema, table, geomField)
+	err := pool.QueryRow(ctx, query, args...).Scan(&srid)
 	if err != nil {
 		return 0, err
 	}
@@ -450,6 +542,19 @@ func inferTableSRID(ctx context.Context, pool *connectionPoolCollector, schema, 
 		return 0, fmt.Errorf("Find_SRID returned invalid SRID %v", srid)
 	}
 	return uint64(srid), nil
+}
+
+// mapplGISSystemInfoSQL builds the OKEY = 1 system-info fetch statement for
+// a MapplGIS table. All identifiers are quoted via pgQuoteIdent (embedded
+// quotes doubled), so adversarial schema/table names cannot inject SQL
+// (audit N7).
+func mapplGISSystemInfoSQL(schema, table string) string {
+	return fmt.Sprintf(
+		`SELECT %[1]v FROM %[2]v.%[3]v WHERE "OKEY" = 1 AND %[1]v IS NOT NULL LIMIT 1`,
+		pgQuoteIdent(mapplgis.GeometryField),
+		pgQuoteIdent(schema),
+		pgQuoteIdent(table),
+	)
 }
 
 // collectMapplGISMeta gathers the schema metadata required by the canonical
@@ -566,10 +671,7 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, sch
 
 	fetch := func() (*mos.SystemInfo, error) {
 		var blob []byte
-		err := pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT "%v" FROM %v."%v" WHERE "OKEY" = 1 AND "%v" IS NOT NULL LIMIT 1`,
-			mapplgis.GeometryField, schema, table, mapplgis.GeometryField,
-		)).Scan(&blob)
+		err := pool.QueryRow(ctx, mapplGISSystemInfoSQL(schema, table)).Scan(&blob)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, nil
@@ -662,41 +764,50 @@ func detectMapplGIS(ctx context.Context, pool *connectionPoolCollector, l *Layer
 	return true, nil
 }
 
-// inspectMOSLayerGeomType samples the first rows of the layer's SQL and
-// derives the geometry type from the first decodable MOS geometry. The
-// MapplGIS LayerInfo blob is metadata: rows carrying it are skipped without
-// applying anything (audit A-01 — custom SQL never auto-applies system
-// info; detection belongs to the registration-time table contract).
-func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
-	// neutralize tokens that could filter out all rows during inspection
-	allZoomsSQL := "ANY('{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24}')"
-	sql := strings.Replace(l.sql, "!ZOOM!", allZoomsSQL, 1)
-	sql = strings.ReplaceAll(sql, conf.BboxToken, "TRUE")
-
-	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
-	sql, err := replaceTokens(sql, l, tile, true)
-	if err != nil {
-		return err
+// mosProbeSQL builds the shared bounds-contract probe query for a MOS
+// layer's custom SQL (audit R1). The SQL is prepared with the documented
+// codec.PrepareProbeSQL token order — !BBOX!/!BOX! neutralize to "1=1"
+// (never "TRUE", so tokens inside SQL function arguments stay syntactically
+// valid) and zoom/position placeholders expand permissively — then wrapped
+// in the shared InspectionSampleLimit sample window
+// (docs/provider-contract.md). Custom parameter tokens are stripped for
+// inspection; if the query cannot run without them the user must set
+// geometry_type in the config.
+func mosProbeSQL(l *Layer) string {
+	probeGeomType := ""
+	if l.geomType != nil {
+		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
-
-	args := make([]any, 0)
+	sql := codec.PrepareProbeSQL(l.sql, l.geomField, l.idField, probeGeomType)
 	sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
+	return codec.WrapProbeSQL(sql)
+}
 
-	// Cap the inspection at the shared sample window (docs/provider-contract.md)
-	sql = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(sql), ";"))
-	sql = fmt.Sprintf("SELECT * FROM (%v) AS mos_inspection LIMIT %v", sql, codec.InspectionSampleLimit)
+// inspectMOSLayerGeomType samples the first rows of the layer's SQL and
+// derives the geometry type from the first decodable MOS geometry.
+func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
+	probeSQL := mosProbeSQL(l)
 
-	rows, err := p.pool.Query(context.Background(), sql, args...)
+	rows, err := p.pool.Query(context.Background(), probeSQL)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
+	return inspectMOSGeomTypeRows(l, probeSQL, rows)
+}
+
+// inspectMOSGeomTypeRows derives the layer geometry type from sampled probe
+// rows. The MapplGIS LayerInfo blob is metadata: rows carrying it are
+// skipped without applying anything (audit A-01 — custom SQL never
+// auto-applies system info; detection belongs to the registration-time
+// table contract).
+func inspectMOSGeomTypeRows(l *Layer, probeSQL string, rows pgx.Rows) error {
 	fdescs := rows.FieldDescriptions()
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
-			return fmt.Errorf("error running SQL: %v ; %w", sql, err)
+			return fmt.Errorf("error running SQL: %v ; %w", probeSQL, err)
 		}
 
 		for i := range vals {
@@ -1009,8 +1120,6 @@ func probeSQLContractRows(l *Layer, rows pgx.Rows) ([]string, codec.SQLGeometryC
 // inspectLayerGeomType sets the geomType field on the layer by running the SQL
 // and reading the geom type in the result set
 func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.Map) error {
-	var err error
-
 	// Raw geometry formats (wkb/wkt/mos) carry non-PostGIS values in the
 	// geometry column, so ST_GeometryType-based inspection cannot work.
 	// For MOS the type is derived after decoding the first real geometry.
@@ -1031,6 +1140,27 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 	//
 	// case insensitive search
 
+	probeSQL, args := geomTypeProbeSQL(l, extractQueryParamValues(pname, maps, l))
+
+	rows, err := p.pool.Query(context.Background(), probeSQL, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	return inspectGeomTypeRows(l, probeSQL, rows)
+}
+
+// geomTypeProbeSQL builds the shared bounds-contract probe query for native
+// geometry-type inspection (audit R1). The ST_AsBinary → ST_GeometryType
+// rewrite keeps the historical sniffing strategy (go-spatial/tegola#180);
+// token neutralization then follows the documented codec.PrepareProbeSQL
+// order — !BBOX!/!BOX! become "1=1" (never "TRUE", all occurrences) and
+// zoom/position placeholders expand permissively (all occurrences, not just
+// the first) — before custom parameters are substituted with live $N
+// arguments. The query is wrapped in the shared InspectionSampleLimit
+// sample window (docs/provider-contract.md).
+func geomTypeProbeSQL(l *Layer, params provider.Params) (string, []any) {
 	re := regexp.MustCompile(`(?i)ST_AsBinary`)
 	sql := re.ReplaceAllString(l.sql, "ST_GeometryType")
 
@@ -1039,30 +1169,14 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 		sql = fmt.Sprintf("SELECT ST_GeometryType(%v) FROM (%v) as q", l.geomField, sql)
 	}
 
-	// we only need a single result set to sniff out the geometry type
-	sql = fmt.Sprintf("%v LIMIT 1", sql)
-
-	// if a !ZOOM! token exists, all features could be filtered out so we don't have a geometry to inspect it's type.
-	// address this by replacing the !ZOOM! token with an ANY statement which includes all zooms
-	sql = strings.Replace(
-		sql,
-		"!ZOOM!",
-		"ANY('{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24}')",
-		1,
-	)
-
-	// we need a tile to run our sql through the replacer
-	tile := provider.NewTile(0, 0, 0, 64, tegola.WebMercator)
-
-	// normal replacer
-	sql, err = replaceTokens(sql, l, tile, true)
-	if err != nil {
-		return err
+	probeGeomType := ""
+	if l.geomType != nil {
+		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
+	sql = codec.PrepareProbeSQL(sql, l.geomField, l.idField, probeGeomType)
 
-	// substitute default values to parameter
-	params := extractQueryParamValues(pname, maps, l)
-
+	// substitute default values for custom parameters; the generated $N
+	// placeholders are passed to the probe query as live arguments
 	args := make([]any, 0)
 	sql = params.ReplaceParams(sql, &args)
 
@@ -1073,18 +1187,19 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 		sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
 	}
 
-	rows, err := p.pool.Query(context.Background(), sql, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
+	return codec.WrapProbeSQL(sql), args
+}
 
+// inspectGeomTypeRows sniffs the geometry type from sampled probe rows,
+// matching either the geometry column (ST_GeometryType-rewritten values) or
+// the st_geometrytype result column produced by the AsMVTGeom wrap.
+func inspectGeomTypeRows(l *Layer, probeSQL string, rows pgx.Rows) error {
 	// fetch rows FieldDescriptions. this gives us the OID for the data types returned to aid in decoding
 	fdescs := rows.FieldDescriptions()
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
-			return fmt.Errorf("error running SQL: %v ; %w", sql, err)
+			return fmt.Errorf("error running SQL: %v ; %w", probeSQL, err)
 		}
 
 		// iterate the values returned from our row, sniffing for the geomField or st_geometrytype field name
@@ -1452,7 +1567,10 @@ func CreateProvider(
 		// default. Custom SQL and raw formats cannot be introspected this
 		// way and keep the documented default.
 		if tblPresent && !sqlPresent && !pcrs.Explicit && !lcrs.Explicit && !isMVT(providerType) && !codec.IsRawFormat(l.geometryFormat) {
-			schema, table := splitTableName(tblName)
+			schema, table, serr := splitTableName(tblName)
+			if serr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: invalid table name %q: %w", i, lName, tblName, serr)
+			}
 			detected, derr := inferTableSRID(context.Background(), p.pool, schema, table, geomfld)
 			if derr != nil {
 				return nil, fmt.Errorf(
@@ -1469,7 +1587,11 @@ func CreateProvider(
 		idFieldExplicit := idfld != ""
 		var tblSchema, tblTable string
 		if tblPresent && !sqlPresent {
-			tblSchema, tblTable = splitTableName(tblName)
+			var serr error
+			tblSchema, tblTable, serr = splitTableName(tblName)
+			if serr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: invalid table name %q: %w", i, lName, tblName, serr)
+			}
 		}
 
 		// A06: canonical MapplGIS detection runs for every tablename layer

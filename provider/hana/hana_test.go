@@ -3,7 +3,6 @@ package hana_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -361,14 +360,12 @@ func TestTileFeatures(t *testing.T) {
 				}},
 			},
 			tile: provider.NewTile(1, 1, 1, 64, tegola.WebMercator),
-			expectedErr: errors.New(
-				fmt.Sprintf(
-					"for %v layer (land) %v: only one of %v or %v can be specified",
-					"hana",
-					0,
-					hana.ConfigKeyTablename,
-					hana.ConfigKeySQL,
-				),
+			expectedErr: fmt.Errorf(
+				"for %v layer (land) %v: only one of %v or %v can be specified",
+				"hana",
+				0,
+				hana.ConfigKeyTablename,
+				hana.ConfigKeySQL,
 			),
 			expectedFeatureCount: 0,
 		},

@@ -79,6 +79,15 @@ func decodeGeometry(bytes []byte) (*BinaryHeader, geom.Geometry, error) {
 		return h, nil, err
 	}
 
+	// audit N15: a GeoPackage binary header with the empty-geometry flag
+	// set carries no WKB tail (the remainder is usually zero-length):
+	// honor the flag instead of feeding it to the WKB decoder. The header
+	// is still returned so callers can read the SRS id; the nil geometry
+	// marks the row as geometry-less.
+	if h.IsGeometryEmpty() {
+		return h, nil, nil
+	}
+
 	geo, err := wkb.DecodeBytes(bytes[h.Size():])
 	if err != nil {
 		log.Errorf("error decoding geometry: %v", err)
@@ -364,6 +373,14 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 					log.Errorf("error decoding geometry: %v", err)
 					return err
 				}
+				if geo == nil {
+					// A declared-but-empty geometry (GeoPackage
+					// empty-geometry header flag, audit N15) cannot be
+					// encoded into a tile: skip the feature exactly like
+					// a NULL geometry column above.
+					skipRow = true
+					continue
+				}
 
 				// The layer SRID is resolved at registration time from the
 				// CRS contract (explicit config > gpkg_contents.srs_id >
@@ -391,9 +408,14 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 					continue
 				}
 				// Legacy fixed zoom-filter columns keep their exclusion.
+				// Bounds columns are excluded solely through
+				// bboxFields.IsBBoxField above (the resolved
+				// bbox_*_fieldname contract): a column merely NAMED
+				// minx/miny/maxx/maxy that is not a bounds field is an
+				// ordinary user tag (audit 7.2.5).
 				switch strings.ToLower(cols[i]) {
-				case "minx", "miny", "maxx", "maxy", "min_zoom", "max_zoom":
-					// Skip these columns used for bounding box and zoom filtering
+				case "min_zoom", "max_zoom":
+					// Skip these columns used for zoom filtering
 					continue
 				}
 				// Grab any non-nil, non-id, non-bounding box, & non-geometry column as a tag

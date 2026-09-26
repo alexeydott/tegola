@@ -43,7 +43,7 @@ func newRawFixture(t *testing.T, tables []string) rawFixture {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	for _, ddl := range tables {
 		if _, err := db.Exec(ddl); err != nil {
@@ -824,7 +824,7 @@ func insertRows(t *testing.T, path, table string, cols []string, rows [][]interf
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	for _, row := range rows {
 		if len(row) != len(cols) {
@@ -948,4 +948,134 @@ func TestMOSLayerInfoPositionInvariant(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestConfiguredBoundsFilterAndPlainMinxTag covers two audit items end to
+// end on a raw wkb table:
+//   - N6: explicitly configured bbox_*_fieldname columns (non-standard
+//     names) drive the SQL bounds filter. The out-of-window row carries a
+//     corrupt geometry blob, so it only ever reaches the WKB decoder when
+//     the SQL filter failed to exclude it — a full table scan fails the
+//     tile query with a decode error.
+//   - 7.2.5: a plain tag column merely named minx (not one of the layer's
+//     bounds columns) is an ordinary tag, while real bounds columns are
+//     never tags.
+func TestConfiguredBoundsFilterAndPlainMinxTag(t *testing.T) {
+	t.Run("configured bounds columns filter in SQL and plain minx is a tag", func(t *testing.T) {
+		fx := newRawFixture(t, []string{
+			"CREATE TABLE parcels (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB, name TEXT, x0 REAL, x1 REAL, y0 REAL, y1 REAL, minx TEXT)",
+		})
+		insertRows(t, fx.path, "parcels", []string{"geom", "name", "x0", "x1", "y0", "y1", "minx"}, [][]interface{}{
+			{wkbGeomBytes(t, geom.Point{5, 5}), "a", 0.0, 10.0, 0.0, 10.0, "keep-me"},
+			// out-of-window row with a corrupt geometry blob: it is
+			// decoded only if the SQL bounds filter did not exclude it
+			{[]byte{0x01, 0x02}, "b", 400.0, 600.0, 400.0, 600.0, "far"},
+		})
+
+		conf := dict.Dict{
+			"filepath": fx.path,
+			"layers": []map[string]interface{}{
+				{
+					"name":                  "raw_layer",
+					"tablename":             "parcels",
+					"geometry_format":       "wkb",
+					"geometry_type":         "Point",
+					"srid":                  3857,
+					// tag columns are config-driven for tablename layers:
+					// include the plain minx column and the configured
+					// bounds columns to pin the exclusion contract
+					"fields":                []string{"name", "minx", "x0", "x1", "y0", "y1"},
+					"bbox_minx_fieldname":   "x0",
+					"bbox_maxx_fieldname":   "x1",
+					"bbox_miny_fieldname":   "y0",
+					"bbox_maxy_fieldname":   "y1",
+				},
+			},
+		}
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			t.Fatalf("NewTileProvider: %v", err)
+		}
+		t.Cleanup(gpkg.Cleanup)
+
+		tile := MockTile{
+			srid: 3857,
+			bufferedExtent: geom.NewExtent(
+				[2]float64{-10, -10},
+				[2]float64{10, 10},
+			),
+		}
+		var count int
+		err = p.TileFeatures(context.TODO(), "raw_layer", &tile, nil, func(f *provider.Feature) error {
+			count++
+			if f.Tags["minx"] != "keep-me" {
+				t.Errorf("column minx is not a bounds field and must be an ordinary tag, got %v", f.Tags["minx"])
+			}
+			if f.Tags["name"] != "a" {
+				t.Errorf("tag name = %v, want a", f.Tags["name"])
+			}
+			for _, col := range []string{"x0", "x1", "y0", "y1"} {
+				if _, ok := f.Tags[col]; ok {
+					t.Errorf("bounds column %s must never be a tag", col)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("TileFeatures: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("feature count = %v, want 1 (SQL bounds filter over the configured columns)", count)
+		}
+	})
+
+	t.Run("legacy bounds columns stay excluded from tags", func(t *testing.T) {
+		fx := newRawFixture(t, []string{
+			"CREATE TABLE legacy (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB, name TEXT, minx REAL, maxx REAL, miny REAL, maxy REAL, min_zoom INTEGER, max_zoom INTEGER)",
+		})
+		insertRows(t, fx.path, "legacy", []string{"geom", "name", "minx", "maxx", "miny", "maxy", "min_zoom", "max_zoom"}, [][]interface{}{
+			{wkbGeomBytes(t, geom.Point{5, 5}), "a", 0.0, 10.0, 0.0, 10.0, 1, 22},
+		})
+
+		conf := dict.Dict{
+			"filepath": fx.path,
+			"layers": []map[string]interface{}{
+				{
+					"name":            "raw_layer",
+					"tablename":       "legacy",
+					"geometry_format": "wkb",
+					"geometry_type":   "Point",
+					"srid":            3857,
+					"fields":          []string{"name", "minx", "min_zoom", "max_zoom"},
+				},
+			},
+		}
+		p, err := gpkg.NewTileProvider(conf, nil)
+		if err != nil {
+			t.Fatalf("NewTileProvider: %v", err)
+		}
+		t.Cleanup(gpkg.Cleanup)
+
+		tile := MockTile{
+			srid: 3857,
+			bufferedExtent: geom.NewExtent(
+				[2]float64{-10, -10},
+				[2]float64{10, 10},
+			),
+		}
+		err = p.TileFeatures(context.TODO(), "raw_layer", &tile, nil, func(f *provider.Feature) error {
+			if f.Tags["name"] != "a" {
+				t.Errorf("tag name = %v, want a", f.Tags["name"])
+			}
+			for _, col := range []string{"minx", "maxx", "miny", "maxy", "min_zoom", "max_zoom"} {
+				if _, ok := f.Tags[col]; ok {
+					t.Errorf("bounds/zoom column %s must never be a tag", col)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("TileFeatures: %v", err)
+		}
+	})
 }

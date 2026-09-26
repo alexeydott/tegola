@@ -2,8 +2,12 @@ package postgis
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/test/mosfixture"
 	"github.com/jackc/pgx/v5"
@@ -113,6 +117,111 @@ func TestProbeSQLContractRows(t *testing.T) {
 		contract, _ := probe(t, mosfixture.Columns(), mosfixture.ValidRows(), "")
 		if contract.ValidMOSRows != 3 {
 			t.Fatalf("ValidMOSRows = %d, expected 3 (auto decode must fall back to DecodeMOS)", contract.ValidMOSRows)
+		}
+	})
+}
+
+// adversarialProbeSQL pins audit R1: TWO zoom tokens plus a bbox token
+// inside a SQL function call — the historical preparation replaced only the
+// first !ZOOM! occurrence and neutralized !BBOX! to TRUE, which breaks
+// ST_Intersects(geom, !BBOX!) at the parenthesis level.
+const adversarialProbeSQL = `SELECT * FROM t WHERE min_zoom <= !ZOOM! AND max_zoom >= !ZOOM! AND geom && !BBOX! AND ST_Intersects(geom, !BBOX!) AND cx = !X! AND cy = !Y!`
+
+// TestProbeSQLPreparationR1 asserts both PostGIS inspection probes follow
+// the shared codec.PrepareProbeSQL contract (audit R1): every zoom/position
+// token occurrence is neutralized, !BBOX! becomes "1=1" (never "TRUE", so
+// it stays syntactically valid inside SQL function arguments) and the
+// query is wrapped in the shared InspectionSampleLimit sample window
+// (docs/provider-contract.md).
+func TestProbeSQLPreparationR1(t *testing.T) {
+	newLayer := func() *Layer {
+		return &Layer{
+			name:       "probe_layer",
+			sql:        adversarialProbeSQL,
+			idField:    "gid",
+			geomField:  "geom",
+			bboxFields: codec.DefaultBBoxFields(),
+		}
+	}
+
+	check := func(t *testing.T, probeSQL string) {
+		t.Helper()
+		for _, tok := range []string{"!ZOOM!", "!BBOX!", "!X!", "!Y!"} {
+			if strings.Contains(probeSQL, tok) {
+				t.Errorf("token %s left in probe SQL: %s", tok, probeSQL)
+			}
+		}
+		if !strings.Contains(probeSQL, "1=1") {
+			t.Errorf("bbox token must neutralize to 1=1: %s", probeSQL)
+		}
+		if strings.Contains(probeSQL, "TRUE") {
+			t.Errorf("bbox token must never neutralize to TRUE (breaks function arguments): %s", probeSQL)
+		}
+		if !strings.Contains(probeSQL, "ST_Intersects(geom, 1=1)") {
+			t.Errorf("ST_Intersects(geom, !BBOX!) must probe as ST_Intersects(geom, 1=1): %s", probeSQL)
+		}
+		if !strings.Contains(probeSQL, fmt.Sprintf("LIMIT %v", codec.InspectionSampleLimit)) {
+			t.Errorf("probe SQL must use the shared sample window LIMIT %v: %s", codec.InspectionSampleLimit, probeSQL)
+		}
+	}
+
+	t.Run("MOS probe neutralizes every token occurrence", func(t *testing.T) {
+		check(t, mosProbeSQL(newLayer()))
+	})
+
+	t.Run("native probe neutralizes every token occurrence", func(t *testing.T) {
+		probeSQL, args := geomTypeProbeSQL(newLayer(), provider.Params{})
+		if len(args) != 0 {
+			t.Fatalf("args = %v, expected none without custom parameters", args)
+		}
+		check(t, probeSQL)
+	})
+
+	// The coordinator-verified live path: custom parameters substitute
+	// with $N placeholders and their values stay bound as query arguments.
+	t.Run("custom parameters keep live arguments", func(t *testing.T) {
+		l := newLayer()
+		l.sql = adversarialProbeSQL + " AND region = !REGION!"
+		params := provider.Params{"!REGION!": {Token: "!REGION!", SQL: "?", Value: "west"}}
+		probeSQL, args := geomTypeProbeSQL(l, params)
+		if strings.Contains(probeSQL, "!REGION!") {
+			t.Fatalf("parameter token must be substituted: %s", probeSQL)
+		}
+		if !strings.Contains(probeSQL, "$1") {
+			t.Fatalf("parameter placeholder must be generated: %s", probeSQL)
+		}
+		if len(args) != 1 || args[0] != "west" {
+			t.Fatalf("args = %v, expected live [west]", args)
+		}
+	})
+
+	t.Run("MOS probe flow succeeds over fixture rows", func(t *testing.T) {
+		l := newLayer()
+		l.geometryFormat = codec.FormatMOS
+		l.mosConfig = mosfixture.Config()
+		probeSQL := mosProbeSQL(l)
+		if err := inspectMOSGeomTypeRows(l, probeSQL, &probeFakeRows{columns: mosfixture.Columns(), rows: mosfixture.ValidRows()}); err != nil {
+			t.Fatalf("probe over fixture rows: %v", err)
+		}
+		// DecodeMOS promotes the fixture WKB point to its multi-geometry
+		// representation (MOS geometries decode as multi types).
+		if _, ok := l.geomType.(geom.MultiPoint); !ok {
+			t.Fatalf("geomType = %T, expected geom.MultiPoint", l.geomType)
+		}
+	})
+
+	t.Run("native probe flow sniffs geometry type from sample rows", func(t *testing.T) {
+		l := newLayer()
+		l.sql = "SELECT ST_AsBinary(geom) AS geom, gid FROM t WHERE min_zoom <= !ZOOM! AND max_zoom >= !ZOOM!"
+		probeSQL, _ := geomTypeProbeSQL(l, provider.Params{})
+		if strings.Contains(probeSQL, "!ZOOM!") {
+			t.Fatalf("both !ZOOM! occurrences must be replaced: %s", probeSQL)
+		}
+		if err := inspectGeomTypeRows(l, probeSQL, &probeFakeRows{columns: []string{"st_geometrytype"}, rows: [][]any{{"ST_Point"}}}); err != nil {
+			t.Fatalf("probe over sample rows: %v", err)
+		}
+		if _, ok := l.geomType.(geom.Point); !ok {
+			t.Fatalf("geomType = %T, expected geom.Point", l.geomType)
 		}
 	})
 }

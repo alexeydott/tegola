@@ -149,6 +149,65 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 	return nil, 0, sql.ErrNoRows
 }
 
+// sridConsistencySQL builds the distinct-SRID probe (audit N8): the smallest
+// result set that proves a geometry column mixes SRIDs. NULL geometries are
+// excluded so an untyped NULL row cannot masquerade as a second SRID.
+func sridConsistencySQL(tablename, geomFieldname string) string {
+	geomIdent := quoteIdentifier(geomFieldname)
+	return fmt.Sprintf("SELECT DISTINCT ST_SRID(%v) FROM %v WHERE %v IS NOT NULL LIMIT 2",
+		geomIdent, quoteIdentifier(tablename), geomIdent)
+}
+
+// shouldProbeTableSRIDs reports whether the distinct-SRID probe (audit N8)
+// applies to a table layer. The probe uses ST_SRID, which only speaks to
+// native geometry columns, so raw wkb/wkt/mos columns are excluded outright.
+// Explicit native formats (mysql/mariadb) assert a native column and are
+// always probed; the auto format is probed only once a sampled row decoded a
+// native header with a non-zero SRID, since auto may legitimately fall back
+// to plain WKB/WKT blobs that ST_SRID cannot read.
+func shouldProbeTableSRIDs(geometryFormat string, headerSRID uint64) bool {
+	switch geometryFormat {
+	case GeometryFormatMySQL, GeometryFormatMariaDB:
+		return true
+	case GeometryFormatAuto, "":
+		return headerSRID > 0
+	}
+	return false
+}
+
+// checkTableSRIDs verifies that a table's geometry column exposes a single
+// SRID (audit N8). Without an explicit srid/crs_defn, the layer SRID is
+// derived from sampled geometry headers; in a table that mixes SRIDs that
+// silently becomes one arbitrary row's SRID and the !BBOX! filter breaks for
+// the remaining rows. More than one distinct SRID fails registration with a
+// controlled error advising an explicit srid/crs_defn, mirroring the PostGIS
+// Find_SRID mixed-SRID failure documented in docs/crs.md.
+func checkTableSRIDs(db *sql.DB, tablename, geomFieldname, layerName string) error {
+	rows, err := db.Query(sridConsistencySQL(tablename, geomFieldname))
+	if err != nil {
+		return fmt.Errorf("layer '%v' (table %v): cannot determine the geometry column SRIDs: %w", layerName, tablename, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var distinct int
+	for rows.Next() {
+		var srid sql.NullInt64
+		if err := rows.Scan(&srid); err != nil {
+			return fmt.Errorf("layer '%v' (table %v): cannot scan the geometry column SRIDs: %w", layerName, tablename, err)
+		}
+		distinct++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("layer '%v' (table %v): cannot read the geometry column SRIDs: %w", layerName, tablename, err)
+	}
+	if distinct > 1 {
+		return fmt.Errorf("layer '%v' (table %v): geometry column %v mixes multiple SRIDs; "+
+			"set an explicit %v or %v to declare the layer CRS",
+			layerName, tablename, geomFieldname, ConfigKeySRID, ConfigKeyCRSDefn)
+	}
+	return nil
+}
+
 func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, error) {
 
 	log.Debugf("config: %v", config)
@@ -404,7 +463,11 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		codec.WarnAndResetMOSParams(layerGeometryFormat, &layer.mosConfig, layerName, GeometryFormatAuto)
 
 		if errTable == nil { // layerConf[ConfigKeyTableName] exists
-			tablename, err := layerConf.String(ConfigKeyTableName, &idFieldname)
+			// the tablename lookup takes no default: the key is known to
+			// exist here, and the old &idFieldname argument was a
+			// copy-paste that made an unrelated field the fallback value
+			// (audit N9).
+			tablename, err := layerConf.String(ConfigKeyTableName, nil)
 			if err != nil {
 				return nil, fmt.Errorf("for layer (%v) %v : %v", i, layerName, err)
 			}
@@ -504,6 +567,16 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				lsrid := lcrs.SRID
 				layer.crsExplicit = sridExplicit || lcrs.Explicit
+
+				// audit N8: when the layer SRID is auto-derived, one sampled
+				// row must not silently represent a table that mixes SRIDs.
+				// An explicit srid/crs_defn (provider or layer level) already
+				// declares the CRS and skips the probe.
+				if !layer.crsExplicit && shouldProbeTableSRIDs(layerGeometryFormat, headerSRID) {
+					if perr := checkTableSRIDs(db, tablename, geomFieldname, layerName); perr != nil {
+						return nil, perr
+					}
+				}
 
 				layer.tablename = tablename
 				layer.tagFieldnames = tagFieldnames
@@ -826,7 +899,8 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list columns of table %v: %v", tablename, err)
 	}
-	defer colRows.Close()
+	defer func() { _ = colRows.Close() }()
+
 	var meta mapplgis.TableMeta
 	for colRows.Next() {
 		var field, colType string
@@ -840,22 +914,20 @@ func detectMapplGIS(db *sql.DB, tablename string) (mapplgis.Info, error) {
 	if err := colRows.Err(); err != nil {
 		return mapplgis.Info{}, fmt.Errorf("error iterating columns of table %v: %v", tablename, err)
 	}
-	_ = colRows.Close()
 
 	idxRows, err := db.Query(fmt.Sprintf("SHOW INDEX FROM %v", quoteIdentifier(tablename)))
 	if err != nil {
 		return mapplgis.Info{}, fmt.Errorf("unable to list indexes of table %v: %v", tablename, err)
 	}
+	defer func() { _ = idxRows.Close() }()
+
 	parsed, perr := parseShowIndexRows(idxRows)
 	if perr != nil {
-		_ = idxRows.Close()
 		return mapplgis.Info{}, fmt.Errorf("table %v: %v", tablename, perr)
 	}
 	if err := idxRows.Err(); err != nil {
-		_ = idxRows.Close()
 		return mapplgis.Info{}, fmt.Errorf("error iterating indexes of table %v: %v", tablename, err)
 	}
-	_ = idxRows.Close()
 
 	indexes := make(map[string]*mapplgis.IndexMeta)
 	for _, row := range parsed {

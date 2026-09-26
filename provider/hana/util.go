@@ -44,11 +44,40 @@ func isSelectQuery(sql string) bool {
 	return isSelectQueryRe.MatchString(sql)
 }
 
+// parseQuotedIdent reports whether the whole input is exactly one
+// quoted HANA identifier ("..." with "" escapes for embedded quotes).
+// A closing quote followed by trailing content is rejected, so hostile
+// input like `"a"; DROP ...` never parses as a valid quoted identifier.
+func parseQuotedIdent(name string) bool {
+	if len(name) < 2 || name[0] != '"' {
+		return false
+	}
+	for i := 1; i < len(name); {
+		if name[i] != '"' {
+			i++
+			continue
+		}
+		if i == len(name)-1 {
+			return true // closing quote ends the identifier
+		}
+		if name[i+1] == '"' {
+			i += 2 // escaped "" quote inside the identifier
+			continue
+		}
+		return false // closing quote with trailing garbage
+	}
+	return false // unterminated quoted identifier
+}
+
+// quoteIdentifier quotes a HANA identifier. A valid quoted identifier is
+// passed through unchanged; anything else is quoted as a literal
+// identifier with embedded quotes doubled, so no input can ever escape
+// the quoting (audit N12).
 func quoteIdentifier(name string) string {
-	if strings.Index(name, `"`) == 0 {
+	if parseQuotedIdent(name) {
 		return name
 	}
-	return fmt.Sprintf(`"%v"`, name)
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func quoteTableName(name string) string {
@@ -73,22 +102,30 @@ func quoteTableName(name string) string {
 	return ret
 }
 
-func hasSrsPlanarEquivalent(pool *connectionPoolCollector, srid uint64) bool {
+func hasSrsPlanarEquivalent(pool *connectionPoolCollector, srid uint64) (bool, error) {
 	var numSRIDs int = 0
 	sql := "SELECT COUNT(*) FROM SYS.ST_SPATIAL_REFERENCE_SYSTEMS WHERE SRS_ID = ?"
-	_ = pool.QueryRow(sql, toPlanarEquivalenSrid(srid)).Scan(&numSRIDs)
-	return numSRIDs > 0
+	if err := pool.QueryRow(sql, toPlanarEquivalenSrid(srid)).Scan(&numSRIDs); err != nil {
+		return false, fmt.Errorf("planar equivalent lookup for srid %v failed: %w", srid, err)
+	}
+	return numSRIDs > 0, nil
 }
 
-func isSrsRoundEarth(pool *connectionPoolCollector, srid uint64) bool {
+// isSrsRoundEarth reports whether the SRS is round-earth. The "?" form
+// is the placeholder go-hdb's scanner recognizes (audit N11); lookup
+// errors are returned so registration cannot silently treat an unknown
+// SRS as planar.
+func isSrsRoundEarth(pool *connectionPoolCollector, srid uint64) (bool, error) {
 	if srid == tegola.WGS84 {
-		return true
+		return true, nil
 	}
 
-	sql := "SELECT TO_BOOLEAN(ROUND_EARTH) FROM SYS.ST_SPATIAL_REFERENCE_SYSTEMS WHERE SRS_ID = $1"
+	sql := "SELECT TO_BOOLEAN(ROUND_EARTH) FROM SYS.ST_SPATIAL_REFERENCE_SYSTEMS WHERE SRS_ID = ?"
 	var ret bool = false
-	_ = pool.QueryRow(sql, srid).Scan(&ret)
-	return ret
+	if err := pool.QueryRow(sql, srid).Scan(&ret); err != nil {
+		return false, fmt.Errorf("round-earth lookup for srid %v failed: %w", srid, err)
+	}
+	return ret, nil
 }
 
 func genGeomField(name string, providerType string) string {
@@ -141,9 +178,15 @@ func getLayerFields(pool *connectionPoolCollector, l *Layer, sql string) ([]Fiel
 	if err != nil {
 		return nil, err
 	}
+	// audit N10: the metadata probe never iterates the rows but must
+	// still release them (sqlclosecheck/rowserrcheck clean).
+	defer func() { _ = rows.Close() }()
 
 	columns, err := rows.ColumnTypes()
 	if err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -335,8 +378,10 @@ func getBBoxFilter(dbVersion uint, geomField string, srid uint64) string {
 }
 
 func getGeometryColumnSRID(pool *connectionPoolCollector, dbVersion uint, sql string, geomFieldName string) (srid int, err error) {
-	sqlQuery := sanitizeSQL(sql)
-	sqlQuery = strings.Replace(sqlQuery, bboxToken, "1=1", -1)
+	// Shared bounds-contract probe preparation (audit R1): neutralizes
+	// !BBOX!/!BOX! to "1=1" and expands zoom/position placeholders
+	// permissively so the sample cannot be filtered out by tile tokens.
+	sqlQuery := codec.PrepareProbeSQL(sql, geomFieldName, "", "")
 
 	sqlQuery = fmt.Sprintf("SELECT %[1]v.ST_SRID() FROM %[2]v WHERE %[1]v IS NOT NULL LIMIT 1", quoteIdentifier(geomFieldName), sqlQuery)
 	err = pool.QueryRow(sqlQuery).Scan(&srid)

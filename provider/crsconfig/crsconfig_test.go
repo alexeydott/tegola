@@ -9,12 +9,19 @@ import (
 
 func TestResolveProvider(t *testing.T) {
 	type tcase struct {
-		name           string
-		config         dict.Dicter
-		fallback       int
-		expectedSRID   int
-		expectedExpl   bool
-		expectErr      bool
+		name         string
+		config       dict.Dicter
+		fallback     int
+		expectedSRID int
+		expectedExpl bool
+		expectErr    bool
+		// syntheticDefn names the crs_defn whose deterministic synthetic
+		// SRID must be assigned (audit N17 reconciliation): synthetic
+		// codes are content-derived (first choice is a deterministic
+		// function of the definition), so the stable contract is the
+		// synthetic range plus registry consistency — never a hard-coded
+		// code like the old sequential 340000001.
+		syntheticDefn string
 	}
 
 	fn := func(t *testing.T, tc tcase) {
@@ -28,6 +35,22 @@ func TestResolveProvider(t *testing.T) {
 		}
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if tc.syntheticDefn != "" {
+			// range contract preserved ...
+			if got.SRID < int(basic.SyntheticSRIDMin) {
+				t.Fatalf("synthetic srid %v below SyntheticSRIDMin %v", got.SRID, basic.SyntheticSRIDMin)
+			}
+			// ... and the registry must reverse-lookup the definition to
+			// the exact assigned code
+			code, ok := basic.Proj4DefnSRID(tc.syntheticDefn)
+			if !ok || code != uint64(got.SRID) {
+				t.Fatalf("registry lookup for defn %q = code %v ok %v, want srid %v", tc.syntheticDefn, code, ok, got.SRID)
+			}
+			if !got.Explicit {
+				t.Fatalf("expected explicit true for crs_defn config")
+			}
+			return
 		}
 		if got.SRID != tc.expectedSRID {
 			t.Fatalf("expected srid %v, got %v", tc.expectedSRID, got.SRID)
@@ -73,9 +96,8 @@ func TestResolveProvider(t *testing.T) {
 			"srid":     4326,
 			"crs_defn": "+proj=utm +zone=34 +datum=WGS84 +units=m +no_defs",
 		},
-		fallback:     3857,
-		expectedSRID: int(basic.SyntheticSRIDMin),
-		expectedExpl: true,
+		fallback:      3857,
+		syntheticDefn: "+proj=utm +zone=34 +datum=WGS84 +units=m +no_defs",
 	})
 	fn(t, tcase{
 		name:         "invalid crs_defn errors",
@@ -124,6 +146,11 @@ func TestApplySystemInfoCRS(t *testing.T) {
 		expectedSRID  int
 		expectedApply bool
 		expectErr     bool
+		// syntheticDefn mirrors the TestResolveProvider contract (audit
+		// N17 reconciliation): the assigned synthetic code is
+		// deterministic but content-derived, so assert the range and the
+		// registry consistency instead of a hard-coded value.
+		syntheticDefn string
 	}
 
 	fn := func(t *testing.T, tc tcase) {
@@ -140,6 +167,16 @@ func TestApplySystemInfoCRS(t *testing.T) {
 		}
 		if applied != tc.expectedApply {
 			t.Fatalf("expected applied %v, got %v", tc.expectedApply, applied)
+		}
+		if tc.syntheticDefn != "" {
+			if gotSRID < int(basic.SyntheticSRIDMin) {
+				t.Fatalf("synthetic srid %v below SyntheticSRIDMin %v", gotSRID, basic.SyntheticSRIDMin)
+			}
+			code, ok := basic.Proj4DefnSRID(tc.syntheticDefn)
+			if !ok || code != uint64(gotSRID) {
+				t.Fatalf("registry lookup for defn %q = code %v ok %v, want srid %v", tc.syntheticDefn, code, ok, gotSRID)
+			}
+			return
 		}
 		if gotSRID != tc.expectedSRID {
 			t.Fatalf("expected srid %v, got %v", tc.expectedSRID, gotSRID)
@@ -175,8 +212,8 @@ func TestApplySystemInfoCRS(t *testing.T) {
 		currentSRID:   3857,
 		explicit:      false,
 		projection:    "+proj=utm +zone=34 +datum=WGS84 +units=m +no_defs",
-		expectedSRID:  int(basic.SyntheticSRIDMin),
 		expectedApply: true,
+		syntheticDefn: "+proj=utm +zone=34 +datum=WGS84 +units=m +no_defs",
 	})
 
 	// the registered synthetic SRID must reverse-lookup the same proj4 string
