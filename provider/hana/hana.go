@@ -714,8 +714,21 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			if verr := validateCRSFormatCompatibility(lsrid, providerType, l.geometryFormat); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
 			}
-		case isSrsRoundEarth(p.pool, uint64(lsrid)):
-			if !hasSrsPlanarEquivalent(p.pool, uint64(lsrid)) {
+		default:
+			// audit N11: the SRS lookups return errors instead of silently
+			// treating an unresolvable SRS as planar.
+			roundEarth, rerr := isSrsRoundEarth(p.pool, uint64(lsrid))
+			if rerr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, rerr)
+			}
+			if !roundEarth {
+				break
+			}
+			hasPlanar, perr := hasSrsPlanarEquivalent(p.pool, uint64(lsrid))
+			if perr != nil {
+				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, perr)
+			}
+			if !hasPlanar {
 				return nil, fmt.Errorf("unable to find a planar equivalent for srid %v in layer: %v", lsrid, lName)
 			}
 			lsrid = int(toPlanarEquivalenSrid(uint64(lsrid)))

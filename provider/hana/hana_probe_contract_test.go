@@ -26,16 +26,24 @@ type contractStubDriver struct {
 	columns  []string
 	rows     [][]driver.Value
 	queryLog *[]string
+	// closes, when non-nil, is incremented by every driver rows Close
+	// (audit N10 close-tracking).
+	closes *int32
+	// typeNames, when set, backs ColumnTypeDatabaseTypeName; when absent
+	// the stub reports no database types (pre-N10 stub behavior).
+	typeNames []string
 }
 
 func (d *contractStubDriver) Open(string) (driver.Conn, error) {
-	return &contractStubConn{columns: d.columns, rows: d.rows, queryLog: d.queryLog}, nil
+	return &contractStubConn{columns: d.columns, rows: d.rows, queryLog: d.queryLog, closes: d.closes, typeNames: d.typeNames}, nil
 }
 
 type contractStubConn struct {
-	columns  []string
-	rows     [][]driver.Value
-	queryLog *[]string
+	columns   []string
+	rows      [][]driver.Value
+	queryLog  *[]string
+	closes    *int32
+	typeNames []string
 }
 
 func (c *contractStubConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("not supported") }
@@ -45,17 +53,35 @@ func (c *contractStubConn) QueryContext(_ context.Context, query string, _ []dri
 	if c.queryLog != nil {
 		*c.queryLog = append(*c.queryLog, query)
 	}
-	return &contractStubRows{columns: c.columns, rows: c.rows}, nil
+	return &contractStubRows{columns: c.columns, rows: c.rows, closes: c.closes, typeNames: c.typeNames}, nil
 }
 
 type contractStubRows struct {
-	columns []string
-	rows    [][]driver.Value
-	next    int
+	columns   []string
+	rows      [][]driver.Value
+	next      int
+	closes    *int32
+	typeNames []string
 }
 
 func (r *contractStubRows) Columns() []string { return r.columns }
-func (r *contractStubRows) Close() error      { return nil }
+func (r *contractStubRows) Close() error {
+	if r.closes != nil {
+		atomic.AddInt32(r.closes, 1)
+	}
+	return nil
+}
+
+// ColumnTypeDatabaseTypeName implements driver.RowsColumnTypeDatabaseTypeName
+// so field introspection (getLayerFields) sees usable column types. Only
+// configured stubs report types; unconfigured ones keep the historical
+// empty-type behavior the probe tests rely on.
+func (r *contractStubRows) ColumnTypeDatabaseTypeName(idx int) string {
+	if idx >= 0 && idx < len(r.typeNames) {
+		return r.typeNames[idx]
+	}
+	return ""
+}
 func (r *contractStubRows) Next(dest []driver.Value) error {
 	if r.next >= len(r.rows) {
 		return io.EOF
@@ -86,6 +112,27 @@ func openContractStub(t *testing.T, columns []string, rows [][]driver.Value) *sq
 	t.Helper()
 	db, _ := openContractStubLogged(t, columns, rows)
 	return db
+}
+
+// openContractStubCounting is openContractStub plus a driver-rows close
+// counter for asserting rows release (audit N10). Every column reports
+// the BLOB database type (an accepted geometry/attribute type) so field
+// introspection succeeds; the probe under test performs no row scanning.
+func openContractStubCounting(t *testing.T, columns []string, rows [][]driver.Value) (*sql.DB, *int32) {
+	t.Helper()
+	closes := new(int32)
+	typeNames := make([]string, len(columns))
+	for i := range typeNames {
+		typeNames[i] = "BLOB"
+	}
+	driverName := "tegola_hana_contract_test_" + strconv.FormatUint(atomic.AddUint64(&contractDriverSeq, 1), 10)
+	sql.Register(driverName, &contractStubDriver{columns: columns, rows: rows, closes: closes, typeNames: typeNames})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db, closes
 }
 
 // hanaProbeFixture converts shared fixture rows to driver values.
