@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -32,19 +33,51 @@ const (
 	GeomTypeToken         = "!GEOM_TYPE!"
 )
 
-// ReservedTokens for query injection
-var ReservedTokens = map[string]struct{}{
-	BboxToken:             {},
-	ZoomToken:             {},
-	XToken:                {},
-	YToken:                {},
-	ZToken:                {},
-	ScaleDenominatorToken: {},
-	PixelWidthToken:       {},
-	PixelHeightToken:      {},
-	IdFieldToken:          {},
-	GeomFieldToken:        {},
-	GeomTypeToken:         {},
+// builtinReservedTokens returns a fresh copy of the built-in query injection
+// tokens that are reserved for every config (part13 P6-28).
+func builtinReservedTokens() map[string]struct{} {
+	return map[string]struct{}{
+		BboxToken:             {},
+		ZoomToken:             {},
+		XToken:                {},
+		YToken:                {},
+		ZToken:                {},
+		ScaleDenominatorToken: {},
+		PixelWidthToken:       {},
+		PixelHeightToken:      {},
+		IdFieldToken:          {},
+		GeomFieldToken:        {},
+		GeomTypeToken:         {},
+	}
+}
+
+// ReservedTokens for query injection.
+//
+// Provider-compat mirror (part13 P6-28): provider implementations (e.g.
+// provider/postgis) read this package-level map when they are created, so it
+// must keep existing. Package variables, however, are shared process-wide
+// mutable state: reloading a config used to accumulate tokens across loads.
+// The authoritative per-load state now lives on Config.ReservedTokens and
+// Validate republishes it here wholesale (replaced, never merged) after a
+// successful validation. Do not write to this map outside of Validate.
+var ReservedTokens = builtinReservedTokens()
+
+// reservedTokensMu serializes publications to the ReservedTokens mirror:
+// Validate may legitimately run concurrently (e.g. parallel test suites or
+// config reloads) and would otherwise race on the shared map. Readers such
+// as provider/postgis consult the mirror at provider-creation time, after
+// startup validation has finished (part13 P6-28).
+var reservedTokensMu sync.Mutex
+
+// publishReservedTokens replaces the ReservedTokens mirror's contents with
+// the given set wholesale (replaced, never merged).
+func publishReservedTokens(tokens map[string]struct{}) {
+	reservedTokensMu.Lock()
+	defer reservedTokensMu.Unlock()
+	clear(ReservedTokens)
+	for token := range tokens {
+		ReservedTokens[token] = struct{}{}
+	}
 }
 
 var blacklistHeaders = []string{"content-encoding", "content-length", "content-type"}
@@ -69,6 +102,21 @@ type Config struct {
 	// Note: Use the type to figure out if the provider is a mvt or std provider
 	Providers []env.Dict     `toml:"providers"`
 	Maps      []provider.Map `toml:"maps"`
+	// ReservedTokens are the query tokens reserved for this config: the
+	// built-in tokens plus the custom parameters declared by its maps. The
+	// map is per-load state (part13 P6-28), populated lazily by Validate /
+	// ValidateAndRegisterParams and never shared between loads. TOML
+	// decoding must not touch it.
+	ReservedTokens map[string]struct{} `toml:"-"`
+}
+
+// reservedTokens lazily initializes and returns the per-config reserved
+// token set (part13 P6-28).
+func (c *Config) reservedTokens() map[string]struct{} {
+	if c.ReservedTokens == nil {
+		c.ReservedTokens = builtinReservedTokens()
+	}
+	return c.ReservedTokens
 }
 
 // Webserver represents the config options for the webserver part of Tegola
@@ -96,12 +144,14 @@ type TileOperationsConfig struct {
 }
 
 // ValidateAndRegisterParams ensures configured params don't conflict with existing
-// query tokens or have overlapping names
-func ValidateAndRegisterParams(mapName string, params []provider.QueryParameter) error {
+// query tokens or have overlapping names. Reserved tokens are tracked on the
+// Config (part13 P6-28), not in package-global state.
+func (c *Config) ValidateAndRegisterParams(mapName string, params []provider.QueryParameter) error {
 	if len(params) == 0 {
 		return nil
 	}
 
+	reservedTokens := c.reservedTokens()
 	usedNames := make(map[string]struct{})
 	usedTokens := make(map[string]struct{})
 
@@ -130,7 +180,7 @@ func ValidateAndRegisterParams(mapName string, params []provider.QueryParameter)
 			}
 		}
 
-		if _, ok := ReservedTokens[param.Token]; ok {
+		if _, ok := reservedTokens[param.Token]; ok {
 			return ErrParamTokenReserved{
 				MapName:   string(mapName),
 				Parameter: param,
@@ -162,9 +212,9 @@ func ValidateAndRegisterParams(mapName string, params []provider.QueryParameter)
 		usedTokens[param.Token] = struct{}{}
 	}
 
-	// Mark all used tokens as reserved
+	// Mark all used tokens as reserved on this config
 	for token := range usedTokens {
-		ReservedTokens[token] = struct{}{}
+		reservedTokens[token] = struct{}{}
 	}
 
 	return nil
@@ -215,7 +265,7 @@ func (c *Config) Validate() error {
 	mapsWithCustomParams := []string{}
 	for mapKey, m := range c.Maps {
 		// validate any declared query parameters
-		if err := ValidateAndRegisterParams(string(m.Name), m.Parameters); err != nil {
+		if err := c.ValidateAndRegisterParams(string(m.Name), m.Parameters); err != nil {
 			return err
 		}
 
@@ -352,6 +402,12 @@ func (c *Config) Validate() error {
 			return ErrInvalidURIPrefix(uriPrefix)
 		}
 	}
+
+	// Republish the per-config reserved tokens into the provider-compat
+	// mirror for implementations that read config.ReservedTokens when they
+	// are created (e.g. provider/postgis). Replace wholesale, never merge:
+	// a reload must not keep tokens from a previous config (part13 P6-28).
+	publishReservedTokens(c.reservedTokens())
 
 	return nil
 }
