@@ -72,6 +72,8 @@ const (
 	ConfigKeyDatabase       = "database"
 	ConfigKeyUser           = "user"
 	ConfigKeyPassword       = "password"
+	ConfigKeyTLS            = "tls"
+	ConfigKeyTimeout        = "timeout"
 	ConfigKeySRID           = "srid"
 	ConfigKeyCRSDefn        = "crs_defn"
 	ConfigKeyMaxConn        = "max_connections"

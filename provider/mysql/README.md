@@ -11,6 +11,11 @@ retried up to two times when the driver reports a broken connection. Features
 are held until the complete result set has been read, so a retry after a
 mid-stream connection failure cannot emit duplicates.
 
+The connection DSN is built with the go-sql-driver's `Config.FormatDSN`, so
+user/password/database values with special characters are escaped correctly.
+`multiStatements` is deliberately **not** enabled: layer SQL must be a single
+statement.
+
 ```toml
 [[providers]]
 name = "mysql_provider"
@@ -25,6 +30,8 @@ geometry_format = "auto"    # optional: auto (default) | mysql | mariadb | wkb |
 mos_precision = 2           # optional, MOS format only: decimal digits of quantized int coords; default depends on mos_units (mm→0, cm→1, dm→1, m→2, km→5)
 mos_units = "m"             # optional, MOS format only: mm | cm | dm | m | km, default m
 max_connections = 100       # optional, default 100
+# tls = "preferred"         # optional, go-sql-driver TLS config name: true | false | preferred | skip-verify | <registered tls.Config name>
+# timeout = "10s"           # optional, dial timeout; Go duration string ("500ms", "10s") or integer seconds; default: driver default (no timeout)
 
 [[providers.layers]]
 name = "buildings"

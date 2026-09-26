@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysqlDriver "github.com/go-sql-driver/mysql"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
@@ -22,6 +24,58 @@ import (
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/mapplgis"
 )
+
+// buildDSN formats the MySQL connection DSN with the vendored
+// go-sql-driver/mysql Config so credential and database values containing
+// special characters are escaped correctly (audit P6-4). multiStatements is
+// deliberately not enabled: layer SQL is always executed as a single
+// statement.
+func buildDSN(user, password, host string, port int, database, tlsConfig string, timeout time.Duration) string {
+	cfg := mysqlDriver.Config{
+		User:      user,
+		Passwd:    password,
+		Net:       "tcp",
+		Addr:      net.JoinHostPort(host, strconv.Itoa(port)),
+		DBName:    database,
+		ParseTime: true,
+		TLSConfig: tlsConfig,
+		Timeout:   timeout,
+	}
+	return cfg.FormatDSN()
+}
+
+// dsnOptions reads the optional connection settings tls and timeout
+// (audit P6-4). tls maps to the go-sql-driver TLSConfig name ("true",
+// "false", "preferred", "skip-verify" or a registered tls.Config name).
+// timeout is a Go duration string ("500ms", "10s"); a bare integer is
+// accepted as seconds. The zero values mean "driver default".
+func dsnOptions(config dict.Dicter) (tlsConfig string, timeout time.Duration, err error) {
+	tlsDefault := ""
+	if tlsConfig, err = config.String(ConfigKeyTLS, &tlsDefault); err != nil {
+		return "", 0, fmt.Errorf("mysql provider invalid %v: %w", ConfigKeyTLS, err)
+	}
+
+	timeoutStr := ""
+	if timeoutStr, err = config.String(ConfigKeyTimeout, &timeoutStr); err != nil {
+		// a bare integer is accepted as seconds
+		if n, ierr := config.Int(ConfigKeyTimeout, nil); ierr == nil {
+			if n < 0 {
+				return "", 0, fmt.Errorf("mysql provider invalid %v: negative duration", ConfigKeyTimeout)
+			}
+			return tlsConfig, time.Duration(n) * time.Second, nil
+		}
+		return "", 0, fmt.Errorf("mysql provider invalid %v: %w", ConfigKeyTimeout, err)
+	}
+	if timeoutStr != "" {
+		if timeout, err = time.ParseDuration(timeoutStr); err != nil {
+			return "", 0, fmt.Errorf("mysql provider invalid %v: %w", ConfigKeyTimeout, err)
+		}
+		if timeout < 0 {
+			return "", 0, fmt.Errorf("mysql provider invalid %v: negative duration", ConfigKeyTimeout)
+		}
+	}
+	return tlsConfig, timeout, nil
+}
 
 // ErrMissingLayerName is returned when a layer config is missing the 'name' key
 var ErrMissingLayerName = errors.New("mysql: layer is missing 'name'")
@@ -286,8 +340,14 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	// per provider/layer via crs_defn, matching the other standard providers.
 	basic.RegisterBuiltinProj4SRIDs()
 
-	dsn := fmt.Sprintf("%v:%v@tcp(%v:%v)/%v?parseTime=true&multiStatements=true",
-		user, password, host, port, database)
+	// optional TLS config name and dial timeout, forwarded to the driver
+	// via the formatted DSN below (audit P6-4).
+	tlsConfig, connTimeout, err := dsnOptions(config)
+	if err != nil {
+		return nil, err
+	}
+
+	dsn := buildDSN(user, password, host, port, database, tlsConfig, connTimeout)
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
