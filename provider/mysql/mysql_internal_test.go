@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"database/sql/driver"
 
@@ -128,6 +129,170 @@ func TestMySQLBBoxWKBUsesGeomFromWKB(t *testing.T) {
 	}
 	if strings.Contains(query, "ST_Intersects(`geom`") {
 		t.Fatalf("raw WKB column must never be used directly as a geometry: %q", query)
+	}
+}
+
+// TestMySQLAxisOrderLongLatForGeographicSRIDs (audit P6-3) pins the geometry
+// constructor SQL for geographic SRIDs: MySQL 8 SRS metadata stores
+// geographic coordinates latitude-first, while tegola writes WKT and bbox
+// polygons longitude-first, so on MySQL servers the constructors must carry
+// the 'axis-order=long-lat' option or bbox filters and stored geometries
+// disagree. MariaDB (no options argument support) and projected SRIDs keep
+// the plain constructor form.
+func TestMySQLAxisOrderLongLatForGeographicSRIDs(t *testing.T) {
+	tile := provider.NewTile(0, 0, 0, 0, 4326)
+	extent, _ := tile.BufferedExtent()
+
+	tcs := []struct {
+		name     string
+		flavor   string
+		srid     uint64
+		format   string
+		wantCol  string
+		wantAxis bool
+	}{
+		{"mysql geographic wkt", GeometryFormatMySQL, 4326, GeometryFormatWKT, "ST_GeomFromText(`geom`, 4326", true},
+		{"mysql projected wkt", GeometryFormatMySQL, 3857, GeometryFormatWKT, "ST_GeomFromText(`geom`, 3857", false},
+		{"mariadb geographic wkt", GeometryFormatMariaDB, 4326, GeometryFormatWKT, "ST_GeomFromText(`geom`, 4326", false},
+		{"mysql geographic wkb", GeometryFormatMySQL, 4326, GeometryFormatWKB, "ST_GeomFromWKB(`geom`, 4326", true},
+		{"mariadb geographic wkb", GeometryFormatMariaDB, 4326, GeometryFormatWKB, "ST_GeomFromWKB(`geom`, 4326", false},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			layer := &Layer{
+				geomFieldname:  "geom",
+				geometryFormat: tc.format,
+				srid:           tc.srid,
+				serverFlavor:   tc.flavor,
+			}
+			query := mustReplaceTokens(t, "WHERE !BBOX!", layer, tile, extent)
+
+			colExpr := tc.wantCol + ")"
+			if tc.wantAxis {
+				colExpr = tc.wantCol + ", 'axis-order=long-lat')"
+			}
+			if !strings.Contains(query, colExpr) {
+				t.Fatalf("geometry column expression %q missing in query: %q", colExpr, query)
+			}
+
+			polyExpr := "ST_GeomFromText('POLYGON"
+			if !strings.Contains(query, polyExpr) {
+				t.Fatalf("bbox polygon expression missing in query: %q", query)
+			}
+			wantSrid := strconv.FormatUint(tc.srid, 10)
+			if tc.wantAxis {
+				polyExpr = ", " + wantSrid + ", 'axis-order=long-lat')"
+				if !strings.Contains(query, polyExpr) {
+					t.Fatalf("bbox polygon expression missing axis-order option in query: %q", query)
+				}
+				if n := strings.Count(query, "'axis-order=long-lat'"); n != 2 {
+					t.Fatalf("expected axis-order on both constructors (%d) in query: %q", n, query)
+				}
+			} else {
+				if strings.Contains(query, "axis-order") {
+					t.Fatalf("axis-order leaked into %s SRID %d query: %q", tc.flavor, tc.srid, query)
+				}
+				polyExpr = ", " + wantSrid + ")"
+				if !strings.Contains(query, polyExpr) {
+					t.Fatalf("bbox polygon expression missing SRID %q in query: %q", polyExpr, query)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildDSNEscapingAndOptions (audit P6-4) pins DSN construction: the
+// driver's Config.FormatDSN escapes special characters (the old fmt.Sprintf
+// DSN broke on e.g. '?' in database names), multiStatements stays disabled,
+// and the tls/timeout options appear only when configured.
+//
+// Note: the go-sql-driver DSN grammar cannot represent a ':' inside the
+// username (ParseDSN splits user at the first ':') — a driver-level
+// limitation affecting any DSN-based configuration.
+func TestBuildDSNEscapingAndOptions(t *testing.T) {
+	user, pass, dbname := "us.er+pa/ss@x", "p@ss:w/rd#1?x&y=z", "data base?x=1"
+	dsn := buildDSN(user, pass, "db.host", 3306, dbname, "", 0)
+	cfg, err := mysqlDriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("ParseDSN(%q) error: %v", dsn, err)
+	}
+	if cfg.User != user || cfg.Passwd != pass || cfg.DBName != dbname {
+		t.Fatalf("credentials/database did not round-trip through DSN %q: user=%q pass=%q db=%q",
+			dsn, cfg.User, cfg.Passwd, cfg.DBName)
+	}
+	if cfg.Addr != "db.host:3306" {
+		t.Fatalf("addr = %q, want %q", cfg.Addr, "db.host:3306")
+	}
+	if !cfg.ParseTime {
+		t.Fatalf("parseTime must stay enabled: %q", dsn)
+	}
+	if strings.Contains(dsn, "multiStatements") {
+		t.Fatalf("multiStatements must be disabled: %q", dsn)
+	}
+	if strings.Contains(dsn, "tls=") || strings.Contains(dsn, "timeout=") {
+		t.Fatalf("unset options leaked into DSN: %q", dsn)
+	}
+
+	// IPv6 hosts are bracketed by net.JoinHostPort
+	dsn = buildDSN("u", "p", "::1", 3306, "db", "skip-verify", 5*time.Second)
+	cfg, err = mysqlDriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("ParseDSN(%q) error: %v", dsn, err)
+	}
+	if cfg.Addr != "[::1]:3306" {
+		t.Fatalf("addr = %q, want %q", cfg.Addr, "[::1]:3306")
+	}
+	if cfg.TLSConfig != "skip-verify" {
+		t.Fatalf("tls = %q, want %q", cfg.TLSConfig, "skip-verify")
+	}
+	if cfg.Timeout != 5*time.Second {
+		t.Fatalf("timeout = %v, want %v", cfg.Timeout, 5*time.Second)
+	}
+	if !strings.Contains(dsn, "tls=skip-verify") || !strings.Contains(dsn, "timeout=5s") {
+		t.Fatalf("options missing from DSN: %q", dsn)
+	}
+}
+
+// TestDSNOptionsConfigKeys pins the new tls/timeout config keys (audit
+// P6-4): both optional, timeout accepts Go duration strings or integer
+// seconds, invalid values fail registration.
+func TestDSNOptionsConfigKeys(t *testing.T) {
+	tcs := []struct {
+		name        string
+		cfg         dict.Dict
+		wantTLS     string
+		wantTimeout time.Duration
+		wantErr     bool
+	}{
+		{"empty", dict.Dict{}, "", 0, false},
+		{"tls only", dict.Dict{ConfigKeyTLS: "preferred"}, "preferred", 0, false},
+		{"duration string", dict.Dict{ConfigKeyTimeout: "10s"}, "", 10 * time.Second, false},
+		{"millisecond string", dict.Dict{ConfigKeyTimeout: "500ms"}, "", 500 * time.Millisecond, false},
+		{"integer seconds", dict.Dict{ConfigKeyTimeout: 5}, "", 5 * time.Second, false},
+		{"both", dict.Dict{ConfigKeyTLS: "skip-verify", ConfigKeyTimeout: "1m"}, "skip-verify", time.Minute, false},
+		{"invalid duration", dict.Dict{ConfigKeyTimeout: "abc"}, "", 0, true},
+		{"negative duration", dict.Dict{ConfigKeyTimeout: "-3s"}, "", 0, true},
+		{"negative integer", dict.Dict{ConfigKeyTimeout: -2}, "", 0, true},
+		{"float value", dict.Dict{ConfigKeyTimeout: 2.5}, "", 0, true},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			tlsCfg, timeout, err := dsnOptions(tc.cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("dsnOptions(%v) = (%q, %v), want error", tc.cfg, tlsCfg, timeout)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("dsnOptions(%v) unexpected error: %v", tc.cfg, err)
+			}
+			if tlsCfg != tc.wantTLS || timeout != tc.wantTimeout {
+				t.Fatalf("dsnOptions(%v) = (%q, %v), want (%q, %v)", tc.cfg, tlsCfg, timeout, tc.wantTLS, tc.wantTimeout)
+			}
+		})
 	}
 }
 
@@ -1029,8 +1194,10 @@ func TestReplaceTokens(t *testing.T) {
 	}
 
 	got = mustReplaceTokens(t, "!ID_FIELD!-!GEOM_FIELD!", layer, tile, ext)
-	if got != "fid-geom" {
-		t.Errorf("expected fid-geom, got: %v", got)
+	// audit P5-10: identifier tokens are now quoted; this used to insert
+	// raw "fid-geom" and allowed identifier breakout
+	if got != "`fid`-`geom`" {
+		t.Errorf("expected `fid`-`geom`, got: %v", got)
 	}
 
 	got = mustReplaceTokens(t, "!GEOM_TYPE!", layer, tile, ext)
@@ -1531,8 +1698,8 @@ type rowsStubRows struct {
 	next    int
 }
 
-func (r *rowsStubRows) Columns() []string         { return r.columns }
-func (r *rowsStubRows) Close() error              { return nil }
+func (r *rowsStubRows) Columns() []string { return r.columns }
+func (r *rowsStubRows) Close() error      { return nil }
 func (r *rowsStubRows) Next(dest []driver.Value) error {
 	if r.next >= len(r.rows) {
 		return io.EOF

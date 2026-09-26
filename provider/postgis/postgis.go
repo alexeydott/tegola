@@ -23,9 +23,9 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/mapplgis"
 	"github.com/jackc/pgx/v5"
 )
@@ -788,7 +788,10 @@ func mosProbeSQL(l *Layer) string {
 func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	probeSQL := mosProbeSQL(l)
 
-	rows, err := p.pool.Query(context.Background(), probeSQL)
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, probeSQL)
 	if err != nil {
 		return err
 	}
@@ -954,23 +957,9 @@ func (p Provider) MVTForLayers(
 
 		// ref: https://postgis.net/docs/ST_AsMVT.html
 		// bytea ST_AsMVT(any_element row, text name, integer extent, text geom_name, text feature_id_name)
-
-		var featureIDName string
-
-		if l.IDFieldName() == "" {
-			featureIDName = "NULL"
-		} else {
-			featureIDName = fmt.Sprintf(`'%s'`, l.IDFieldName())
-		}
-
-		sqls = append(sqls, fmt.Sprintf(
-			`(SELECT ST_AsMVT(q,'%s',%d,'%s',%s) AS data FROM (%s) AS q)`,
-			layers[i].MVTName,
-			tegola.DefaultExtent,
-			l.GeomFieldName(),
-			featureIDName,
-			sql,
-		))
+		// name/geom/feature-id arguments are single-quoted SQL literals with
+		// embedded quotes escaped (audit P5-8)
+		sqls = append(sqls, buildMVTLayerSQL(layers[i].MVTName, l.GeomFieldName(), l.IDFieldName(), sql))
 	}
 
 	subsqls := strings.Join(sqls, "||")
@@ -1061,7 +1050,10 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 	// 7.2.3: the probe statement carries no query arguments; no args —
 	// never pass nil here: pgx variadic treats a lone nil as one query
 	// argument ("expected 0 arguments, got 1")
-	rows, err := p.pool.Query(context.Background(), probeSQL)
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, probeSQL)
 	if err != nil {
 		return nil, codec.SQLGeometryContract{}, err
 	}
@@ -1142,7 +1134,10 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 
 	probeSQL, args := geomTypeProbeSQL(l, extractQueryParamValues(pname, maps, l))
 
-	rows, err := p.pool.Query(context.Background(), probeSQL, args...)
+	ctx, cancel := codec.NewInspectionContext()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, probeSQL, args...)
 	if err != nil {
 		return err
 	}
@@ -1514,10 +1509,10 @@ func CreateProvider(
 		lsrid := lcrs.SRID
 
 		l := Layer{
-			name:           lName,
-			idField:        idfld,
-			geomField:      geomfld,
-			srid:           uint64(lsrid),
+			name:      lName,
+			idField:   idfld,
+			geomField: geomfld,
+			srid:      uint64(lsrid),
 			// explicit CRS at either config level suppresses any
 			// source-provided projection (MOS system-info blob)
 			crsExplicit:    pcrs.Explicit || lcrs.Explicit,
@@ -1571,7 +1566,9 @@ func CreateProvider(
 			if serr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: invalid table name %q: %w", i, lName, tblName, serr)
 			}
-			detected, derr := inferTableSRID(context.Background(), p.pool, schema, table, geomfld)
+			dctx, dcancel := codec.NewInspectionContext()
+			detected, derr := inferTableSRID(dctx, p.pool, schema, table, geomfld)
+			dcancel()
 			if derr != nil {
 				return nil, fmt.Errorf(
 					"for layer (%v) %v: unable to auto-detect source SRID from PostGIS metadata; set srid or crs_defn explicitly: %w",
@@ -1599,7 +1596,9 @@ func CreateProvider(
 		// spatial table, so a layer pointing at one must be discovered here
 		// and served via the MOS path. Custom SQL is never auto-detected.
 		if tblSchema != "" {
-			isMappl, derr := detectMapplGIS(context.Background(), p.pool, &l, tblSchema, tblTable)
+			mctx, mcancel := codec.NewInspectionContext()
+			isMappl, derr := detectMapplGIS(mctx, p.pool, &l, tblSchema, tblTable)
+			mcancel()
 			if derr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %v", i, lName, derr)
 			}
@@ -1775,6 +1774,12 @@ func CreateProvider(
 		lyrs[lName] = l
 	}
 	p.layers = lyrs
+
+	// audit P6-19: raw geometry formats without a bounds-backed filter are
+	// fully scanned on every tile request; warn once per affected layer.
+	for _, msg := range rawGeometryBoundsWarnings(p.layers) {
+		log.Warn(msg)
+	}
 
 	// track the provider so we can clean it up later
 	providers = append(providers, p)

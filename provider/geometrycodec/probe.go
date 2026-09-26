@@ -14,11 +14,13 @@ package geometrycodec
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
@@ -33,6 +35,19 @@ import (
 // replacement uses at a tile, see e.g. provider/*/util.go replaceTokens).
 const probeWebMercatorMax = 20037508.342789244
 
+// InspectionQueryTimeout bounds registration-time probe and sample queries
+// (audit P5-16): a hung or pathological database must not stall provider
+// registration forever. It is the budget for one probe query, not for the
+// whole registration.
+const InspectionQueryTimeout = 30 * time.Second
+
+// NewInspectionContext returns a context carrying InspectionQueryTimeout for
+// one registration-time probe/sample query (audit P5-16). The caller must
+// call the returned cancel function.
+func NewInspectionContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), InspectionQueryTimeout)
+}
+
 // z0/0/0 Web Mercator reference values for the scale/pixel tokens. Computed
 // exactly like the runtime token replacement (pixel width over 256px tiles,
 // 0.28mm pixel size) so probe SQL matches tile-time semantics.
@@ -42,17 +57,72 @@ var (
 	probeScaleDenominator = probePixelWidth / 0.00028
 )
 
+// probePermissivePredicate is the always-true predicate tile/zoom/BBOX
+// references collapse to during probe neutralization.
+const probePermissivePredicate = "1=1"
+
 // probeAllZooms is the permissive replacement for zoom-level comparisons
 // ("x >= !ZOOM!" becomes "x IN (0,...,24)").
 const probeAllZooms = "IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24)"
 
-// probeZoomCompareRegexp matches zoom-level comparisons such as
-// "z >= !ZOOM!" / "z>=!zoom!" / "z <= !zoom!". The operator is swallowed
-// together with the token so the comparison collapses onto the permissive
-// IN list; two-character operators are matched first. Token-first forms
-// ("!ZOOM! >= 5") fall through to the bare token replacement below, which
-// makes the comparison trivially true/false without breaking the SQL.
-var probeZoomCompareRegexp = regexp.MustCompile(`(>=|=>|=<|<=|!=|=|>|<)\s*` + `(?i)!ZOOM!`)
+// Comparison-level neutralization (audit P6-9). A comparison whose side
+// operand is a tile/zoom token must collapse to the permissive predicate
+// no matter which side of the operator the token is on: the token-left form
+// ("!ZOOM! >= 5") used to fall through to the bare "0" substitution below
+// ("0 >= 5") and silently sampled zero rows. The operand is matched as an
+// atom plus any trailing operator/keyword continuation (arithmetic,
+// BETWEEN, LIKE, IN, IS NULL...) so the whole predicate is consumed and
+// never cut apart; shapes outside this grammar (e.g. function-call
+// operands) fall back to the safe bare-token substitution below, which is
+// exactly the pre-P6-9 SQL.
+const (
+	// probeCompareOp matches the comparison operators; two-character
+	// forms are matched first so they are not cut in half.
+	probeCompareOp = `(?:>=|=>|=<|<=|!=|<>|=|>|<)`
+	// probeOperandAtom matches one operand: string/number literals,
+	// one-level parenthesized groups, identifiers (optionally schema- or
+	// table-qualified), or another token.
+	probeOperandAtom = `(?:'[^']*'|"[^"]*"|` +
+		`[-+]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|` +
+		`\([^()]*\)|` +
+		`[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?|` +
+		`![A-Z0-9_]+!)`
+	// probeExprContinue consumes operator/keyword continuations that must
+	// not dangle after the neutralized comparison ("cx = !X! + 1",
+	// "!X! = y BETWEEN 1 AND 2", "!X! = y IS NULL"...).
+	probeExprContinue = `(?:(?:\s*(?:[-+*/]|::|\|\|)\s*` + probeOperandAtom + `)|` +
+		`(?:\s+(?i:IS)\s+(?i:NOT\s+)?(?:(?i:NULL)|(?i:TRUE)|(?i:FALSE)|(?i:UNKNOWN)|(?i:DISTINCT\s+FROM)\s+` + probeOperandAtom + `))|` +
+		`(?:\s+(?i:NOT\s+)?(?i:BETWEEN)\s+(?:(?i:SYMMETRIC)|(?i:ASYMMETRIC))?\s*` + probeOperandAtom + `\s+(?i:AND)\s+` + probeOperandAtom + `)|` +
+		`(?:\s+(?i:NOT\s+)?(?i:LIKE|ILIKE)\s+` + probeOperandAtom + `)|` +
+		`(?:\s+(?i:NOT\s+)?(?i:SIMILAR)\s+(?i:TO)\s+` + probeOperandAtom + `)|` +
+		`(?:\s+(?i:NOT\s+)?(?i:IN)\s*` + probeOperandAtom + `))*`
+	// probeCompareTokenLeft covers every tile/zoom token in token-first
+	// comparisons; the token-last forms below exclude !ZOOM! so right-side
+	// zoom comparisons keep the richer full-range substitution.
+	probeCompareTokenLeft  = `!(?:ZOOM|Z|X|Y)!`
+	probeCompareTokenRight = `!(?:Z|X|Y)!`
+)
+
+// probeTokenLeftCompareRegexp matches token-first comparisons
+// ("!ZOOM! >= 5", "!X! = !Y!"); probeTokenRightCompareRegexp matches
+// token-last ones ("cx = !X! + 1", "5 <= !X!"). The leading boundary
+// character is captured in group 1 and re-emitted with the replacement so
+// the surrounding SQL is never cut apart; the right-side form deliberately
+// excludes "(" from its boundary class so an expression like "f(x) >= !X!"
+// is never truncated (it falls back to the safe bare-token substitution).
+var (
+	probeTokenLeftCompareRegexp  = regexp.MustCompile(`(^|[\s(,;])` + probeCompareTokenLeft + `\s*` + probeCompareOp + `\s*` + probeOperandAtom + probeExprContinue)
+	probeTokenRightCompareRegexp = regexp.MustCompile(`(^|[\s,;])` + probeOperandAtom + probeExprContinue + `\s*` + probeCompareOp + `\s*` + probeCompareTokenRight + probeExprContinue)
+)
+
+// probeZoomCompareRegexp matches zoom-level comparisons with the token on
+// the right ("z >= !ZOOM!" / "z>=!zoom!" / "z <= !zoom!"). The operator is
+// swallowed together with the token so the comparison collapses onto the
+// permissive IN list; any operator/keyword continuation is swallowed along
+// with it so nothing dangles ("z = !ZOOM! + 1" must not become
+// "z IN (0,...) + 1"). Token-first forms are handled by
+// probeTokenLeftCompareRegexp above.
+var probeZoomCompareRegexp = regexp.MustCompile(probeCompareOp + `\s*` + `(?i)!ZOOM!` + probeExprContinue)
 
 // probeKnownTokens are the token spellings PrepareProbeSQL normalizes to
 // their canonical uppercase form before substitution (the same token
@@ -70,12 +140,17 @@ var probeKnownTokens = []string{
 //
 //  1. known !WORD! tokens are normalized to their canonical uppercase
 //     spelling (case-insensitive token surface);
-//  2. zoom comparisons ("<op> !ZOOM!", operator one of >=, =>, =<, <=,
-//     !=, =, >, < with or without whitespace before the token) collapse to
-//     the permissive IN (0,...,24) list;
+//  2. comparisons referencing a tile/zoom token collapse to the permissive
+//     "1=1" predicate regardless of which side of the operator the token
+//     is on ("!ZOOM! >= 5", "cx = !X! + 1", "!X! = !Y!"...). Right-side
+//     zoom comparisons ("min_zoom <= !ZOOM!") instead collapse to the
+//     permissive IN (0,...,24) range;
 //  3. !BBOX!/!BOX! expand to "1=1" — the probe never applies a spatial
 //     filter;
-//  4. bare !ZOOM!/!Z!/!X!/!Y! expand to "0";
+//  4. remaining bare !ZOOM!/!Z!/!X!/!Y! expand to "0" (projection
+//     positions such as "!X! AS tile_x", or operand shapes outside the
+//     comparison grammar — e.g. function-call operands — where the numeric
+//     fallback keeps the SQL valid exactly as before);
 //  5. !SCALE_DENOMINATOR!/!PIXEL_WIDTH!/!PIXEL_HEIGHT! expand to the z=0
 //     Web Mercator reference values (identical to the runtime expansion at
 //     tile 0/0/0); !ID_FIELD!/!GEOM_FIELD!/!GEOM_TYPE! expand to the
@@ -85,12 +160,18 @@ var probeKnownTokens = []string{
 // they are resolved by the parameter layer at tile time.
 func PrepareProbeSQL(customSQL, geomField, idField, geomType string) string {
 	sql := normalizeProbeTokens(customSQL)
+	// collapse tile/zoom comparisons to the permissive predicate no matter
+	// which side of the operator the token is on (audit P6-9). The
+	// token-left pass runs first so token-to-token comparisons collapse in
+	// one step instead of being cut into bare substitutions.
+	sql = probeTokenLeftCompareRegexp.ReplaceAllString(sql, "${1}"+probePermissivePredicate)
+	sql = probeTokenRightCompareRegexp.ReplaceAllString(sql, "${1}"+probePermissivePredicate)
 	sql = probeZoomCompareRegexp.ReplaceAllString(sql, probeAllZooms)
 	// the result is embedded into wrapping inspection queries
 	// ("SELECT ... FROM (%s) ..."), so a trailing semicolon must go
 	sql = strings.NewReplacer(
-		config.BboxToken, "1=1",
-		"!BOX!", "1=1",
+		config.BboxToken, probePermissivePredicate,
+		"!BOX!", probePermissivePredicate,
 		config.ZoomToken, "0",
 		config.ZToken, "0",
 		config.XToken, "0",
@@ -304,6 +385,15 @@ func ValidateMOSSQLExplicitConfig(layerName string, crsExplicit bool) error {
 // metres scale tokens.
 var degreesCRS = map[int]struct{}{
 	4326: {}, 4269: {}, 4258: {}, 4490: {}, 4214: {}, 4674: {}, 4230: {}, 4267: {},
+}
+
+// IsGeographicSRID reports whether the SRID is one of the common geographic
+// (degrees) CRS codes in degreesCRS. Providers use it to apply
+// axis-order-sensitive SQL for MySQL's latitude-first geographic SRS
+// metadata (audit P6-3) and to detect non-metric scale tokens.
+func IsGeographicSRID(srid uint64) bool {
+	_, ok := degreesCRS[int(srid)]
+	return ok
 }
 
 // crsDefnConfigKey mirrors crsconfig.KeyCRSDefn ("crs_defn"), referenced by

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -13,8 +14,8 @@ import (
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/internal/env"
 	"github.com/go-spatial/tegola/internal/log"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/tracelog"
@@ -67,7 +68,10 @@ func genSQL(
 			return "", err
 		}
 
-		rows, err := pool.Query(context.Background(), sql)
+		ictx, icancel := codec.NewInspectionContext()
+		defer icancel()
+
+		rows, err := pool.Query(ictx, sql)
 		if err != nil {
 			return "", err
 		}
@@ -239,8 +243,8 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 		config.ScaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		config.PixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
 		config.PixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-		config.IdFieldToken, lyr.IDFieldName(),
-		config.GeomFieldToken, lyr.GeomFieldName(),
+		config.IdFieldToken, quoteTokenIdentifier(lyr.IDFieldName()),
+		config.GeomFieldToken, quoteTokenIdentifier(lyr.GeomFieldName()),
 		config.GeomTypeToken, geoType,
 	)
 
@@ -253,6 +257,101 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 // embedded quotes (SQL standard identifier escaping).
 func pgQuoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// escapeSQLStringLiteral escapes a value embedded in a single-quoted SQL
+// string literal by doubling single quotes (audit P5-8).
+func escapeSQLStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlStringLiteral wraps a value in a single-quoted SQL string literal,
+// escaping embedded quotes (audit P5-8).
+func sqlStringLiteral(s string) string {
+	return "'" + escapeSQLStringLiteral(s) + "'"
+}
+
+// rawGeometryBoundsWarning returns the registration-time warning for a
+// raw-geometry-format layer (wkb/wkt/mos) whose per-tile query has no
+// bounds-columns-backed server-side predicate: tegola scans the whole layer
+// source on every tile request and filters geometries in memory. Returns ""
+// when no warning is needed (audit P6-19).
+func rawGeometryBoundsWarning(layerName, geometryFormat string, boundsPredicateUsed bool) string {
+	if !codec.IsRawFormat(geometryFormat) || boundsPredicateUsed {
+		return ""
+	}
+	return fmt.Sprintf(
+		"layer (%v): geometry_format=%q stores raw geometry without bounds columns backing a server-side filter; every tile request scans the full table and filters geometries in memory (O(rows) per tile). Configure bounds columns (bbox_minx_fieldname/bbox_maxx_fieldname/bbox_miny_fieldname/bbox_maxy_fieldname) with a bounds-backed MOS query carrying !BBOX! so tile requests filter server-side, or use a native geometry column (audit P6-19)",
+		layerName, geometryFormat,
+	)
+}
+
+// rawGeometryBoundsWarnings returns the sorted set of registration-time
+// warnings for the configured layers (audit P6-19). For PostGIS only
+// bounds-backed custom SQL counts as a server-side filter for a raw-format
+// layer: its !BBOX! token expands to the bounds-columns predicate, while
+// the generated table SQL for raw formats carries no spatial filter at all.
+func rawGeometryBoundsWarnings(layers map[string]Layer) []string {
+	var msgs []string
+	for _, l := range layers {
+		boundsPredicateUsed := codec.SQLHasBBoxToken(l.sql, config.BboxToken, "!BOX!")
+		if msg := rawGeometryBoundsWarning(l.name, l.geometryFormat, boundsPredicateUsed); msg != "" {
+			msgs = append(msgs, msg)
+		}
+	}
+	sort.Strings(msgs)
+	return msgs
+}
+
+// buildMVTLayerSQL builds the per-layer ST_AsMVT subquery. The name,
+// geometry-field and feature-id arguments are single-quoted SQL literals;
+// embedded single quotes are escaped by doubling (audit P5-8). An empty
+// idFieldName produces NULL (no feature id) as before.
+func buildMVTLayerSQL(mvtName, geomFieldName, idFieldName, innerSQL string) string {
+	featureIDName := "NULL"
+	if idFieldName != "" {
+		featureIDName = sqlStringLiteral(idFieldName)
+	}
+	// ref: https://postgis.net/docs/ST_AsMVT.html
+	// bytea ST_AsMVT(any_element row, text name, integer extent, text geom_name, text feature_id_name)
+	return fmt.Sprintf(
+		`(SELECT ST_AsMVT(q,%s,%d,%s,%s) AS data FROM (%s) AS q)`,
+		sqlStringLiteral(mvtName),
+		tegola.DefaultExtent,
+		sqlStringLiteral(geomFieldName),
+		featureIDName,
+		innerSQL,
+	)
+}
+
+// quoteTokenIdentifier quotes an identifier substituted for an
+// !ID_FIELD!/!GEOM_FIELD! SQL token (audit P5-10). Values the user already
+// wrapped in a complete quote pair (double quotes or backticks) pass through
+// verbatim for backward compatibility; qualified names are quoted per part
+// so table-qualified fields keep working; anything else is escaped with
+// pgQuoteIdent so hostile names cannot break out of the identifier.
+func quoteTokenIdentifier(name string) string {
+	if isQuotedIdentifierValue(name) {
+		return name
+	}
+	parts := strings.Split(name, ".")
+	for i := range parts {
+		parts[i] = pgQuoteIdent(parts[i])
+	}
+	return strings.Join(parts, ".")
+}
+
+// isQuotedIdentifierValue reports whether name is already wrapped in a
+// complete quote pair (double quotes or backticks). Semantics are kept
+// identical to the mysql provider's token quoting (audit P5-10).
+func isQuotedIdentifierValue(name string) bool {
+	if len(name) < 2 {
+		return false
+	}
+	if name[0] != '`' && name[0] != '"' {
+		return false
+	}
+	return name[len(name)-1] == name[0]
 }
 
 // extractQueryParamValues finds default values for SQL tokens and constructs query parameter values out of them
@@ -346,8 +445,6 @@ func decipherFields(
 	descriptions []pgconn.FieldDescription,
 	values []any,
 ) (gid uint64, geom []byte, tags map[string]any, err error) {
-	var ok bool
-
 	tags = make(map[string]any)
 
 	var idParsed bool
@@ -372,7 +469,15 @@ func decipherFields(
 
 		switch descName {
 		case geomFieldname:
-			if geom, ok = values[i].([]byte); !ok {
+			// pgx returns Go strings for text/varchar geometry columns
+			// (geometry_format="wkt" reads WKT from such columns), while bytea
+			// columns come back as []byte; accept both (audit P6-2).
+			switch gval := values[i].(type) {
+			case []byte:
+				geom = gval
+			case string:
+				geom = []byte(gval)
+			default:
 				return 0, nil, nil, fmt.Errorf(
 					"unable to convert geometry field (%v) into bytes",
 					geomFieldname,
@@ -447,31 +552,12 @@ func decipherFields(
 	return gid, geom, tags, nil
 }
 
+// gId converts a feature ID value to uint64. The conversion rules (audit
+// P6-10: reject negative, fractional and out-of-range IDs with a clear
+// error) live in provider.ConvertFeatureID so every provider call site
+// behaves identically.
 func gId(v any) (gid uint64, err error) {
-	switch aval := v.(type) {
-	case float64:
-		return uint64(aval), nil
-	case int64:
-		return uint64(aval), nil
-	case uint64:
-		return aval, nil
-	case uint:
-		return uint64(aval), nil
-	case int8:
-		return uint64(aval), nil
-	case uint8:
-		return uint64(aval), nil
-	case uint16:
-		return uint64(aval), nil
-	case int32:
-		return uint64(aval), nil
-	case uint32:
-		return uint64(aval), nil
-	case string:
-		return strconv.ParseUint(aval, 10, 64)
-	default:
-		return gid, fmt.Errorf("unable to convert field into a uint64")
-	}
+	return provider.ConvertFeatureID(v)
 }
 
 // ctxErr will check if the supplied context has an error (i.e. context canceled)
