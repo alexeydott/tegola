@@ -34,7 +34,8 @@ in-tree for each.
 
 ## Candidates for upstream PR
 
-Beyond the two bugs in the table above, the audit (`tegola_review_part12.md`, section 0.8)
+Beyond the two bugs in the table above, the audit (`tegola_review_part12.md`, section 0.8;
+full report committed in-tree at [`docs/audit/tegola_review_part12.md`](docs/audit/tegola_review_part12.md))
 lists the following items as upstream pull-request candidates. Sending them upstream
 lowers the future cost of syncing this fork.
 
