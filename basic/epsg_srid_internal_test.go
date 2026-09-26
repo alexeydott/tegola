@@ -1,6 +1,14 @@
 package basic
 
-import "testing"
+import (
+	"bytes"
+	"log"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/go-spatial/proj"
+)
 
 // The synthetic SRID allocation must be deterministic across processes: two
 // tegola instances loading the same crs_defn must agree on the SRID, because
@@ -235,5 +243,84 @@ func TestIsSupportedProj4RejectsBrokenRoundTrip(t *testing.T) {
 	good := "+proj=merc +a=6370997 +b=6370997 +lon_0=0 +lat_0=50 +y_0=1000 +units=m +no_defs"
 	if !isSupportedProj4(good) {
 		t.Fatalf("definition %q is valid and must be accepted", good)
+	}
+}
+
+// ---- P5-11: deterministic synthetic SRID collision handling ----
+
+// collideDefnA and collideDefnB are valid definitions sharing one
+// defnFirstChoice (found by exhaustive FNV-1a search over a padded x_0):
+// both hash to SRID 394599798. They pin the collision path deterministically.
+const (
+	collideDefnA = "+proj=merc +a=6370997 +b=6370997 +lon_0=0 +lat_0=0 +x_0=00065141 +units=m +no_defs"
+	collideDefnB = "+proj=merc +a=6370997 +b=6370997 +lon_0=0 +lat_0=0 +x_0=00092200 +units=m +no_defs"
+)
+
+// TestRegisterProj4DefnCollisionOrderIndependent guards P5-11: two distinct
+// definitions mapping to the same synthetic SRID must resolve identically
+// regardless of registration order, and the collision must be reported via a
+// warning naming both definitions instead of being silently resolved by load
+// order.
+func TestRegisterProj4DefnCollisionOrderIndependent(t *testing.T) {
+	if defnFirstChoice(collideDefnA) != defnFirstChoice(collideDefnB) {
+		t.Fatal("test pair must share a synthetic SRID first choice")
+	}
+
+	type runResult struct {
+		codes map[string]uint64
+		warn  string
+	}
+	run := func(order ...string) runResult {
+		t.Helper()
+		proj4RegisteredMu.Lock()
+		savedOwners := proj4Registered
+		savedCodes := proj4DefnCodes
+		proj4Registered = map[uint64]string{}
+		proj4DefnCodes = map[string]uint64{}
+		proj4RegisteredMu.Unlock()
+
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		defer log.SetOutput(os.Stderr)
+
+		got := map[string]uint64{}
+		for _, d := range order {
+			if _, err := RegisterProj4Defn(d); err != nil {
+				t.Fatalf("RegisterProj4Defn(%q) returned error: %v", d, err)
+			}
+		}
+		// order-independence is a property of the final registry state:
+		// an earlier registration's SRID may legitimately change when a
+		// colliding smaller definition displaces it (re-query via
+		// Proj4DefnSRID), so read the codes back instead of caching the
+		// values returned at registration time.
+		proj4RegisteredMu.Lock()
+		for d, c := range proj4DefnCodes {
+			got[d] = c
+		}
+		proj4Registered = savedOwners
+		proj4DefnCodes = savedCodes
+		proj4RegisteredMu.Unlock()
+		for _, c := range got {
+			proj.RemoveCustomProjection(proj.EPSGCode(c))
+		}
+		return runResult{codes: got, warn: buf.String()}
+	}
+
+	r1 := run(collideDefnA, collideDefnB)
+	r2 := run(collideDefnB, collideDefnA)
+
+	for _, d := range []string{collideDefnA, collideDefnB} {
+		if r1.codes[d] != r2.codes[d] {
+			t.Fatalf("definition %q got SRID %d when registered A-first but %d when registered B-first; synthetic SRID allocation must not depend on load order", d, r1.codes[d], r2.codes[d])
+		}
+	}
+	if r1.codes[collideDefnA] == r1.codes[collideDefnB] {
+		t.Fatalf("distinct definitions share synthetic SRID %d", r1.codes[collideDefnA])
+	}
+	for name, r := range map[string]runResult{"A-first": r1, "B-first": r2} {
+		if !strings.Contains(r.warn, collideDefnA) || !strings.Contains(r.warn, collideDefnB) {
+			t.Fatalf("%s: collision warning must name both definitions, got %q", name, r.warn)
+		}
 	}
 }

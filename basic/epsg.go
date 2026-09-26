@@ -2,6 +2,7 @@ package basic
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strconv"
@@ -222,6 +223,61 @@ func resolveDefnSRID(defn string, owners map[uint64]string) (uint64, bool) {
 	}
 }
 
+// claimDefnSRID allocates the synthetic SRID for defn, updating the owners
+// (SRID -> definition) and codes (definition -> SRID) maps. Two distinct
+// definitions with the same first choice must resolve identically regardless
+// of registration order (P5-11): the lexicographically smaller definition
+// owns the contested slot, the larger one re-resolves along its own probe
+// chain, and a displaced earlier registration re-resolves recursively. Every
+// contested slot logs a warning naming both definitions and the SRID, so
+// silent load-order resolution is no longer possible. The result depends only
+// on the set of registered definitions.
+func claimDefnSRID(defn string, owners map[uint64]string, codes map[string]uint64) (uint64, bool) {
+	return claimDefnSRIDFrom(defn, owners, codes, 0)
+}
+
+// claimDefnSRIDFrom is claimDefnSRID with skipCode: a slot whose collision was
+// already reported (the slot the definition was just displaced from), so the
+// displacement does not log the same pair twice. Note the returned SRID of an
+// earlier registration may change when a colliding lexicographically smaller
+// definition is registered later; callers that stored a previously returned
+// code should re-query it with Proj4DefnSRID.
+func claimDefnSRIDFrom(defn string, owners map[uint64]string, codes map[string]uint64, skipCode uint64) (uint64, bool) {
+	start := defnFirstChoice(defn)
+	code := start
+	for {
+		owner, taken := owners[code]
+		switch {
+		case !taken || owner == defn:
+			owners[code] = defn
+			codes[defn] = code
+			return code, true
+		case defn < owner:
+			if code != skipCode {
+				log.Printf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", defn, owner, code)
+			}
+			owners[code] = defn
+			codes[defn] = code
+			delete(codes, owner)
+			if _, ok := claimDefnSRIDFrom(owner, owners, codes, code); !ok {
+				return 0, false
+			}
+			return code, true
+		default:
+			if code != skipCode {
+				log.Printf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", owner, defn, code)
+			}
+			code += defnSRIDProbeStep
+			if code >= SyntheticSRIDMin+defnSRIDSpan {
+				code = SyntheticSRIDMin
+			}
+			if code == start {
+				return 0, false
+			}
+		}
+	}
+}
+
 // RegisterProj4Defn registers an arbitrary PROJ.4 coordinate system definition
 // and returns a synthetic SRID standing in for it. Configs that carry a full
 // textual CRS description (crs_defn) instead of a numeric EPSG code pass the
@@ -244,16 +300,35 @@ func RegisterProj4Defn(proj4 string) (uint64, error) {
 	if code, ok := proj4DefnCodes[proj4]; ok {
 		return code, nil
 	}
-	code, ok := resolveDefnSRID(proj4, proj4Registered)
+	prevCodes := make(map[string]uint64, len(proj4DefnCodes))
+	for d, c := range proj4DefnCodes {
+		prevCodes[d] = c
+	}
+	code, ok := claimDefnSRID(proj4, proj4Registered, proj4DefnCodes)
 	if !ok {
 		return 0, fmt.Errorf("RegisterProj4Defn: synthetic SRID space exhausted")
 	}
-	proj4DefnCodes[proj4] = code
-	proj4Registered[code] = proj4
 
 	proj4RegisterOnce.Do(func() {})
 	proj4ProjectionMu.Lock()
 	proj.CustomProjection(proj.EPSGCode(code), proj4)
+	// a collision may have displaced earlier definitions to new SRIDs:
+	// register every changed definition under its new code, then drop stale
+	// codes that no current definition claims (a stale code may have been
+	// reused by the definition that caused the displacement).
+	currentCodes := make(map[uint64]bool, len(proj4DefnCodes))
+	for d, c := range proj4DefnCodes {
+		currentCodes[c] = true
+		if prev, ok := prevCodes[d]; !ok || prev != c {
+			proj.CustomProjection(proj.EPSGCode(c), d)
+		}
+	}
+	for d, prev := range prevCodes {
+		c, ok := proj4DefnCodes[d]
+		if (!ok || c != prev) && !currentCodes[prev] {
+			proj.RemoveCustomProjection(proj.EPSGCode(prev))
+		}
+	}
 	proj4ProjectionMu.Unlock()
 	return code, nil
 }
