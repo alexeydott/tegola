@@ -103,3 +103,74 @@ func TestConvertTagValue(t *testing.T) {
 		})
 	}
 }
+
+// TestConvertTagValueDecimalPrecision (audit P6-12) covers DECIMAL values
+// that carry more precision than float64's 53-bit mantissa: ParseFloat used
+// to silently round them, so a 20-digit DECIMAL lost digits beyond 2^53.
+// Values that do not survive the float64 round trip are emitted as string
+// tags with the exact text; everything else keeps the numeric tag.
+func TestConvertTagValueDecimalPrecision(t *testing.T) {
+	tcs := []struct {
+		name     string
+		val      string
+		expected interface{}
+	}{
+		{
+			"20-digit DECIMAL keeps exact digits as string",
+			"12345678901234567890",
+			"12345678901234567890",
+		},
+		{
+			"20-digit DECIMAL with fraction keeps exact digits as string",
+			"12345678901234567890.12",
+			"12345678901234567890.12",
+		},
+		{
+			"negative precision-losing DECIMAL is a string",
+			"-12345678901234567890",
+			"-12345678901234567890",
+		},
+		{
+			"exact 2.5 stays a number",
+			"2.5",
+			2.5,
+		},
+		{
+			"scale-only trailing zeros stay a number",
+			"2.50",
+			2.5,
+		},
+		{
+			"binary-inexact but round-tripping 0.1 stays a number",
+			"0.1",
+			0.1,
+		},
+		{
+			"exponent notation stays a number",
+			"1e2",
+			100.0,
+		},
+		{
+			"2^53+1 loses precision and becomes a string",
+			"9007199254740993",
+			"9007199254740993",
+		},
+		{
+			"integer within exact range stays a number",
+			"42",
+			42.0,
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := convertTagValue([]byte(tc.val), typeCategoryFloat)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.expected {
+				t.Errorf("got %v (%T), expected %v (%T)", got, got, tc.expected, tc.expected)
+			}
+		})
+	}
+}
