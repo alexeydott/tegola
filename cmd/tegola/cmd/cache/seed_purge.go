@@ -163,7 +163,22 @@ func AvailableSrcConversions() []proj.EPSGCode {
 	}
 }
 
+// validateConcurrency ensures the requested worker count is usable: 0 would
+// leave the seeder with no workers (it hangs) and negative values panic
+// (part13 P6-24).
+func validateConcurrency(n int) error {
+	if n < 1 {
+		return fmt.Errorf("invalid concurrency value (%d). concurrency must be at least 1", n)
+	}
+	return nil
+}
+
 func seedPurgeCmdValidate(cmd *cobra.Command, args []string) (err error) {
+	// validate the concurrency flag
+	if err = validateConcurrency(cacheConcurrency); err != nil {
+		return err
+	}
+
 	// validate the cache-bounds-srid
 	if !IsKnownSrcConversionSRID(proj.EPSGCode(cacheBoundsSRID)) {
 		var str strings.Builder
