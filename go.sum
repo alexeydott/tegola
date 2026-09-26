@@ -37,8 +37,8 @@ github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/cloudmock v0
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/cloudmock v0.62.0/go.mod h1:ifhe5teRNcbxg9p353DhOkOgczzL/IBLYFqT1cm1zpM=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.62.0 h1:aPMa5qZU9dp4fU34o+jQgVIPFIOi20oxYg8TLigmZLg=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.62.0/go.mod h1:sg6Wqbl0BKKZ5zKnQj2q0qic/3ziF894SCx1LpbX37Y=
-github.com/SAP/go-hdb v1.18.10 h1:ab7u9mS416U1FZkZANNiqQlnKK68zGk1PcZwdHy20dw=
-github.com/SAP/go-hdb v1.18.10/go.mod h1:p9ia2k+4e36G46T1wti/PoqoRenX6P8OGg6vSIn87kQ=
+github.com/SAP/go-hdb v1.18.11 h1:+tLlPvhz7e6BPJvJibTvrWZ2A9CvUxW9I10caMCmfsQ=
+github.com/SAP/go-hdb v1.18.11/go.mod h1:p9ia2k+4e36G46T1wti/PoqoRenX6P8OGg6vSIn87kQ=
 github.com/ajstarks/deck v0.0.0-20200831202436-30c9fc6549a9/go.mod h1:JynElWSGnm/4RlzPXRlREEwqTHAN3T56Bv2ITsFT3gY=
 github.com/ajstarks/deck/generate v0.0.0-20210309230005-c3f852c02e19/go.mod h1:T13YZdzov6OU0A1+RfKZiZN9ca6VeKdBdyDV+BY97Tk=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyRiyQj/Ud48djTMtMebDqepE95rw=

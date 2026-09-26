@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/storage v1.68.0
 	github.com/Azure/azure-storage-blob-go v0.0.0-20180706173141-f0a732ea9441
 	github.com/BurntSushi/toml v1.6.0
-	github.com/SAP/go-hdb v1.18.10
+	github.com/SAP/go-hdb v1.18.11
 	github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b
 	github.com/akrylysov/algnhsa v1.1.0
 	github.com/aws/aws-sdk-go v1.55.8
