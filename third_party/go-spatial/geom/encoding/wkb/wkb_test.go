@@ -1,8 +1,10 @@
 package wkb_test
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/go-spatial/geom"
@@ -148,4 +150,92 @@ func FuzzDecodeBytes(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_, _ = wkb.DecodeBytes(data)
 	})
+}
+
+// nestedCollection builds a WKB GeometryCollection nested depth levels deep:
+// every level is a collection with one element and the innermost element is a
+// point.
+func nestedCollection(depth int) []byte {
+	b := leHeader(wkb.Point)
+	b = binary.LittleEndian.AppendUint64(b, 0x3FF8000000000000) // 1.5
+	b = binary.LittleEndian.AppendUint64(b, 0xC002000000000000) // -2.25
+	for i := 0; i < depth; i++ {
+		wrapped := leHeader(wkb.Collection)
+		wrapped = binary.LittleEndian.AppendUint32(wrapped, 1)
+		wrapped = append(wrapped, b...)
+		b = wrapped
+	}
+	return b
+}
+
+// lenHidingReader wraps a reader so the decoder's remaining-size pre-check
+// (which probes for a Len() method) cannot run, exercising the code paths that
+// handle opaque io.Readers.
+type lenHidingReader struct{ io.Reader }
+
+// TestDecodeNestedCollectionDepthLimit covers audit P5-4: deeply nested
+// GeometryCollections must be rejected with a clear error instead of recursing
+// until the stack is exhausted. Nesting up to decode.MaxNestingDepth levels
+// decodes fine; one level more fails with decode.ErrMaxNestingDepth. Both the
+// sized (DecodeBytes) and plain io.Reader paths are checked.
+func TestDecodeNestedCollectionDepthLimit(t *testing.T) {
+	atLimit := nestedCollection(decode.MaxNestingDepth)
+	if _, err := wkb.DecodeBytes(atLimit); err != nil {
+		t.Fatalf("DecodeBytes with %d nested collections: %v, want success", decode.MaxNestingDepth, err)
+	}
+	if _, err := wkb.Decode(lenHidingReader{bytes.NewReader(atLimit)}); err != nil {
+		t.Fatalf("Decode with %d nested collections: %v, want success", decode.MaxNestingDepth, err)
+	}
+
+	tooDeep := nestedCollection(decode.MaxNestingDepth + 1)
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{"sized reader", func() error {
+			_, err := wkb.DecodeBytes(tooDeep)
+			return err
+		}},
+		{"plain reader", func() error {
+			_, err := wkb.Decode(lenHidingReader{bytes.NewReader(tooDeep)})
+			return err
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run()
+			if err == nil {
+				t.Fatalf("expected an error for %d nested collections, got none", decode.MaxNestingDepth+1)
+			}
+			var depthErr decode.ErrMaxNestingDepth
+			if !errors.As(err, &depthErr) {
+				t.Fatalf("expected decode.ErrMaxNestingDepth, got %T: %v", err, err)
+			}
+			if depthErr.Max != decode.MaxNestingDepth {
+				t.Fatalf("error reports max %d, want %d", depthErr.Max, decode.MaxNestingDepth)
+			}
+		})
+	}
+}
+
+// TestDecodeUnsizedReaderElementCap covers audit P5-4: for readers that do
+// not report their remaining length the element-count pre-check cannot run,
+// so declared counts must be capped at decode.MaxElements to keep hostile
+// input from forcing huge allocations.
+func TestDecodeUnsizedReaderElementCap(t *testing.T) {
+	b := leHeader(wkb.LineString)
+	b = binary.LittleEndian.AppendUint32(b, decode.MaxElements+1)
+	b = append(b, make([]byte, 64)...)
+
+	_, err := wkb.Decode(lenHidingReader{bytes.NewReader(b)})
+	if err == nil {
+		t.Fatal("expected an error for a declared count above MaxElements, got none")
+	}
+	var countErr decode.ErrElementCount
+	if !errors.As(err, &countErr) {
+		t.Fatalf("expected decode.ErrElementCount, got %T: %v", err, err)
+	}
+	if countErr.Count != decode.MaxElements+1 {
+		t.Fatalf("expected the declared count %d in the error, got %v", decode.MaxElements+1, countErr.Count)
+	}
 }

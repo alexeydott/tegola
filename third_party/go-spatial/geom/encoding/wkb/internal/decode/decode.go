@@ -36,16 +36,46 @@ func (e ErrElementCount) Error() string {
 	return fmt.Sprintf("decode: %v element count %v exceeds input size", e.Primary, e.Count)
 }
 
+// MaxNestingDepth is the maximum number of nested GeometryCollection levels
+// the decoder will follow. Each level costs one recursion frame (and one
+// decoder call per element), so hostile input with unbounded nesting could
+// otherwise exhaust the goroutine stack. A collection nested deeper than this
+// is rejected with ErrMaxNestingDepth.
+const MaxNestingDepth = 32
+
+// ErrMaxNestingDepth is returned when GeometryCollections are nested more
+// deeply than MaxNestingDepth levels.
+type ErrMaxNestingDepth struct {
+	Max int
+}
+
+func (e ErrMaxNestingDepth) Error() string {
+	return fmt.Sprintf("decode: maximum nesting depth of %d nested collections exceeded", e.Max)
+}
+
+// MaxElements is the absolute maximum number of elements (or points) a single
+// WKB header may declare when the input reader cannot report its remaining
+// length. For such readers the remaining-size pre-check cannot run, so this
+// cap is what stops a hostile input from forcing a huge allocation. Readers
+// that report their remaining length (e.g. the *bytes.Reader behind
+// wkb.DecodeBytes) are instead checked against the actual input size and may
+// legitimately contain more elements than this.
+const MaxElements = 1 << 20
+
 // ensureCount verifies that num elements of at least minBytesPerElem each can
 // fit into the remaining bytes of r, before any slice is allocated for them.
 // Readers that report their remaining length (e.g. the *bytes.Reader behind
-// wkb.DecodeBytes) are checked; opaque io.Readers skip the pre-check and fail
-// on binary.Read as before.
+// wkb.DecodeBytes) are checked against it; opaque io.Readers cannot be, so
+// their declared counts are capped at MaxElements instead.
 func ensureCount(r io.Reader, primary string, num uint32, minBytesPerElem uint64) error {
 	if lr, ok := r.(interface{ Len() int }); ok {
 		if uint64(num)*minBytesPerElem > uint64(lr.Len()) {
 			return ErrElementCount{Primary: primary, Count: num}
 		}
+		return nil
+	}
+	if uint64(num) > MaxElements {
+		return ErrElementCount{Primary: primary, Count: num}
 	}
 	return nil
 }
@@ -219,7 +249,14 @@ func MultiPolygon(r io.Reader, bom binary.ByteOrder) (plys geom.MultiPolygon, er
 	return plys, err
 }
 
+// Collection decodes a WKB GeometryCollection. Nested collections are limited
+// to MaxNestingDepth levels; deeper nesting returns ErrMaxNestingDepth instead
+// of recursing until the goroutine stack is exhausted (audit P5-4).
 func Collection(r io.Reader, bom binary.ByteOrder) (col geom.Collection, err error) {
+	return collection(r, bom, 1)
+}
+
+func collection(r io.Reader, bom binary.ByteOrder, depth int) (col geom.Collection, err error) {
 	var num uint32
 	if err = binary.Read(r, bom, &num); err != nil {
 		return col, err
@@ -249,7 +286,11 @@ func Collection(r io.Reader, bom binary.ByteOrder) (col geom.Collection, err err
 		case consts.MultiPolygon:
 			col[i], err = MultiPolygon(r, bom)
 		case consts.Collection:
-			col[i], err = Collection(r, bom)
+			if depth+1 > MaxNestingDepth {
+				err = ErrMaxNestingDepth{Max: MaxNestingDepth}
+			} else {
+				col[i], err = collection(r, bom, depth+1)
+			}
 		default:
 			err = ErrInvalidType{"collection", typ}
 		}
