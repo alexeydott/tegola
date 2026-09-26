@@ -12,8 +12,9 @@ import (
 
 // TestIdentTokenQuoting pins the cross-provider !ID_FIELD!/!GEOM_FIELD!
 // token quoting contract (audit P5-10, shorthand "!ID!/!GEOM!"): unquoted values are quoted per identifier part,
-// values wrapped in one complete quote pair pass through verbatim, and
-// hostile values can never break out of the quoted identifier. The matrix
+// values wrapped in one complete identifier quote pair (double quote or
+// backtick) pass through verbatim, and hostile values can never break
+// out of the quoted identifier. The matrix
 // goes through replaceTokens so it fails against the pre-fix raw
 // substitution.
 func TestIdentTokenQuoting(t *testing.T) {
@@ -22,14 +23,17 @@ func TestIdentTokenQuoting(t *testing.T) {
 		expected string
 	}
 	tests := map[string]tcase{
-		"plain":           {value: "feature_id", expected: "`feature_id`"},
-		"qualified":       {value: "schema.table.col", expected: "`schema`.`table`.`col`"},
-		"already-quoted":  {value: `"my.col"`, expected: `"my.col"`},
-		"already-escaped": {value: "`a``b`", expected: "`a``b`"},
-		"hostile-semi":    {value: "a;b--", expected: "`a;b--`"},
-		"hostile-quote":   {value: `a"b`, expected: "`a\"b`"},
-		"quote-shaped":    {value: "`x`;DROP`", expected: "```x``;DROP```"},
-		"mixed-qualified": {value: `"my schema".col`, expected: "\"my schema\".`col`"},
+		"plain":                              {value: "feature_id", expected: "`feature_id`"},
+		"qualified":                          {value: "schema.table.col", expected: "`schema`.`table`.`col`"},
+		"already-quoted":                     {value: `"my.col"`, expected: `"my.col"`},
+		"already-escaped":                    {value: "`a``b`", expected: "`a``b`"},
+		"backtick-quoted":                    {value: "`my.col`", expected: "`my.col`"},
+		"single-quoted-is-not-an-identifier": {value: "'my.col'", expected: "`'my.col'`"},
+		"quote-shaped-single":                {value: "'x';DROP'", expected: "`'x';DROP'`"},
+		"hostile-semi":                       {value: "a;b--", expected: "`a;b--`"},
+		"hostile-quote":                      {value: `a"b`, expected: "`a\"b`"},
+		"quote-shaped":                       {value: "`x`;DROP`", expected: "```x``;DROP```"},
+		"mixed-qualified":                    {value: `"my schema".col`, expected: "\"my schema\".`col`"},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

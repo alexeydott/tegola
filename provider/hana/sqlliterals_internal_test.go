@@ -91,7 +91,7 @@ func TestGenMVTSQLStringLiteralEscaping(t *testing.T) {
 	}
 }
 
-func TestQuoteTokenIdent(t *testing.T) {
+func TestQuoteTokenIdentifier(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -100,15 +100,20 @@ func TestQuoteTokenIdent(t *testing.T) {
 		{"plain", "geom", `"geom"`},
 		{"already quoted", `"geom"`, `"geom"`},
 		{"already quoted with escape", `"a""b"`, `"a""b"`},
+		{"backtick quoted passes through", "`geom`", "`geom`"},
 		{"empty no-id sentinel", "", ""},
 		{"hostile", `x" ; DROP`, `"x"" ; DROP"`},
 		{"single quote inside", "we'ird", `"we'ird"`},
+		{"single-quoted value is not identifier quoting", "'geom'", `"'geom'"`},
+		{"qualified name quoted per part", "s.t.c", `"s"."t"."c"`},
+		{"qualified quoted parts pass through", `"my.schema"."my.table"`, `"my.schema"."my.table"`},
+		{"hostile qualified value never splits raw", "a;b--.t", `"a;b--"."t"`},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := quoteTokenIdent(tc.in); got != tc.want {
-				t.Fatalf("quoteTokenIdent(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := quoteTokenIdentifier(tc.in); got != tc.want {
+				t.Fatalf("quoteTokenIdentifier(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

@@ -26,18 +26,21 @@ func sqliteReadOnlyDSN(path string) string {
 	return "file:" + path + "?mode=ro&_busy_timeout=5000"
 }
 
-// identAlreadyQuoted reports whether v is one complete quoted identifier
-// spanning the whole value (audit P5-10 pass-through rule): first and last
-// byte are the same identifier-quote character and the closing quote at the
-// end is the actual terminator (doubled quote characters inside count as
-// escapes). A value like "`x';DROP`" is NOT a complete pair and is quoted
-// normally instead of being passed through as SQL text.
-func identAlreadyQuoted(v string) bool {
+// isQuotedIdentifierValue reports whether v is one complete quoted
+// identifier spanning the whole value (audit P5-10 pass-through rule):
+// first and last byte are the same identifier-quote character and the
+// closing quote at the end is the actual terminator (doubled quote
+// characters inside count as escapes). Only the identifier quote
+// characters (double quote, backtick) qualify; a single-quote pair is a
+// SQL string literal, never an identifier, so it is never passed through.
+// A value like "`x';DROP`" is NOT a complete pair and is quoted normally
+// instead of being passed through as SQL text.
+func isQuotedIdentifierValue(v string) bool {
 	if len(v) < 2 {
 		return false
 	}
 	q := v[0]
-	if q != '"' && q != '`' && q != '\'' {
+	if q != '"' && q != '`' {
 		return false
 	}
 	if v[len(v)-1] != q {
@@ -90,18 +93,19 @@ func splitIdentDots(v string) []string {
 	return parts
 }
 
-// quoteIdentValue prepares a configured !ID_FIELD!/!GEOM_FIELD! token value
-// for interpolation into SQLite SQL text (audit P5-10, shorthand
-// "!ID!/!GEOM!"). A value already wrapped in one complete quote pair passes through verbatim; anything else is
-// quoted per identifier part (schema.table.col => `schema`.`table`.`col`)
-// with embedded quote characters made inert.
-func quoteIdentValue(v string) string {
-	if identAlreadyQuoted(v) {
+// quoteTokenIdentifier prepares a configured !ID_FIELD!/!GEOM_FIELD!
+// token value for interpolation into SQLite SQL text (audit P5-10,
+// shorthand "!ID!/!GEOM!"). A value already wrapped in one complete
+// identifier quote pair passes through verbatim; anything else is quoted
+// per identifier part (schema.table.col => `schema`.`table`.`col`) with
+// embedded quote characters made inert.
+func quoteTokenIdentifier(v string) string {
+	if isQuotedIdentifierValue(v) {
 		return v
 	}
 	parts := splitIdentDots(v)
 	for i := range parts {
-		if identAlreadyQuoted(parts[i]) {
+		if isQuotedIdentifierValue(parts[i]) {
 			continue
 		}
 		parts[i] = sqliteQuoteIdent(parts[i])
@@ -156,8 +160,8 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		config.ScaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		config.PixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
 		config.PixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-		config.IdFieldToken, quoteIdentValue(layer.idFieldname),
-		config.GeomFieldToken, quoteIdentValue(layer.geomFieldname),
+		config.IdFieldToken, quoteTokenIdentifier(layer.idFieldname),
+		config.GeomFieldToken, quoteTokenIdentifier(layer.geomFieldname),
 		config.GeomTypeToken, geomType,
 	)
 

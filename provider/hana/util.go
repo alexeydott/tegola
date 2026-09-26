@@ -90,16 +90,25 @@ func escapeSQLStringLiteral(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
 
-// identAlreadyQuoted reports whether name is already wrapped in one
-// complete double-quote pair (with "" escapes) spanning the whole
-// value (audit P5-10 contract).
-func identAlreadyQuoted(name string) bool {
-	if len(name) < 2 || name[0] != '"' {
+// isQuotedIdentifierValue reports whether name is already wrapped in one
+// complete identifier quote pair (double quote or backtick, with doubled
+// quote escapes) spanning the whole value (audit P5-10 contract). A
+// single-quote pair is a SQL string literal, never an identifier, so it
+// is never passed through.
+func isQuotedIdentifierValue(name string) bool {
+	if len(name) < 2 {
+		return false
+	}
+	q := name[0]
+	if q != '"' && q != '`' {
+		return false
+	}
+	if name[len(name)-1] != q {
 		return false
 	}
 	for i := 1; i < len(name); i++ {
-		if name[i] == '"' {
-			if i+1 < len(name) && name[i+1] == '"' {
+		if name[i] == q {
+			if i+1 < len(name) && name[i+1] == q {
 				i++
 				continue
 			}
@@ -109,16 +118,62 @@ func identAlreadyQuoted(name string) bool {
 	return false
 }
 
-// quoteTokenIdent quotes an identifier substituted for the !ID_FIELD! /
-// !GEOM_FIELD! SQL tokens (audit P5-10 contract): values already wrapped
-// in a complete quote pair pass through verbatim; the empty string (the
-// no-id-field sentinel) passes through unchanged; everything else is
-// quoted as a single HANA identifier.
-func quoteTokenIdent(name string) string {
-	if name == "" || identAlreadyQuoted(name) {
+// splitIdentDots splits a possibly qualified identifier at top-level
+// dots, keeping dots that sit inside quoted segments ("a.b".c has one
+// dot). An unclosed quote keeps the remainder in the current part, so
+// hostile values are never split into injection-shaped pieces. This is
+// the lenient token-value counterpart of the strict parseIdentParts
+// registration parser (audit P5-3).
+func splitIdentDots(v string) []string {
+	var parts []string
+	var cur strings.Builder
+	var quote byte
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case quote != 0:
+			cur.WriteByte(c)
+			if c == quote {
+				if i+1 < len(v) && v[i+1] == quote {
+					cur.WriteByte(quote)
+					i++
+					continue
+				}
+				quote = 0
+			}
+		case c == '"' || c == '`' || c == '\'':
+			quote = c
+			cur.WriteByte(c)
+		case c == '.':
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	parts = append(parts, cur.String())
+	return parts
+}
+
+// quoteTokenIdentifier quotes an identifier substituted for the
+// !ID_FIELD! / !GEOM_FIELD! SQL tokens (audit P5-10 contract): values
+// already wrapped in a complete identifier quote pair pass through
+// verbatim; the empty string (the no-id-field sentinel) passes through
+// unchanged; everything else is quoted per identifier part
+// (schema.table.col => "schema"."table"."col"), so dots inside quoted
+// parts survive and hostile values can never escape the quoting.
+func quoteTokenIdentifier(name string) string {
+	if name == "" || isQuotedIdentifierValue(name) {
 		return name
 	}
-	return quoteIdentifier(name)
+	parts := splitIdentDots(name)
+	for i := range parts {
+		if isQuotedIdentifierValue(parts[i]) {
+			continue
+		}
+		parts[i] = quoteIdentifier(parts[i])
+	}
+	return strings.Join(parts, ".")
 }
 
 // validateIdentName rejects empty identifier names before they can be
@@ -632,8 +687,8 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 		zToken, strconv.FormatUint(uint64(z), 10),
 		xToken, strconv.FormatUint(uint64(x), 10),
 		yToken, strconv.FormatUint(uint64(y), 10),
-		idFieldToken, quoteTokenIdent(l.IDFieldName()),
-		geomFieldToken, quoteTokenIdent(l.geomField),
+		idFieldToken, quoteTokenIdentifier(l.IDFieldName()),
+		geomFieldToken, quoteTokenIdentifier(l.geomField),
 		geomTypeToken, geoType,
 		scaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
 		pixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
