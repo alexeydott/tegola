@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/Azure/azure-storage-blob-go/2017-07-29/azblob"
@@ -290,8 +290,13 @@ func validateContainerURL(rawURL string) error {
 	return nil
 }
 
-func (azb *Cache) makeBlob(key *cache.Key) azblob.BlobURL {
-	k := filepath.Join(azb.Basepath, key.String())
+// blobKey composes the Azure blob key for a cache key. Blob keys always use
+// forward slashes regardless of the OS separator, so path.Join is used
+// instead of filepath.Join (same defect class as audit P6-33 for s3/gcs).
+func (azb *Cache) blobKey(key *cache.Key) string {
+	return path.Join(azb.Basepath, key.String())
+}
 
-	return azb.Container.NewBlobURL(k)
+func (azb *Cache) makeBlob(key *cache.Key) azblob.BlobURL {
+	return azb.Container.NewBlobURL(azb.blobKey(key))
 }

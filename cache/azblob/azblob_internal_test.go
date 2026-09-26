@@ -123,3 +123,14 @@ func TestPurgeNotFoundIsSuccess(t *testing.T) {
 		t.Errorf("Purge() of a missing blob must succeed, got: %v", err)
 	}
 }
+
+// P6-33-class regression: blob keys must join key parts with forward slashes
+// on every OS. filepath.Join produced backslash-separated blob keys on
+// Windows, so blobs written on Windows never matched reads on other hosts.
+func TestBlobKeyUsesForwardSlashes(t *testing.T) {
+	azb := Cache{Basepath: "mybase"}
+	key := cache.Key{MapName: "map", LayerName: "layer", Z: 1, X: 2, Y: 3}
+	if got, want := azb.blobKey(&key), "mybase/map/layer/1/2/3"; got != want {
+		t.Errorf("blobKey() = %q, want %q", got, want)
+	}
+}
