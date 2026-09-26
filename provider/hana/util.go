@@ -337,7 +337,9 @@ func quoteTableName(name string) string {
 func hasSrsPlanarEquivalent(pool *connectionPoolCollector, srid uint64) (bool, error) {
 	var numSRIDs int = 0
 	sql := "SELECT COUNT(*) FROM SYS.ST_SPATIAL_REFERENCE_SYSTEMS WHERE SRS_ID = ?"
-	if err := pool.QueryRow(sql, toPlanarEquivalenSrid(srid)).Scan(&numSRIDs); err != nil {
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	if err := pool.QueryRowContext(ctx, sql, toPlanarEquivalenSrid(srid)).Scan(&numSRIDs); err != nil {
 		return false, fmt.Errorf("planar equivalent lookup for srid %v failed: %w", srid, err)
 	}
 	return numSRIDs > 0, nil
@@ -354,7 +356,9 @@ func isSrsRoundEarth(pool *connectionPoolCollector, srid uint64) (bool, error) {
 
 	sql := "SELECT TO_BOOLEAN(ROUND_EARTH) FROM SYS.ST_SPATIAL_REFERENCE_SYSTEMS WHERE SRS_ID = ?"
 	var ret bool = false
-	if err := pool.QueryRow(sql, srid).Scan(&ret); err != nil {
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	if err := pool.QueryRowContext(ctx, sql, srid).Scan(&ret); err != nil {
 		return false, fmt.Errorf("round-earth lookup for srid %v failed: %w", srid, err)
 	}
 	return ret, nil
@@ -376,8 +380,11 @@ func getLayerSQL(tblname string) string {
 	return fmt.Sprintf(`SELECT * FROM %[1]v LIMIT 0;`, quotedTblName)
 }
 
-func getLayerRows(pool *connectionPoolCollector, sql string, extent *geom.Extent, srid uint64, withBBox bool) (*sql.Rows, error) {
-	ctx := context.Background()
+// getLayerRows runs a registration-time probe query under the supplied
+// context. Callers create the context via NewInspectionContext (audit
+// P5-16) and own its cancelation: the returned rows stay live past this
+// function, so no cancel may run before the caller closes them.
+func getLayerRows(ctx context.Context, pool *connectionPoolCollector, sql string, extent *geom.Extent, srid uint64, withBBox bool) (*sql.Rows, error) {
 	if withBBox {
 		rows, err := pool.QueryContextWithBBox(ctx, sql, extent, srid, false)
 		if err := ctxErr(ctx, err); err != nil {
@@ -409,7 +416,11 @@ func getLayerFields(pool *connectionPoolCollector, l *Layer, sql string) ([]Fiel
 	if err != nil {
 		return nil, err
 	}
-	rows, err := getLayerRows(pool, sql, extent, l.SRID(), withBBox)
+	// audit P5-16: the metadata probe runs under the inspection timeout;
+	// the deferred cancel stays live until this function's rows are closed.
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	rows, err := getLayerRows(ctx, pool, sql, extent, l.SRID(), withBBox)
 	if err != nil {
 		return nil, err
 	}
@@ -618,7 +629,9 @@ func getGeometryColumnSRID(pool *connectionPoolCollector, dbVersion uint, sql st
 	sqlQuery := codec.PrepareProbeSQL(sql, geomFieldName, "", "")
 
 	sqlQuery = fmt.Sprintf("SELECT %[1]v.ST_SRID() FROM %[2]v WHERE %[1]v IS NOT NULL LIMIT 1", quoteIdentifier(geomFieldName), sqlQuery)
-	err = pool.QueryRow(sqlQuery).Scan(&srid)
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	err = pool.QueryRowContext(ctx, sqlQuery).Scan(&srid)
 	return srid, err
 }
 

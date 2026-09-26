@@ -51,6 +51,12 @@ func (c connectionPoolCollector) QueryRow(query string, args ...any) *sql.Row {
 	return c.pool.QueryRow(query, args...)
 }
 
+// QueryRowContext mirrors QueryRow for registration-time probes that must
+// run under the inspection timeout (audit P5-16).
+func (c connectionPoolCollector) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return c.pool.QueryRowContext(ctx, query, args...)
+}
+
 func (c connectionPoolCollector) QueryContext(ctx context.Context, query string) (*sql.Rows, error) {
 	return c.pool.QueryContext(ctx, query)
 }
@@ -440,7 +446,10 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 	}
 
 	var dbVersion string
-	if err := conn.QueryRow(`SELECT VERSION FROM "SYS"."M_DATABASE"`).Scan(&dbVersion); err != nil {
+	// audit P5-16: the version probe runs under the inspection timeout.
+	vctx, vcancel := NewInspectionContext(context.Background())
+	defer vcancel()
+	if err := conn.QueryRowContext(vctx, `SELECT VERSION FROM "SYS"."M_DATABASE"`).Scan(&dbVersion); err != nil {
 		return nil, err
 	}
 
@@ -1004,7 +1013,9 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 
 	// The prepared probe contains no bbox placeholders, so it must run
 	// without extent binding (withBBox=false).
-	rows, err := getLayerRows(p.pool, sqlQuery, nil, l.SRID(), false)
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	rows, err := getLayerRows(ctx, p.pool, sqlQuery, nil, l.SRID(), false)
 	if err != nil {
 		return err
 	}
@@ -1091,7 +1102,10 @@ func mosProbeSQL(l *Layer) string {
 func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 	sqlQuery := mosProbeSQL(l)
 
-	rows, err := p.pool.QueryContext(context.Background(), sqlQuery)
+	// audit P5-16: the sample probe runs under the inspection timeout.
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	rows, err := p.pool.QueryContext(ctx, sqlQuery)
 	if err != nil {
 		return err
 	}
@@ -1181,7 +1195,10 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 	// neutralize so a leftover placeholder cannot break the probe statement
 	probeSQL = provider.ParameterTokenRegexp.ReplaceAllString(probeSQL, "")
 
-	rows, err := p.pool.QueryContext(context.Background(), probeSQL)
+	// audit P5-16: the sample probe runs under the inspection timeout.
+	ctx, cancel := NewInspectionContext(context.Background())
+	defer cancel()
+	rows, err := p.pool.QueryContext(ctx, probeSQL)
 	if err != nil {
 		return nil, codec.SQLGeometryContract{}, err
 	}
@@ -1692,6 +1709,10 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, tbl
 // the self-described projection to the layer unless the CRS config was
 // explicit, so the subsequent SRID resolution sees a resolved value.
 func detectMapplGIS(ctx context.Context, pool *connectionPoolCollector, l *Layer, tblName string) (bool, error) {
+	// audit P5-16: the metadata probes run under the inspection timeout,
+	// honoring the plumbed parent context (nil means Background).
+	ctx, cancel := NewInspectionContext(ctx)
+	defer cancel()
 	meta, fetch, err := collectMapplGISMeta(ctx, pool, tblName)
 	if err != nil {
 		return false, err
