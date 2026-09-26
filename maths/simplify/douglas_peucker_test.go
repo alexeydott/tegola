@@ -23,28 +23,28 @@ func TestDouglasPeuckerKeepsDistantIntermediatePoints(t *testing.T) {
 		{
 			name: "three points, far off middle kept",
 			points: []maths.Pt{
-				{0, 0}, {5, 100}, {10, 0},
+				{X: 0, Y: 0}, {X: 5, Y: 100}, {X: 10, Y: 0},
 			},
 			tolerance: 2.0,
-			mustKeep:  []maths.Pt{{5, 100}},
+			mustKeep:  []maths.Pt{{X: 5, Y: 100}},
 		},
 		{
 			name: "three points, far off second-to-last kept",
 			points: []maths.Pt{
-				{0, 0}, {100, 1}, {10, 1},
+				{X: 0, Y: 0}, {X: 100, Y: 1}, {X: 10, Y: 1},
 			},
 			tolerance: 2.0,
-			mustKeep:  []maths.Pt{{100, 1}},
+			mustKeep:  []maths.Pt{{X: 100, Y: 1}},
 		},
 		{
 			name: "ring without closing duplicate keeps all corners",
 			// DP is always called on open point lists; the closing
 			// duplicate is stripped upstream by normalizePoints.
 			points: []maths.Pt{
-				{0, 0}, {10, 0}, {10, 10}, {0, 10}, {5, 5},
+				{X: 0, Y: 0}, {X: 10, Y: 0}, {X: 10, Y: 10}, {X: 0, Y: 10}, {X: 5, Y: 5},
 			},
 			tolerance: 2.0,
-			mustKeep:  []maths.Pt{{10, 0}, {10, 10}, {0, 10}},
+			mustKeep:  []maths.Pt{{X: 10, Y: 0}, {X: 10, Y: 10}, {X: 0, Y: 10}},
 		},
 	}
 
@@ -76,7 +76,7 @@ func TestDouglasPeuckerKeepsDistantIntermediatePoints(t *testing.T) {
 // the chord are still removed.
 func TestDouglasPeuckerCollapsesFlat(t *testing.T) {
 	pts := []maths.Pt{
-		{0, 0}, {5, 0.5}, {10, 0},
+		{X: 0, Y: 0}, {X: 5, Y: 0.5}, {X: 10, Y: 0},
 	}
 	got := DouglasPeucker(pts, 2.0)
 	if len(got) != 2 {
@@ -86,10 +86,10 @@ func TestDouglasPeuckerCollapsesFlat(t *testing.T) {
 
 func TestDouglasPeuckerSplitsAtTheFarthestPoint(t *testing.T) {
 	pts := []maths.Pt{
-		{0, 0}, {1, 1}, {2, 2}, {3, 0},
+		{X: 0, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: 2}, {X: 3, Y: 0},
 	}
 	got := DouglasPeucker(pts, 0.5)
-	want := []maths.Pt{{0, 0}, {2, 2}, {3, 0}}
+	want := []maths.Pt{{X: 0, Y: 0}, {X: 2, Y: 2}, {X: 3, Y: 0}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

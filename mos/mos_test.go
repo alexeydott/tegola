@@ -28,18 +28,18 @@ func (bb *blobBuilder) build() []byte {
 	var buf bytes.Buffer
 	buf.WriteByte(bb.oType)
 	buf.WriteByte(bb.typeMod)
-	binary.Write(&buf, binary.LittleEndian, bb.addFlag)
-	binary.Write(&buf, binary.LittleEndian, uint16(len(bb.counts)))
-	binary.Write(&buf, binary.LittleEndian, int32(len(bb.points)))
+	_ = binary.Write(&buf, binary.LittleEndian, bb.addFlag)
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(len(bb.counts)))
+	_ = binary.Write(&buf, binary.LittleEndian, int32(len(bb.points)))
 	if !bb.tenByteHeader {
-		binary.Write(&buf, binary.LittleEndian, bb.ofl)
+		_ = binary.Write(&buf, binary.LittleEndian, bb.ofl)
 	}
 	for _, c := range bb.counts {
-		binary.Write(&buf, binary.LittleEndian, c)
+		_ = binary.Write(&buf, binary.LittleEndian, c)
 	}
 	for _, p := range bb.points {
-		binary.Write(&buf, binary.LittleEndian, int32(p[0]))
-		binary.Write(&buf, binary.LittleEndian, int32(p[1]))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(p[0]))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(p[1]))
 	}
 	buf.Write(bb.tail)
 	return buf.Bytes()

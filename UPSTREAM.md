@@ -66,12 +66,18 @@ release chronology are **GitHub Releases** and **tags**.
 
 ## Linting (CI)
 
-`govet`, `errcheck`, and `staticcheck` are enabled in `.golangci.yml`; CI runs
-golangci-lint v2.13.2 via the `lint` job in `.github/workflows/on_pr_push.yml`. One
-targeted `errcheck` exclusion is recorded here: `(*database/sql.Rows).Close` is excluded
-(same rationale as the pre-existing `(io.Closer).Close` exclusion). The remaining
-unchecked `Rows.Close` calls live in `provider/hana` and `provider/mysql`, which are out
-of scope for this wave and are deliberately left un-refactored rather than edited.
+`govet`, `errcheck`, `staticcheck`, `sqlclosecheck`, and `rowserrcheck` are enabled
+in `.golangci.yml` (test files are linted as well, `tests: true`); CI runs
+golangci-lint v2.13.2 via the `lint` job in `.github/workflows/on_pr_push.yml`.
+Two targeted `errcheck` exclusions are recorded here: `(*database/sql.Rows).Close`
+and `(io.Closer).Close` (cleanup in tests and deferred probe closes are
+uninteresting error paths). The exclusions are safe because the dedicated
+`sqlclosecheck` and `rowserrcheck` linters cover the dangerous half of that
+space: a `*sql.Rows` that is never closed, closed twice, or iterated past a
+silent query error is still reported. Row-`Close`/`Err` hygiene findings that
+remain are concentrated in `provider/hana`, `provider/mysql`, `provider/gpkg`,
+`provider/postgis`, and `server/` and are tracked as deferred debt rather than
+silently suppressed.
 
 Honest limitation: `errcheck` only catches *ignored* (unchecked) errors. It does **not**
 catch the "error is checked, then deliberately swallowed as a cache miss" bug class (the
