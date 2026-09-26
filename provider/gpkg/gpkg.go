@@ -391,9 +391,14 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 					continue
 				}
 				// Legacy fixed zoom-filter columns keep their exclusion.
+				// Bounds columns are excluded solely through
+				// bboxFields.IsBBoxField above (the resolved
+				// bbox_*_fieldname contract): a column merely NAMED
+				// minx/miny/maxx/maxy that is not a bounds field is an
+				// ordinary user tag (audit 7.2.5).
 				switch strings.ToLower(cols[i]) {
-				case "minx", "miny", "maxx", "maxy", "min_zoom", "max_zoom":
-					// Skip these columns used for bounding box and zoom filtering
+				case "min_zoom", "max_zoom":
+					// Skip these columns used for zoom filtering
 					continue
 				}
 				// Grab any non-nil, non-id, non-bounding box, & non-geometry column as a tag

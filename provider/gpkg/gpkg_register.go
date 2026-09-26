@@ -326,6 +326,29 @@ func detectBoundColumns(colNames []string) *[4]string {
 	return &fields
 }
 
+// matchBoundColumns maps the configured bounds fields (bbox_*_fieldname,
+// layer > provider > defaults) to the table's actual column names
+// (case-insensitive, preserving the column's case for SQL quoting) in the
+// query field order [minx, maxx, miny, maxy]; nil unless the table carries
+// all four configured columns (audit N6: explicit configuration wins over
+// the legacy-name autodetection, so non-standard bounds columns still get
+// a SQL filter instead of a full table scan).
+func matchBoundColumns(colNames []string, fields codec.BBoxFields) *[4]string {
+	lookup := make(map[string]string, len(colNames))
+	for _, name := range colNames {
+		lookup[strings.ToLower(name)] = name
+	}
+	matched := [4]string{}
+	for i, key := range fields {
+		actual, ok := lookup[strings.ToLower(strings.TrimSpace(key))]
+		if !ok {
+			return nil
+		}
+		matched[i] = actual
+	}
+	return &matched
+}
+
 // Collect meta data about all feature tables in opened gpkg.
 func featureTableMetaData(gpkg *sql.DB) (map[string]featureTableDetails, error) {
 	// this query is used to read the metadata from the gpkg_contents and
@@ -726,18 +749,25 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 						layerName, tablename, layer.idFieldname, pkColumns[0])
 					layer.idFieldname = pkColumns[0]
 				}
-				layer.boundFieldnames = detectBoundColumns(colNames)
+				bboxFields, berr := codec.ResolveBBoxFields(config, layerConf, layerName)
+				if berr != nil {
+					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, berr)
+				}
+				// Explicitly configured bounds columns (bbox_*_fieldname)
+				// win over the legacy-name autodetection (audit N6): when
+				// the table carries all four configured columns they drive
+				// the SQL bounds filter, so rawBoundsSQL can avoid a full
+				// table scan for non-standard column names.
+				layer.boundFieldnames = matchBoundColumns(colNames, bboxFields)
+				if layer.boundFieldnames == nil {
+					layer.boundFieldnames = detectBoundColumns(colNames)
+				}
 				if layer.boundFieldnames != nil {
 					log.Debugf("layer (%v): table %q carries raw bounds columns; enabling SQL bounds filter", layerName, tablename)
 				}
 				// bboxFields mirrors the detected (or resolved) bounds
 				// columns so tag exclusion and the predicate builder share
-				// one contract; configured bbox_*_fieldname values win when
-				// the table carries the named columns.
-				bboxFields, berr := codec.ResolveBBoxFields(config, layerConf, layerName)
-				if berr != nil {
-					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, berr)
-				}
+				// one contract.
 				if layer.boundFieldnames != nil {
 					layer.bboxFields = codec.BBoxFields(*layer.boundFieldnames)
 				} else {
