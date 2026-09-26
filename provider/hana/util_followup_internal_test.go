@@ -25,16 +25,17 @@ func TestParseQuotedIdent(t *testing.T) {
 	}{
 		{`"a"`, true},
 		{`"MyCol"`, true},
-		{`"a""b"`, true},          // escaped quote inside
-		{`""`, true},              // empty quoted identifier
-		{`"a""b""c""d"`, true},    // multiple escaped quotes
+		{`"a""b"`, true},                // escaped quote inside
+		{`""`, false},                   // audit P5-12: empty quoted identifier rejected
+		{`""""`, true},                  // single literal quote as the name is non-empty
+		{`"a""b""c""d"`, true},          // multiple escaped quotes
 		{`"a"; DROP TABLE x;--`, false}, // trailing garbage after close
-		{`"a"x`, false},           // trailing garbage
-		{`"abc`, false},           // unterminated
-		{`a"b`, false},            // not quoted at all
-		{``, false},               // empty
-		{`"`, false},              // lone quote
-		{`""a"`, false},           // close then trailing quote
+		{`"a"x`, false},                 // trailing garbage
+		{`"abc`, false},                 // unterminated
+		{`a"b`, false},                  // not quoted at all
+		{``, false},                     // empty
+		{`"`, false},                    // lone quote
+		{`""a"`, false},                 // close then trailing quote
 	}
 	for _, c := range cases {
 		if got := parseQuotedIdent(c.in); got != c.want {
@@ -53,6 +54,9 @@ func TestQuoteIdentifier(t *testing.T) {
 		{`MyCol`, `"MyCol"`},
 		{`"MyCol"`, `"MyCol"`}, // valid quoted identifier passes through
 		{`"a""b"`, `"a""b"`},   // valid with escapes passes through
+		// audit P5-12: `""` is no longer a valid quoted identifier and is
+		// quoted as the literal two-character name `""` instead.
+		{`""`, `""""""`},
 		// hostile inputs are neutralized as literal identifiers
 		{`"a"; DROP TABLE x;--`, `"""a""; DROP TABLE x;--"`},
 		{`"abc`, `"""abc"`},
@@ -61,6 +65,36 @@ func TestQuoteIdentifier(t *testing.T) {
 	for _, c := range cases {
 		if got := quoteIdentifier(c.in); got != c.want {
 			t.Errorf("quoteIdentifier(%q) = %v, expected %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestValidateIdentName verifies that empty identifier names are
+// rejected at registration with a clear error (audit P5-12): both the
+// plain empty string and the empty quoted form `""` must be refused,
+// while a quoted name whose content is a literal quote (`""""`) is a
+// valid non-empty name.
+func TestValidateIdentName(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"", true},      // empty name
+		{`""`, true},    // empty quoted identifier (audit P5-12)
+		{`"`, false},    // not empty-content, parseQuotedIdent handles quoting
+		{`x`, false},    // plain name
+		{"geom", false}, // default geom field name
+		{`""""`, false}, // one literal quote char is non-empty content
+		{`"MyCol"`, false},
+	}
+	for _, c := range cases {
+		err := validateIdentName(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("validateIdentName(%q) error = %v, wantErr %v", c.in, err, c.wantErr)
+			continue
+		}
+		if c.wantErr && err != nil && !strings.Contains(err.Error(), "empty") {
+			t.Errorf("validateIdentName(%q) error %q should name the empty-name problem", c.in, err.Error())
 		}
 	}
 }
@@ -150,13 +184,13 @@ func TestGetLayerFieldsClosesRows(t *testing.T) {
 	db, closes := openContractStubCounting(t, []string{"id", "geom", "name"}, [][]driver.Value{{int64(1), []byte{1}, "a"}})
 	pool := &connectionPoolCollector{pool: db}
 	l := Layer{
-		name:          "probe_layer",
-		idField:       "id",
-		geomField:     "geom",
-		geomType:      geom.Point{},
-		srid:          3857,
+		name:           "probe_layer",
+		idField:        "id",
+		geomField:      "geom",
+		geomType:       geom.Point{},
+		srid:           3857,
 		geometryFormat: "",
-		bboxFields:    codec.DefaultBBoxFields(),
+		bboxFields:     codec.DefaultBBoxFields(),
 	}
 
 	fields, err := getLayerFields(pool, &l, "SELECT * FROM probe_table")

@@ -22,9 +22,9 @@ import (
 	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/mapplgis"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -519,16 +519,34 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			return nil, fmt.Errorf("for layer (%v) %v %v field had the following error: %w", i, lName, ConfigKeyFields, err)
 		}
 
+		// Audit P5-12: reject empty field names before they are quoted
+		// into SQL at registration.
+		for _, f := range fields {
+			if err := validateIdentName(f); err != nil {
+				return nil, fmt.Errorf("for layer (%v) %v %v: %w", i, lName, ConfigKeyFields, err)
+			}
+		}
+
 		geomfld := "geom"
 		geomfld, err = layer.String(ConfigKeyGeomField, &geomfld)
 		if err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v : %w", i, lName, err)
+		}
+		if err := validateIdentName(geomfld); err != nil {
+			return nil, fmt.Errorf("for layer (%v) %v %v: %w", i, lName, ConfigKeyGeomField, err)
 		}
 
 		idfld := ""
 		idfld, err = layer.String(ConfigKeyFeatureIDField, &idfld)
 		if err != nil {
 			return nil, fmt.Errorf("for layer (%v) %v : %w", i, lName, err)
+		}
+		// An empty id field is the documented "no id column" sentinel and
+		// stays valid; an explicitly empty quoted name ("") does not.
+		if idfld != "" {
+			if err := validateIdentName(idfld); err != nil {
+				return nil, fmt.Errorf("for layer (%v) %v %v: %w", i, lName, ConfigKeyFeatureIDField, err)
+			}
 		}
 		if idfld == geomfld {
 			return nil, fmt.Errorf("for layer (%v) %v: %v (%v) and %v field (%v) is the same", i, lName, ConfigKeyGeomField, geomfld, ConfigKeyFeatureIDField, idfld)
@@ -596,6 +614,11 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			tblName, err = layer.String(ConfigKeyTablename, &lName)
 			if err != nil {
 				return nil, fmt.Errorf("for %v layer (%v) %v has an error: %w", i, lName, ConfigKeyTablename, err)
+			}
+			// Audit P5-12: reject empty table names at registration; the
+			// quoted-identifier parts are validated by quoteTableName.
+			if err := validateIdentName(tblName); err != nil {
+				return nil, fmt.Errorf("for %v layer (%v) %v: %w", i, lName, ConfigKeyTablename, err)
 			}
 		}
 

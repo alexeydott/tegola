@@ -17,9 +17,9 @@ import (
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/env"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/crsconfig"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/crsconfig"
+	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 const (
@@ -49,7 +49,10 @@ func isSelectQuery(sql string) bool {
 // A closing quote followed by trailing content is rejected, so hostile
 // input like `"a"; DROP ...` never parses as a valid quoted identifier.
 func parseQuotedIdent(name string) bool {
-	if len(name) < 2 || name[0] != '"' {
+	// Audit P5-12: an empty quoted identifier `""` has no name content and
+	// is not a valid identifier, so the minimum accepted form is 3 bytes
+	// (`"x"`); `""""` (a single literal quote as the name) stays valid.
+	if len(name) < 3 || name[0] != '"' {
 		return false
 	}
 	for i := 1; i < len(name); {
@@ -78,6 +81,20 @@ func quoteIdentifier(name string) string {
 		return name
 	}
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// validateIdentName rejects empty identifier names before they can be
+// quoted into SQL (audit P5-12). Quoting cannot express an empty
+// identifier: `""` would become the literal two-character name `""`
+// after quoting, so empty names must be refused at registration instead.
+func validateIdentName(name string) error {
+	if name == "" {
+		return fmt.Errorf("identifier name is empty; expected a non-empty identifier name")
+	}
+	if name == `""` {
+		return fmt.Errorf(`identifier %q is empty; expected a non-empty identifier name`, name)
+	}
+	return nil
 }
 
 func quoteTableName(name string) string {
