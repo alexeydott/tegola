@@ -12,6 +12,7 @@ import (
 	"github.com/go-spatial/tegola/cache"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/test"
+	"github.com/go-spatial/tegola/server"
 )
 
 // blockingTiler wraps the test tile provider and can hold the first N
@@ -299,11 +300,18 @@ func TestTileUpdateNotOverwrittenByStaleMissRender(t *testing.T) {
 	// the miss render is now paused inside the provider
 	<-tiler.entered
 
-	// regenerate the metatile while the miss render is still in flight
+	// regenerate the metatile while the miss render is still in flight; the
+	// regeneration runs in the background and must not wait for the held miss
+	// render
 	w := tileOpsRequest(router, base+"?tile=update", testTileOpsToken)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("update: status = %d, want 204 (%s)", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("update: status = %d, want 202 (%s)", w.Code, w.Body.String())
 	}
+
+	// wait for the regeneration to finish BEFORE releasing the miss render:
+	// the regeneration bumps the metatile generation, so the stale render's
+	// write is skipped once it completes
+	server.AwaitMetatileRegeneration()
 
 	// let the stale render finish; its result must not overwrite the update
 	close(tiler.release)
@@ -366,17 +374,21 @@ func TestTileStatusUpdatingOnlyDuringMutatingOperations(t *testing.T) {
 		w := tileOpsRequest(router2, base+"?tile=update", testTileOpsToken)
 		updateDone <- w.Code
 	}()
-	// the update is now rendering (the update counter was already taken)
+	// the metatile regeneration is now rendering in the background (the
+	// update counter was already taken)
 	<-tiler2.entered
 
 	if status := fetchTileOpStatus(t, router2, base+"?tile=status"); !status.Updating {
 		t.Error("?tile=update in flight must report updating=true")
 	}
 
-	close(tiler2.release)
-	if code := <-updateDone; code != http.StatusNoContent {
-		t.Errorf("?tile=update: status = %d, want 204", code)
+	// the request itself is answered while the regeneration still runs
+	if code := <-updateDone; code != http.StatusAccepted {
+		t.Errorf("?tile=update: status = %d, want 202", code)
 	}
+
+	close(tiler2.release)
+	server.AwaitMetatileRegeneration()
 
 	// once finished the flag must fall back to false
 	if status := fetchTileOpStatus(t, router2, base+"?tile=status"); status.Updating {
@@ -398,9 +410,10 @@ func TestTileUpdateSkipsOutOfBoundsMetatileTiles(t *testing.T) {
 	enableTileOperations(t, serverTileOpsTestConfig())
 
 	w := tileOpsRequest(router, "/maps/test-map/test-layer/4/8/7.pbf?tile=update", testTileOpsToken)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("update: status = %d, want 204 (%s)", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("update: status = %d, want 202 (%s)", w.Code, w.Body.String())
 	}
+	server.AwaitMetatileRegeneration()
 
 	// the requested tile is within bounds and must be cached exactly once
 	inKey := cache.Key{MapName: "test-map", LayerName: "test-layer", Z: 4, X: 8, Y: 7}

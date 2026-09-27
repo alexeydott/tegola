@@ -416,6 +416,11 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 				return
+			case errors.Is(err, errMetatileRegenUnavailable):
+				// the regeneration scheduler is saturated or shutting down:
+				// shed the request instead of queueing unbounded work
+				log.Debugf("tile operation %v denied for map %v: %v", operation[0], req.mapName, err)
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			default:
 				log.Error(err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -563,9 +568,72 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 		return fmt.Errorf("parse tile parameters: %w", err)
 	}
 
-	ctx := context.WithValue(r.Context(), observability.ObserveCtxKey(observability.ObserveVarMapName), m.Name)
+	// hand the full metatile regeneration to the bounded background
+	// scheduler: the request must not pay for up to metatileSize² renders
+	// and cache writes while holding the metatile mutation lock. Concurrent
+	// requests for the same metatile join the regeneration that is already
+	// scheduled instead of starting another one.
+	_, err = metatileRegens.enqueue(metatileKey, func(ctx context.Context) error {
+		ctx = context.WithValue(ctx, observability.ObserveCtxKey(observability.ObserveVarMapName), m.Name)
+		return regenerateMetatile(ctx, req, m, params, tile, cacher)
+	})
+	if err != nil {
+		return err
+	}
 
-	state, unlock, err := tileUpdateLocks.acquire(ctx, metatileKey)
+	if operation == tileOperationUpdate {
+		w.Header().Del("Content-Encoding")
+		w.Header().Del("Content-Length")
+		w.WriteHeader(http.StatusAccepted)
+		// body-capable responses must carry a complete gzip stream through
+		// the gzip middleware (see GZipHandler and the ?tile=status handler),
+		// so answer with an empty stream: gzip clients decode an empty body
+		// and other clients receive an empty, correctly sized body.
+		gzipWriter := gzip.NewWriter(w)
+		if err := gzipWriter.Close(); err != nil {
+			return fmt.Errorf("finish accepted response: %w", err)
+		}
+		return nil
+	}
+
+	// getupdated answers with the requested tile from a minimal single-tile
+	// render — the same render an ordinary cache miss performs, shared with
+	// any concurrent request for this tile — while the full metatile
+	// regeneration proceeds in the background. Rendering through
+	// renderTileForCache keeps the cache write metatile-lock safe.
+	res, shared := tileRenders.do(r.Context(), key.String(), func(renderCtx context.Context) *tileRenderResult {
+		return renderTileForCache(renderCtx, r, http.HandlerFunc(req.ServeHTTP), cacher, &key, true)
+	})
+	if err := r.Context().Err(); err != nil {
+		// our request ended while the render was in flight: the client is
+		// gone and there is nothing left to deliver
+		return err
+	}
+	if res.canceled {
+		// the render was abandoned (bounded render timeout) while we were
+		// still live: never write it as an empty 200
+		log.Warnf("tile operation %v: shared render for %v did not complete", operation, r.URL.Path)
+		w.WriteHeader(http.StatusGatewayTimeout)
+		return nil
+	}
+	if shared {
+		// we waited on another request's render: report SHARED instead of
+		// the captured MISS so cache instrumentation can tell the two apart
+		res = res.waiterView()
+	}
+	res.writeTo(w)
+	return nil
+}
+
+// regenerateMetatile renders every in-bounds tile of the metatile containing
+// tile and writes each result to the cache. It runs on the background
+// scheduler (see metatileRegenScheduler) while ?tile=update and
+// ?tile=getupdated requests return immediately. The render loop keeps the
+// historical synchronous semantics: a failure on the requested tile aborts
+// the pass, other out-of-bounds tiles are skipped, and any encode or cache
+// error aborts the pass so a later request retries it.
+func regenerateMetatile(ctx context.Context, req HandleMapLayerZXY, m atlas.Map, params provider.Params, tile slippy.Tile, cacher cache.Interface) error {
+	state, unlock, err := tileUpdateLocks.acquire(ctx, req.metatileLockKey(tile))
 	if err != nil {
 		return err
 	}
@@ -579,7 +647,6 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 	endX := minUint(baseX+metatileSize-1, maxXY)
 	endY := minUint(baseY+metatileSize-1, maxXY)
 
-	var updated []byte
 	for y := baseY; y <= endY; y++ {
 		for x := baseX; x <= endX; x++ {
 			if err := ctx.Err(); err != nil {
@@ -615,26 +682,10 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 			if err := cacher.Set(ctx, &currentKey, encoded); err != nil {
 				return fmt.Errorf("cache tile %d/%d/%d: %w", current.Z, current.X, current.Y, err)
 			}
-
-			if current == tile {
-				updated = encoded
-			}
 		}
 	}
 
-	if operation == tileOperationUpdate {
-		w.Header().Del("Content-Encoding")
-		w.Header().Del("Content-Length")
-		w.WriteHeader(http.StatusNoContent)
-		return nil
-	}
-
-	w.Header().Set("Content-Type", mvt.MimeType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(updated)))
-	w.Header().Set("Tegola-Cache", "MISS")
-	w.WriteHeader(http.StatusOK)
-	_, err = w.Write(updated)
-	return err
+	return nil
 }
 
 func (req HandleMapLayerZXY) tileCacheKey(tile slippy.Tile) cache.Key {

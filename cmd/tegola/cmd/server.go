@@ -34,6 +34,12 @@ var serverCmd = &cobra.Command{
 		gdcmd.New()
 		gdcmd.OnComplete(provider.Cleanup)
 		gdcmd.OnComplete(observability.Cleanup)
+		// completion runs in reverse registration order: in-flight metatile
+		// regeneration is canceled and drained after http.Server.Shutdown
+		// (registered later via shutdown(srv)) and before observability and
+		// provider cleanup, so no background render writes to a cache whose
+		// provider is being torn down behind it
+		gdcmd.OnComplete(server.ShutdownMetatileRegeneration)
 
 		// Resolve the listen port. An explicitly-passed --port flag always
 		// overrides the config value; when the flag is not set we fall back to the

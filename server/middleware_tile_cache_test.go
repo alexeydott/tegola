@@ -239,7 +239,7 @@ func TestTileOperationsRegenerateMetatile(t *testing.T) {
 	}
 
 	update := request(uri + "?tile=update")
-	if update.Code != http.StatusNoContent {
+	if update.Code != http.StatusAccepted {
 		t.Fatalf("update operation returned %d: %s", update.Code, update.Body.String())
 	}
 	if update.Body.Len() != 0 {
@@ -248,6 +248,9 @@ func TestTileOperationsRegenerateMetatile(t *testing.T) {
 	if update.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("update operation must not advertise content encoding: %q", update.Header().Get("Content-Encoding"))
 	}
+
+	// the metatile regeneration runs in the background after the 202
+	server.AwaitMetatileRegeneration()
 
 	for y := uint(0); y < 8; y++ {
 		for x := uint(0); x < 8; x++ {
@@ -276,6 +279,9 @@ func TestTileOperationsRegenerateMetatile(t *testing.T) {
 	if updated.Body.Len() == 0 {
 		t.Fatal("getupdated operation returned an empty tile")
 	}
+
+	// getupdated schedules a metatile regeneration in the background as well
+	server.AwaitMetatileRegeneration()
 
 	normal := request(uri)
 	if normal.Code != http.StatusOK || normal.Header().Get("Tegola-Cache") != "HIT" {
