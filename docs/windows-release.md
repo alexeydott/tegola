@@ -40,8 +40,11 @@ CGO/GeoPackage support, and a built viewer rather than `viewer not built`.
 Run the CGO-off/on test matrix and lint before publishing; distinguish gated
 database/cloud tests from actual live-service checks. The completion audit's
 verified scope and remaining limitations are listed in [UPSTREAM.md](../UPSTREAM.md).
-In particular, geographic PROJ definitions currently support WGS84 identity,
-and SQL token scanning assumes the documented default backend string modes.
+Geographic definitions support WGS84 identity and the Go fork's three- and
+seven-parameter datum transformations; see [the CRS contract](crs.md#geographic-proj-definitions)
+for the remaining grid, unit, axis and prime-meridian restrictions and the
+two-dimensional height convention. SQL token scanning assumes the documented
+default backend string modes.
 
 Commit messages in this fork must not contain `Co-authored-by` trailers.
 Fetch and reconcile `origin/master`, inspect the outgoing commits, and push

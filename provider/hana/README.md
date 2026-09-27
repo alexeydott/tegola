@@ -109,19 +109,22 @@ using the OGC standard rendering pixel of 0.28 mm:
   This is **projected map scale**, not geodesic ground scale; no local
   projection-distortion correction is applied. EPSG:3857 retains its
   previous SQL values byte for byte with the default tile size.
-- EPSG:4326 (including HANA's planar-equivalent 1000004326) uses degrees
+- EPSG:4326 (including HANA's planar-equivalent 1000004326) and supported
+  geographic `crs_defn` definitions use degrees
   for pixel dimensions. Meters per longitude degree are approximated by
   `6378137 * pi / 180 * cos(latitude)`, with latitude at the tile center.
   This spherical parallel-arc approximation uses the WGS84 semi-major
-  radius; it is not an ellipsoidal geodesic and is only a representative
+  radius even for other supported geographic datums; it is not an
+  ellipsoidal geodesic and is only a representative
   horizontal scale for a large tile. Latitude is obtained by transforming
   the original tile center, not averaging the transformed north/south edges.
 - An unknown projection/unit definition or an invalid/non-finite extent
   causes a clear layer-scoped query error **only when a scale token occurs
   in executable SQL**. Database-only SRS definitions must also be known to
-  Tegola to use these tokens. Other geographic CRSs, including generic
-  `+proj=longlat` definitions, remain subject to the existing projection
-  engine's registration restrictions; use `srid = 4326` for WGS84 degrees.
+  Tegola to use these tokens. Geographic `+proj=longlat` definitions support
+  WGS84 identity and the Go fork's three-/seven-parameter datum transformations;
+  see the [CRS contract](../../docs/crs.md#geographic-proj-definitions) for
+  supported parameters and the remaining registration restrictions.
 
 The normal tile extent is EPSG:3857. Custom tiles already in the layer CRS
 are also supported; other tile-to-layer CRS combinations return an explicit

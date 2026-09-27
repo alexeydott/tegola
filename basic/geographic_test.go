@@ -69,7 +69,8 @@ func TestRegisterUnsupportedGeographicDefinition(t *testing.T) {
 	for _, defn := range []string{
 		"+proj=longlat +datum=NAD27",
 		"+proj=longlat +datum=WGS84 +units=m",
-		"+proj=longlat +datum=WGS84 +towgs84=1,0,0",
+		"+proj=longlat +datum=WGS84 +towgs84=1,0",
+		"+proj=longlat +datum=WGS84 +towgs84=NaN,0,0",
 		"+proj=longlat +datum=WGS84 +pm=paris",
 	} {
 		if _, err := RegisterProj4Defn(defn); err == nil {
@@ -78,5 +79,50 @@ func TestRegisterUnsupportedGeographicDefinition(t *testing.T) {
 		if err := RegisterProj4SRID(910043, defn); err == nil {
 			t.Errorf("accepted unsupported explicit geographic definition %q", defn)
 		}
+	}
+}
+
+// These independent PROJ 9.5.1 reference values cover the complete crs_defn
+// registration -> geographic datum conversion -> Web Mercator route, and its
+// reverse. The reverse input represents WGS84 (37.6, 55.7), not the shifted point.
+func TestRegisterGeographicDatumDefinition(t *testing.T) {
+	for _, tc := range []struct {
+		name, defn                   string
+		webMercator, fromWebMercator geom.Point
+	}{
+		{"three_parameters", "+proj=longlat +ellps=bessel +towgs84=41,-107.6,-93 +no_defs",
+			geom.Point{4185417.6034322004, 7498990.087942868}, geom.Point{37.60175371636222, 55.69966788487392}},
+		{"seven_parameters", "+proj=longlat +ellps=krass +towgs84=23.92,-141.27,-80.9,0,-0.35,-0.82,-0.12 +no_defs",
+			geom.Point{4185373.1079426813, 7498961.8039867915}, geom.Point{37.602153621265074, 55.699811015165196}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srid, err := RegisterProj4Defn(tc.defn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !IsGeographicSRID(srid) {
+				t.Fatal("registered CRS is not geographic")
+			}
+			projected, err := ToWebMercator(srid, geom.Point{37.6, 55.7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := projected.(geom.Point)
+			for i, want := range tc.webMercator {
+				if math.IsNaN(got[i]) || math.Abs(got[i]-want) > 0.001 {
+					t.Errorf("Web Mercator coordinate %d = %.9f, PROJ reference %.9f", i, got[i], want)
+				}
+			}
+			unprojected, err := FromWebMercator(srid, geom.Point{4185612.8538270863, 7498924.477653493})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = unprojected.(geom.Point)
+			for i, want := range tc.fromWebMercator {
+				if math.IsNaN(got[i]) || math.Abs(got[i]-want) > 2e-9 {
+					t.Errorf("geographic coordinate %d = %.12f, PROJ reference %.12f", i, got[i], want)
+				}
+			}
+		})
 	}
 }

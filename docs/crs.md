@@ -114,9 +114,12 @@ The `!BBOX!` token is always evaluated **in the layer's source CRS**:
 tile extent transformed into the resolved layer CRS, divided by the tile's
 pixel dimensions. `!SCALE_DENOMINATOR!` converts the horizontal pixel width
 to meters and divides by the OGC standard pixel size of 0.00028 m. Projected
-CRSs use their PROJ.4 linear units; EPSG:4326 and supported WGS84 `longlat` definitions use a spherical,
-latitude-adjusted meters-per-longitude-degree approximation at the tile
-center. Unknown CRS/unit definitions cause a query error for executable
+CRSs use their PROJ.4 linear units; EPSG:4326 and supported `longlat`
+definitions use a spherical, latitude-adjusted meters-per-longitude-degree
+approximation at the tile center. This scale approximation retains the WGS84
+semi-major radius of 6378137 m even for other supported geographic datums;
+it does not calculate ellipsoidal ground scale. Unknown CRS/unit definitions
+cause a query error for executable
 scale tokens. Default EPSG:3857 SQL values are unchanged. See the
 [HANA scale token contract](../provider/hana/README.md#scale-tokens) for tile
 sizes, projection-scale interpretation, and geographic limitations.
@@ -137,10 +140,34 @@ the `latlong`, `lonlat` and `latlon` aliases. Coordinates remain longitude,
 latitude in degrees; registration allocates a synthetic SRID as for projected
 definitions. Scale tokens recognize these synthetic geographic SRIDs.
 
-Support is deliberately limited to WGS84, Greenwich and east/north axes.
-Nonzero datum shifts, other datums, angular-unit conversions, grids and axis
-changes are rejected at registration. They require additional transformation
-support and are not treated as WGS84 identity conversions.
+The Go `proj` fork applies its existing `datumToWGS84` / `datumFromWGS84`
+transformations to geographic coordinates as well as projected coordinates.
+Source longitude/latitude is converted through geocentric coordinates using
+the source ellipsoid and a three- or seven-parameter `+towgs84` transformation;
+the reverse path converts WGS84 back to the source datum. For example:
+
+```toml
+crs_defn = "+proj=longlat +ellps=bessel +towgs84=41,-107.6,-93,0,0,0,0 +no_defs"
+```
+
+Supported definitions can name a datum in the Go fork's datum table with a
+built-in three- or seven-parameter transformation, or specify an ellipsoid
+and `+towgs84` explicitly. Names accepted by the full PROJ library are not
+necessarily present in this table. Custom ellipsoids may use `+a` with the
+supported `+b`, `+rf`, `+f`, `+es` or `+e` parameters. An explicit WGS84 ellipsoid needs no datum
+shift. A named datum cannot be combined with a conflicting `+ellps` or
+numeric ellipsoid overrides; define the ellipsoid and `+towgs84` without
+`+datum` for such custom transformations. Unknown datums and other ellipsoids
+without a defined transformation are rejected rather than treated as WGS84.
+
+The coordinate interface is two-dimensional: each direction assumes zero
+input ellipsoidal height and discards the transformed height. Consequently,
+forward/inverse round trips with a datum shift can have small differences.
+Coordinates must remain longitude/latitude in degrees, with Greenwich as
+the prime meridian and east/north axes (`enu`). Grid transformations, other
+prime meridians, angular-unit conversions and axis changes remain unsupported
+by this Go fork and are rejected at registration. These are implementation
+limits of the fork, not limitations of `crs_defn` or the PROJ library generally.
 
 ## Provider support matrix
 

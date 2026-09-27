@@ -10,7 +10,7 @@ import (
 	"github.com/go-spatial/tegola"
 )
 
-// IsGeographicSRID reports whether coordinates are WGS84 longitude/latitude
+// IsGeographicSRID reports whether coordinates are longitude/latitude
 // in degrees, either EPSG:4326 or a supported registered geographic definition.
 func IsGeographicSRID(srid uint64) bool {
 	if srid == tegola.WGS84 {

@@ -227,8 +227,9 @@ Pixel dimensions use the unbuffered tile extent transformed to the layer CRS,
 with 256×256 pixels by default. Custom tiles may expose `PixelSize()`.
 The scale denominator converts horizontal pixel size to meters and divides by
 the OGC 0.00028 m rendering pixel. Projected CRSs use their registered linear
-units (including feet); supported WGS84 geographic CRSs use a spherical
-parallel-arc approximation at the tile center latitude. Unsupported CRS/units
+units (including feet); supported geographic CRSs use a spherical parallel-arc
+approximation at the tile center latitude, retaining the WGS84 semi-major
+radius even for other datums (not ellipsoidal ground scale). Unsupported CRS/units
 produce an error when a scale token is executed. EPSG:3857 defaults are unchanged;
 non-WebMercator SQL thresholds must use the new CRS-aware values.
 

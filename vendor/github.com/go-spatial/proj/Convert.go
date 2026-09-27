@@ -35,7 +35,7 @@ const (
 
 // Convert performs a conversion from a 4326 coordinate system (lon/lat
 // degrees, 2D) to the given system (projected units, or degrees for supported
-// WGS84 geographic definitions).
+// geographic definitions).
 //
 // The input is assumed to be an array of lon/lat points, e.g. [lon0, lat0,
 // lon1, lat1, lon2, lat2, ...]. The length of the array must, therefore, be
@@ -55,8 +55,8 @@ func Convert(dest EPSGCode, input []float64) ([]float64, error) {
 	return conv.convert(input)
 }
 
-// Inverse converts from a projected X/Y of a coordinate system to
-// 4326 (lat/lon, 2D).
+// Inverse converts projected X/Y or geographic longitude/latitude in degrees
+// to WGS84 longitude/latitude in degrees (2D).
 //
 // The input is assumed to be an array of x/y points, e.g. [x0, y0,
 // x1, y1, x2, y2, ...]. The length of the array must, therefore, be
@@ -175,7 +175,11 @@ func newConversion(dest EPSGCode) (*conversion, error) {
 		return nil, err
 	}
 	if geographic {
-		conv = &conversion{dest: dest, projString: ps, geographic: true}
+		sys, err := geographicSystem(ps)
+		if err != nil {
+			return nil, err
+		}
+		conv = &conversion{dest: dest, projString: ps, geographic: true, system: sys}
 		conversions[dest] = conv
 		return conv, nil
 	}
@@ -206,7 +210,7 @@ func newConversion(dest EPSGCode) (*conversion, error) {
 // convert performs the projection on the given input points
 func (conv *conversion) convert(input []float64) ([]float64, error) {
 	if conv != nil && conv.geographic {
-		return copyGeographicCoordinates(input)
+		return conv.geographicCoordinates(input, false)
 	}
 
 	if conv == nil || conv.converter == nil {
@@ -240,7 +244,7 @@ func (conv *conversion) convert(input []float64) ([]float64, error) {
 
 func (conv *conversion) inverse(input []float64) ([]float64, error) {
 	if conv != nil && conv.geographic {
-		return copyGeographicCoordinates(input)
+		return conv.geographicCoordinates(input, true)
 	}
 	if conv == nil || conv.converter == nil {
 		return nil, fmt.Errorf("conversion not initialized")

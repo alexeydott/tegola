@@ -231,6 +231,20 @@ func (sys *System) initialize() error {
 	return sys.processMisc()
 }
 
+// NewGeographicSystem initializes datum and ellipsoid parameters without a map
+// projection. The caller must validate geographic axes, units and modifiers.
+func NewGeographicSystem(ps *support.ProjString) (*System, error) {
+	sys := &System{ProjString: ps, NeedEllps: true, IsLatLong: true,
+		Left: IOUnitsAngular, Right: IOUnitsAngular, Axis: "enu"}
+	if err := sys.processDatum(); err != nil {
+		return nil, err
+	}
+	if err := sys.processEllipsoid(); err != nil {
+		return nil, err
+	}
+	return sys, nil
+}
+
 func (sys *System) processDatum() error {
 
 	sys.DatumType = DatumTypeUnknown

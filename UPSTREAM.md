@@ -287,13 +287,24 @@ not assumed to remain open from the earlier session notes.
    WGS84 degrees, with the OGC 0.00028 m pixel. HANA planar aliases remain
    supported. Unsupported CRS/unit data errors only when executable scale
    tokens require it; WebMercator defaults remain compatible.
-4. **Closed for WGS84 geographic definitions.** The projection fork and its
-   vendored copy support `longlat` aliases with explicit WGS84 datum or
-   ellipsoid; registration, synthetic SRIDs, forward/inverse reprojection,
-   replacement and geographic scale math are tested. **Remaining limitation:**
-   other geographic datums, nonzero datum shifts, grids, angular-unit and axis
-   conversions are unsupported and rejected explicitly, not approximated by
-   WGS84 identity.
+4. **Geographic datum support completed in the Go fork.** The projection fork
+   and its vendored copy route `longlat` aliases through the existing
+   `datumToWGS84` / `datumFromWGS84` math. Three-/seven-parameter datums in the
+   fork's datum table and ellipsoid definitions with explicit `+towgs84`
+   use the same datum transformations as projected CRSs; WGS84 identity remains supported.
+   Custom ellipsoids can use `+a` with supported `+b`, `+rf`, `+f`, `+es` or
+   `+e` parameters, without a conflicting named datum. Unknown datums,
+   conflicting datum/ellipsoid combinations and non-WGS84 ellipsoids without
+   a defined transformation fail registration. **Remaining fork limitations:** grids,
+   non-Greenwich prime meridians, angular-unit and axis conversions. These
+   are not general limitations of `crs_defn` or PROJ. The two-dimensional API
+   assumes zero input height in each direction, so shifted round trips can
+   differ slightly. Scale tokens retain the documented WGS84-radius spherical
+   approximation even for other supported geographic datums. See
+   [the CRS contract](docs/crs.md#geographic-proj-definitions).
+   Regression tests use independent PROJ 9.5.1 references for three-/seven-parameter
+   shifts, a custom ellipsoid, zero shift between different ellipsoids, both
+   poles, GGRS87, and synthetic `crs_defn` conversion through WebMercator.
 5. **Already fixed; stale finding corrected.** File-cache writes already used
    unique `os.CreateTemp` names in `671a7ea1`, with Windows retry adjustments
    in `769463ea`. The concurrent same-key write and Set/Purge regression tests
