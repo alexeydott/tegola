@@ -41,9 +41,17 @@ under `third_party/`, then run `go mod vendor`.
 - `encoding/mvt/decode.go`: `github.com/arolek/p` usage dropped in favour of
   a local variable (dependency hygiene, no behaviour change).
 
-The `go` directive of the fork go.mod files (`go 1.21`) must stay at or below
-the main module's `go` directive. The `require` versions in the root
+The `go` directive of the fork go.mod files must stay at or below
+the main module's `go` directive. `geom` requires Go 1.23.4 (the minimum
+required by protobuf v1.36.12); `proj` requires Go 1.21. The `require` versions in the root
 `go.mod` still record the upstream baselines (`geom v0.1.0`, `proj v0.3.0`).
+
+Each nested module has its own dependency graph and checksums; the root's
+`go.sum` and `vendor/` do not satisfy a nested module's dependencies. After
+changing a nested module's requirements, run `go mod tidy` in that module
+and commit its `go.mod` and `go.sum`, then regenerate the root vendor tree.
+CI builds and tests the nested modules with `-mod=readonly` so missing
+requirements or checksums cannot be silently repaired.
 
 ## Consuming this fork as a Go module (external consumers)
 
