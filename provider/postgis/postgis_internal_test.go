@@ -3,7 +3,6 @@ package postgis
 import (
 	"bytes"
 	"context"
-	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +11,7 @@ import (
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/ttools"
 	"github.com/go-spatial/tegola/provider"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -54,23 +54,10 @@ type TCConfig struct {
 }
 
 func (cfg TCConfig) Config(mConfig map[string]any) dict.Dict {
-	var config map[string]any
 	if cfg.BaseConfig != nil {
 		mConfig = cfg.BaseConfig
 	}
-	config = make(map[string]any, len(mConfig))
-	maps.Copy(config, mConfig)
-
-	// set the config overrides
-	maps.Copy(config, cfg.ConfigOverride)
-
-	if len(cfg.LayerConfig) > 0 {
-		layerConfig, _ := config[ConfigKeyLayers].([]map[string]any)
-		layerConfig = append(layerConfig, cfg.LayerConfig...)
-		config[ConfigKeyLayers] = layerConfig
-	}
-
-	return dict.Dict(config)
+	return fixture.Config(mConfig, cfg.ConfigOverride, cfg.LayerConfig)
 }
 
 func TestMVTProviders(t *testing.T) {

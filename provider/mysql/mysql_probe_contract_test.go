@@ -1,31 +1,12 @@
 package mysql
 
 import (
-	"database/sql/driver"
 	"testing"
 
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 	"github.com/go-spatial/tegola/provider/test/mosfixture"
 )
-
-// probeFixture converts shared fixture rows to driver values for the stub
-// driver (driver.Value only allows int64, not int).
-func probeFixture(rows [][]interface{}) [][]driver.Value {
-	out := make([][]driver.Value, len(rows))
-	for i, row := range rows {
-		vals := make([]driver.Value, len(row))
-		for j, v := range row {
-			switch t := v.(type) {
-			case int:
-				vals[j] = int64(t)
-			default:
-				vals[j] = v
-			}
-		}
-		out[i] = vals
-	}
-	return out
-}
 
 // TestProbeMOSCustomSQLContract runs the shared bounds-contract fixture
 // through the real MySQL probe (real rows.Scan — audit A01) and asserts the
@@ -34,12 +15,12 @@ func probeFixture(rows [][]interface{}) [][]driver.Value {
 func TestProbeMOSCustomSQLContract(t *testing.T) {
 	probe := func(t *testing.T, columns []string, rows [][]interface{}, format string) ([]string, codec.SQLGeometryContract, *Layer) {
 		t.Helper()
-		db := openShowIndexStub(t, columns, probeFixture(rows))
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: fixture.DriverRows(rows)})
 		layer := &Layer{
-			name:         "probe_layer",
+			name:          "probe_layer",
 			geomFieldname: "geom",
-			bboxFields:   codec.DefaultBBoxFields(),
-			mosConfig:    mosfixture.Config(),
+			bboxFields:    codec.DefaultBBoxFields(),
+			mosConfig:     mosfixture.Config(),
 		}
 		cols, contract, err := probeMOSCustomSQLContract(db, layer, "SELECT * FROM probe_table", format, "mysql")
 		if err != nil {

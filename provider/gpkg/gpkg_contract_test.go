@@ -19,6 +19,7 @@ import (
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/gpkg"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 )
 
 const (
@@ -46,9 +47,9 @@ func contractConf(path string, layers ...map[string]interface{}) dict.Dict {
 // the decoded rows (1.0..3.0 at the paired default precision 2).
 func contractFeatures(t *testing.T, p provider.Tiler, name string) int {
 	t.Helper()
-	tile := MockTile{
-		srid:           3857,
-		bufferedExtent: geom.NewExtent([2]float64{-10, -10}, [2]float64{10, 10}),
+	tile := fixture.Tile{
+		SRID:           3857,
+		BufferedBounds: geom.NewExtent([2]float64{-10, -10}, [2]float64{10, 10}),
 	}
 	var count int
 	if err := p.TileFeatures(context.TODO(), name, &tile, nil, func(f *provider.Feature) error {

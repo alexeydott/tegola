@@ -6,115 +6,22 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"io"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 	"github.com/go-spatial/tegola/provider/test/mosfixture"
 )
 
-// contractStubDriver emulates probe query results: every query returns the
-// same column names and rows, so probeMOSCustomSQLContract can be exercised
-// against real sql.Rows without a live HANA server (audit A01). When
-// queryLog is non-nil every executed query text is appended to it (audit
-// R1).
-type contractStubDriver struct {
-	columns  []string
-	rows     [][]driver.Value
-	queryLog *[]string
-	// closes, when non-nil, is incremented by every driver rows Close
-	// (audit N10 close-tracking).
-	closes *int32
-	// ctxLog, when non-nil, records the context every query executes
-	// under (audit P5-16 probe-context deadlines).
-	ctxLog *[]context.Context
-	// typeNames, when set, backs ColumnTypeDatabaseTypeName; when absent
-	// the stub reports no database types (pre-N10 stub behavior).
-	typeNames []string
-}
-
-func (d *contractStubDriver) Open(string) (driver.Conn, error) {
-	return &contractStubConn{columns: d.columns, rows: d.rows, queryLog: d.queryLog, closes: d.closes, ctxLog: d.ctxLog, typeNames: d.typeNames}, nil
-}
-
-type contractStubConn struct {
-	columns   []string
-	rows      [][]driver.Value
-	queryLog  *[]string
-	closes    *int32
-	ctxLog    *[]context.Context
-	typeNames []string
-}
-
-func (c *contractStubConn) Prepare(string) (driver.Stmt, error) {
-	return nil, errors.New("not supported")
-}
-func (c *contractStubConn) Close() error              { return nil }
-func (c *contractStubConn) Begin() (driver.Tx, error) { return nil, errors.New("not supported") }
-func (c *contractStubConn) QueryContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
-	if c.queryLog != nil {
-		*c.queryLog = append(*c.queryLog, query)
-	}
-	if c.ctxLog != nil {
-		*c.ctxLog = append(*c.ctxLog, ctx)
-	}
-	return &contractStubRows{columns: c.columns, rows: c.rows, closes: c.closes, typeNames: c.typeNames}, nil
-}
-
-type contractStubRows struct {
-	columns   []string
-	rows      [][]driver.Value
-	next      int
-	closes    *int32
-	typeNames []string
-}
-
-func (r *contractStubRows) Columns() []string { return r.columns }
-func (r *contractStubRows) Close() error {
-	if r.closes != nil {
-		atomic.AddInt32(r.closes, 1)
-	}
-	return nil
-}
-
-// ColumnTypeDatabaseTypeName implements driver.RowsColumnTypeDatabaseTypeName
-// so field introspection (getLayerFields) sees usable column types. Only
-// configured stubs report types; unconfigured ones keep the historical
-// empty-type behavior the probe tests rely on.
-func (r *contractStubRows) ColumnTypeDatabaseTypeName(idx int) string {
-	if idx >= 0 && idx < len(r.typeNames) {
-		return r.typeNames[idx]
-	}
-	return ""
-}
-func (r *contractStubRows) Next(dest []driver.Value) error {
-	if r.next >= len(r.rows) {
-		return io.EOF
-	}
-	copy(dest, r.rows[r.next])
-	r.next++
-	return nil
-}
-
-var contractDriverSeq uint64
-
-// openContractStubLogged registers a fresh stub driver whose executed query
+// openContractStubLogged opens a fixture whose executed query
 // texts are appended to the returned log (audit R1).
 func openContractStubLogged(t *testing.T, columns []string, rows [][]driver.Value) (*sql.DB, *[]string) {
 	t.Helper()
 	queryLog := &[]string{}
-	driverName := "tegola_hana_contract_test_" + strconv.FormatUint(atomic.AddUint64(&contractDriverSeq, 1), 10)
-	sql.Register(driverName, &contractStubDriver{columns: columns, rows: rows, queryLog: queryLog})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows, QueryLog: queryLog})
 	return db, queryLog
 }
 
@@ -135,13 +42,7 @@ func openContractStubCounting(t *testing.T, columns []string, rows [][]driver.Va
 	for i := range typeNames {
 		typeNames[i] = "BLOB"
 	}
-	driverName := "tegola_hana_contract_test_" + strconv.FormatUint(atomic.AddUint64(&contractDriverSeq, 1), 10)
-	sql.Register(driverName, &contractStubDriver{columns: columns, rows: rows, closes: closes, typeNames: typeNames})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows, Closes: closes, TypeNames: typeNames})
 	return db, closes
 }
 
@@ -155,32 +56,8 @@ func openContractStubCtxs(t *testing.T, columns []string, rows [][]driver.Value)
 	for i := range typeNames {
 		typeNames[i] = "BLOB"
 	}
-	driverName := "tegola_hana_contract_test_" + strconv.FormatUint(atomic.AddUint64(&contractDriverSeq, 1), 10)
-	sql.Register(driverName, &contractStubDriver{columns: columns, rows: rows, ctxLog: ctxLog, typeNames: typeNames})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows, ContextLog: ctxLog, TypeNames: typeNames})
 	return db, ctxLog
-}
-
-// hanaProbeFixture converts shared fixture rows to driver values.
-func hanaProbeFixture(rows [][]interface{}) [][]driver.Value {
-	out := make([][]driver.Value, len(rows))
-	for i, row := range rows {
-		vals := make([]driver.Value, len(row))
-		for j, v := range row {
-			switch t := v.(type) {
-			case int:
-				vals[j] = int64(t)
-			default:
-				vals[j] = v
-			}
-		}
-		out[i] = vals
-	}
-	return out
 }
 
 // TestProbeMOSCustomSQLContract runs the shared bounds-contract fixture
@@ -190,7 +67,7 @@ func hanaProbeFixture(rows [][]interface{}) [][]driver.Value {
 func TestProbeMOSCustomSQLContract(t *testing.T) {
 	probe := func(t *testing.T, columns []string, rows [][]interface{}, format string) ([]string, codec.SQLGeometryContract, *Layer) {
 		t.Helper()
-		db := openContractStub(t, columns, hanaProbeFixture(rows))
+		db := openContractStub(t, columns, fixture.DriverRows(rows))
 		p := Provider{pool: &connectionPoolCollector{pool: db}}
 		layer := &Layer{
 			name:           "probe_layer",
@@ -308,7 +185,7 @@ func TestInspectionProbeSQLR1(t *testing.T) {
 	}
 
 	t.Run("MOS probe flow succeeds over fixture rows", func(t *testing.T) {
-		db, queryLog := openContractStubLogged(t, mosfixture.Columns(), hanaProbeFixture(mosfixture.ValidRows()))
+		db, queryLog := openContractStubLogged(t, mosfixture.Columns(), fixture.DriverRows(mosfixture.ValidRows()))
 		p := Provider{pool: &connectionPoolCollector{pool: db}}
 		l := newLayer()
 		if err := p.inspectMOSLayerGeomType(l); err != nil {
