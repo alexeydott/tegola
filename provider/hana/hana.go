@@ -1474,9 +1474,13 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 		l, ok := p.Layer(layer.Name)
 
 		if !ok {
-			// Should we error here, or have a flag so that we don't
-			// spam the user?
-			log.Warnf("provider layer not found %v", layer.Name)
+			// A missing configured layer FAILS the MVT query (part12 0.6):
+			// never continue with a zero-valued Layer and a logged warning
+			// (the removed upstream behaviour). This is a missing-LAYER
+			// error, deliberately distinct from the bounds-contract gate:
+			// custom SQL whose SELECT list omits the bounds columns still
+			// registers with a WARN (b5ad0979).
+			return nil, fmt.Errorf("MVT query: configured layer is not registered with the provider (a missing layer fails the query; missing bounds columns in custom SQL only warn at registration): %w", ErrLayerNotFound{LayerName: layer.Name})
 		}
 		if debugLayerSQL {
 			log.Debugf("SQL for Layer(%v):\n%v\n", l.Name(), l.sql)

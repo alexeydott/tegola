@@ -34,6 +34,20 @@ func captureWarns(t *testing.T, f func()) string {
 	return buf.String()
 }
 
+// captureDebug runs f with the default slog logger replaced by one writing
+// DEBUG+ records into a buffer and returns the captured text (WARN lines
+// are captured too). Used to assert the tile-query SQL shape via the
+// "qtext:" debug record.
+func captureDebug(t *testing.T, f func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+	f()
+	return buf.String()
+}
+
 // TestNullFeatureIDSkipped covers the gpkg part of audit P6-11: a NULL
 // feature id must not silently become ID 0 (duplicate IDs collapse in the
 // MVT). The documented strategy is to skip the row and warn, since
@@ -580,14 +594,17 @@ func TestRawLayerWithoutBoundsWarns(t *testing.T) {
 	})
 }
 
-// TestRTreeAndIDChecks covers audit P5-5: registration verifies the RTree
-// spatial index table exists (clear error naming the table and the
-// CreateRTreeIndex fix) and that the configured id column is the rowid
-// alias (INTEGER PRIMARY KEY) - warn otherwise. The tile query joins the
-// RTree on rowid, so the join stays deterministic even when the id column
-// is not the rowid alias. Pre-fix: no registration checks existed and the
-// join matched the configured id column against the RTree's rowid, silently
-// dropping rows when the two differ.
+// TestRTreeAndIDChecks covers audit P5-5 and the UPSTREAM debt 0.6b
+// closure: registration picks and caches the tile-query plan - the
+// rtree_<table>_<column> shadow table is checked once via sqlite_master,
+// and when it is missing the layer registers with a WARN and a fallback
+// plan (never a per-request probe, never a cryptic "no such table" per
+// tile request) - and the configured id column is expected to be the
+// rowid alias (INTEGER PRIMARY KEY), warn otherwise. The tile query joins
+// the RTree on rowid, so the join stays deterministic even when the id
+// column is not the rowid alias. Pre-fix: no registration checks existed
+// and the join matched the configured id column against the RTree's
+// rowid, silently dropping rows when the two differ.
 func TestRTreeAndIDChecks(t *testing.T) {
 	const metaDDL = `CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT, srs_id INTEGER, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE);
 CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT);
@@ -660,16 +677,29 @@ CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_
 		return ids
 	}
 
-	t.Run("missing rtree errors clearly", func(t *testing.T) {
+	t.Run("missing rtree warns and registers with fallback", func(t *testing.T) {
+		// DELIBERATE change (UPSTREAM debt 0.6b closure): the former
+		// registration ERROR is now a WARN + fallback plan. This fixture
+		// has no bounds columns either, so the layer degrades to the
+		// full-scan plan and still serves in-tile features through the
+		// mandatory in-memory exact filter.
 		path := mkNativeFixture(t, metaDDLNoRTree, "fid", []interface{}{1, 2})
-		_, err := gpkg.NewTileProvider(mkConf(path, "fid"), nil)
-		if err == nil {
-			t.Fatal("NewTileProvider errored = nil, want missing-RTree error")
-		}
-		for _, want := range []string{"rtree_t1_geom", "CreateRTreeIndex", "t1"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q missing %q", err.Error(), want)
+		var ids []uint64
+		out := captureWarns(t, func() {
+			p, err := gpkg.NewTileProvider(mkConf(path, "fid"), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v, want WARN + fallback registration", err)
 			}
+			t.Cleanup(gpkg.Cleanup)
+			ids = fetchIDs(t, p)
+		})
+		for _, want := range []string{"rtree_t1_geom", "CreateRTreeIndex", "t1", "full-table-scan"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("warning %q missing %q", out, want)
+			}
+		}
+		if want := []uint64{1, 2}; !reflect.DeepEqual(ids, want) {
+			t.Errorf("feature ids = %v, want %v (fallback plan must still serve in-tile features)", ids, want)
 		}
 	})
 
@@ -718,6 +748,181 @@ CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_
 		}
 		if want := []uint64{1, 2}; !reflect.DeepEqual(ids, want) {
 			t.Errorf("feature ids = %v, want %v", ids, want)
+		}
+	})
+}
+
+// TestTileQueryPlanSelection covers the UPSTREAM debt 0.6b closure: the
+// RTree existence check happens ONCE at layer registration (a sqlite_master
+// probe for the rtree_<table>_<column> shadow table), the result is cached
+// as the layer's tile-query plan, and every plan keeps exactly one SQL
+// round trip per tile request - never a per-request probe. planRTree keeps
+// the upstream RTree JOIN SQL; without the shadow table the layer registers
+// with a WARN and falls back to planBBox (bounds columns on the table
+// itself) or, when there are no bounds columns either, planScan (full scan
+// with the mandatory in-memory exact filter).
+func TestTileQueryPlanSelection(t *testing.T) {
+	const metaDDL = `CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT, srs_id INTEGER, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE);
+CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT);`
+
+	// row 3 is outside the (0,0)-(100,100) test tile: every plan must
+	// drop it and serve exactly [1,2].
+	pts := []geom.Point{{50, 50}, {60, 60}, {200, 200}}
+	mkFixture := func(t *testing.T, withRTree, withBounds bool) string {
+		t.Helper()
+		t1 := "CREATE TABLE t1 (fid INTEGER PRIMARY KEY, geom BLOB, note TEXT"
+		if withBounds {
+			t1 += ", minx DOUBLE, maxx DOUBLE, miny DOUBLE, maxy DOUBLE"
+		}
+		t1 += ")"
+		ddl := metaDDL
+		if withRTree {
+			ddl += "\nCREATE TABLE rtree_t1_geom (id INTEGER, minx DOUBLE, maxx DOUBLE, miny DOUBLE, maxy DOUBLE);"
+		}
+		fx := newRawFixture(t, []string{t1, ddl})
+		insertRows(t, fx.path, "gpkg_contents", []string{"table_name", "data_type", "srs_id"}, [][]interface{}{
+			{"t1", "features", 3857},
+		})
+		insertRows(t, fx.path, "gpkg_geometry_columns", []string{"table_name", "column_name", "geometry_type_name", "srs_id", "z", "m"}, [][]interface{}{
+			{"t1", "geom", "GEOMETRY", 3857, 0, 0},
+		})
+		cols := []string{"fid", "geom", "note"}
+		if withBounds {
+			cols = append(cols, "minx", "maxx", "miny", "maxy")
+		}
+		rows := make([][]interface{}, len(pts))
+		for i, pt := range pts {
+			row := []interface{}{i + 1, gpkgPointBlob(t, 3857, pt[0], pt[1]), "n"}
+			if withBounds {
+				row = append(row, pt[0], pt[0], pt[1], pt[1])
+			}
+			rows[i] = row
+		}
+		insertRows(t, fx.path, "t1", cols, rows)
+		if withRTree {
+			// RTree entries key on rowid and cover every row, like a
+			// real shadow table.
+			entries := make([][]interface{}, len(pts))
+			for i, pt := range pts {
+				entries[i] = []interface{}{i + 1, pt[0], pt[0], pt[1], pt[1]}
+			}
+			insertRows(t, fx.path, "rtree_t1_geom", []string{"id", "minx", "maxx", "miny", "maxy"}, entries)
+		}
+		return fx.path
+	}
+	conf := func(path string) dict.Dict {
+		return dict.Dict{
+			"filepath": path,
+			"layers": []map[string]interface{}{
+				{
+					"name":               "t1",
+					"tablename":          "t1",
+					"id_fieldname":       "fid",
+					"geometry_fieldname": "geom",
+					"fields":             []string{"note"},
+				},
+			},
+		}
+	}
+	fetchIDs := func(t *testing.T, p provider.Tiler) []uint64 {
+		t.Helper()
+		tile := MockTile{
+			srid:           3857,
+			bufferedExtent: geom.NewExtent([2]float64{0, 0}, [2]float64{100, 100}),
+		}
+		var ids []uint64
+		err := p.TileFeatures(context.TODO(), "t1", &tile, nil, func(f *provider.Feature) error {
+			ids = append(ids, f.ID)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("TileFeatures: %v", err)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		return ids
+	}
+	run := func(t *testing.T, path string) ([]uint64, string) {
+		t.Helper()
+		var ids []uint64
+		out := captureDebug(t, func() {
+			p, err := gpkg.NewTileProvider(conf(path), nil)
+			if err != nil {
+				t.Fatalf("NewTileProvider errored = %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			ids = fetchIDs(t, p)
+		})
+		return ids, out
+	}
+	// qtextLine pins the "exactly one SQL round trip per tile request"
+	// contract and returns the tile-query SQL line (the shape the plan
+	// controls); warn lines may legitimately mention bounds column names.
+	qtextLine := func(t *testing.T, out string) string {
+		t.Helper()
+		n := 0
+		var line string
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(l, "qtext:") {
+				n++
+				line = l
+			}
+		}
+		if n != 1 {
+			t.Errorf("tile request logged %d SQL round trips (qtext lines), want exactly 1", n)
+		}
+		return line
+	}
+	wantIDs := []uint64{1, 2}
+
+	t.Run("rtree shadow table present uses the upstream join plan", func(t *testing.T) {
+		ids, out := run(t, mkFixture(t, true, false))
+		q := qtextLine(t, out)
+		if !strings.Contains(q, "JOIN") || !strings.Contains(q, "rtree_t1_geom") || !strings.Contains(q, "si ON l.rowid = si.id") {
+			t.Errorf("planRTree query must keep the upstream RTree JOIN, got: %s", q)
+		}
+		if strings.Contains(out, "CreateRTreeIndex") {
+			t.Errorf("rtree present, expected no fallback warning, got: %s", out)
+		}
+		if !reflect.DeepEqual(ids, wantIDs) {
+			t.Errorf("feature ids = %v, want %v", ids, wantIDs)
+		}
+	})
+
+	t.Run("missing rtree with bounds columns falls back to plain-bbox plan", func(t *testing.T) {
+		ids, out := run(t, mkFixture(t, false, true))
+		for _, want := range []string{"rtree_t1_geom", "CreateRTreeIndex", "plain-bbox"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("fallback warning missing %q, got: %s", want, out)
+			}
+		}
+		q := qtextLine(t, out)
+		if strings.Contains(q, "JOIN") {
+			t.Errorf("planBBox query must not join the rtree shadow table, got: %s", q)
+		}
+		if !strings.Contains(q, "minx") || !strings.Contains(q, "maxy") {
+			t.Errorf("planBBox query must filter on the table's bounds columns, got: %s", q)
+		}
+		if !reflect.DeepEqual(ids, wantIDs) {
+			t.Errorf("feature ids = %v, want %v (bbox predicate must drop out-of-tile rows)", ids, wantIDs)
+		}
+	})
+
+	t.Run("missing rtree and bounds columns falls back to full-scan plan", func(t *testing.T) {
+		ids, out := run(t, mkFixture(t, false, false))
+		for _, want := range []string{"rtree_t1_geom", "CreateRTreeIndex", "full-table-scan"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("fallback warning missing %q, got: %s", want, out)
+			}
+		}
+		q := qtextLine(t, out)
+		if strings.Contains(q, "JOIN") {
+			t.Errorf("planScan query must not join the rtree shadow table, got: %s", q)
+		}
+		if strings.Contains(q, "minx") || strings.Contains(q, "maxy") {
+			t.Errorf("planScan query must carry no bounds predicate (the in-memory filter does it), got: %s", q)
+		}
+		if !reflect.DeepEqual(ids, wantIDs) {
+			t.Errorf("feature ids = %v, want %v (in-memory filter must drop out-of-tile rows)", ids, wantIDs)
 		}
 	})
 }

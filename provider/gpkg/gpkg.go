@@ -266,7 +266,10 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			}
 			qtext = fmt.Sprintf("%v FROM %v l WHERE %v", selectClause, quoteIdent(pLayer.tablename), where)
 		} else {
-			// If layer was specified via "tablename" in config, construct query.
+			// If layer was specified via "tablename" in config, construct
+			// query. The spatial pre-filter plan was detected and cached at
+			// registration (UPSTREAM debt 0.6b): exactly one SQL round trip
+			// per tile request, never a per-request existence probe.
 			rtreeTablename := fmt.Sprintf("rtree_%v_%v", pLayer.tablename, pLayer.geomFieldname)
 
 			selectClause := fmt.Sprintf("SELECT l.%v, l.%v", quoteIdent(pLayer.idFieldname), quoteIdent(pLayer.geomFieldname))
@@ -275,20 +278,42 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 				selectClause += fmt.Sprintf(", l.%v", quoteIdent(tf))
 			}
 
-			// l - layer table, si - spatial index. The RTree's id is the
-			// table rowid (audit P5-5): join on l.rowid directly so the
-			// join is deterministic regardless of the configured id
-			// column (which only feeds feature IDs and is verified at
-			// registration). ORDER BY keeps row order deterministic so
-			// concurrent requests stream identical rows (stable MVT
-			// output); rowid breaks ties for non-unique id columns.
-			qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.rowid = si.id WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v, l.rowid", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
+			switch pLayer.tileQueryPlan {
+			case planBBox:
+				// No RTree shadow table: filter on the table's bounds
+				// columns instead. The !BBOX! expansion names the bounds
+				// columns unqualified, resolving against the single table.
+				qtext = fmt.Sprintf("%v FROM %v l WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v, l.rowid", selectClause, quoteIdent(pLayer.tablename), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
 
-			// bounds predicate build errors are fail-closed (A12): surface
-			// them instead of silently running unfiltered SQL.
-			qtext, err = replaceTokens(qtext, pLayer, tile, tileBBox)
-			if err != nil {
-				return err
+				// bounds predicate build errors are fail-closed (A12): surface
+				// them instead of silently running unfiltered SQL.
+				qtext, err = replaceTokens(qtext, pLayer, tile, tileBBox)
+				if err != nil {
+					return err
+				}
+			case planScan:
+				// Neither RTree nor bounds columns: scan the table with no
+				// spatial pre-filter; the mandatory in-memory exact filter
+				// below is the only one. No !BBOX! token here, so
+				// replaceTokens (whose bounds predicate build is lazy) is
+				// not needed - matching the raw-format branch.
+				qtext = fmt.Sprintf("%v FROM %v l WHERE l.%v IS NOT NULL ORDER BY l.%v, l.rowid", selectClause, quoteIdent(pLayer.tablename), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
+			default: // planRTree
+				// l - layer table, si - spatial index. The RTree's id is the
+				// table rowid (audit P5-5): join on l.rowid directly so the
+				// join is deterministic regardless of the configured id
+				// column (which only feeds feature IDs and is verified at
+				// registration). ORDER BY keeps row order deterministic so
+				// concurrent requests stream identical rows (stable MVT
+				// output); rowid breaks ties for non-unique id columns.
+				qtext = fmt.Sprintf("%v FROM %v l JOIN %v si ON l.rowid = si.id WHERE l.%v IS NOT NULL AND !BBOX! ORDER BY l.%v, l.rowid", selectClause, quoteIdent(pLayer.tablename), quoteIdent(rtreeTablename), quoteIdent(pLayer.geomFieldname), quoteIdent(pLayer.idFieldname))
+
+				// bounds predicate build errors are fail-closed (A12): surface
+				// them instead of silently running unfiltered SQL.
+				qtext, err = replaceTokens(qtext, pLayer, tile, tileBBox)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	} else {
@@ -470,8 +495,9 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		}
 
 		// Exact in-memory filter. Mandatory for wkb/wkt/mos formats whose
-		// queries cannot use the RTree join; harmless for native GPKG
-		// geometry that was already filtered via !BBOX!.
+		// queries cannot use the RTree join and for planScan native layers
+		// (no spatial pre-filter in SQL at all); harmless for the planRTree
+		// and planBBox native plans that already filtered via !BBOX!.
 		if !codec.GeometryIntersectsExtent(feature.Geometry, tileBBox) {
 			continue
 		}

@@ -54,7 +54,32 @@ type Layer struct {
 	// crsExplicit records whether srid/crs_defn was set explicitly at
 	// provider or layer level, suppressing source-metadata CRS inference.
 	crsExplicit bool
+	// tileQueryPlan caches the registration-time spatial pre-filter plan
+	// for the tile query (UPSTREAM debt 0.6b): planRTree when the
+	// rtree_<table>_<geom> shadow table exists (checked via sqlite_master
+	// once per layer at registration, never per request), planBBox when the
+	// table carries bounds columns, planScan otherwise.
+	tileQueryPlan tileQueryPlan
 }
+
+// tileQueryPlan selects the spatial pre-filter baked into the tile-query
+// SQL of a native (GeoPackage geometry) tablename layer. The plan is
+// chosen and cached at layer registration (UPSTREAM debt 0.6b) so every
+// tile request keeps exactly one SQL round trip and never probes per tile.
+type tileQueryPlan int
+
+const (
+	// planRTree is the upstream plan: JOIN the rtree_<table>_<column>
+	// shadow table and filter on its bounds via !BBOX!.
+	planRTree tileQueryPlan = iota
+	// planBBox filters on bounds columns of the table itself (the resolved
+	// bbox_*_fieldname names or the legacy minx/maxx/miny/maxy) via !BBOX!.
+	planBBox
+	// planScan has no spatial pre-filter in SQL: the tile query scans the
+	// table and the mandatory in-memory exact filter drops out-of-tile
+	// features.
+	planScan
+)
 
 func (l Layer) Name() string            { return l.name }
 func (l Layer) GeomType() geom.Geometry { return l.geomType }

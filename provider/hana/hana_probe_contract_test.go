@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/test/mosfixture"
 )
@@ -340,5 +341,56 @@ func TestInspectionProbeSQLR1(t *testing.T) {
 			t.Fatalf("executed %d queries, expected exactly 1: %v", len(*queryLog), *queryLog)
 		}
 		assertProbeSQL(t, (*queryLog)[0])
+	})
+}
+
+// TestMVTForLayersMissingLayerVsMissingBoundsContract pins the deliberate
+// part12 0.6 behaviour change and keeps it separate from the bounds-contract
+// gate: a MISSING LAYER now fails the MVT query instead of logging a warning
+// and continuing with a zero-valued Layer (removed upstream behaviour), while
+// custom SQL whose SELECT list omits the bounds columns must STILL register
+// with a WARN only (b5ad0979) - the bounds gate never becomes fatal because
+// of this fix.
+func TestMVTForLayersMissingLayerVsMissingBoundsContract(t *testing.T) {
+	t.Run("missing layer fails the query (part12 0.6)", func(t *testing.T) {
+		// The nil pool proves the failure happens before any SQL runs: a
+		// zero-valued Layer must never reach query construction.
+		p := Provider{layers: map[string]Layer{}}
+		_, err := p.MVTForLayers(context.Background(), nil, nil, []provider.Layer{{Name: "ghost"}})
+		if err == nil {
+			t.Fatal("MVTForLayers with an unregistered layer must fail (part12 0.6); warn-and-continue with a zero Layer is the removed upstream behaviour")
+		}
+		var lnf ErrLayerNotFound
+		if !errors.As(err, &lnf) {
+			t.Fatalf("missing layer must surface ErrLayerNotFound, got %T: %v", err, err)
+		}
+		if lnf.LayerName != "ghost" {
+			t.Fatalf("ErrLayerNotFound.LayerName = %q, want %q", lnf.LayerName, "ghost")
+		}
+		// The message must name the layer and keep the missing-layer vs
+		// missing-bounds distinction explicit.
+		for _, want := range []string{"ghost", "missing layer fails the query"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error must contain %q, got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("missing bounds columns in custom SQL stay warn-only at registration (b5ad0979)", func(t *testing.T) {
+		// Contrast half of the contract: custom SQL without bounds columns
+		// in its result set registers with a WARN. The 0.6 fix is ONLY
+		// about a missing layer; this gate must not start failing.
+		contract := codec.SQLGeometryContract{GeometryField: "geom"}
+		configured := codec.DefaultBBoxFields()
+		resolved, boundsInResult, err := codec.ResolveBoundsSQLContract("l", "SELECT id, geom FROM t WHERE !BBOX!", "geom", contract, configured)
+		if err != nil {
+			t.Fatalf("missing bounds columns in the custom SQL result must stay warn-only at registration (b5ad0979), got error: %v", err)
+		}
+		if boundsInResult {
+			t.Fatal("bounds absent from the result columns must report boundsInResult=false (warn + register)")
+		}
+		if resolved != configured {
+			t.Fatalf("fallback must keep the configured bounds chain, got %v want %v", resolved, configured)
+		}
 	})
 }
