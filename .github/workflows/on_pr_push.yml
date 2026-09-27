@@ -165,6 +165,9 @@ jobs:
         popd
         git diff --exit-code -- third_party/
 
+    - name: Verify replacement inventory and external consumer
+      run: go run -mod=vendor ./ci/check-dependencies
+
   docker-build:
     name: Docker image build
     runs-on: ubuntu-22.04

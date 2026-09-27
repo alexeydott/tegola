@@ -4,7 +4,8 @@ The upstream modules `github.com/go-spatial/proj` and
 `github.com/go-spatial/geom` carry fork-specific fixes. The fixes used to live
 only as edits inside `vendor/`, which broke `-mod=mod` builds and any consumer
 of the tegola module. They now live here as real modules wired in through
-`replace` directives in the root `go.mod`:
+`replace` directives in the root `go.mod`. This fixes builds from a checkout,
+not automatic downstream dependency resolution:
 
 ```
 github.com/go-spatial/geom => ./third_party/go-spatial/geom
@@ -55,36 +56,97 @@ requirements or checksums cannot be silently repaired.
 
 ## Consuming this fork as a Go module (external consumers)
 
+### Inventory and remaining limitation
+
+| Main module | Local replacements |
+| --- | --- |
+| Root `github.com/go-spatial/tegola` | `geom` and `proj`, at the paths above |
+| `third_party/go-spatial/geom` | None; standalone builds use upstream `proj v0.3.0` |
+| `third_party/go-spatial/proj` | None |
+
 Go only honours `replace` directives from the **main** module of a build.
-A consumer that imports this fork as a dependency does **not** inherit the
-filesystem `replace` directives above, so it would build against the
-*unpatched* upstream `geom`/`proj` modules and silently lose both the
-`+towgs84` datum-shift reprojection fix (proj) and the MVT
-degenerate-geometry guards (geom).
+A downstream consumer inherits neither these replacements nor this repository's
+`vendor/`. Without its own replacements, it selects the *unpatched* upstream
+modules. This can fail to compile against protobuf APIv2, or lose the datum-shift
+and MVT degenerate-geometry fixes. Also, a downloaded root module zip excludes
+the nested modules: do not point replacements into the module cache and expect
+`third_party` to be present.
 
-Until the fixes are upstreamed, external consumers (e.g. go-wfs/Jivan)
-**must** replicate the replaces in their own `go.mod`:
+**Unconfigured, remote-only consumption remains unsupported.** Keeping local
+forks is intentional: dropping the replacements discards required patches;
+re-homing geom packages changes public Go type identity; and separately
+published, versioned fork modules are not currently available as a verified
+dependency source. A `go.work` file alone would not fix downstream consumers
+either, because workspaces are not inherited. The bounded solution is an
+explicit checkout-based consumer setup, checked in CI, while preserving
+offline root builds. Fully transparent consumption still requires upstreaming
+the fixes or publishing and adopting suitable versioned modules.
 
+### Supported checkout-based consumer setup
+
+Keep a complete checkout of this fork at a pinned commit outside the consumer
+module. From the consumer directory, use its own `go.mod` to select all three
+modules. For example, with sibling `consumer` and `tegola` directories:
+
+```sh
+go mod edit -require=github.com/go-spatial/tegola@v0.0.0
+go mod edit -replace=github.com/go-spatial/tegola=../tegola
+go mod edit -replace=github.com/go-spatial/geom=../tegola/third_party/go-spatial/geom
+go mod edit -replace=github.com/go-spatial/proj=../tegola/third_party/go-spatial/proj
+go mod tidy
+go list -m all
+go build -mod=readonly ./...
+go test -mod=readonly ./...
 ```
-require github.com/go-spatial/tegola <fork-version>
 
-replace (
-    github.com/go-spatial/geom => github.com/alexeydott/geom <fork-revision>
-    github.com/go-spatial/proj => github.com/alexeydott/proj <fork-revision>
-)
+The `v0.0.0` version is a placeholder for a local replacement, not a published
+release. Paths are relative to the **consumer's** `go.mod`, not Tegola's.
+Use quoted absolute paths if the checkouts are not siblings. Imports remain
+`github.com/go-spatial/tegola`, even though the checkout is from
+`alexeydott/tegola`. Confirm the module listing selects the three local
+directories, not upstream geom/proj.
+
+The initial tidy/build needs network access or an already populated module
+cache. To make the consumer independently buildable offline, vendor its
+dependencies while those checkouts and downloaded modules are available:
+
+```sh
+go mod vendor
+go build -mod=vendor ./...
+go test -mod=vendor ./...
 ```
 
-Publish the fork modules under the same import paths at accessible VCS
-revisions (or point the replaces at your own local checkouts of
-`third_party/go-spatial/geom` / `third_party/go-spatial/proj`).
+Commit the consumer's `go.mod`, `go.sum`, and `vendor/` according to its policy.
+Explicit vendor mode then uses its own vendored sources; it does not read the
+replacement source directories. Switching back to module mode or regenerating
+vendor still needs the pinned checkouts. `go mod verify` verifies downloaded
+modules, **not** local replacements: the checkout's commit and the consumer's
+vendor review provide provenance for those.
 
-Smoke-check a consumer module:
+### Automated portability check
 
-1. Create a module outside this repository that imports a tegola provider
-   package (e.g. `provider/postgis`).
-2. `go list -m all` — confirm `github.com/go-spatial/geom` and
-   `github.com/go-spatial/proj` resolve to the fork revisions, not upstream.
-3. `go build ./...` — must succeed with **no reference** to this checkout's
-   `./third_party` paths.
-4. Verify patched behaviour: a `+towgs84` projection converts (proj fix) and
-   MVT encoding of a clipped degenerate LineString does not panic (geom fix).
+Run from the Tegola checkout root:
+
+```sh
+go run -mod=vendor ./ci/check-dependencies
+go -C third_party/go-spatial/geom build -mod=readonly ./...
+go -C third_party/go-spatial/geom test -mod=readonly ./...
+go -C third_party/go-spatial/proj build -mod=readonly ./...
+go -C third_party/go-spatial/proj test -mod=readonly ./...
+```
+
+The check rejects changed root replacements, extra/missing nested modules, or
+any nested replacement. It creates a temporary consumer **outside** this
+checkout with the three explicit replacements, disables workspace inheritance,
+and tests a PostGIS import, public geom type compatibility, protobuf APIv2,
+degenerate MVT encoding, and a known datum-shift result. It lists and verifies
+the consumer module graph, vendors it, then builds and tests with
+`GOPROXY=off`, `GOSUMDB=off`, and `GOTOOLCHAIN=local`. Temporary files are removed
+afterward. The initial consumer setup needs network access or cached modules;
+it is not a remote-publication or empty-cache offline test.
+
+CI also builds/tests both nested modules with `-mod=readonly` and checks that
+their manifests/checksums stay unchanged. Nested builds deliberately do not
+use the root vendor tree. For a root-vendored MVT package check, use
+`go test -mod=vendor github.com/go-spatial/geom/encoding/mvt/...`; there is no
+root `mvt/` directory.
