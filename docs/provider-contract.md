@@ -89,10 +89,14 @@ skips structural validation — it skips only geometry-class inference and the
 >=3-sample-row requirement (explicitly typed layers may have empty data).
 
 - **Table layers** are inspected via database metadata / a sample query.
-- **Custom SQL** is sampled by the registration probe, which always executes
-  the SQL without a spatial filter: `!BBOX!` is neutralized to `1=1`,
-  position / zoom tokens are permissive, and the probe is capped at 16
-  sample rows. If the query currently returns no rows, the layer is still
+- **Custom SQL** is sampled by a registration probe capped at 16 rows.
+  Bounds-predicate `!BBOX!` tokens are neutralized to `1=1`; native PostGIS
+  geometry operands instead receive the zoom-zero envelope transformed into
+  the layer CRS, including tokens used as spatial-function arguments.
+  Automatic PostGIS MOS detection can retry the predicate form if the native
+  query fails, but still requires positive decoded MOS evidence. Position /
+  zoom tokens are permissive. All token handling follows the backend's SQL
+  dialect and preserves literals and comments. If the query currently returns no rows, the layer is still
   registered (without an inferred geometry type) so the server can start;
   it begins serving once the query returns data.
 

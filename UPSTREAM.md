@@ -140,7 +140,7 @@ The following items were identified in the fork-vs-upstream audit but are intent
 | 3.6 | ~~`basic/line.go` simplification correctness: line simplification does not check point intersection ("malformed geoprocessing with providers of type not mvt_postgis", an open upstream bug noted in v0.21.0). Geometry behavior is left unchanged until a test corpus exists.~~ — **closed** (wave 2): intersection-aware Douglas-Peucker in `maths/simplify` with a 25-case corpus (9 pre-fix failures → 0). Closure log below. |
 | part10 A15 | ~~External dependency portability - `third_party` `replace` directives complicate out-of-tree consumption.~~ — **partially closed** (wave 2, bounded mitigation): replace inventory CI-guarded, checkout-based consumption documented and smoke-tested, geom `go.sum` repaired. Transparent unconfigured remote consumption remains **open** (blocked on upstreaming the patches or publishing fork modules). Closure log below. |
 | part10 A16 | Green CI runs are unavailable for this fork (no GitHub Actions quota), so the standing policy is local re-verification on the exact pushed SHA: `go test -mod vendor -count=1 ./...` with `CGO_ENABLED=0` and `CGO_ENABLED=1`, plus `golangci-lint run ./...`. Not a contradiction with "Linting (CI)" above: the workflow defines what is checked, this row records that the runs themselves cannot be relied upon. |
-| part13 P6.5 | ~~HANA scale tokens: `!PIXEL_WIDTH!` and `!SCALE_DENOMINATOR!` in `provider/hana/util.go` (`replaceTokens`, TODOs next to the token definitions and the `// TODO: Always convert to meter if we support different projections` note) compute pixel width and scale denominator assuming WebMercator meters and 256x256 tiles regardless of the configured layer CRS; `// TODO: it's currently assumed the tile will always be in WebMercator` is the same debt. Deferred: the fix needs per-CRS scale math and the provider is owned outside this wave. Same debt class as the postgis scale-token work recorded in the part12 audit.~~ — **closed** (wave 2): CRS-aware scale math in `provider/hana/scale.go`. The same debt remains **open** for the postgis (and mysql/gpkg) scale tokens. Closure log below. |
+| part13 P6.5 | ~~HANA scale tokens: `!PIXEL_WIDTH!` and `!SCALE_DENOMINATOR!` in `provider/hana/util.go` (`replaceTokens`, TODOs next to the token definitions and the `// TODO: Always convert to meter if we support different projections` note) compute pixel width and scale denominator assuming WebMercator meters and 256x256 tiles regardless of the configured layer CRS; `// TODO: it's currently assumed the tile will always be in WebMercator` is the same debt. Deferred: the fix needs per-CRS scale math and the provider is owned outside this wave. Same debt class as the postgis scale-token work recorded in the part12 audit.~~ — **closed** (wave 2): CRS-aware scale math in `provider/hana/scale.go`. The follow-up below closes the equivalent PostGIS, MySQL and GeoPackage scale-token debt. |
 
 ### Wave-2 closure log
 
@@ -152,13 +152,17 @@ open by decision and are unchanged.
   context-aware substitution (`internal/sqltoken`) used by gpkg, mysql,
   postgis, hana, query-parameter values and geometrycodec probes. Tokens are
   replaced only in SQL code context and preserved verbatim (and un-uppercased)
-  inside single-quoted strings (incl. `''` and backslash escapes),
-  double-quoted/backtick/bracket identifiers, `--`/`#`/`/* */` comments and PG
-  `$tag$` dollar-quotes; detection APIs apply the same rule. Self-contained
-  scanner (GoSQLX evaluated and rejected as a full-parser dependency);
-  per-site behavior tests. Caveat: `#` line comments swallow PG `#>`/`#>>`/`#-`
-  operator tails — put tokens on their own line. Bind-parameter rewrite out of
-  scope by design.
+  inside the strings, identifiers and comments supported by each backend.
+  The completion audit replaced the original combined grammar with explicit
+  PostgreSQL, MySQL, SQLite and HANA dialects throughout rendering, parameter
+  replacement, validation and probes. PostgreSQL arrays/hash operators remain
+  executable; ordinary strings and `E'...'` have distinct escaping rules.
+  SQLite backslashes and MySQL comment rules are handled separately.
+  Detection APIs use the same dialect as substitution. Legacy public wrappers
+  preserve their original behavior. PostgreSQL assumes
+  `standard_conforming_strings=on`; MySQL assumes default string escaping
+  (not `NO_BACKSLASH_ESCAPES` or `ANSI_QUOTES`). Bind-parameter rewrite remains
+  out of scope by design.
 * **2.5 — Logging consolidation on `log/slog`.** `internal/log` remains the
   single logging facade but is now implemented on stdlib `log/slog`
   (TextHandler) as the one backend, with a `*slog.Logger` accessor for new code
@@ -216,8 +220,8 @@ open by decision and are unchanged.
   before observability/provider cleanup. Zero new config keys. Deterministic
   tests cover single-flight sharing, failure retry, bounded concurrency,
   shutdown, and panic recovery; full suite green including `-race`. Out of
-  scope and still open: file-cache shared-tempfile race (`cache/file/file.go`)
-  — see the tracked findings below.
+  scope of the original closure: the reported file-cache shared-tempfile race (`cache/file/file.go`)
+  — the follow-up below corrects this stale finding.
 * **2.2 — Redis cache URI-only.** (Decision: drop the legacy key.) The
   `address`/`network`/`password`/`db`/`ssl` keys are removed; `uri` is the
   single redis cache connection key, parsed with go-redis v9 `ParseURL`
@@ -257,42 +261,58 @@ open by decision and are unchanged.
   obsolete HANA warning/TODO removed. Purely additive
   `basic.ProjectedMetersPerUnit` helper; DB-free math/context/compatibility
   tests and full vendored build/vet/CGO-off+on tests/lint pass. PostGIS's
-  identical WebMercator-only scale debt and generic geographic `crs_defn`
-  engine support remain outside this HANA-scoped closure.
+  remaining scale-token debt and WGS84 geographic `crs_defn`
+  engine support were addressed in the follow-up below.
 
-### Newly tracked findings (found during wave-2 work, not yet addressed)
+### Completion of newly tracked findings (2026-09-28)
 
-1. **`ZEpislon` unit mismatch (tolerance path, `maths/simplify` callers).**
-   `ZEpislon()` = `Tolerance/(2^Z*Extent)` (~6.1e-4 at Z=2) is applied to world
-   web-mercator METERS before `PrepareGeo` scales to 4096 px — the effective
-   tolerance is a fraction of a millimeter at Z=2 instead of the intended ~10 px
-   (~24.5 km at Z=2). In-process simplification is effectively a no-op for
-   meter-scale data. Companion to finding 2.
-2. **`simplifyGeometries` gate is unreachable (`atlas/atlas.go`).** The
-   simplification call site requires `simplifyGeometries`, but the variable is
-   only ever assigned `false` (the `dontsimplifygeo` branch) and defaults to
-   false — the simplify branch looks unreachable in production as written
-   (likely a lost `= true` default when `TEGOLA_OPTIONS` handling moved out of
-   `mvt`). Together with finding 1, map-level in-process simplification never
-   actually runs; the 3.6 fix applies to `SimplifyGeometry` regardless of
-   caller.
-3. **Scale tokens remain WebMercator-only outside HANA.**
-   `provider/postgis/util.go` computes `!PIXEL_WIDTH!`/`!SCALE_DENOMINATOR!`
-   (and friends) from the WebMercator extent /256 even after source-CRS bbox
-   conversion; mysql/gpkg retain the same documented WebMercator scale
-   semantics. Same debt class as the closed P6.5; HANA-scoped closure did not
-   touch them.
-4. **Projection engine rejects generic geographic `crs_defn`.** Registration of
-   a generic `+proj=longlat` PROJ definition is rejected although EPSG:4326 is
-   directly supported (found during P6.5). Unsupported geographic CRSs error
-   rather than silently receiving meter values; extending the engine is
-   unscoped.
-5. **File-cache shared-tempfile race (`cache/file/file.go`,
-   `renameWithRetry`).** Concurrent cache writes can collide on a shared
-   temporary file; out of scope of the 2.1 closure and left open as a separate
-   upstream-PR candidate.
-6. **MySQL test-fixture oddity (test-only).**
-   `provider/mysql/mysql_internal_test.go` builds a `wkbPoint` payload with a
-   `uint64(1)` inserted between X and Y — 29 bytes rather than a standard
-   21-byte WKB point. Existing tests check type/SRID, not those coordinates;
-   left as-is (consolidation scope), tracked here for completeness.
+The six findings left after wave 2 were checked against the actual source,
+not assumed to remain open from the earlier session notes.
+
+1. **Closed: simplification tolerance units.** `Tile.ZEpislon()` now returns
+   `Tolerance * ZRes()` in WebMercator meters. The default ten-unit tolerance
+   refers to the 4096-unit MVT coordinate extent, not ten display pixels.
+   Regression tests exercise both the numeric conversion and the production
+   encode boundary with meter-space geometries.
+2. **Closed: unreachable simplification gate.** The default is enabled again;
+   `dontsimplifygeo`, per-layer `dont_simplify`, and the maximum zoom still
+   disable it. Enabling it exposed a component-topology gap: simplifying a
+   shell independently could strand a hole outside it. Polygons with holes
+   and multi-component MultiPolygons now conservatively retain their input
+   until a topology check between components exists. Lines and simple shells
+   retain the existing self-intersection validation.
+3. **Closed: scale tokens outside HANA.** All four providers share
+   `provider.TileScale`: unbuffered source-CRS dimensions, optional tile pixel
+   size (256x256 default), projected-unit conversion and latitude-adjusted
+   WGS84 degrees, with the OGC 0.00028 m pixel. HANA planar aliases remain
+   supported. Unsupported CRS/unit data errors only when executable scale
+   tokens require it; WebMercator defaults remain compatible.
+4. **Closed for WGS84 geographic definitions.** The projection fork and its
+   vendored copy support `longlat` aliases with explicit WGS84 datum or
+   ellipsoid; registration, synthetic SRIDs, forward/inverse reprojection,
+   replacement and geographic scale math are tested. **Remaining limitation:**
+   other geographic datums, nonzero datum shifts, grids, angular-unit and axis
+   conversions are unsupported and rejected explicitly, not approximated by
+   WGS84 identity.
+5. **Already fixed; stale finding corrected.** File-cache writes already used
+   unique `os.CreateTemp` names in `671a7ea1`, with Windows retry adjustments
+   in `769463ea`. The concurrent same-key write and Set/Purge regression tests
+   pass. No redundant cache implementation change was made.
+6. **Closed: MySQL WKB fixture.** Remove the extra uint64 between X and Y;
+   the point is standard 21-byte WKB and tests assert the decoded coordinates,
+   rather than only its type and SRID.
+
+A further scheduler regression was fixed: tile status includes accepted
+regeneration jobs waiting in the queue, not just jobs already rendering.
+An HTTP-level regression checks `updating: true` while a job is queued.
+
+Live PostGIS validation also exposed pre-existing registration-probe failures:
+native `!BBOX!` operands were replaced with a boolean, compact zoom comparisons
+lost their separator, wrapping a trailing line comment consumed the closing
+SQL, and NULL geometry samples aborted type discovery. These paths now have
+regression coverage. The PostGIS MVT test checks decoded content rather than
+a byte length tied to one PostGIS/GEOS encoder version.
+
+The earlier exclusions remain: cloud-SDK migrations (2.3), reliance on remote
+CI quota (A16), and transparent remote dependency consumption (A15) are not
+claimed complete by this follow-up.

@@ -110,23 +110,37 @@ The `!BBOX!` token is always evaluated **in the layer's source CRS**:
 
 ## Scale tokens
 
-**HANA** computes `!PIXEL_WIDTH!` and `!PIXEL_HEIGHT!` from the unbuffered
+**HANA, PostGIS, GeoPackage and MySQL** compute `!PIXEL_WIDTH!` and `!PIXEL_HEIGHT!` from the unbuffered
 tile extent transformed into the resolved layer CRS, divided by the tile's
 pixel dimensions. `!SCALE_DENOMINATOR!` converts the horizontal pixel width
 to meters and divides by the OGC standard pixel size of 0.00028 m. Projected
-CRSs use their PROJ.4 linear units; EPSG:4326 uses a spherical,
+CRSs use their PROJ.4 linear units; EPSG:4326 and supported WGS84 `longlat` definitions use a spherical,
 latitude-adjusted meters-per-longitude-degree approximation at the tile
 center. Unknown CRS/unit definitions cause a query error for executable
 scale tokens. Default EPSG:3857 SQL values are unchanged. See the
 [HANA scale token contract](../provider/hana/README.md#scale-tokens) for tile
 sizes, projection-scale interpretation, and geographic limitations.
 
-**PostGIS, GeoPackage and MySQL** retain their existing scale-token behavior:
-`!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!` and `!PIXEL_HEIGHT!` use Web Mercator
-meters, not the resolved source CRS units. For a geographic CRS (for example
-`srid = 4326`) their values are not degrees-consistent and the server logs
-a startup warning for such layers. HANA's CRS-aware implementation does not
-change those providers.
+All four providers share `provider.TileScale`. The default pixel dimensions
+are 256 by 256; custom tile implementations can expose `PixelSize()`.
+Queries without executable scale tokens do not require scale-unit resolution.
+MySQL custom SQL whose CRS inspection is deferred must set `srid` or
+`crs_defn` when using scale tokens: row-header discovery happens after SQL
+execution and cannot establish the units needed to construct that query.
+For PostGIS, GeoPackage and MySQL, non-WebMercator scale thresholds may need
+adjustment when upgrading from the earlier WebMercator-only behavior.
+
+## Geographic PROJ definitions
+
+`crs_defn = "+proj=longlat +datum=WGS84 +no_defs"` is supported, including
+the `latlong`, `lonlat` and `latlon` aliases. Coordinates remain longitude,
+latitude in degrees; registration allocates a synthetic SRID as for projected
+definitions. Scale tokens recognize these synthetic geographic SRIDs.
+
+Support is deliberately limited to WGS84, Greenwich and east/north axes.
+Nonzero datum shifts, other datums, angular-unit conversions, grids and axis
+changes are rejected at registration. They require additional transformation
+support and are not treated as WGS84 identity conversions.
 
 ## Provider support matrix
 
