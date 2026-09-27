@@ -4,10 +4,10 @@
 package env
 
 import (
-	"fmt"
 	"reflect"
 
 	"github.com/go-spatial/tegola/dict"
+	"github.com/go-spatial/tegola/internal/log"
 )
 
 // Dict is a decoded configuration map. Config values are parsed from TOML via
@@ -25,7 +25,7 @@ func (d Dict) Dict(key string) (v Dict, err error) {
 	}
 
 	if dv, ok = val.(Dict); !ok {
-		return v, dict.ErrType{Key: key, Value: val, T:reflect.TypeOf(v)}
+		return v, dict.ErrType{Key: key, Value: val, T: reflect.TypeOf(v)}
 	}
 	return dv, nil
 }
@@ -86,7 +86,7 @@ func (d Dict) StringSlice(key string) (v []string, err error) {
 			} else {
 				ptr, err := ParseString(iv[k])
 				if err != nil {
-					fmt.Println("err", err)
+					log.Debugf("err %v", err)
 					switch err.(type) {
 					case ErrEnvVar:
 						return v, err

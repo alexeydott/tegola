@@ -9,6 +9,7 @@ import (
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/proj"
 	"github.com/go-spatial/tegola"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/maths/webmercator"
 )
 
@@ -393,10 +394,10 @@ func MapAsGeometry(m map[string]interface{}) (geo Geometry, err error) {
 	case "linestring":
 		return interfaceAsLine(m["value"])
 	case "polygon":
-		fmt.Println("Working on Polygon:")
+		log.Debug("Working on Polygon:")
 		return interfaceAsPolygon(m["value"])
 	case "multipolygon":
-		fmt.Println("Working on MPolygon:")
+		log.Debug("Working on MPolygon:")
 		var mp MultiPolygon
 		err := forEachMapInSlice(m["value"], func(_ string, v interface{}) error {
 			p, err := interfaceAsPolygon(v)

@@ -2,8 +2,7 @@ package basic
 
 import (
 	"bytes"
-	"log"
-	"os"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -280,8 +279,9 @@ func TestRegisterProj4DefnCollisionOrderIndependent(t *testing.T) {
 		proj4RegisteredMu.Unlock()
 
 		var buf bytes.Buffer
-		log.SetOutput(&buf)
-		defer log.SetOutput(os.Stderr)
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		defer slog.SetDefault(prev)
 
 		got := map[string]uint64{}
 		for _, d := range order {

@@ -3,7 +3,6 @@ package cache
 import (
 	"context"
 	"fmt"
-	"log"
 	"path"
 	"path/filepath"
 	"sort"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/dict"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/maths"
 )
 
@@ -48,7 +48,7 @@ func ParseKey(str string) (*Key, error) {
 			keyPartsCount: len(keyParts),
 		}
 
-		log.Println(err.Error())
+		log.Warn(err.Error())
 		return nil, err
 	}
 
@@ -80,7 +80,7 @@ func ParseKey(str string) (*Key, error) {
 		err = validateKeyName(str, "map", key.MapName)
 	}
 	if err != nil {
-		log.Printf("cache: invalid file key: %s", err.Error())
+		log.Warnf("cache: invalid file key: %s", err.Error())
 		return nil, err
 	}
 
@@ -94,7 +94,7 @@ func ParseKey(str string) (*Key, error) {
 			val:  zxy[0],
 		}
 
-		log.Printf("cache: invalid file key: %s", err.Error())
+		log.Warnf("cache: invalid file key: %s", err.Error())
 		return nil, err
 	}
 
@@ -109,7 +109,7 @@ func ParseKey(str string) (*Key, error) {
 			val:  zxy[1],
 		}
 
-		log.Printf("cache: invalid file key: %s", err.Error())
+		log.Warnf("cache: invalid file key: %s", err.Error())
 		return nil, err
 	}
 
@@ -125,7 +125,7 @@ func ParseKey(str string) (*Key, error) {
 			val:  zxy[2],
 		}
 
-		log.Printf("cache: invalid file key: %s", err.Error())
+		log.Warnf("cache: invalid file key: %s", err.Error())
 		return nil, err
 	}
 	key.Y = uint(placeholder)
