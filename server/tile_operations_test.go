@@ -178,9 +178,10 @@ func TestTileOperationsRequireToken(t *testing.T) {
 
 	// a valid token authorizes the operation
 	w = tileOpsRequest(router, base+"?tile=update", testTileOpsToken)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("authorized update: status = %d, want 204 (%s)", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("authorized update: status = %d, want 202 (%s)", w.Code, w.Body.String())
 	}
+	server.AwaitMetatileRegeneration()
 	// z4 tile 2/3 lives in metatile x[0..7] y[0..7]; the map has no bounds
 	// configured so all 64 tiles must be cached
 	if got := cacher.setCount(); got != 64 {
@@ -204,6 +205,49 @@ func TestTileOperationsRequireToken(t *testing.T) {
 	}
 	if got, want := cacher.keyCount(cache.Key{MapName: "test-map", LayerName: "test-layer", Z: 4, X: 2, Y: 3}), before+1; got != want {
 		t.Errorf("dirty tile cache writes = %d, want %d", got, want)
+	}
+}
+
+// TestConcurrentTileUpdatesShareOneRegeneration guards the no-stampede
+// property: concurrent ?tile=update requests for the same metatile must share
+// a single regeneration, so the metatile is rendered and cached exactly once.
+func TestConcurrentTileUpdatesShareOneRegeneration(t *testing.T) {
+	tiler := newBlockingTiler(1)
+	layer := testLayer1
+	layer.Provider = tiler
+
+	a := newTestMapWithLayers(layer)
+	cacher, router := newTileOpsTestServer(t, a)
+	enableTileOperations(t, serverTileOpsTestConfig())
+
+	uri := "/maps/test-map/test-layer/4/2/3.pbf?tile=update"
+
+	const requestCount = 5
+	codes := make(chan int, requestCount)
+	for i := 0; i < requestCount; i++ {
+		go func() {
+			w := tileOpsRequest(router, uri, testTileOpsToken)
+			codes <- w.Code
+		}()
+	}
+
+	// every request is answered while the shared regeneration is held inside
+	// the provider: the request path must not wait for the metatile render
+	for i := 0; i < requestCount; i++ {
+		if code := <-codes; code != http.StatusAccepted {
+			t.Fatalf("concurrent update: status = %d, want %d", code, http.StatusAccepted)
+		}
+	}
+
+	// all requests joined the one regeneration held in the provider; release
+	// it and let the shared regeneration finish
+	close(tiler.release)
+	server.AwaitMetatileRegeneration()
+
+	// z4 tile 2/3 lives in metatile x[0..7] y[0..7] (64 tiles): one shared
+	// regeneration must write exactly 64 tiles, not 5x64
+	if got := cacher.setCount(); got != 64 {
+		t.Errorf("concurrent updates wrote %d cache entries, want 64 (one regeneration)", got)
 	}
 }
 
