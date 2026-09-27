@@ -981,23 +981,23 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, err)
 				}
 
-				// audit P5-5: the tile query JOINs the RTree spatial index
-				// table - verify at registration that it exists, failing
-				// with a clear error instead of a cryptic "no such table"
-				// per tile request.
+				// audit P5-5 / UPSTREAM debt 0.6b: pick and cache the
+				// tile-query spatial pre-filter plan at registration so
+				// every request keeps exactly one SQL round trip and never
+				// probes per tile. sqlite_master is the AUTHORITATIVE check
+				// for the rtree_<table>_<column> shadow table the upstream
+				// JOIN resolves (it covers CreateRTreeIndex virtual tables
+				// and plain shadow tables alike); gpkg_extensions is
+				// deliberately NOT the gate - its gpkg_rtree_index rows are
+				// advisory and can be missing in hand-built files or stale,
+				// while the failure mode to avoid ("no such table" per tile
+				// request) is predicted exactly by sqlite_master.
 				rtreeName := fmt.Sprintf("rtree_%v_%v", tablename, layer.geomFieldname)
-				exists, terr := rtreeTableExists(db, rtreeName)
+				rtreeExists, terr := rtreeTableExists(db, rtreeName)
 				if terr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, terr)
 				}
-				if !exists {
-					return nil, fmt.Errorf("for layer (%v) %v: table %q has no RTree spatial index %q; native GeoPackage layers require the spatial index for tile queries - create it with SELECT CreateRTreeIndex(%v,%v) (or export the data with the rtree extension enabled)", i, layerName, tablename, rtreeName, sqlStringLiteral(tablename), sqlStringLiteral(layer.geomFieldname))
-				}
 
-				// audit P5-5: the RTree join keys on the table rowid. The
-				// configured id column only feeds feature IDs; when it is
-				// not the rowid alias (INTEGER PRIMARY KEY) its values may
-				// not match rowids and may not be unique.
 				alias, aerr := rowidAliasColumn(db, tablename)
 				if aerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, aerr)
@@ -1016,8 +1016,47 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				if !idFound {
 					return nil, fmt.Errorf("for layer (%v) %v: table %q has no id column %q", i, layerName, tablename, layer.idFieldname)
 				}
+
+				if rtreeExists {
+					// upstream plan: JOIN the RTree shadow table.
+					layer.tileQueryPlan = planRTree
+				} else {
+					// No RTree shadow table: fall back to plain-bbox
+					// filtering on the table's bounds columns (configured
+					// names first, then the legacy minx/maxx/miny/maxy
+					// detection, audit N6); without any bounds columns the
+					// plan degrades to a full scan with the mandatory
+					// in-memory exact filter - still registered, with a
+					// WARN (part of the fork's register-with-warning
+					// philosophy).
+					layer.boundFieldnames = matchBoundColumns(colNames, layer.bboxFields)
+					if layer.boundFieldnames == nil {
+						layer.boundFieldnames = detectBoundColumns(colNames)
+					}
+					switch {
+					case layer.boundFieldnames != nil:
+						layer.tileQueryPlan = planBBox
+						// bboxFields mirrors the detected bounds columns so
+						// tag exclusion and the predicate builder share one
+						// contract (same as the raw-format branch).
+						layer.bboxFields = codec.BBoxFields(*layer.boundFieldnames)
+						log.Warnf("layer '%v': table %q has no RTree spatial index %q; registering with the plain-bbox fallback on columns %v (tile queries slower than the RTree plan). Create the index with SELECT CreateRTreeIndex(%v,%v)", layerName, tablename, rtreeName, strings.Join((*layer.boundFieldnames)[:], ", "), sqlStringLiteral(tablename), sqlStringLiteral(layer.geomFieldname))
+					default:
+						layer.tileQueryPlan = planScan
+						log.Warnf("layer '%v': table %q has no RTree spatial index %q and no bounds columns (minx/maxx/miny/maxy); registering anyway: every tile request will full-table-scan %q and filter decoded geometries in memory. Create the index with SELECT CreateRTreeIndex(%v,%v)", layerName, tablename, rtreeName, tablename, sqlStringLiteral(tablename), sqlStringLiteral(layer.geomFieldname))
+					}
+				}
+
+				// audit P5-5: the RTree join keys on the table rowid. The
+				// configured id column only feeds feature IDs; when it is
+				// not the rowid alias (INTEGER PRIMARY KEY) its values may
+				// not match rowids and may not be unique.
 				if alias == "" || !strings.EqualFold(alias, layer.idFieldname) {
-					log.Warnf("layer '%v': table %q id column %q is not an INTEGER PRIMARY KEY (rowid alias); the RTree join keys on rowid and feature IDs come from %q, which may be non-unique or mismatched", layerName, tablename, layer.idFieldname, layer.idFieldname)
+					if layer.tileQueryPlan == planRTree {
+						log.Warnf("layer '%v': table %q id column %q is not an INTEGER PRIMARY KEY (rowid alias); the RTree join keys on rowid and feature IDs come from %q, which may be non-unique or mismatched", layerName, tablename, layer.idFieldname, layer.idFieldname)
+					} else {
+						log.Warnf("layer '%v': table %q id column %q is not an INTEGER PRIMARY KEY (rowid alias); feature IDs come from %q, which may be non-unique or mismatched", layerName, tablename, layer.idFieldname, layer.idFieldname)
+					}
 				}
 			}
 
