@@ -117,6 +117,19 @@ explicit `srid` or `crs_defn` (a missing CRS is a startup error);
 `mos_precision` and `mos_units` are optional with the normative paired
 defaults (see [geometry-formats.md](geometry-formats.md#mos-quantization)).
 
+## SQL-context-aware token substitution
+
+Token substitution (`!BBOX!` and the other `!TOKEN!` placeholders) applies
+only in SQL code context. Tokens inside single-quoted string literals
+(including `''` doubling and backslash escapes), double-quoted, backtick or
+bracket identifiers, line comments (`--`, MySQL `#`) and block comments, and
+PostgreSQL dollar-quoted strings are left verbatim and are not uppercased.
+The same rule governs token *detection*: a `!BBOX!` mention inside a comment
+or literal does not satisfy the custom-SQL token requirements and does not
+trigger the raw-format (`wkb`/`wkt`) token rejection. Put tokens on their own
+line when using MySQL `#` comments: `#`-comment scanning is unconditional, so
+PostgreSQL's `#>`/`#>>`/`#-` operators swallow the rest of the line.
+
 ## System info auto-configuration (MapplGIS tables only)
 
 MOS tables written by MapplGIS carry a `MapplGIS LayerInfo` metadata blob.
