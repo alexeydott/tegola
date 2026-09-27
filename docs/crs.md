@@ -108,12 +108,25 @@ The `!BBOX!` token is always evaluated **in the layer's source CRS**:
   synthetic CRSs on HANA) replace `!BBOX!` with a no-op and apply an exact
   in-memory bbox filter after decoding.
 
-## Scale token limitations
+## Scale tokens
 
-The `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!` and `!PIXEL_HEIGHT!` tokens are
-computed in Web Mercator meters and are meaningful only for metric CRSs. For
-a geographic CRS (for example `srid = 4326`) their values are not
-degrees-consistent and the server logs a startup warning for such layers.
+**HANA** computes `!PIXEL_WIDTH!` and `!PIXEL_HEIGHT!` from the unbuffered
+tile extent transformed into the resolved layer CRS, divided by the tile's
+pixel dimensions. `!SCALE_DENOMINATOR!` converts the horizontal pixel width
+to meters and divides by the OGC standard pixel size of 0.00028 m. Projected
+CRSs use their PROJ.4 linear units; EPSG:4326 uses a spherical,
+latitude-adjusted meters-per-longitude-degree approximation at the tile
+center. Unknown CRS/unit definitions cause a query error for executable
+scale tokens. Default EPSG:3857 SQL values are unchanged. See the
+[HANA scale token contract](../provider/hana/README.md#scale-tokens) for tile
+sizes, projection-scale interpretation, and geographic limitations.
+
+**PostGIS, GeoPackage and MySQL** retain their existing scale-token behavior:
+`!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!` and `!PIXEL_HEIGHT!` use Web Mercator
+meters, not the resolved source CRS units. For a geographic CRS (for example
+`srid = 4326`) their values are not degrees-consistent and the server logs
+a startup warning for such layers. HANA's CRS-aware implementation does not
+change those providers.
 
 ## Provider support matrix
 
