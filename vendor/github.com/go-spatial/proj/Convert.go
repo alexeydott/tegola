@@ -34,7 +34,8 @@ const (
 )
 
 // Convert performs a conversion from a 4326 coordinate system (lon/lat
-// degrees, 2D) to the given projected system (x/y meters, 2D).
+// degrees, 2D) to the given system (projected units, or degrees for supported
+// WGS84 geographic definitions).
 //
 // The input is assumed to be an array of lon/lat points, e.g. [lon0, lat0,
 // lon1, lat1, lon2, lat2, ...]. The length of the array must, therefore, be
@@ -104,6 +105,7 @@ func RemoveCustomProjection(code EPSGCode) {
 
 // conversion holds the objects needed to perform a conversion
 type conversion struct {
+	geographic bool
 	dest       EPSGCode
 	projString *support.ProjString
 	system     *core.System
@@ -168,6 +170,15 @@ func newConversion(dest EPSGCode) (*conversion, error) {
 	if err != nil {
 		return nil, err
 	}
+	geographic, err := geographicDefinition(ps)
+	if err != nil {
+		return nil, err
+	}
+	if geographic {
+		conv = &conversion{dest: dest, projString: ps, geographic: true}
+		conversions[dest] = conv
+		return conv, nil
+	}
 
 	sys, opx, err := core.NewSystem(ps)
 	if err != nil {
@@ -194,6 +205,9 @@ func newConversion(dest EPSGCode) (*conversion, error) {
 
 // convert performs the projection on the given input points
 func (conv *conversion) convert(input []float64) ([]float64, error) {
+	if conv != nil && conv.geographic {
+		return copyGeographicCoordinates(input)
+	}
 
 	if conv == nil || conv.converter == nil {
 		return nil, fmt.Errorf("conversion not initialized")
@@ -225,6 +239,9 @@ func (conv *conversion) convert(input []float64) ([]float64, error) {
 }
 
 func (conv *conversion) inverse(input []float64) ([]float64, error) {
+	if conv != nil && conv.geographic {
+		return copyGeographicCoordinates(input)
+	}
 	if conv == nil || conv.converter == nil {
 		return nil, fmt.Errorf("conversion not initialized")
 	}

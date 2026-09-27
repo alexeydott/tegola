@@ -1,9 +1,14 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/go-spatial/geom/slippy"
+	"github.com/go-spatial/tegola/atlas"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -284,5 +289,56 @@ func TestMetatileRegenSchedulerRecoversPanic(t *testing.T) {
 
 	if !ran.Load() {
 		t.Fatal("the scheduler must keep serving regenerations after a panic")
+	}
+}
+
+func TestMetatileRegenQueuedWorkIsUpdating(t *testing.T) {
+	s := newMetatileRegenScheduler()
+	old := metatileRegens
+	metatileRegens = s
+	defer func() { metatileRegens = old }()
+	req := HandleMapLayerZXY{Atlas: &atlas.Atlas{}, mapName: "queued"}
+	tile := slippy.Tile{Z: 4, X: 0, Y: 0}
+	key := req.metatileLockKey(tile)
+	release := make(chan struct{})
+	started := make(chan struct{}, metatileRegenConcurrency)
+	defer func() { close(release); s.wait() }()
+	for i := 0; i < metatileRegenConcurrency; i++ {
+		_, err := s.enqueue(fmt.Sprintf("busy-%d", i), func(context.Context) error { started <- struct{}{}; <-release; return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < metatileRegenConcurrency; i++ {
+		<-started
+	}
+	if _, err := s.enqueue(key, func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !s.isUpdating(key) {
+		t.Fatal("accepted queued regeneration must report updating")
+	}
+	w := httptest.NewRecorder()
+	if err := req.serveTileOperation(w, httptest.NewRequest("GET", "/?tile=status", nil), atlas.Map{}, tile, tileOperationStatus); err != nil {
+		t.Fatal(err)
+	}
+	zr, err := gzip.NewReader(w.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := zr.Close(); err != nil {
+			t.Errorf("close gzip reader: %v", err)
+		}
+	}()
+	var status tileStatusResponse
+	if err := json.NewDecoder(zr).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Updating {
+		t.Fatal("HTTP status must report accepted queued job as updating")
+	}
+	if s.isUpdating("absent") {
+		t.Fatal("absent regeneration reported updating")
 	}
 }

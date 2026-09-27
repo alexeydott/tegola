@@ -4,14 +4,34 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/go-spatial/proj"
 	"github.com/go-spatial/proj/core"
 	"github.com/go-spatial/proj/support"
 	"github.com/go-spatial/tegola"
 )
 
+// IsGeographicSRID reports whether coordinates are WGS84 longitude/latitude
+// in degrees, either EPSG:4326 or a supported registered geographic definition.
+func IsGeographicSRID(srid uint64) bool {
+	if srid == tegola.WGS84 {
+		return true
+	}
+	// EPSG:3857 always follows the native WebMercator path.
+	if srid == tegola.WebMercator {
+		return false
+	}
+	proj4RegisteredMu.Lock()
+	defn := proj4Registered[srid]
+	proj4RegisteredMu.Unlock()
+	return proj.IsGeographicDefinition(defn)
+}
+
 // ProjectedMetersPerUnit returns the linear unit conversion used by the
 // registered projection. Geographic and unknown CRSs return an error.
 func ProjectedMetersPerUnit(srid uint64) (float64, error) {
+	if IsGeographicSRID(srid) {
+		return 0, fmt.Errorf("SRID %d has geographic angular units", srid)
+	}
 	// FromWebMercator handles 3857 directly, regardless of registrations.
 	if srid == tegola.WebMercator {
 		return 1, nil

@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	simplifyGeometries    bool
+	simplifyGeometries         = true
 	simplificationMaxZoom uint = 10
 )
 

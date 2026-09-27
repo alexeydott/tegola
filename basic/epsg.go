@@ -19,7 +19,9 @@ import (
 // additional SRID via a PROJ.4 string. Projections are described in PROJ.4
 // syntax and registered with proj.CustomProjection; the actual math is
 // performed by proj's ported operations (merc, utm/etmerc, aea, leac, aeqd,
-// eqc, airy, august). Definitions using other PROJ.4 projections are
+// eqc, airy, august), plus WGS84 geographic definitions (longlat aliases).
+// Geographic definitions with unsupported datum/unit/axis modifiers fail closed.
+// Definitions using other PROJ.4 projections are
 // rejected at registration time.
 
 var (

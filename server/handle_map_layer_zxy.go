@@ -534,7 +534,7 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 			X:        tile.X,
 			Y:        tile.Y,
 			Cached:   cached,
-			Updating: tileUpdateLocks.isUpdating(metatileKey),
+			Updating: metatileRegens.isUpdating(metatileKey) || tileUpdateLocks.isUpdating(metatileKey),
 			Metatile: [4]uint{baseX, baseY, endX - baseX + 1, endY - baseY + 1},
 		}
 

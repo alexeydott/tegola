@@ -152,6 +152,15 @@ func (s *metatileRegenScheduler) runCall(key string, call *metatileRegenCall, fn
 	}
 }
 
+// isUpdating includes accepted work waiting for a rendering slot or mutation
+// lock, so clients cannot mistake a queued regeneration for completion.
+func (s *metatileRegenScheduler) isUpdating(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.calls[key]
+	return ok
+}
+
 // wait blocks until every scheduled regeneration has completed. Regenerations
 // are forgotten before wait returns, so a later request always schedules a
 // fresh regeneration.

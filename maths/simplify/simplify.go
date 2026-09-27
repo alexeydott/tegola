@@ -15,6 +15,11 @@ func SimplifyGeometry(g tegola.Geometry, tolerance float64) tegola.Geometry {
 		return simplifyPolygon(gg, tolerance)
 
 	case tegola.MultiPolygon:
+		// Independent simplification can make disjoint polygons overlap.
+		// Preserve component relationships until cross-component validation exists.
+		if len(gg.Polygons()) > 1 {
+			return g
+		}
 		var newMP basic.MultiPolygon
 
 		for _, p := range gg.Polygons() {
@@ -75,6 +80,12 @@ func simplifyLineString(g tegola.LineString, tolerance float64) basic.Line {
 
 func simplifyPolygon(g tegola.Polygon, tolerance float64) basic.Polygon {
 	lines := g.Sublines()
+	// An individually valid simplified shell can exclude an unchanged hole,
+	// or a simplified hole can cross the shell/another hole. Keep the polygon
+	// unchanged until simplification can validate relationships between rings.
+	if len(lines) > 1 {
+		return basic.ClonePolygon(g)
+	}
 	if len(lines) <= 0 {
 		return nil
 	}
