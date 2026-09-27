@@ -464,7 +464,7 @@ func (req HandleMapLayerZXY) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// check for tile size warnings
 	if len(pbyte) > MaxTileSize {
-		slog.Default().Info("tile is rather large",
+		log.Logger().Info("tile is rather large",
 			slog.String("map", req.mapName),
 			slog.String("layer", req.layerName),
 			slog.Uint64("z", uint64(req.z)),
