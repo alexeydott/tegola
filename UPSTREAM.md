@@ -56,6 +56,28 @@ lowers the future cost of syncing this fork.
   after the empty-hostname regression (audit N5) is fixed, otherwise the fork's
   regression would be shipped upstream. N5 is fixed in this fork (wave 4).
 
+## Dependency maintenance in the fork
+
+The fork carries a dependency-maintenance layer on top of the upstream base
+(2024-12-19). It is recorded here because it changes the sync surface:
+
+* **Go modules** were upgraded in bulk (`go.mod` / `vendor` refresh; e.g.
+  `redis/go-redis` v9.22.0). `SAP/go-hdb` was bumped to v1.18.11 and
+  `gdey/tbltest` to its final upstream revision; the unused `arolek/p`
+  dependency was dropped. Upstream's `require` pins are therefore no longer a
+  reliable diff baseline for `go.mod` / `vendor/`.
+* **MVT protobuf codegen** migrated from gogo to `google.golang.org/protobuf`
+  (`protoc-gen-go` v1.36.12; see `third_party/README.md`). When syncing
+  `go-spatial/geom` with upstream, the generated `vector_tile.pb.go` must be
+  re-generated with `protoc-gen-go` rather than taken from upstream's gogo
+  output (the wire format is unchanged).
+* **Built-in viewer (`ui/`)**: `maplibre-gl` upgraded to v5, the deprecated
+  `babel-eslint` replaced with `@babel/eslint-parser`, and npm install scripts
+  denied by default (`ui/.npmrc` supply-chain hardening).
+* The bulk upgrade deliberately stopped short of the cloud-SDK migrations:
+  `aws-sdk-go` is still v1 and `azure-storage-blob-go` is still the legacy
+  2018 track, so deferred debt 2.3 is unchanged by the refresh.
+
 ## Sync methodology
 
 Compare the fork against upstream `master` using the git graph:

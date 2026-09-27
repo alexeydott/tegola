@@ -20,10 +20,17 @@ Breaking changes
 * PostGIS provider: `tablename` and `sql` are strictly mutually exclusive (startup error).
 * PostGIS provider: `pool_*` connection-pool keys were introduced/renamed; review your `[[providers]]` blocks.
 
+Maintenance
+
+* Go module dependencies upgraded (`go.mod` / `vendor` refresh): `redis/go-redis` v9.22.0, `SAP/go-hdb` v1.18.11, `gdey/tbltest` bumped to its final upstream revision, and the unused `arolek/p` dependency dropped.
+* MVT protobuf code generation migrated from gogo to `google.golang.org/protobuf` (`protoc-gen-go` v1.36.12); the wire format is unchanged and the fork no longer depends on `github.com/golang/protobuf`.
+* Built-in viewer: `maplibre-gl` upgraded to v5, the deprecated `babel-eslint` replaced with `@babel/eslint-parser`, and npm install scripts denied by default (`ui/.npmrc` supply-chain hardening).
+
 Bugs
 
 * Custom SQL structural validation no longer requires the bounds columns in the SELECT result: they are validated only when they are part of the SQL result (their actual names are persisted for the bounds predicate), and a layer whose SELECT list omits them is registered with a warning under the resolved names (`layer > provider > MINX/MAXX/MINY/MAXY`) — the `!BBOX!` predicate resolves the bounds columns in the query's own scope. A missing `!BBOX!`/`!BOX!` token or a missing configured geometry column remain startup errors. Applies to all providers (`mysql`, `postgis`, `hana`, `gpkg`).
 * MySQL provider: the connection DSN is now built from `mysqlDriver.NewConfig()`, preserving the go-sql-driver authentication defaults. Previously a bare config struct literal disabled `allowNativePasswords`, so accounts using `mysql_native_password` failed to connect with "this user requires mysql native password authentication".
+* MySQL provider: `BIGINT UNSIGNED` (`uint64`) and `FLOAT` (`float32`) column values arriving from the driver's binary protocol hit the tag type switch's error fallback, so the affected tags were silently dropped from the tile while an `unexpected type for mysql column data` error was logged per row. Both types are now encoded into the MVT (`uint64` via the native `uint_value`, `float32` widened through its shortest decimal form so the tag matches the text protocol's value).
 ## 0.17.0 (2023-07-27)
 
 Features
