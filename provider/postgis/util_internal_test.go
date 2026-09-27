@@ -282,6 +282,17 @@ func TestUppercaseTokens(t *testing.T) {
 	}
 }
 
+// SQL-context-aware token substitution (UPSTREAM 2.6): uppercaseTokens
+// normalizes code-context tokens only; token text inside string literals,
+// quoted identifiers and comments is left byte-identical.
+func TestUppercaseTokensProtectedContexts(t *testing.T) {
+	str := "SELECT `!x!`, '!y!' -- !z!\nFROM t WHERE !zoom! = 1"
+	want := "SELECT `!x!`, '!y!' -- !z!\nFROM t WHERE !ZOOM! = 1"
+	if out := uppercaseTokens(str); out != want {
+		t.Fatalf("protected contexts must not be uppercased:\n got %q\nwant %q", out, want)
+	}
+}
+
 func TestDecipherFields(t *testing.T) {
 	ttools.ShouldSkip(t, TESTENV)
 
