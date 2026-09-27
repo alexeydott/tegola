@@ -84,8 +84,7 @@ Return vector tiles for a map layer. The URI supports the same variables as the 
 - `:layer_name` is the name of the map layer as defined in the `config.toml` file.
 
 Tile cache operations can be requested on the map-layer endpoint with the `tile`
-query parameter. These operations are synchronous and the query parameter is
-never included in the tile cache key:
+query parameter. The query parameter is never included in the tile cache key:
 
 ```
 /maps/:map_name/:layer_name/:z/:x/:y?tile=status
@@ -112,10 +111,16 @@ never included in the tile cache key:
   The `metatile` array contains the metatile origin (`x`, `y`) and its
   effective width and height. At low zoom levels the dimensions can be
   smaller than 8x8 because they are clipped to the valid tile range.
-- `?tile=update` regenerates and caches every tile in the aligned 8x8
-  metatile, then returns `204 No Content` without an MVT body.
-- `?tile=getupdated` regenerates and caches the same metatile, then returns the
-  requested tile as an MVT response.
+- `?tile=update` schedules regeneration of every tile in the aligned 8x8
+  metatile in the background and returns `202 Accepted` immediately. The
+  response body is empty. Regeneration is single-flight per metatile: requests
+  that arrive while a regeneration is running join it instead of starting
+  another one. `?tile=status` reports `"updating": true` while a regeneration
+  is running. If the background regeneration fails it is logged at WARN and
+  the next request retries it.
+- `?tile=getupdated` renders and returns the requested tile immediately as an
+  MVT response, and schedules the same background metatile regeneration as
+  `?tile=update`.
 
 The `tile` operation cannot be combined with other query parameters.
 Operation responses are marked `Cache-Control: no-store`.
