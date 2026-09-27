@@ -27,6 +27,7 @@ import (
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/internal/sqltoken"
 	"github.com/go-spatial/tegola/mos"
 )
 
@@ -158,71 +159,92 @@ var probeKnownTokens = []string{
 //
 // Unknown !token! values (custom query parameters) are left untouched:
 // they are resolved by the parameter layer at tile time.
+//
+// SQL-context awareness: every step above touches only tokens and
+// comparisons in SQL code context. Token-looking text inside string
+// literals, quoted identifiers, comments, or PostgreSQL dollar-quoted
+// strings stays verbatim (and is never uppercased by the normalization),
+// so probing cannot rewrite documented or quoted text.
 func PrepareProbeSQL(customSQL, geomField, idField, geomType string) string {
 	sql := normalizeProbeTokens(customSQL)
 	// collapse tile/zoom comparisons to the permissive predicate no matter
 	// which side of the operator the token is on (audit P6-9). The
 	// token-left pass runs first so token-to-token comparisons collapse in
-	// one step instead of being cut into bare substitutions.
-	sql = probeTokenLeftCompareRegexp.ReplaceAllString(sql, "${1}"+probePermissivePredicate)
-	sql = probeTokenRightCompareRegexp.ReplaceAllString(sql, "${1}"+probePermissivePredicate)
-	sql = probeZoomCompareRegexp.ReplaceAllString(sql, probeAllZooms)
+	// one step instead of being cut into bare substitutions. A match whose
+	// span carries token-looking text in a protected context is left
+	// verbatim: collapsing it would rewrite quoted or commented text.
+	sql = replaceAllGuarded(sql, probeTokenLeftCompareRegexp, probePermissivePredicate, true)
+	sql = replaceAllGuarded(sql, probeTokenRightCompareRegexp, probePermissivePredicate, true)
+	sql = replaceAllGuarded(sql, probeZoomCompareRegexp, probeAllZooms, false)
 	// the result is embedded into wrapping inspection queries
 	// ("SELECT ... FROM (%s) ..."), so a trailing semicolon must go
-	sql = strings.NewReplacer(
-		config.BboxToken, probePermissivePredicate,
-		"!BOX!", probePermissivePredicate,
-		config.ZoomToken, "0",
-		config.ZToken, "0",
-		config.XToken, "0",
-		config.YToken, "0",
-		config.ScaleDenominatorToken, strconv.FormatFloat(probeScaleDenominator, 'f', 8, 64),
-		config.PixelWidthToken, strconv.FormatFloat(probePixelWidth, 'f', 8, 64),
-		config.PixelHeightToken, strconv.FormatFloat(probePixelHeight, 'f', 8, 64),
-		config.IdFieldToken, idField,
-		config.GeomFieldToken, geomField,
-		config.GeomTypeToken, geomType,
-	).Replace(sql)
+	sql = sqltoken.MapTokens(sql, func(tok string) string {
+		switch tok {
+		case config.BboxToken, "!BOX!":
+			return probePermissivePredicate
+		case config.ZoomToken, config.ZToken, config.XToken, config.YToken:
+			return "0"
+		case config.ScaleDenominatorToken:
+			return strconv.FormatFloat(probeScaleDenominator, 'f', 8, 64)
+		case config.PixelWidthToken:
+			return strconv.FormatFloat(probePixelWidth, 'f', 8, 64)
+		case config.PixelHeightToken:
+			return strconv.FormatFloat(probePixelHeight, 'f', 8, 64)
+		case config.IdFieldToken:
+			return idField
+		case config.GeomFieldToken:
+			return geomField
+		case config.GeomTypeToken:
+			return geomType
+		}
+		return tok
+	})
 	return strings.TrimSuffix(strings.TrimSpace(sql), ";")
 }
 
 // normalizeProbeTokens rewrites the known tokens to their canonical
-// uppercase spelling so the probe substitution is case-insensitive.
+// uppercase spelling so the probe substitution is case-insensitive. Only
+// code-context tokens are normalized; token-looking text in protected
+// contexts keeps its exact bytes.
 func normalizeProbeTokens(sql string) string {
-	for _, tok := range probeKnownTokens {
-		sql = replaceFold(sql, tok, tok)
-	}
-	return sql
+	return sqltoken.MapTokens(sql, func(tok string) string {
+		for _, known := range probeKnownTokens {
+			if strings.EqualFold(tok, known) {
+				return known
+			}
+		}
+		return tok
+	})
 }
 
-// replaceFold replaces every case-insensitive occurrence of old with
-// replacement in s.
-func replaceFold(s, old, replacement string) string {
-	if old == "" {
-		return s
+// replaceAllGuarded mirrors re.ReplaceAllString(sql, "${1}"+repl) (or
+// re.ReplaceAllString(sql, repl) when emitGroup1 is false) except that
+// matches whose span contains token-looking text in a protected context
+// are left verbatim instead of collapsed. The probe replacements only
+// re-emit submatch 1, so the expansion is modeled by the flag rather than
+// a full ${N} expander.
+func replaceAllGuarded(sql string, re *regexp.Regexp, repl string, emitGroup1 bool) string {
+	matches := re.FindAllStringSubmatchIndex(sql, -1)
+	if len(matches) == 0 {
+		return sql
 	}
 	var b strings.Builder
-	for {
-		i := indexFold(s, old)
-		if i < 0 {
-			b.WriteString(s)
-			return b.String()
+	prev := 0
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		b.WriteString(sql[prev:start])
+		if sqltoken.SpanHasProtectedToken(sql, start, end) {
+			b.WriteString(sql[start:end])
+		} else {
+			if emitGroup1 && len(m) >= 4 && m[2] >= 0 {
+				b.WriteString(sql[m[2]:m[3]])
+			}
+			b.WriteString(repl)
 		}
-		b.WriteString(s[:i])
-		b.WriteString(replacement)
-		s = s[i+len(old):]
+		prev = end
 	}
-}
-
-// indexFold returns the index of the first case-insensitive occurrence of
-// sub in s, or -1.
-func indexFold(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if strings.EqualFold(s[i:i+len(sub)], sub) {
-			return i
-		}
-	}
-	return -1
+	b.WriteString(sql[prev:])
+	return b.String()
 }
 
 // WrapProbeSQL wraps a prepared custom-SQL query in the standard probe
@@ -345,7 +367,9 @@ func (e ErrSQLGeometryContract) Error() string {
 // Fail-closed registration errors — the runtime tile query cannot execute
 // without them:
 //
-//   - the SQL must contain a bbox token (!BBOX! or !BOX!, case-insensitive);
+//   - the SQL must contain a bbox token (!BBOX! or !BOX!, case-insensitive,
+//     in code context — token text in strings/comments/identifiers does
+//     not count);
 //   - when a geometry column is configured, the probe must have matched it
 //     in the result columns.
 //
@@ -364,9 +388,7 @@ func (e ErrSQLGeometryContract) Error() string {
 // persist those instead of the configured spellings. Otherwise resolved is
 // the configured chain passed in.
 func ResolveBoundsSQLContract(layerName, sql, geometryField string, contract SQLGeometryContract, configured BBoxFields) (resolved BBoxFields, boundsInResult bool, err error) {
-	upper := strings.ToUpper(sql)
-	if !strings.Contains(upper, strings.ToUpper(config.BboxToken)) &&
-		!strings.Contains(upper, "!BOX!") {
+	if !sqltoken.ContainsTokenFold(sql, config.BboxToken, "!BOX!") {
 		return configured, false, ErrSQLGeometryContract{Layer: layerName,
 			Reason: fmt.Sprintf("missing %v token; bounds-backed custom SQL must carry a bounds predicate", config.BboxToken)}
 	}
@@ -418,12 +440,11 @@ const crsDefnConfigKey = "crs_defn"
 // regardless of the layer CRS. Token values are left unchanged. The
 // crs_defn text (layer over provider) is used as a hint for synthetic CRSs.
 // Either cfg may be nil. Returns true when the warning was logged (for
-// testability); callers may ignore the result.
+// testability); callers may ignore the result. Token detection is
+// case-insensitive but code-context only: token text in string literals,
+// identifiers, or comments does not count as usage.
 func WarnNonMetricScaleTokens(layerName, sql string, srid uint32, providerCfg, layerCfg dict.Dicter) bool {
-	upper := strings.ToUpper(sql)
-	uses := strings.Contains(upper, strings.ToUpper(config.ScaleDenominatorToken)) ||
-		strings.Contains(upper, strings.ToUpper(config.PixelWidthToken)) ||
-		strings.Contains(upper, strings.ToUpper(config.PixelHeightToken))
+	uses := sqltoken.ContainsTokenFold(sql, config.ScaleDenominatorToken, config.PixelWidthToken, config.PixelHeightToken)
 	if !uses {
 		return false
 	}

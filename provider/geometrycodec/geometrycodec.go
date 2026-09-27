@@ -22,6 +22,7 @@ import (
 	"github.com/go-spatial/geom/encoding/wkt"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/internal/sqltoken"
 	"github.com/go-spatial/tegola/mos"
 )
 
@@ -91,7 +92,9 @@ func ValidateMVTGeometryFormat(format string) error {
 // !BBOX! is permitted for `mos`; wkb/wkt store geometries as BLOB/TEXT
 // columns without raw bounds columns, so !BBOX! remains rejected for them —
 // tegola applies an exact in-memory bbox filter instead. Token matching is
-// case-insensitive, mirroring the providers' uppercaseTokens normalization.
+// case-insensitive and SQL-context aware: only tokens in code context count,
+// mirroring the providers' substitution, so token-looking text in string
+// literals, identifiers, or comments is not flagged.
 // Non-raw formats and empty SQL are always accepted. For MOS callers that
 // require bounds-backed SQL, use RequireBBoxCustomSQL afterwards.
 func ValidateRawCustomSQL(layerName, geometryFormat, customSQL string, bboxTokens ...string) error {
@@ -104,7 +107,7 @@ func ValidateRawCustomSQL(layerName, geometryFormat, customSQL string, bboxToken
 		return nil
 	}
 	for _, tok := range bboxTokens {
-		if strings.Contains(strings.ToLower(customSQL), strings.ToLower(tok)) {
+		if sqltoken.ContainsTokenFold(customSQL, tok) {
 			return fmt.Errorf(
 				"layer (%v): custom SQL cannot use %v with geometry_format=%q: raw formats (wkb/wkt) store geometries as BLOB/TEXT and have no native spatial column for the token's predicate; remove %v from the custom SQL (tegola applies an exact in-memory bbox filter instead)",
 				layerName, tok, geometryFormat, tok,
@@ -115,14 +118,11 @@ func ValidateRawCustomSQL(layerName, geometryFormat, customSQL string, bboxToken
 }
 
 // SQLHasBBoxToken reports whether customSQL carries any of the given
-// bounds-predicate tokens (!BBOX! / !BOX!), case-insensitively.
+// bounds-predicate tokens (!BBOX! / !BOX!), case-insensitively. Only tokens
+// in SQL code context count: token-looking text inside string literals,
+// quoted identifiers, or comments does not.
 func SQLHasBBoxToken(customSQL string, bboxTokens ...string) bool {
-	for _, tok := range bboxTokens {
-		if strings.Contains(strings.ToLower(customSQL), strings.ToLower(tok)) {
-			return true
-		}
-	}
-	return false
+	return sqltoken.ContainsTokenFold(customSQL, bboxTokens...)
 }
 
 // RequireBBoxCustomSQL reports whether customSQL for a bounds-backed layer

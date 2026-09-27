@@ -21,6 +21,7 @@ import (
 	conf "github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/internal/sqltoken"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
 	"github.com/go-spatial/tegola/provider"
@@ -779,7 +780,7 @@ func mosProbeSQL(l *Layer) string {
 		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
 	sql := codec.PrepareProbeSQL(l.sql, l.geomField, l.idField, probeGeomType)
-	sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
+	sql = sqltoken.StripTokens(sql)
 	return codec.WrapProbeSQL(sql)
 }
 
@@ -1043,9 +1044,11 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
 	}
-	// catch-all: drop any remaining !TOKEN! the shared preparation could not
-	// neutralize so a leftover placeholder cannot break the probe statement
-	probeSQL = provider.ParameterTokenRegexp.ReplaceAllString(probeSQL, "")
+	// catch-all: drop any remaining code-context !TOKEN! the shared
+	// preparation could not neutralize so a leftover placeholder cannot
+	// break the probe statement (tokens in string literals or comments
+	// are left verbatim)
+	probeSQL = sqltoken.StripTokens(probeSQL)
 
 	// 7.2.3: the probe statement carries no query arguments; no args —
 	// never pass nil here: pgx variadic treats a lone nil as one query
@@ -1175,12 +1178,11 @@ func geomTypeProbeSQL(l *Layer, params provider.Params) (string, []any) {
 	args := make([]any, 0)
 	sql = params.ReplaceParams(sql, &args)
 
-	if provider.ParameterTokenRegexp.MatchString(sql) {
-		// remove all parameter tokens for inspection
-		// crossing our fingers that the query is still valid 🤞
-		// if not, the user will have to specify `geometry_type` in the config
-		sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
-	}
+	// remove all remaining code-context parameter tokens for inspection
+	// (tokens in string literals or comments are left verbatim)
+	// crossing our fingers that the query is still valid 🤞
+	// if not, the user will have to specify `geometry_type` in the config
+	sql = sqltoken.StripTokens(sql)
 
 	return codec.WrapProbeSQL(sql), args
 }
@@ -1612,14 +1614,16 @@ func CreateProvider(
 		}
 
 		if sql != "" {
-			// convert !BOX! (MapServer) and !bbox! (Mapnik) to !BBOX! for compatibility
-			sql := strings.ReplaceAll(
-				strings.ReplaceAll(sql, "!BOX!", conf.BboxToken),
-				"!bbox!",
-				conf.BboxToken,
-			)
-			// make sure that the sql has a !BBOX! token
-			if !strings.Contains(sql, conf.BboxToken) {
+			// convert !BOX! (MapServer) and !bbox! (Mapnik) to !BBOX! for
+			// compatibility; only code-context occurrences are rewritten
+			sql := sqltoken.MapTokens(sql, func(token string) string {
+				if token == "!BOX!" || token == "!bbox!" {
+					return conf.BboxToken
+				}
+				return token
+			})
+			// make sure that the sql has a !BBOX! token (code context)
+			if !sqltoken.ContainsToken(sql, conf.BboxToken) {
 				return nil, fmt.Errorf(
 					"SQL for layer (%v) %v is missing required token: %v",
 					i,
@@ -1646,14 +1650,14 @@ func CreateProvider(
 				}
 			}
 
-			// check all tokens are valid
-			for _, token := range provider.ParameterTokenRegexp.FindAllString(sql, -1) {
-				if _, ok := conf.ReservedTokens[token]; !ok {
+			// check all tokens are valid (code-context occurrences only)
+			for _, token := range sqltoken.CodeTokens(sql) {
+				if _, ok := conf.ReservedTokens[token.Text]; !ok {
 					return nil, fmt.Errorf(
 						"SQL for layer (%v) %v references an unknown token %s: %v",
 						i,
 						lName,
-						token,
+						token.Text,
 						sql,
 					)
 				}
