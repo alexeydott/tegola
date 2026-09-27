@@ -54,7 +54,7 @@ type rowsConnector struct{ result SQLRows }
 func (c rowsConnector) Connect(context.Context) (driver.Conn, error) {
 	return &rowsConn{c.result}, nil
 }
-func (c rowsConnector) Driver() driver.Driver { return rowsDriver{c.result} }
+func (c rowsConnector) Driver() driver.Driver { return rowsDriver(c) }
 
 type rowsDriver struct{ result SQLRows }
 

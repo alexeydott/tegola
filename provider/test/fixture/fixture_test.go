@@ -131,7 +131,12 @@ func TestSQLRows(t *testing.T) {
 				}
 			}()
 		}
-		if _, err := db.Prepare("unsupported"); err == nil {
+		if stmt, err := db.Prepare("unsupported"); err == nil {
+			defer func() {
+				if err := stmt.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			t.Fatal("Prepare must fail")
 		}
 		if _, err := db.Begin(); err == nil {
@@ -171,5 +176,11 @@ func TestSQLRowsEmptyAndIsolated(t *testing.T) {
 	types, err := rows.ColumnTypes()
 	if err != nil || len(types) != 1 || types[0].DatabaseTypeName() != "" {
 		t.Fatalf("unconfigured types = %v, %v", types, err)
+	}
+	if rows.Next() {
+		t.Fatal("empty result must not produce a row")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 }

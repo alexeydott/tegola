@@ -13,12 +13,12 @@ import (
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/geom/encoding/wkb"
-	"github.com/go-spatial/geom/slippy"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/go-spatial/tegola/provider/gpkg"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 )
 
 // openSQLite opens the fixture database; the sqlite3 driver is registered by
@@ -39,16 +39,9 @@ func newRawFixture(t *testing.T, tables []string) rawFixture {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "raw.gpkg")
-	db, err := openSQLite(path)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	for _, ddl := range tables {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatalf("exec %q: %v", ddl, err)
-		}
+	db := fixture.OpenDB(t, "sqlite3", path, tables...)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite fixture: %v", err)
 	}
 	return rawFixture{path: path}
 }
@@ -134,9 +127,9 @@ func TestMOSPointAndBBox(t *testing.T) {
 		}
 		t.Cleanup(gpkg.Cleanup)
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{0, 0},
 				[2]float64{10, 10},
 			),
@@ -188,9 +181,9 @@ func TestMOSPointAndBBox(t *testing.T) {
 		}
 		t.Cleanup(gpkg.Cleanup)
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{0, 0},
 				[2]float64{10, 10},
 			),
@@ -291,9 +284,9 @@ func TestRawFormatTableLayer(t *testing.T) {
 		// RemoveAll runs (t.Cleanup is LIFO within the subtest).
 		t.Cleanup(gpkg.Cleanup)
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{-200, -200},
 				[2]float64{200, 200},
 			),
@@ -341,9 +334,9 @@ func TestRawFormatTableLayer(t *testing.T) {
 		}
 		t.Cleanup(gpkg.Cleanup)
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{0, 0},
 				[2]float64{100, 100},
 			),
@@ -395,9 +388,9 @@ func TestRawFormatTableLayer(t *testing.T) {
 
 		// decoded coords are 0.01-scale metres (1..3 metres); a small
 		// WebMercator window around the origin must contain them.
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{-10, -10},
 				[2]float64{10, 10},
 			),
@@ -453,9 +446,9 @@ func TestRawFormatTableLayer(t *testing.T) {
 		}
 		t.Cleanup(gpkg.Cleanup)
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{-10, -10},
 				[2]float64{10, 10},
 			),
@@ -545,9 +538,9 @@ func TestRawFormatTableLayer(t *testing.T) {
 		}
 		t.Cleanup(gpkg.Cleanup)
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{-10, -10},
 				[2]float64{10, 10},
 			),
@@ -611,9 +604,9 @@ func TestRawFormatTableLayer(t *testing.T) {
 			t.Errorf("layer srid = %v, want 3857 (system info projection must not be applied to SQL layers)", srid)
 		}
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{-10, -10},
 				[2]float64{10, 10},
 			),
@@ -773,15 +766,10 @@ func TestMOSDeferredCustomSQLPreQuery(t *testing.T) {
 		{mosPointBlob([][2]int32{{200, 400}}), 0.0, 10.0, 0.0, 10.0},
 	})
 
-	tile := &deferredTestTile{
-		z:    5,
-		x:    0,
-		y:    0,
-		srid: 3857,
-		bufferedExtent: geom.NewExtent(
-			[2]float64{0, 0},
-			[2]float64{10, 10},
-		),
+	bounds := geom.NewExtent([2]float64{0, 0}, [2]float64{10, 10})
+	tile := &fixture.Tile{
+		Z: 5, X: 0, Y: 0, SRID: 3857,
+		Bounds: bounds, BufferedBounds: bounds,
 	}
 	var count int
 	err = p.TileFeatures(context.TODO(), "mos_layer", tile, nil, func(f *provider.Feature) error {
@@ -803,17 +791,6 @@ func TestMOSDeferredCustomSQLPreQuery(t *testing.T) {
 		t.Errorf("feature count = %v, want 1", count)
 	}
 }
-
-type deferredTestTile struct {
-	z              slippy.Zoom
-	x, y           uint
-	srid           uint64
-	bufferedExtent *geom.Extent
-}
-
-func (t *deferredTestTile) Extent() (*geom.Extent, uint64)         { return t.bufferedExtent, t.srid }
-func (t *deferredTestTile) BufferedExtent() (*geom.Extent, uint64) { return t.bufferedExtent, t.srid }
-func (t *deferredTestTile) ZXY() (slippy.Zoom, uint, uint)         { return t.z, t.x, t.y }
 
 // insertRows inserts rows into the given table with named columns (the id
 // column is autoincrement and is omitted). nil values become SQL NULL.
@@ -927,9 +904,9 @@ func TestMOSLayerInfoPositionInvariant(t *testing.T) {
 					t.Errorf("layer srid = %v, want 3857 (SQL layers must not apply system info)", srid)
 				}
 
-				tile := MockTile{
-					srid: 3857,
-					bufferedExtent: geom.NewExtent(
+				tile := fixture.Tile{
+					SRID: 3857,
+					BufferedBounds: geom.NewExtent(
 						[2]float64{-10, -10},
 						[2]float64{10, 10},
 					),
@@ -976,19 +953,19 @@ func TestConfiguredBoundsFilterAndPlainMinxTag(t *testing.T) {
 			"filepath": fx.path,
 			"layers": []map[string]interface{}{
 				{
-					"name":                  "raw_layer",
-					"tablename":             "parcels",
-					"geometry_format":       "wkb",
-					"geometry_type":         "Point",
-					"srid":                  3857,
+					"name":            "raw_layer",
+					"tablename":       "parcels",
+					"geometry_format": "wkb",
+					"geometry_type":   "Point",
+					"srid":            3857,
 					// tag columns are config-driven for tablename layers:
 					// include the plain minx column and the configured
 					// bounds columns to pin the exclusion contract
-					"fields":                []string{"name", "minx", "x0", "x1", "y0", "y1"},
-					"bbox_minx_fieldname":   "x0",
-					"bbox_maxx_fieldname":   "x1",
-					"bbox_miny_fieldname":   "y0",
-					"bbox_maxy_fieldname":   "y1",
+					"fields":              []string{"name", "minx", "x0", "x1", "y0", "y1"},
+					"bbox_minx_fieldname": "x0",
+					"bbox_maxx_fieldname": "x1",
+					"bbox_miny_fieldname": "y0",
+					"bbox_maxy_fieldname": "y1",
 				},
 			},
 		}
@@ -998,9 +975,9 @@ func TestConfiguredBoundsFilterAndPlainMinxTag(t *testing.T) {
 		}
 		t.Cleanup(gpkg.Cleanup)
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{-10, -10},
 				[2]float64{10, 10},
 			),
@@ -1056,9 +1033,9 @@ func TestConfiguredBoundsFilterAndPlainMinxTag(t *testing.T) {
 		}
 		t.Cleanup(gpkg.Cleanup)
 
-		tile := MockTile{
-			srid: 3857,
-			bufferedExtent: geom.NewExtent(
+		tile := fixture.Tile{
+			SRID: 3857,
+			BufferedBounds: geom.NewExtent(
 				[2]float64{-10, -10},
 				[2]float64{10, 10},
 			),

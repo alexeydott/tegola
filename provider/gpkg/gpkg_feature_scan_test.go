@@ -19,6 +19,7 @@ import (
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/gpkg"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 )
 
 // captureWarns runs f with the default slog logger replaced by one writing
@@ -83,9 +84,9 @@ func TestNullFeatureIDSkipped(t *testing.T) {
 	}
 	t.Cleanup(gpkg.Cleanup)
 
-	tile := MockTile{
-		srid: 3857,
-		bufferedExtent: geom.NewExtent(
+	tile := fixture.Tile{
+		SRID: 3857,
+		BufferedBounds: geom.NewExtent(
 			[2]float64{0, 0},
 			[2]float64{100, 100},
 		),
@@ -146,9 +147,9 @@ func TestBlobTagBase64(t *testing.T) {
 	}
 	t.Cleanup(gpkg.Cleanup)
 
-	tile := MockTile{
-		srid: 3857,
-		bufferedExtent: geom.NewExtent(
+	tile := fixture.Tile{
+		SRID: 3857,
+		BufferedBounds: geom.NewExtent(
 			[2]float64{0, 0},
 			[2]float64{100, 100},
 		),
@@ -273,9 +274,9 @@ func TestMixedCaseColumnNames(t *testing.T) {
 func fetchOneFeature(t *testing.T, p provider.Tiler, layer string) provider.Feature {
 	t.Helper()
 
-	tile := MockTile{
-		srid: 3857,
-		bufferedExtent: geom.NewExtent(
+	tile := fixture.Tile{
+		SRID: 3857,
+		BufferedBounds: geom.NewExtent(
 			[2]float64{0, 0},
 			[2]float64{100, 100},
 		),
@@ -661,9 +662,9 @@ CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_
 	}
 	fetchIDs := func(t *testing.T, p provider.Tiler) []uint64 {
 		t.Helper()
-		tile := MockTile{
-			srid:           3857,
-			bufferedExtent: geom.NewExtent([2]float64{0, 0}, [2]float64{100, 100}),
+		tile := fixture.Tile{
+			SRID:           3857,
+			BufferedBounds: geom.NewExtent([2]float64{0, 0}, [2]float64{100, 100}),
 		}
 		var ids []uint64
 		err := p.TileFeatures(context.TODO(), "t1", &tile, nil, func(f *provider.Feature) error {
@@ -826,9 +827,9 @@ CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_
 	}
 	fetchIDs := func(t *testing.T, p provider.Tiler) []uint64 {
 		t.Helper()
-		tile := MockTile{
-			srid:           3857,
-			bufferedExtent: geom.NewExtent([2]float64{0, 0}, [2]float64{100, 100}),
+		tile := fixture.Tile{
+			SRID:           3857,
+			BufferedBounds: geom.NewExtent([2]float64{0, 0}, [2]float64{100, 100}),
 		}
 		var ids []uint64
 		err := p.TileFeatures(context.TODO(), "t1", &tile, nil, func(f *provider.Feature) error {

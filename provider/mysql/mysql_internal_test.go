@@ -26,6 +26,7 @@ import (
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
@@ -490,89 +491,6 @@ func TestValidateMOSPrecision(t *testing.T) {
 	}
 }
 
-type samplingTestDriver struct {
-	values [][]driver.Value
-}
-
-func (d *samplingTestDriver) Open(string) (driver.Conn, error) {
-	return &samplingTestConn{driver: d}, nil
-}
-
-type samplingTestConn struct {
-	driver *samplingTestDriver
-}
-
-func (c *samplingTestConn) Prepare(string) (driver.Stmt, error) {
-	return nil, errors.New("not supported")
-}
-func (c *samplingTestConn) Close() error              { return nil }
-func (c *samplingTestConn) Begin() (driver.Tx, error) { return nil, errors.New("not supported") }
-
-func (c *samplingTestConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
-	return &samplingTestRows{values: c.driver.values}, nil
-}
-
-type samplingTestRows struct {
-	values [][]driver.Value
-	index  int
-}
-
-func (r *samplingTestRows) Columns() []string { return []string{"geom"} }
-func (r *samplingTestRows) Close() error      { return nil }
-
-func (r *samplingTestRows) Next(dest []driver.Value) error {
-	if r.index == len(r.values) {
-		return io.EOF
-	}
-	dest[0] = r.values[r.index][0]
-	r.index++
-	return nil
-}
-
-func (r *samplingTestRows) ColumnTypeDatabaseTypeName(int) string { return "BLOB" }
-
-// staticRowsDriver is a fake database/sql driver that returns a fixed set of
-// rows for every query, regardless of the SQL text. It emulates a server that
-// cannot evaluate spatial predicates, so only the provider's in-memory exact
-// filter can drop out-of-tile rows.
-type staticRowsDriver struct {
-	rows [][]driver.Value
-}
-
-func (d *staticRowsDriver) Open(string) (driver.Conn, error) {
-	return &staticRowsConn{rows: d.rows}, nil
-}
-
-type staticRowsConn struct {
-	rows [][]driver.Value
-}
-
-func (c *staticRowsConn) Prepare(string) (driver.Stmt, error) {
-	return nil, errors.New("not supported")
-}
-func (c *staticRowsConn) Close() error              { return nil }
-func (c *staticRowsConn) Begin() (driver.Tx, error) { return nil, errors.New("not supported") }
-
-func (c *staticRowsConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
-	return &staticRows{rows: c.rows}, nil
-}
-
-type staticRows struct {
-	rows [][]driver.Value
-	next int
-}
-
-func (r *staticRows) Columns() []string { return []string{"id", "geom"} }
-func (r *staticRows) Close() error      { return nil }
-func (r *staticRows) Next(dest []driver.Value) error {
-	if r.next >= len(r.rows) {
-		return io.EOF
-	}
-	copy(dest, r.rows[r.next])
-	r.next++
-	return nil
-}
-
 func TestTileFeaturesWKBInMemoryFilter(t *testing.T) {
 	inside, err := wkb.EncodeBytes(geom.Point{-1000000, 1000000})
 	if err != nil {
@@ -583,16 +501,10 @@ func TestTileFeaturesWKBInMemoryFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	driverName := "tegola_mysql_wkb_rows_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
-	sql.Register(driverName, &staticRowsDriver{rows: [][]driver.Value{
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: []string{"id", "geom"}, Rows: [][]driver.Value{
 		{int64(1), inside},
 		{int64(2), outside},
 	}})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
 
 	// The fake server returns both rows for any query, so the SQL !BBOX!
 	// predicate cannot be what filters: the exact in-memory filter is
@@ -636,15 +548,10 @@ func TestGeomTypeFromColumnSkipsSystemInfoBlob(t *testing.T) {
 	copy(systemInfo, []byte{5, 'V', 'e', 'r', ' ', '1'})
 	binary.LittleEndian.PutUint32(systemInfo[11:15], 4)
 
-	driverName := "tegola_mysql_sampling_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
-	sql.Register(driverName, &samplingTestDriver{
-		values: [][]driver.Value{{systemInfo}, {"POINT(1 2)"}},
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{
+		Columns: []string{"geom"}, TypeNames: []string{"BLOB"},
+		Rows: [][]driver.Value{{systemInfo}, {"POINT(1 2)"}},
 	})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
 
 	geo, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
@@ -662,32 +569,22 @@ func TestGeomTypeFromColumnOnlySystemInfoRowsYieldsErrNoRows(t *testing.T) {
 	copy(systemInfo, []byte{5, 'V', 'e', 'r', ' ', '1'})
 	binary.LittleEndian.PutUint32(systemInfo[11:15], 4)
 
-	driverName := "tegola_mysql_layerinfo_only_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
-	sql.Register(driverName, &samplingTestDriver{
-		values: [][]driver.Value{{systemInfo}},
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{
+		Columns: []string{"geom"}, TypeNames: []string{"BLOB"},
+		Rows: [][]driver.Value{{systemInfo}},
 	})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
 
-	_, _, err = geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
+	_, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != sql.ErrNoRows {
 		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
 }
 
 func TestGeomTypeFromColumnSkipsNullGeometryRows(t *testing.T) {
-	driverName := "tegola_mysql_null_sampling_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
-	sql.Register(driverName, &samplingTestDriver{
-		values: [][]driver.Value{{nil}, {"POINT(1 2)"}},
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{
+		Columns: []string{"geom"}, TypeNames: []string{"BLOB"},
+		Rows: [][]driver.Value{{nil}, {"POINT(1 2)"}},
 	})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
 
 	geo, _, err := geomTypeFromColumn(db, "SELECT geom", GeometryFormatWKT, GeometryFormatMySQL, codec.DefaultMOSConfig())
 	if err != nil {
@@ -1137,7 +1034,7 @@ func TestShouldProbeTableSRIDs(t *testing.T) {
 // CRS advice.
 func TestCheckTableSRIDs(t *testing.T) {
 	t.Run("single srid", func(t *testing.T) {
-		db := openShowIndexStub(t, []string{"SRID"}, [][]driver.Value{{int64(4326)}})
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: []string{"SRID"}, Rows: [][]driver.Value{{int64(4326)}}})
 		defer func() { _ = db.Close() }()
 		if err := checkTableSRIDs(db, "t", "geom", "l"); err != nil {
 			t.Errorf("expected consistent SRIDs to pass, got: %v", err)
@@ -1145,7 +1042,7 @@ func TestCheckTableSRIDs(t *testing.T) {
 	})
 
 	t.Run("no rows", func(t *testing.T) {
-		db := openShowIndexStub(t, []string{"SRID"}, nil)
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: []string{"SRID"}})
 		defer func() { _ = db.Close() }()
 		if err := checkTableSRIDs(db, "t", "geom", "l"); err != nil {
 			t.Errorf("expected empty table to pass, got: %v", err)
@@ -1153,7 +1050,7 @@ func TestCheckTableSRIDs(t *testing.T) {
 	})
 
 	t.Run("mixed srids", func(t *testing.T) {
-		db := openShowIndexStub(t, []string{"SRID"}, [][]driver.Value{{int64(4326)}, {int64(3857)}})
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: []string{"SRID"}, Rows: [][]driver.Value{{int64(4326)}, {int64(3857)}}})
 		defer func() { _ = db.Close() }()
 		err := checkTableSRIDs(db, "t", "geom", "l")
 		if err == nil {
@@ -1636,15 +1533,9 @@ func TestExplicitGeometryTypeMixedContentPermitted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	driverName := "tegola_mysql_mixed_rows_test_" + strconv.FormatUint(retryTestDriverID.Add(1), 10)
-	sql.Register(driverName, &staticRowsDriver{rows: [][]driver.Value{
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: []string{"id", "geom"}, Rows: [][]driver.Value{
 		{int64(1), inside},
 	}})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
 
 	p := &Provider{
 		db: db,
@@ -1679,61 +1570,6 @@ func TestExplicitGeometryTypeMixedContentPermitted(t *testing.T) {
 	}
 }
 
-// rowsStubDriver emulates SHOW INDEX results: every query returns the same
-// column names and rows, so parseShowIndexRows can be exercised against
-// real sql.Rows across server versions (audit A08).
-type rowsStubDriver struct {
-	columns []string
-	rows    [][]driver.Value
-}
-
-func (d *rowsStubDriver) Open(string) (driver.Conn, error) {
-	return &rowsStubConn{columns: d.columns, rows: d.rows}, nil
-}
-
-type rowsStubConn struct {
-	columns []string
-	rows    [][]driver.Value
-}
-
-func (c *rowsStubConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("not supported") }
-func (c *rowsStubConn) Close() error                        { return nil }
-func (c *rowsStubConn) Begin() (driver.Tx, error)           { return nil, errors.New("not supported") }
-func (c *rowsStubConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
-	return &rowsStubRows{columns: c.columns, rows: c.rows}, nil
-}
-
-type rowsStubRows struct {
-	columns []string
-	rows    [][]driver.Value
-	next    int
-}
-
-func (r *rowsStubRows) Columns() []string { return r.columns }
-func (r *rowsStubRows) Close() error      { return nil }
-func (r *rowsStubRows) Next(dest []driver.Value) error {
-	if r.next >= len(r.rows) {
-		return io.EOF
-	}
-	copy(dest, r.rows[r.next])
-	r.next++
-	return nil
-}
-
-var showIndexDriverSeq uint64
-
-func openShowIndexStub(t *testing.T, columns []string, rows [][]driver.Value) *sql.DB {
-	t.Helper()
-	driverName := "tegola_mysql_show_index_test_" + strconv.FormatUint(atomic.AddUint64(&showIndexDriverSeq, 1), 10)
-	sql.Register(driverName, &rowsStubDriver{columns: columns, rows: rows})
-	db, err := sql.Open(driverName, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
-
 // TestParseShowIndexRows covers the version-sensitive SHOW INDEX parsing
 // (audit A01/A08): MySQL 5.7 (13 columns), MySQL 8.0 (15 columns), future
 // servers with extra trailing columns, and rows shorter than the fixed
@@ -1750,7 +1586,7 @@ func TestParseShowIndexRows(t *testing.T) {
 			{"t", int64(1), "MINX_IDX", int64(1), "MINX", "A", int64(1), nil, nil, "YES", "BTREE", "", ""},
 			{"t", int64(1), "MINX_IDX", int64(2), "MUID", "A", int64(1), nil, nil, "YES", "BTREE", "", ""},
 		}
-		db := openShowIndexStub(t, columns, rows)
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows})
 		rs, err := db.Query("SHOW INDEX FROM t")
 		if err != nil {
 			t.Fatal(err)
@@ -1783,7 +1619,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		rows := [][]driver.Value{
 			{"t", int64(0), "PRIMARY", int64(1), "OKEY", "A", int64(1), nil, nil, "", "BTREE", "", "", "YES", nil},
 		}
-		db := openShowIndexStub(t, columns, rows)
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows})
 		rs, err := db.Query("SHOW INDEX FROM t")
 		if err != nil {
 			t.Fatal(err)
@@ -1810,7 +1646,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		rows := [][]driver.Value{
 			{"t", int64(0), "PRIMARY", int64(1), "OKEY", "A", int64(1), nil, nil, "", "BTREE", "", "", "YES", nil, "x", "y"},
 		}
-		db := openShowIndexStub(t, columns, rows)
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows})
 		rs, err := db.Query("SHOW INDEX FROM t")
 		if err != nil {
 			t.Fatal(err)
@@ -1837,7 +1673,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		rows := [][]driver.Value{
 			{"t", int64(0), "PRIMARY", "not-a-number", "OKEY", "A", int64(1), nil, nil, "", "BTREE", "", ""},
 		}
-		db := openShowIndexStub(t, columns, rows)
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows})
 		rs, err := db.Query("SHOW INDEX FROM t")
 		if err != nil {
 			t.Fatal(err)
@@ -1851,7 +1687,7 @@ func TestParseShowIndexRows(t *testing.T) {
 	t.Run("missing required column", func(t *testing.T) {
 		columns := []string{"Table", "Non_unique", "Key_name", "Seq_in_index"}
 		rows := [][]driver.Value{{"t", int64(0), "PRIMARY", int64(1)}}
-		db := openShowIndexStub(t, columns, rows)
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows})
 		rs, err := db.Query("SHOW INDEX FROM t")
 		if err != nil {
 			t.Fatal(err)
@@ -1867,7 +1703,7 @@ func TestParseShowIndexRows(t *testing.T) {
 		rows := [][]driver.Value{
 			{nil, nil, "PRIMARY", "1", "OKEY"},
 		}
-		db := openShowIndexStub(t, columns, rows)
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: columns, Rows: rows})
 		rs, err := db.Query("SHOW INDEX FROM t")
 		if err != nil {
 			t.Fatal(err)

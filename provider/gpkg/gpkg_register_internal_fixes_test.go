@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -23,12 +24,7 @@ import (
 // its metadata rows cursor is open.
 func newGpkgMetadataDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "meta.gpkg"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range []string{
+	return fixture.OpenDB(t, "sqlite3", filepath.Join(t.TempDir(), "meta.gpkg"),
 		`CREATE TABLE gpkg_contents (
 			table_name TEXT NOT NULL PRIMARY KEY,
 			data_type TEXT NOT NULL,
@@ -46,12 +42,7 @@ func newGpkgMetadataDB(t *testing.T) *sql.DB {
 			z TINYINT NOT NULL, m TINYINT NOT NULL,
 			PRIMARY KEY (table_name, column_name)
 		)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatalf("exec %q: %v", ddl, err)
-		}
-	}
-	return db
+	)
 }
 
 func TestHasGpkgMetadataTables(t *testing.T) {

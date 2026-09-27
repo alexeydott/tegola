@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/go-spatial/tegola/internal/ttools"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/hana"
+	"github.com/go-spatial/tegola/provider/test/fixture"
 )
 
 // TESTENV is the environment variable that must be set to "yes" to run HANA tests.
@@ -36,24 +36,11 @@ type TCConfig struct {
 }
 
 func (cfg TCConfig) Config() dict.Dict {
-	var config map[string]interface{}
 	mConfig := getConfigFromEnv()
 	if cfg.BaseConfig != nil {
 		mConfig = cfg.BaseConfig
 	}
-	config = make(map[string]interface{}, len(mConfig))
-	maps.Copy(config, mConfig)
-
-	// set the config overrides
-	maps.Copy(config, cfg.ConfigOverride)
-
-	if len(cfg.LayerConfig) > 0 {
-		layerConfig, _ := config[hana.ConfigKeyLayers].([]map[string]interface{})
-		layerConfig = append(layerConfig, cfg.LayerConfig...)
-		config[hana.ConfigKeyLayers] = layerConfig
-	}
-
-	return dict.Dict(config)
+	return fixture.Config(mConfig, cfg.ConfigOverride, cfg.LayerConfig)
 }
 
 func GetConnectionURI() string {
