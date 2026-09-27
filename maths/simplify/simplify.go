@@ -1,10 +1,11 @@
 package simplify
 
 import (
+	"math"
+
 	"github.com/go-spatial/tegola"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/maths"
-	"github.com/go-spatial/tegola/maths/points"
 )
 
 // SimplifyGeometry applies the DouglasPeucker simplification routine to the supplied geometry
@@ -66,7 +67,10 @@ func simplifyLineString(g tegola.LineString, tolerance float64) basic.Line {
 		return nil
 	}
 
-	return basic.NewLineTruncatedFromPt(pts...)
+	// No coordinate truncation here: the MVT encoder quantizes to its output
+	// grid anyway, and pre-truncating shifted simplified vertices off the
+	// input subsequence (debt 3.6 corpus cases line/*-truncation).
+	return basic.NewLineFromPt(pts...)
 }
 
 func simplifyPolygon(g tegola.Polygon, tolerance float64) basic.Polygon {
@@ -99,8 +103,8 @@ func simplifyPolygon(g tegola.Polygon, tolerance float64) basic.Polygon {
 			continue
 		}
 
-		pts = normalizePoints(pts)
-		// If the last point is the same as the first, remove the first point.
+		normalized := normalizePoints(pts)
+		pts = normalized
 		if len(pts) <= 4 {
 			if i == 0 {
 				return basic.ClonePolygon(g)
@@ -118,7 +122,18 @@ func simplifyPolygon(g tegola.Polygon, tolerance float64) basic.Polygon {
 			continue
 		}
 
-		poly = append(poly, basic.NewLineTruncatedFromPt(pts...))
+		// Ring topology backstop: DouglasPeucker validates the open chain, but
+		// a ring also has the closing edge from last point back to first. When
+		// the closed ring self-intersects and the pre-simplify ring did not
+		// (or validation is inconclusive), fall back to the normalized ring,
+		// which preserves the input geometry exactly.
+		if intersects, complete := selfIntersects(pts, true); !complete || intersects {
+			if inIntersects, inComplete := selfIntersects(normalized, true); !inComplete || !inIntersects {
+				pts = normalized
+			}
+		}
+
+		poly = append(poly, basic.NewLineFromPt(pts...))
 	}
 
 	if len(poly) == 0 {
@@ -128,6 +143,12 @@ func simplifyPolygon(g tegola.Polygon, tolerance float64) basic.Polygon {
 	return poly
 }
 
+// normalizePoints removes redundant vertices from the ring chain pts without
+// changing the geometry: a vertex is dropped only when it lies on the segment
+// between the neighbours kept around it. (The previous rule dropped points
+// collinear with pts[0] and their successor regardless of position, which
+// removed spike apexes that are not between their neighbours and folded the
+// ring edge across the spike.)
 func normalizePoints(pts []maths.Pt) (pnts []maths.Pt) {
 	if pts[0] == pts[len(pts)-1] {
 		pts = pts[1:]
@@ -145,12 +166,23 @@ func normalizePoints(pts []maths.Pt) (pnts []maths.Pt) {
 		if ni >= len(pts) {
 			ni = 0
 		}
-		m1, _, sdef1 := points.SlopeIntercept(pts[lpt], pts[i])
-		m2, _, sdef2 := points.SlopeIntercept(pts[lpt], pts[ni])
-		if m1 != m2 || sdef1 != sdef2 {
-			pnts = append(pnts, pts[i])
+		if collinearBetween(pts[lpt], pts[i], pts[ni]) {
+			continue // drop: the path pts[lpt]-pts[i]-pts[ni] keeps its geometry
 		}
+		pnts = append(pnts, pts[i])
+		lpt = i
 	}
 
 	return pnts
+}
+
+// collinearBetween reports whether b lies on the segment from a to c
+// (endpoints included), so dropping b leaves the path a-c unchanged.
+func collinearBetween(a, b, c maths.Pt) bool {
+	ab := sub2(b, a)
+	bc := sub2(c, b)
+	if !nearZero(cross2(ab, bc), math.Sqrt(dot2(ab, ab)*dot2(bc, bc))) {
+		return false
+	}
+	return dot2(ab, bc) >= 0
 }
