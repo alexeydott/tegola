@@ -883,10 +883,6 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 					}
 				}
 			}
-
-			// warn-only 1.3 policy: the scale/pixel tokens are computed as
-			// Web Mercator metres regardless of the layer CRS.
-			codec.WarnNonMetricScaleTokens(lName, l.sql, uint32(l.srid), config, layer)
 		} else {
 			// Tablename and Fields will be used to build the query.
 			// We need to do some work. We need to check to see Fields contains the geom and gid fields
