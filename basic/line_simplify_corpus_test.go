@@ -29,11 +29,11 @@ import (
 //	(d) monotonicity: x-monotone inputs stay x-monotone (control invariant).
 //	NaN/Inf-free: inputs are finite by construction and outputs must be finite.
 //
-// Cases marked xfail document KNOWN failures of the current implementation
-// (the debt-3.6 bug pins). A case marked xfail MUST fail its invariants:
-// if it passes, the runner fails with "STALE XFAIL MARKER" and the marker must
-// be flipped. Setting TEGOLA_SIMP_CORPUS_STRICT=1 turns expected-failure
-// skips into test failures, so the corpus can be counted before/after a fix.
+// The xfail field documented KNOWN failures of the pre-fix implementation
+// (the debt-3.6 bug pins). All markers were removed when the fix landed; the
+// runner still rejects stale markers ("STALE XFAIL MARKER" when an xfail case
+// passes) and TEGOLA_SIMP_CORPUS_STRICT=1 still turns expected-failure skips
+// into test failures, so the corpus can be counted against regressions.
 
 const corpusTolEps = 1e-9
 
@@ -53,8 +53,9 @@ type simplifyCorpusCase struct {
 	// runner closes it with a duplicate of the first point, as the polygon
 	// pipeline does.
 	in []maths.Pt
-	// xfail non-empty marks an expected failure of the CURRENT implementation
-	// with the invariant(s) and mechanism it pins down.
+	// xfail non-empty marks an expected failure of the implementation with the
+	// invariant(s) and mechanism it pins down. Empty since debt 3.6 was fixed;
+	// kept so regressions can be pinned with an explicit marker again.
 	xfail string
 	// wantReduced asserts size reduction: len(out) <= maxRatio*len(in).
 	wantReduced bool
@@ -70,7 +71,7 @@ var simplifyCorpus = []simplifyCorpusCase{
 		name:        "dp/straight",
 		surface:     surfaceDP,
 		tol:         0.1,
-		in:          []maths.Pt{{0, 0}, {1, 1}, {2, 2}, {3, 3}},
+		in:          []maths.Pt{{X: 0, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: 2}, {X: 3, Y: 3}},
 		wantReduced: true,
 		maxRatio:    0.5,
 	},
@@ -78,7 +79,7 @@ var simplifyCorpus = []simplifyCorpusCase{
 		name:        "dp/collinear-run",
 		surface:     surfaceDP,
 		tol:         0.1,
-		in:          []maths.Pt{{0, 0}, {2, 4}, {4, 8}, {6, 12}, {8, 16}},
+		in:          []maths.Pt{{X: 0, Y: 0}, {X: 2, Y: 4}, {X: 4, Y: 8}, {X: 6, Y: 12}, {X: 8, Y: 16}},
 		wantReduced: true,
 		maxRatio:    0.5,
 	},
@@ -86,7 +87,7 @@ var simplifyCorpus = []simplifyCorpusCase{
 		name:        "line/straight-integer",
 		surface:     surfaceLine,
 		tol:         0.1,
-		in:          []maths.Pt{{0, 0}, {2, 2}, {4, 4}, {6, 6}, {8, 8}, {10, 10}},
+		in:          []maths.Pt{{X: 0, Y: 0}, {X: 2, Y: 2}, {X: 4, Y: 4}, {X: 6, Y: 6}, {X: 8, Y: 8}, {X: 10, Y: 10}},
 		wantReduced: true,
 		maxRatio:    0.5,
 	},
@@ -96,13 +97,13 @@ var simplifyCorpus = []simplifyCorpusCase{
 		name:    "dp/zigzag-kept",
 		surface: surfaceDP,
 		tol:     1.5,
-		in:      []maths.Pt{{0, 0}, {1, 2}, {2, 0}, {3, 2}, {4, 0}},
+		in:      []maths.Pt{{X: 0, Y: 0}, {X: 1, Y: 2}, {X: 2, Y: 0}, {X: 3, Y: 2}, {X: 4, Y: 0}},
 	},
 	{
 		name:    "dp/sawtooth-collapse",
 		surface: surfaceDP,
 		tol:     2,
-		in:      []maths.Pt{{0, 0}, {2, 1}, {4, 0}, {6, 1}, {8, 0}, {10, 1}, {12, 0}},
+		in:      []maths.Pt{{X: 0, Y: 0}, {X: 2, Y: 1}, {X: 4, Y: 0}, {X: 6, Y: 1}, {X: 8, Y: 0}, {X: 10, Y: 1}, {X: 12, Y: 0}},
 	},
 
 	// ---- tall thin spikes / needles (fold-backs the naive DP collapses) ----
@@ -111,25 +112,22 @@ var simplifyCorpus = []simplifyCorpusCase{
 		surface: surfaceDP,
 		tol:     1,
 		// The apex lies exactly on the INFINITE line through the chord
-		// (distance 0) but ~990 away from the chord segment: current DP drops
-		// it and the replacement chord no longer covers the spike.
-		in:    []maths.Pt{{0, 0}, {1000, 20}, {10, 0.2}},
-		xfail: "(b) needle/fold-back: apex dropped via infinite-line distance, Hausdorff ~990 >> tol",
+		// (distance 0) but ~990 away from the chord segment: pre-fix DP
+		// dropped it and the replacement chord no longer covered the spike.
+		in: []maths.Pt{{X: 0, Y: 0}, {X: 1000, Y: 20}, {X: 10, Y: 0.2}},
 	},
 	{
 		name:    "dp/needle-foldback-offset",
 		surface: surfaceDP,
 		tol:     1,
-		in:      []maths.Pt{{0, 0}, {1000, 20.5}, {10, 0.2}},
-		xfail:   "(b) needle/fold-back: apex dropped via infinite-line distance, Hausdorff ~990 >> tol",
+		in:      []maths.Pt{{X: 0, Y: 0}, {X: 1000, Y: 20.5}, {X: 10, Y: 0.2}},
 	},
 	{
 		name:    "line/needle-geom",
 		surface: surfaceLine,
 		tol:     1,
 		// 5+ points so SimplifyGeometry's len<=4 short-circuit cannot mask it.
-		in:    []maths.Pt{{0, 0}, {1000, 20.5}, {10, 0.2}, {20, 0.4}, {30, 0.6}},
-		xfail: "(b) needle/fold-back through SimplifyGeometry (plus integer truncation)",
+		in: []maths.Pt{{X: 0, Y: 0}, {X: 1000, Y: 20.5}, {X: 10, Y: 0.2}, {X: 20, Y: 0.4}, {X: 30, Y: 0.6}},
 	},
 
 	// ---- staircases near tolerance (control; must not invent crossings) ----
@@ -138,7 +136,7 @@ var simplifyCorpus = []simplifyCorpusCase{
 		surface: surfaceDP,
 		tol:     0.7,
 		in: []maths.Pt{
-			{0, 0}, {1, 0}, {1, 1}, {2, 1}, {2, 2}, {3, 2}, {3, 3}, {4, 3},
+			{X: 0, Y: 0}, {X: 1, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: 1}, {X: 2, Y: 2}, {X: 3, Y: 2}, {X: 3, Y: 3}, {X: 4, Y: 3},
 		},
 	},
 
@@ -147,7 +145,7 @@ var simplifyCorpus = []simplifyCorpusCase{
 		name:    "dp/self-touching",
 		surface: surfaceDP,
 		tol:     2,
-		in:      []maths.Pt{{0, 0}, {10, 10}, {10, 0}, {0, 10}},
+		in:      []maths.Pt{{X: 0, Y: 0}, {X: 10, Y: 10}, {X: 10, Y: 0}, {X: 0, Y: 10}},
 	},
 
 	// ---- topology: crossing introduced by the simplification itself ----
@@ -155,11 +153,10 @@ var simplifyCorpus = []simplifyCorpusCase{
 		name:    "dp/crossing-created",
 		surface: surfaceDP,
 		tol:     1.2,
-		// Simple input. Current DP outputs [(0,0),(10,0),(5,1),(11,-1)]: the
+		// Simple input. Pre-fix DP output [(0,0),(10,0),(5,1),(11,-1)]: the
 		// replacement chords (0,0)-(10,0) and (5,1)-(11,-1) cross at (8,0),
 		// creating a self-intersection out of thin air.
-		in:    []maths.Pt{{0, 0}, {5, -0.5}, {10, 0}, {5, 1}, {10.5, 0.2}, {11, -1}},
-		xfail: "(a) simplified line self-intersects: replacement chords cross",
+		in: []maths.Pt{{X: 0, Y: 0}, {X: 5, Y: -0.5}, {X: 10, Y: 0}, {X: 5, Y: 1}, {X: 10.5, Y: 0.2}, {X: 11, Y: -1}},
 	},
 
 	// ---- large coordinate ranges: web-mercator meters (~2e7) ----
@@ -168,26 +165,25 @@ var simplifyCorpus = []simplifyCorpusCase{
 		surface: surfaceDP,
 		tol:     0.25,
 		in: []maths.Pt{
-			{wmBase, wmBase}, {wmBase + 13.7, wmBase + 7.95},
-			{wmBase + 27.4, wmBase + 15.8}, {wmBase + 41.1, wmBase + 23.75},
-			{wmBase + 54.8, wmBase + 31.6}, {wmBase + 68.5, wmBase + 39.55},
-			{wmBase + 82.2, wmBase + 47.4}, {wmBase + 95.9, wmBase + 55.35},
+			{X: wmBase, Y: wmBase}, {X: wmBase + 13.7, Y: wmBase + 7.95},
+			{X: wmBase + 27.4, Y: wmBase + 15.8}, {X: wmBase + 41.1, Y: wmBase + 23.75},
+			{X: wmBase + 54.8, Y: wmBase + 31.6}, {X: wmBase + 68.5, Y: wmBase + 39.55},
+			{X: wmBase + 82.2, Y: wmBase + 47.4}, {X: wmBase + 95.9, Y: wmBase + 55.35},
 		},
 	},
 	{
 		name:    "line/webmercator-truncation",
 		surface: surfaceLine,
 		tol:     0.1,
-		// Fractional meter coordinates: simplifyLineString's integer
-		// truncation snaps vertices to whole meters (~0.7 shift), far beyond
+		// Fractional meter coordinates: pre-fix simplifyLineString's integer
+		// truncation snapped vertices to whole meters (~0.7 shift), far beyond
 		// the tolerance.
 		in: []maths.Pt{
-			{wmBase, wmBase}, {wmBase + 13.83, wmBase + 7.97},
-			{wmBase + 27.4, wmBase + 15.8}, {wmBase + 41.37, wmBase + 23.75},
-			{wmBase + 54.8, wmBase + 31.67}, {wmBase + 68.43, wmBase + 39.55},
-			{wmBase + 82.2, wmBase + 47.4}, {wmBase + 95.93, wmBase + 55.35},
+			{X: wmBase, Y: wmBase}, {X: wmBase + 13.83, Y: wmBase + 7.97},
+			{X: wmBase + 27.4, Y: wmBase + 15.8}, {X: wmBase + 41.37, Y: wmBase + 23.75},
+			{X: wmBase + 54.8, Y: wmBase + 31.67}, {X: wmBase + 68.43, Y: wmBase + 39.55},
+			{X: wmBase + 82.2, Y: wmBase + 47.4}, {X: wmBase + 95.93, Y: wmBase + 55.35},
 		},
-		xfail: "(b)(c) integer truncation of source coordinates shifts vertices ~0.7 >> tol",
 	},
 
 	// ---- large coordinate ranges: projected degrees ----
@@ -196,23 +192,22 @@ var simplifyCorpus = []simplifyCorpusCase{
 		surface: surfaceDP,
 		tol:     1e-4,
 		in: []maths.Pt{
-			{12.345678, 56.789012}, {12.355678, 56.794012},
-			{12.365678, 56.799012}, {12.375678, 56.804012},
-			{12.385678, 56.809012}, {12.395678, 56.814012},
+			{X: 12.345678, Y: 56.789012}, {X: 12.355678, Y: 56.794012},
+			{X: 12.365678, Y: 56.799012}, {X: 12.375678, Y: 56.804012},
+			{X: 12.385678, Y: 56.809012}, {X: 12.395678, Y: 56.814012},
 		},
 	},
 	{
 		name:    "line/degrees-truncation",
 		surface: surfaceLine,
 		tol:     1e-6,
-		// Fractional degree coordinates: truncation snaps everything to
-		// integer degrees (~100km) and degenerates the line to two identical
-		// points.
+		// Fractional degree coordinates: pre-fix truncation snapped everything
+		// to integer degrees (~100km) and degenerated the line to two
+		// identical points.
 		in: []maths.Pt{
-			{12, 56}, {12.125, 56.0625}, {12.25, 56.125}, {12.375, 56.1875005},
-			{12.5, 56.25}, {12.625, 56.3125}, {12.75, 56.375}, {12.875, 56.4375},
+			{X: 12, Y: 56}, {X: 12.125, Y: 56.0625}, {X: 12.25, Y: 56.125}, {X: 12.375, Y: 56.1875005},
+			{X: 12.5, Y: 56.25}, {X: 12.625, Y: 56.3125}, {X: 12.75, Y: 56.375}, {X: 12.875, Y: 56.4375},
 		},
-		xfail: "(b)(c) integer truncation degenerates a degree-scale line to [(12,56),(12,56)]",
 	},
 
 	// ---- degenerate inputs (must not panic; outputs must stay finite) ----
@@ -226,19 +221,19 @@ var simplifyCorpus = []simplifyCorpusCase{
 		name:    "dp/degenerate-single",
 		surface: surfaceDP,
 		tol:     1,
-		in:      []maths.Pt{{7, 3}},
+		in:      []maths.Pt{{X: 7, Y: 3}},
 	},
 	{
 		name:    "dp/degenerate-pair",
 		surface: surfaceDP,
 		tol:     1,
-		in:      []maths.Pt{{1, 1}, {2, 2}},
+		in:      []maths.Pt{{X: 1, Y: 1}, {X: 2, Y: 2}},
 	},
 	{
 		name:        "dp/degenerate-repeated",
 		surface:     surfaceDP,
 		tol:         1,
-		in:          []maths.Pt{{5, 5}, {5, 5}, {5, 5}, {5, 5}, {5, 5}},
+		in:          []maths.Pt{{X: 5, Y: 5}, {X: 5, Y: 5}, {X: 5, Y: 5}, {X: 5, Y: 5}, {X: 5, Y: 5}},
 		wantReduced: true,
 		maxRatio:    0.5,
 	},
@@ -259,7 +254,6 @@ var simplifyCorpus = []simplifyCorpusCase{
 		in:          noisyLineFrac(300),
 		wantReduced: true,
 		maxRatio:    0.5,
-		xfail:       "(b) integer truncation shifts fractional vertices up to ~1.4 >> tol",
 	},
 
 	// ---- rings (polygons): closure, collinear edges, normalizePoints ----
@@ -267,34 +261,32 @@ var simplifyCorpus = []simplifyCorpusCase{
 		name:    "ring/simple-convex",
 		surface: surfaceRing,
 		tol:     0.5,
-		in:      []maths.Pt{{4, 0}, {2, 3}, {-2, 3}, {-4, 0}, {-2, -3}, {2, -3}},
+		in:      []maths.Pt{{X: 4, Y: 0}, {X: 2, Y: 3}, {X: -2, Y: 3}, {X: -4, Y: 0}, {X: -2, Y: -3}, {X: 2, Y: -3}},
 	},
 	{
 		name:    "ring/collinear-edge",
 		surface: surfaceRing,
 		tol:     0.5,
-		in:      []maths.Pt{{0, 0}, {2, 0}, {4, 0}, {4, 3}, {0, 3}},
+		in:      []maths.Pt{{X: 0, Y: 0}, {X: 2, Y: 0}, {X: 4, Y: 0}, {X: 4, Y: 3}, {X: 0, Y: 3}},
 	},
 	{
 		name:    "ring/spike-drop-normalize",
 		surface: surfaceRing,
 		tol:     1,
-		// normalizePoints drops (10,0) because it is collinear with pts[0] and
-		// pts[i+1], even though it is a spike apex w.r.t. its own neighbours;
-		// the closing edge (5,20)->(0,0) then stands ~3.16 away from the
-		// removed apex. Ring self-intersection/invalidity territory.
-		in:    []maths.Pt{{5, 20}, {0, 0}, {5, 5}, {10, 0}, {20, 0}, {25, 10}},
-		xfail: "(b) normalizePoints drops a spike apex (not between its neighbours), Hausdorff ~3.16 >> tol",
+		// Pre-fix normalizePoints dropped (10,0) because it was collinear with
+		// pts[0] and pts[i+1], even though it is a spike apex w.r.t. its own
+		// neighbours; the closing edge (5,20)->(0,0) then stood ~3.16 away
+		// from the removed apex. Ring self-intersection/invalidity territory.
+		in: []maths.Pt{{X: 5, Y: 20}, {X: 0, Y: 0}, {X: 5, Y: 5}, {X: 10, Y: 0}, {X: 20, Y: 0}, {X: 25, Y: 10}},
 	},
 	{
 		name:    "ring/degrees-truncation",
 		surface: surfaceRing,
 		tol:     0.05,
 		in: []maths.Pt{
-			{12.2, 56.4}, {12.6, 56.4}, {12.8, 56.6},
-			{12.6, 56.8}, {12.2, 56.8}, {12.0, 56.6},
+			{X: 12.2, Y: 56.4}, {X: 12.6, Y: 56.4}, {X: 12.8, Y: 56.6},
+			{X: 12.6, Y: 56.8}, {X: 12.2, Y: 56.8}, {X: 12.0, Y: 56.6},
 		},
-		xfail: "(b)(c) integer truncation collapses the ring to the degenerate point (12,56)",
 	},
 }
 
@@ -312,8 +304,8 @@ func noisyLine(n int) []maths.Pt {
 	return out
 }
 
-// noisyLineFrac is noisyLine with fractional x, so the integer truncation in
-// the simplify path is exercised.
+// noisyLineFrac is noisyLine with fractional x; it originally exercised the
+// integer truncation the simplify path used to apply.
 func noisyLineFrac(n int) []maths.Pt {
 	out := noisyLine(n)
 	for i := range out {
@@ -452,7 +444,7 @@ func segDistPoint(p, a, b maths.Pt) float64 {
 
 func cross2(u, v maths.Pt) float64 { return u.X*v.Y - u.Y*v.X }
 
-func sub2(a, b maths.Pt) maths.Pt { return maths.Pt{a.X - b.X, a.Y - b.Y} }
+func sub2(a, b maths.Pt) maths.Pt { return maths.Pt{X: a.X - b.X, Y: a.Y - b.Y} }
 
 func dot2(u, v maths.Pt) float64 { return u.X*v.X + u.Y*v.Y }
 
