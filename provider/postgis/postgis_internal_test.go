@@ -8,12 +8,15 @@ import (
 	"testing"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/geom/encoding/mvt"
+	vectorTile "github.com/go-spatial/geom/encoding/mvt/vector_tile"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/ttools"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/test/fixture"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 // TESTENV is the environment variable that must be set to "yes" to run postgis tests.
@@ -66,7 +69,6 @@ func TestMVTProviders(t *testing.T) {
 	type tcase struct {
 		TCConfig
 		layerNames []string
-		mvtTile    []byte
 		err        string
 		tile       provider.Tile
 	}
@@ -75,7 +77,6 @@ func TestMVTProviders(t *testing.T) {
 			config := tc.Config(DefaultEnvConfig)
 			config[ConfigKeyName] = "provider_name"
 			prvd, err := NewMVTTileProvider(config, nil)
-			// for now we will just check the length of the bytes.
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) {
 					t.Logf("error %#v", err)
@@ -100,8 +101,49 @@ func TestMVTProviders(t *testing.T) {
 				t.Errorf("NewProvider unexpected error: %v", err)
 				return
 			}
-			if len(tc.mvtTile) != len(mvtTile) {
-				t.Errorf("tile byte length, exected %v got %v", len(tc.mvtTile), len(mvtTile))
+			// Encoding size changes across PostGIS/GEOS releases. Validate
+			// decoded content rather than pinning one encoder's byte count.
+			var decoded vectorTile.Tile
+			if err := proto.Unmarshal(mvtTile, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if len(decoded.Layers) != len(tc.layerNames) {
+				t.Fatalf("layers = %d, want %d", len(decoded.Layers), len(tc.layerNames))
+			}
+			for i, layer := range decoded.Layers {
+				if layer.GetName() != tc.layerNames[i] || layer.GetExtent() != 4096 || layer.GetVersion() != 2 {
+					t.Fatalf("unexpected layer metadata: %v", layer)
+				}
+				if len(layer.Features) == 0 {
+					t.Fatal("empty MVT layer")
+				}
+				seen := map[uint64]bool{}
+				for _, feature := range layer.Features {
+					if feature.Id == nil || feature.GetId() == 0 || seen[feature.GetId()] {
+						t.Fatalf("missing or duplicate feature ID: %v", feature.Id)
+					}
+					seen[feature.GetId()] = true
+					if feature.GetType() != vectorTile.Tile_POLYGON {
+						t.Fatalf("geometry type = %v, want polygon", feature.GetType())
+					}
+					if _, err := mvt.DecodeGeometry(feature.GetType(), feature.Geometry); err != nil {
+						t.Fatalf("invalid MVT geometry: %v", err)
+					}
+					if len(feature.Tags)%2 != 0 {
+						t.Fatal("unpaired feature tags")
+					}
+					hasScaleRank := false
+					for j := 0; j < len(feature.Tags); j += 2 {
+						key, value := feature.Tags[j], feature.Tags[j+1]
+						if int(key) >= len(layer.Keys) || int(value) >= len(layer.Values) {
+							t.Fatal("tag references invalid dictionary entry")
+						}
+						hasScaleRank = hasScaleRank || layer.Keys[key] == "scalerank"
+					}
+					if !hasScaleRank {
+						t.Fatal("feature lost scalerank attribute")
+					}
+				}
 			}
 		}
 	}
@@ -120,7 +162,6 @@ func TestMVTProviders(t *testing.T) {
 				},
 			},
 			layerNames: []string{"land"},
-			mvtTile:    make([]byte, 174689),
 			tile:       provider.NewTile(0, 0, 0, 16, 4326),
 		},
 	}

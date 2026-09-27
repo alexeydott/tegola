@@ -787,10 +787,10 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			// !BBOX! token; only MOS raw format is allowed (and required)
 			// to carry it, with the bounds-backed predicate builder
 			// replacing the spatial predicate at query time.
-			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, bboxToken, "!BOX!"); verr != nil {
+			if verr := codec.HANA.ValidateRawCustomSQL(lName, l.geometryFormat, sql, bboxToken, "!BOX!"); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
 			}
-			if rerr := codec.RequireBBoxCustomSQL(lName, l.geometryFormat == codec.FormatMOS, sql, bboxToken, "!BOX!"); rerr != nil {
+			if rerr := codec.HANA.RequireBBoxCustomSQL(lName, l.geometryFormat == codec.FormatMOS, sql, bboxToken, "!BOX!"); rerr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, rerr)
 			}
 			if !strings.Contains(sql, "*") {
@@ -811,7 +811,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			// without a spatial filter (!BBOX!/!BOX! -> 1=1) and with
 			// permissive position/zoom placeholders, applied in the ONE
 			// documented order of codec.PrepareProbeSQL (7.2.2).
-			inspectionSQL := codec.PrepareProbeSQL(l.sql, geomfld, idfld, geomType)
+			inspectionSQL := codec.HANA.PrepareProbeSQL(l.sql, geomfld, idfld, geomType)
 			probeSQL := codec.WrapProbeSQLTopStyle(inspectionSQL)
 
 			// Storage-format probe + structural contract (A01/A02/A08):
@@ -837,7 +837,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 					// inference with MOS evidence (A02/A05).
 					mosEvidence := contract.ValidMOSRows >= codec.MinValidMOSRows
 					if strict || mosEvidence {
-						resolved, boundsInResult, cerr := codec.ResolveBoundsSQLContract(lName, l.sql, geomfld, contract, l.bboxFields)
+						resolved, boundsInResult, cerr := codec.HANA.ResolveBoundsSQLContract(lName, l.sql, geomfld, contract, l.bboxFields)
 						if cerr != nil {
 							return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, cerr)
 						}
@@ -1004,7 +1004,7 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 	// neutralize to "1=1" and zoom/position placeholders expand
 	// permissively across ALL occurrences (the previous first-occurrence
 	// replacement left later !ZOOM! tokens in the SQL).
-	sqlQuery = codec.PrepareProbeSQL(sqlQuery, l.GeomFieldName(), l.IDFieldName(), probeGeomType)
+	sqlQuery = codec.HANA.PrepareProbeSQL(sqlQuery, l.GeomFieldName(), l.IDFieldName(), probeGeomType)
 
 	// The probe binds no arguments, so custom parameters cannot be
 	// substituted here (the previous ReplaceParams call generated
@@ -1013,7 +1013,7 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 	// is still valid 🤞 if not, the user will have to specify
 	// `geometry_type` in the config. Only code-context tokens are
 	// stripped; tokens in string literals or comments stay verbatim.
-	sqlQuery = sqltoken.StripTokens(sqlQuery)
+	sqlQuery = sqltoken.HANA.StripTokens(sqlQuery)
 
 	// Shared sample window (docs/provider-contract.md): the probe reads at
 	// most codec.InspectionSampleLimit rows.
@@ -1097,8 +1097,8 @@ func mosProbeSQL(l *Layer) string {
 	if l.geomType != nil {
 		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
-	sql := codec.PrepareProbeSQL(l.sql, l.GeomFieldName(), l.IDFieldName(), probeGeomType)
-	sql = sqltoken.StripTokens(sql)
+	sql := codec.HANA.PrepareProbeSQL(l.sql, l.GeomFieldName(), l.IDFieldName(), probeGeomType)
+	sql = sqltoken.HANA.StripTokens(sql)
 	return codec.WrapProbeSQLTopStyle(sql)
 }
 
@@ -1203,7 +1203,7 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 	// preparation could not neutralize so a leftover placeholder cannot
 	// break the probe statement (tokens in string literals or comments
 	// are left verbatim)
-	probeSQL = sqltoken.StripTokens(probeSQL)
+	probeSQL = sqltoken.HANA.StripTokens(probeSQL)
 
 	// audit P5-16: the sample probe runs under the inspection timeout.
 	ctx, cancel := NewInspectionContext(context.Background())
@@ -1326,7 +1326,7 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 
 	// replace configured query parameters if any
 	args := make([]interface{}, 0)
-	sqlQuery = params.ReplaceParams(sqlQuery, &args)
+	sqlQuery = params.ReplaceParamsWithDialect(sqlQuery, &args, provider.SQLDialectHANA)
 	if err != nil {
 		return err
 	}
@@ -1488,7 +1488,7 @@ func (p Provider) MVTForLayers(ctx context.Context, tile provider.Tile, params p
 		}
 
 		// replace configured query parameters if any
-		sqlQuery = params.ReplaceParams(sqlQuery, &args)
+		sqlQuery = params.ReplaceParamsWithDialect(sqlQuery, &args, provider.SQLDialectHANA)
 
 		now := time.Now()
 

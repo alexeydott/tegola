@@ -30,6 +30,22 @@ type Params map[string]QueryParameterValue
 // substituted: token-looking text inside string literals, quoted identifiers,
 // or comments is left verbatim.
 func (params Params) ReplaceParams(sql string, args *[]interface{}) string {
+	return params.ReplaceParamsWithDialect(sql, args, SQLDialectLegacy)
+}
+
+// SQLDialect selects the lexical rules used for parameter substitution.
+type SQLDialect = sqltoken.Dialect
+
+const (
+	SQLDialectLegacy     = sqltoken.Legacy
+	SQLDialectPostgreSQL = sqltoken.PostgreSQL
+	SQLDialectMySQL      = sqltoken.MySQL
+	SQLDialectSQLite     = sqltoken.SQLite
+	SQLDialectHANA       = sqltoken.HANA
+)
+
+// ReplaceParamsWithDialect substitutes executable parameters under backend SQL rules.
+func (params Params) ReplaceParamsWithDialect(sql string, args *[]interface{}, dialect SQLDialect) string {
 	if params == nil {
 		return sql
 	}
@@ -39,11 +55,11 @@ func (params Params) ReplaceParams(sql string, args *[]interface{}) string {
 		sb    strings.Builder
 	)
 
-	for _, tok := range sqltoken.CodeTokens(sql) {
+	for _, tok := range dialect.CodeTokens(sql) {
 		resultSQL, ok := cache[tok.Text]
 		if ok {
 			// Already have it cached, replace the token and move on.
-			sql = sqltoken.ReplaceToken(sql, tok.Text, resultSQL)
+			sql = dialect.ReplaceToken(sql, tok.Text, resultSQL)
 			continue
 		}
 
@@ -73,7 +89,7 @@ func (params Params) ReplaceParams(sql string, args *[]interface{}) string {
 
 		resultSQL = sb.String()
 		cache[tok.Text] = resultSQL
-		sql = sqltoken.ReplaceToken(sql, tok.Text, resultSQL)
+		sql = dialect.ReplaceToken(sql, tok.Text, resultSQL)
 	}
 
 	return sql

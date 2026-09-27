@@ -1,6 +1,7 @@
 package gpkg
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -133,9 +134,8 @@ func quoteTokenIdentifier(v string) string {
 // strings is left verbatim.
 //
 // bboxExtent must be the tile's buffered extent transformed to the layer's
-// source SRID. Pixel dimensions and scale denominator are intentionally
-// calculated from the tile's unbuffered Web Mercator extent, matching the
-// PostGIS provider.
+// source SRID. Pixel dimensions use the unbuffered extent in the source CRS;
+// scale uses its linear units or a latitude-adjusted geographic conversion.
 //
 // Bounds-backed custom SQL (!BBOX! expanding into the configured bounds
 // fields predicate) is fail-closed (A12): a predicate build error is
@@ -148,7 +148,7 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	// only build the bounds predicate when the query actually uses it;
 	// build errors are fail-closed (A12).
 	bboxSQL := ""
-	if sqltoken.ContainsTokenFold(qtext, config.BboxToken, "!BOX!") {
+	if sqltoken.SQLite.ContainsTokenFold(qtext, config.BboxToken, "!BOX!") {
 		var err error
 		bboxSQL, err = buildBBoxPredicate(layer, bboxExtent)
 		if err != nil {
@@ -156,10 +156,14 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		}
 	}
 
-	extent, _ := tile.Extent()
-	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
-	pixelHeight := (extent.MaxY() - extent.MinY()) / 256
-	scaleDenominator := pixelWidth / 0.00028
+	var pixelWidth, pixelHeight, scaleDenominator float64
+	if sqltoken.SQLite.ContainsTokenFold(qtext, config.PixelWidthToken, config.PixelHeightToken, config.ScaleDenominatorToken) {
+		var err error
+		pixelWidth, pixelHeight, scaleDenominator, err = provider.TileScale(tile, layer.SRID())
+		if err != nil {
+			return "", fmt.Errorf("layer (%v) scale tokens: %w", layer.name, err)
+		}
+	}
 
 	var geomType string
 	if layer.geomType != nil {
@@ -167,7 +171,7 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	}
 
 	z, x, y := tile.ZXY()
-	return sqltoken.MapTokens(qtext, func(tok string) string {
+	return sqltoken.SQLite.MapTokens(qtext, func(tok string) string {
 		switch tok {
 		case config.BboxToken, "!BOX!":
 			return bboxSQL
@@ -217,7 +221,7 @@ func buildBBoxPredicate(layer *Layer, bboxExtent *geom.Extent) (string, error) {
 // Only code-context tokens are normalized; token-looking text in string
 // literals, identifiers, or comments keeps its exact bytes.
 func uppercaseTokens(str string) string {
-	return sqltoken.MapTokens(str, strings.ToUpper)
+	return sqltoken.SQLite.MapTokens(str, strings.ToUpper)
 }
 
 func trimTrailingSemicolon(sqlText string) string {

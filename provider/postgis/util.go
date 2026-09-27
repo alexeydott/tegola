@@ -163,8 +163,8 @@ func genSQL(
 // !Y! - the tile Y value
 // !Z! - the tile Z value
 // !SCALE_DENOMINATOR! - scale denominator, assuming 90.7 DPI (i.e. 0.28mm pixel size)
-// !PIXEL_WIDTH! - the pixel width in meters, assuming 256x256 tiles
-// !PIXEL_HEIGHT! - the pixel height in meters, assuming 256x256 tiles
+// !PIXEL_WIDTH! - unbuffered pixel width in the resolved layer CRS units
+// !PIXEL_HEIGHT! - unbuffered pixel height in the resolved layer CRS units
 // !GEOM_FIELD! - the geom field name
 // !GEOM_TYPE! - the geom field type if defined otherwise ""
 //
@@ -227,11 +227,14 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 		bbox = predicate
 	}
 
-	extent, _ = tile.Extent()
-	// TODO: Always convert to meter if we support different projections
-	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
-	pixelHeight := (extent.MaxY() - extent.MinY()) / 256
-	scaleDenominator := pixelWidth / 0.00028 /* px size in m */
+	var pixelWidth, pixelHeight, scaleDenominator float64
+	if sqltoken.PostgreSQL.ContainsTokenFold(sql, config.PixelWidthToken, config.PixelHeightToken, config.ScaleDenominatorToken) {
+		var err error
+		pixelWidth, pixelHeight, scaleDenominator, err = provider.TileScale(tile, lyr.SRID())
+		if err != nil {
+			return "", fmt.Errorf("layer (%v) scale tokens: %w", lyr.name, err)
+		}
+	}
 
 	if lyr.GeomType() != nil {
 		geoType = fmt.Sprintf("%v", lyr.GeomType())
@@ -240,7 +243,7 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 	// replace query string tokens
 	z, x, y := tile.ZXY()
 	sql = uppercaseTokens(sql)
-	return sqltoken.MapTokens(sql, func(tok string) string {
+	return sqltoken.PostgreSQL.MapTokens(sql, func(tok string) string {
 		switch tok {
 		case config.BboxToken:
 			return bbox
@@ -308,7 +311,7 @@ func rawGeometryBoundsWarning(layerName, geometryFormat string, boundsPredicateU
 func rawGeometryBoundsWarnings(layers map[string]Layer) []string {
 	var msgs []string
 	for _, l := range layers {
-		boundsPredicateUsed := codec.SQLHasBBoxToken(l.sql, config.BboxToken, "!BOX!")
+		boundsPredicateUsed := codec.PostgreSQL.SQLHasBBoxToken(l.sql, config.BboxToken, "!BOX!")
 		if msg := rawGeometryBoundsWarning(l.name, l.geometryFormat, boundsPredicateUsed); msg != "" {
 			msgs = append(msgs, msg)
 		}
@@ -394,7 +397,7 @@ func extractQueryParamValues(pname string, maps []provider.Map, layer *Layer) pr
 // Token-looking text in string literals, identifiers, or comments keeps
 // its exact bytes.
 func uppercaseTokens(str string) string {
-	return sqltoken.MapTokens(str, strings.ToUpper)
+	return sqltoken.PostgreSQL.MapTokens(str, strings.ToUpper)
 }
 
 func transformVal(valType uint32, val any) (any, error) {

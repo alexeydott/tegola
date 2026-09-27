@@ -336,7 +336,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 			return fmt.Errorf("layer (%v): %v", pLayer.name, terr)
 		}
 		qtext = expanded
-		qtext = queryParams.ReplaceParams(qtext, &args)
+		qtext = queryParams.ReplaceParamsWithDialect(qtext, &args, provider.SQLDialectMySQL)
 	}
 
 	log.Debugf("qtext: %v", qtext)

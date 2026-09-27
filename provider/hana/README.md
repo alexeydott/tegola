@@ -184,3 +184,10 @@ Testing is designed to work against a live SAP HANA database. To see how to set 
 $ export RUN_HANA_TESTS=yes
 $ export HANA_CONNECTION_STRING="hdb://myuser:mypassword@something.hanacloud.ondemand.com:443?TLSInsecureSkipVerify"
 ```
+
+### SQL token lexical rules
+
+SQL tokens use HANA lexical rules: single-quoted strings, double-quoted
+identifiers, `--` comments, and block comments are protected. Backslashes are
+literal characters; PostgreSQL dollar quoting and MySQL backticks/hash comments
+are not treated as HANA quoting.

@@ -158,8 +158,8 @@ tablename = "gis.zoning_base_3857"
     -   `!Y!` - [Optional] will be replaced with the "Y" value of the requested tile.
     -   `!Z!` - [Optional] will be replaced with the "Z" value of the requested tile.
     -   `!SCALE_DENOMINATOR!` - [Optional] scale denominator, assuming 90.7 DPI (i.e. 0.28mm pixel size)
-    -   `!PIXEL_WIDTH!` - [Optional] the pixel width in meters, assuming 256x256 tiles
-    -   `!PIXEL_HEIGHT!` - [Optional] the pixel height in meters, assuming 256x256 tiles
+    -   `!PIXEL_WIDTH!` - [Optional] the unbuffered pixel width in the resolved layer CRS units
+    -   `!PIXEL_HEIGHT!` - [Optional] the unbuffered pixel height in the resolved layer CRS units
     -   `!ID_FIELD!` - [Optional] the id field name
     -   `!GEOM_FIELD!` - [Optional] the geom field name
     -   `!GEOM_TYPE!` - [Optional] the geom type field name
@@ -272,3 +272,22 @@ $ export PGSSLKEY=""
 $ export PGSSLCERT=""
 $ export PGSSLROOTCERT=""
 ```
+
+### Scale token units
+
+Pixel dimensions use the unbuffered tile extent transformed to the layer CRS,
+with 256×256 pixels by default. Custom tiles may expose `PixelSize()`.
+The scale denominator converts horizontal pixel size to meters and divides by
+the OGC 0.00028 m rendering pixel. Projected CRSs use their registered linear
+units (including feet); supported WGS84 geographic CRSs use a spherical
+parallel-arc approximation at the tile center latitude. Unsupported CRS/units
+produce an error when a scale token is executed. EPSG:3857 defaults are unchanged;
+non-WebMercator SQL thresholds must use the new CRS-aware values.
+
+### SQL token lexical rules
+
+SQL tokens use PostgreSQL lexical rules: array brackets and JSON/hash operators
+remain executable SQL; quoted identifiers, ordinary and dollar-quoted strings,
+and comments are preserved. The scanner assumes `standard_conforming_strings=on`;
+use `E'...'` for backslash escapes. Nondefault `standard_conforming_strings=off`
+is not supported by token scanning.

@@ -265,7 +265,7 @@ func (p Provider) TileFeatures(
 
 	// replace configured query parameters if any
 	args := make([]any, 0)
-	sql = params.ReplaceParams(sql, &args)
+	sql = params.ReplaceParamsWithDialect(sql, &args, provider.SQLDialectPostgreSQL)
 	if err != nil {
 		return err
 	}
@@ -779,8 +779,8 @@ func mosProbeSQL(l *Layer) string {
 	if l.geomType != nil {
 		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
-	sql := codec.PrepareProbeSQL(l.sql, l.geomField, l.idField, probeGeomType)
-	sql = sqltoken.StripTokens(sql)
+	sql := codec.PostgreSQL.PrepareProbeSQL(l.sql, l.geomField, l.idField, probeGeomType)
+	sql = sqltoken.PostgreSQL.StripTokens(sql)
 	return codec.WrapProbeSQL(sql)
 }
 
@@ -958,7 +958,7 @@ func (p Provider) MVTForLayers(
 		}
 
 		// replace configured query parameters if any
-		sql = params.ReplaceParams(sql, &args)
+		sql = params.ReplaceParamsWithDialect(sql, &args, provider.SQLDialectPostgreSQL)
 
 		// ref: https://postgis.net/docs/ST_AsMVT.html
 		// bytea ST_AsMVT(any_element row, text name, integer extent, text geom_name, text feature_id_name)
@@ -1039,8 +1039,8 @@ func (p Provider) setLayerGeomType(l *Layer, geomType string) error {
 // common InspectSQLGeometryContract probe over REAL scanned row values:
 // bounds columns presence plus at least MinValidMOSRows decodable MOS
 // geometries with coordinates. The probe SQL is prepared by the shared
-// codec.PrepareProbeSQL/WrapProbeSQL helpers: the statement always executes
-// without a spatial filter and the sample reads at most
+// shared probe helpers: raw bounds predicates are neutralized, native
+// spatial operands use a source-CRS world envelope, and the sample reads at most
 // codec.InspectionSampleLimit rows. SystemInfo rows are skipped, never
 // applied: SQL-sample detection carries no projection contract. The actual
 // result-column names are returned so the caller can persist them (A09).
@@ -1052,7 +1052,7 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 	// preparation could not neutralize so a leftover placeholder cannot
 	// break the probe statement (tokens in string literals or comments
 	// are left verbatim)
-	probeSQL = sqltoken.StripTokens(probeSQL)
+	probeSQL = sqltoken.PostgreSQL.StripTokens(probeSQL)
 
 	// 7.2.3: the probe statement carries no query arguments; no args —
 	// never pass nil here: pgx variadic treats a lone nil as one query
@@ -1139,7 +1139,10 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 	//
 	// case insensitive search
 
-	probeSQL, args := geomTypeProbeSQL(l, extractQueryParamValues(pname, maps, l))
+	probeSQL, args, err := geomTypeProbeSQL(l, extractQueryParamValues(pname, maps, l))
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := codec.NewInspectionContext()
 	defer cancel()
@@ -1157,12 +1160,12 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 // geometry-type inspection (audit R1). The ST_AsBinary → ST_GeometryType
 // rewrite keeps the historical sniffing strategy (go-spatial/tegola#180);
 // token neutralization then follows the documented codec.PrepareProbeSQL
-// order — !BBOX!/!BOX! become "1=1" (never "TRUE", all occurrences) and
+// order: native !BBOX!/!BOX! use typed source-CRS world envelopes;
 // zoom/position placeholders expand permissively (all occurrences, not just
 // the first) — before custom parameters are substituted with live $N
 // arguments. The query is wrapped in the shared InspectionSampleLimit
 // sample window (docs/provider-contract.md).
-func geomTypeProbeSQL(l *Layer, params provider.Params) (string, []any) {
+func geomTypeProbeSQL(l *Layer, params provider.Params) (string, []any, error) {
 	re := regexp.MustCompile(`(?i)ST_AsBinary`)
 	sql := re.ReplaceAllString(l.sql, "ST_GeometryType")
 
@@ -1175,20 +1178,23 @@ func geomTypeProbeSQL(l *Layer, params provider.Params) (string, []any) {
 	if l.geomType != nil {
 		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
-	sql = codec.PrepareProbeSQL(sql, l.geomField, l.idField, probeGeomType)
+	sql, err := prepareLayerProbeSQL(sql, l, probeGeomType)
+	if err != nil {
+		return "", nil, err
+	}
 
 	// substitute default values for custom parameters; the generated $N
 	// placeholders are passed to the probe query as live arguments
 	args := make([]any, 0)
-	sql = params.ReplaceParams(sql, &args)
+	sql = params.ReplaceParamsWithDialect(sql, &args, provider.SQLDialectPostgreSQL)
 
 	// remove all remaining code-context parameter tokens for inspection
 	// (tokens in string literals or comments are left verbatim)
 	// crossing our fingers that the query is still valid 🤞
 	// if not, the user will have to specify `geometry_type` in the config
-	sql = sqltoken.StripTokens(sql)
+	sql = sqltoken.PostgreSQL.StripTokens(sql)
 
-	return codec.WrapProbeSQL(sql), args
+	return codec.WrapProbeSQL(sql), args, nil
 }
 
 // inspectGeomTypeRows sniffs the geometry type from sampled probe rows,
@@ -1208,6 +1214,10 @@ func inspectGeomTypeRows(l *Layer, probeSQL string, rows pgx.Rows) error {
 			switch string(fdescs[i].Name) {
 			case l.geomField, "st_geometrytype":
 				switch v {
+				case nil:
+					// SQL NULL carries no type evidence. Keep sampling so a
+					// nullable geometry column can be inferred from later rows.
+					continue
 				case "ST_Point":
 					l.geomType = geom.Point{}
 				case "ST_LineString":
@@ -1620,14 +1630,14 @@ func CreateProvider(
 		if sql != "" {
 			// convert !BOX! (MapServer) and !bbox! (Mapnik) to !BBOX! for
 			// compatibility; only code-context occurrences are rewritten
-			sql := sqltoken.MapTokens(sql, func(token string) string {
+			sql := sqltoken.PostgreSQL.MapTokens(sql, func(token string) string {
 				if token == "!BOX!" || token == "!bbox!" {
 					return conf.BboxToken
 				}
 				return token
 			})
 			// make sure that the sql has a !BBOX! token (code context)
-			if !sqltoken.ContainsToken(sql, conf.BboxToken) {
+			if !sqltoken.PostgreSQL.ContainsToken(sql, conf.BboxToken) {
 				return nil, fmt.Errorf(
 					"SQL for layer (%v) %v is missing required token: %v",
 					i,
@@ -1655,7 +1665,7 @@ func CreateProvider(
 			}
 
 			// check all tokens are valid (code-context occurrences only)
-			for _, token := range sqltoken.CodeTokens(sql) {
+			for _, token := range sqltoken.PostgreSQL.CodeTokens(sql) {
 				if _, ok := conf.ReservedTokens[token.Text]; !ok {
 					return nil, fmt.Errorf(
 						"SQL for layer (%v) %v references an unknown token %s: %v",
@@ -1671,16 +1681,16 @@ func CreateProvider(
 			// the native-spatial !BBOX! envelope; only MOS raw format is
 			// allowed (and required) to carry it, with the bounds-backed
 			// predicate builder replacing the envelope at query time.
-			if verr := codec.ValidateRawCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken, "!BOX!"); verr != nil {
+			if verr := codec.PostgreSQL.ValidateRawCustomSQL(lName, l.geometryFormat, sql, conf.BboxToken, "!BOX!"); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, verr)
 			}
-			if rerr := codec.RequireBBoxCustomSQL(lName, l.geometryFormat == codec.FormatMOS, sql, conf.BboxToken, "!BOX!"); rerr != nil {
+			if rerr := codec.PostgreSQL.RequireBBoxCustomSQL(lName, l.geometryFormat == codec.FormatMOS, sql, conf.BboxToken, "!BOX!"); rerr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, lName, rerr)
 			}
 
 			// Common storage-format probe (decisions 3+6): the probe
-			// executes the custom SQL without a spatial filter (shared
-			// token neutralization in one documented order) and inspects
+			// uses boolean predicates for raw bounds and a world envelope
+			// for native spatial operands, then inspects
 			// REAL scanned row values for the bounds columns plus
 			// decodable geometries. It runs for every format that can
 			// carry bounds columns or raw geometry and doubles as the
@@ -1688,9 +1698,23 @@ func CreateProvider(
 			// (A08): result-column checks never depend on the sample rows.
 			boundsBacked := l.geometryFormat == codec.FormatMOS
 			if l.geometryFormat != codec.FormatWKB && l.geometryFormat != codec.FormatWKT {
-				inspectionSQL := codec.PrepareProbeSQL(sql, geomfld, idfld, geomType)
+				inspectionSQL, err := prepareLayerProbeSQL(sql, &l, geomType)
+				if err != nil {
+					return nil, err
+				}
 				probeSQL := codec.WrapProbeSQL(inspectionSQL)
 				columns, contract, perr := p.probeMOSCustomSQLContract(&l, probeSQL)
+				// Empty geometry_format also permits positive MOS detection.
+				// Such SQL uses a boolean bounds token, not a native geometry
+				// operand. Retry the raw contract only after the typed probe
+				// fails; format selection still requires decoded MOS evidence.
+				if perr != nil && l.geometryFormat == "" {
+					rawSQL := codec.WrapProbeSQL(codec.PostgreSQL.PrepareProbeSQL(sql, geomfld, idfld, geomType))
+					if rawSQL != probeSQL {
+						columns, contract, perr = p.probeMOSCustomSQLContract(&l, rawSQL)
+					}
+				}
+
 				switch {
 				case perr != nil && boundsBacked:
 					return nil, fmt.Errorf("layer '%v' problem probing bounds-backed custom SQL: %v", lName, perr)
@@ -1705,7 +1729,7 @@ func CreateProvider(
 						// A02: the structural contract is a startup error,
 						// validated AFTER format resolution so an
 						// auto-detected MOS layer cannot skip it (A05)
-						resolved, boundsInResult, verr := codec.ResolveBoundsSQLContract(lName, sql, l.geomField, contract, l.bboxFields)
+						resolved, boundsInResult, verr := codec.PostgreSQL.ResolveBoundsSQLContract(lName, sql, l.geomField, contract, l.bboxFields)
 						if verr != nil {
 							return nil, fmt.Errorf("layer (%v) %v: %w", i, lName, verr)
 						}
@@ -1752,9 +1776,6 @@ func CreateProvider(
 						log.Warnf("layer '%v': custom SQL storage format not detected (sample columns: %v; %v decodable MOS sample rows); registering with format %q", lName, strings.Join(columns, ", "), contract.ValidMOSRows, l.geometryFormat)
 					}
 				}
-				// 1.3-code: scale tokens compute Web-Mercator metres
-				// regardless of layer CRS; warn on non-metric (degrees) CRS
-				codec.WarnNonMetricScaleTokens(lName, sql, uint32(l.srid), config, layer)
 			}
 
 			l.sql = sql

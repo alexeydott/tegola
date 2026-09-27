@@ -56,10 +56,10 @@ func TestReplaceTokensProtectedContexts(t *testing.T) {
 	extent := geom.NewExtent([2]float64{-10, -10}, [2]float64{10, 10})
 	layer := &Layer{geomFieldname: "geom", bboxFields: codec.DefaultBBoxFields()}
 
-	sql := "SELECT '!zoom!', `!x!`, \"!y!\", [!z!]\n" +
+	sql := "SELECT '!zoom!', `!x!`, \"!y!\", '!z!'\n" +
 		"FROM t WHERE z = !ZOOM! # !BBOX!\n" +
 		"-- !id_field!"
-	want := "SELECT '!zoom!', `!x!`, \"!y!\", [!z!]\n" +
+	want := "SELECT '!zoom!', `!x!`, \"!y!\", '!z!'\n" +
 		"FROM t WHERE z = 2 # !BBOX!\n" +
 		"-- !id_field!"
 

@@ -20,9 +20,8 @@ import (
 // strings is left verbatim.
 //
 // bboxExtent must be the tile's buffered extent transformed to the layer's
-// source SRID. Pixel dimensions and scale denominator are intentionally
-// calculated from the tile's unbuffered Web Mercator extent, matching the
-// PostGIS and GPKG providers.
+// source SRID. Pixel dimensions use the unbuffered extent in the source CRS;
+// scale uses its linear units or a latitude-adjusted geographic conversion.
 //
 // The bounds predicate is built lazily: only queries that actually carry a
 // bbox token (in code context) pay for it. Predicate build errors are
@@ -34,7 +33,7 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 
 	// only build a bounds predicate when the query carries a bbox token
 	bboxSQL := "1=1"
-	if sqltoken.ContainsTokenFold(qtext, config.BboxToken, "!BOX!") {
+	if sqltoken.MySQL.ContainsTokenFold(qtext, config.BboxToken, "!BOX!") {
 		var err error
 		bboxSQL, err = boundsSQLForLayer(layer, bboxExtent)
 		if err != nil {
@@ -42,10 +41,22 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 		}
 	}
 
-	extent, _ := tile.Extent()
-	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
-	pixelHeight := (extent.MaxY() - extent.MinY()) / 256
-	scaleDenominator := pixelWidth / 0.00028
+	var pixelWidth, pixelHeight, scaleDenominator float64
+	if sqltoken.MySQL.ContainsTokenFold(qtext, config.PixelWidthToken, config.PixelHeightToken, config.ScaleDenominatorToken) {
+		// Deferred inspection learns the source CRS from rows only after this
+		// SQL executes. Never substitute units from its provisional SRID.
+		// Runtime callers pass a request-local Layer copy, as does header
+		// resolution; these fields are not shared mutable state.
+		if layer.deferredInspection && !layer.crsExplicit && !layer.deferredSRIDLocked {
+			return "", fmt.Errorf("layer (%v) scale tokens require a resolved source CRS; configure srid or crs_defn for deferred custom SQL", layer.name)
+		}
+
+		var err error
+		pixelWidth, pixelHeight, scaleDenominator, err = provider.TileScale(tile, layer.SRID())
+		if err != nil {
+			return "", fmt.Errorf("layer (%v) scale tokens: %w", layer.name, err)
+		}
+	}
 
 	var geomType string
 	if layer.geomType != nil {
@@ -53,7 +64,7 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	}
 
 	z, x, y := tile.ZXY()
-	return sqltoken.MapTokens(qtext, func(tok string) string {
+	return sqltoken.MySQL.MapTokens(qtext, func(tok string) string {
 		switch tok {
 		case config.BboxToken, "!BOX!":
 			return bboxSQL
@@ -106,7 +117,7 @@ func rawGeometryBoundsWarnings(layers map[string]Layer) []string {
 	var msgs []string
 	for _, l := range layers {
 		boundsPredicateUsed := l.geometryFormat == codec.FormatMOS ||
-			codec.SQLHasBBoxToken(l.sql, config.BboxToken, "!BOX!")
+			codec.MySQL.SQLHasBBoxToken(l.sql, config.BboxToken, "!BOX!")
 		if msg := rawGeometryBoundsWarning(l.name, l.geometryFormat, boundsPredicateUsed); msg != "" {
 			msgs = append(msgs, msg)
 		}
@@ -223,7 +234,7 @@ func mosBoundsSQL(layer *Layer, bboxExtent *geom.Extent) (string, error) {
 // GPKG. Only code-context tokens are normalized; token-looking text in
 // string literals, identifiers, or comments keeps its exact bytes.
 func uppercaseTokens(str string) string {
-	return sqltoken.MapTokens(str, strings.ToUpper)
+	return sqltoken.MySQL.MapTokens(str, strings.ToUpper)
 }
 
 func trimTrailingSemicolon(sqlText string) string {

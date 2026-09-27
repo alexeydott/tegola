@@ -165,20 +165,20 @@ var probeKnownTokens = []string{
 // literals, quoted identifiers, comments, or PostgreSQL dollar-quoted
 // strings stays verbatim (and is never uppercased by the normalization),
 // so probing cannot rewrite documented or quoted text.
-func PrepareProbeSQL(customSQL, geomField, idField, geomType string) string {
-	sql := normalizeProbeTokens(customSQL)
+func (d SQLDialect) PrepareProbeSQL(customSQL, geomField, idField, geomType string) string {
+	sql := d.normalizeProbeTokens(customSQL)
 	// collapse tile/zoom comparisons to the permissive predicate no matter
 	// which side of the operator the token is on (audit P6-9). The
 	// token-left pass runs first so token-to-token comparisons collapse in
 	// one step instead of being cut into bare substitutions. A match whose
 	// span carries token-looking text in a protected context is left
 	// verbatim: collapsing it would rewrite quoted or commented text.
-	sql = replaceAllGuarded(sql, probeTokenLeftCompareRegexp, probePermissivePredicate, true)
-	sql = replaceAllGuarded(sql, probeTokenRightCompareRegexp, probePermissivePredicate, true)
-	sql = replaceAllGuarded(sql, probeZoomCompareRegexp, probeAllZooms, false)
+	sql = d.replaceAllGuarded(sql, probeTokenLeftCompareRegexp, probePermissivePredicate, true)
+	sql = d.replaceAllGuarded(sql, probeTokenRightCompareRegexp, probePermissivePredicate, true)
+	sql = d.replaceAllGuarded(sql, probeZoomCompareRegexp, probeAllZooms, false)
 	// the result is embedded into wrapping inspection queries
 	// ("SELECT ... FROM (%s) ..."), so a trailing semicolon must go
-	sql = sqltoken.MapTokens(sql, func(tok string) string {
+	sql = d.scanner.MapTokens(sql, func(tok string) string {
 		switch tok {
 		case config.BboxToken, "!BOX!":
 			return probePermissivePredicate
@@ -206,8 +206,8 @@ func PrepareProbeSQL(customSQL, geomField, idField, geomType string) string {
 // uppercase spelling so the probe substitution is case-insensitive. Only
 // code-context tokens are normalized; token-looking text in protected
 // contexts keeps its exact bytes.
-func normalizeProbeTokens(sql string) string {
-	return sqltoken.MapTokens(sql, func(tok string) string {
+func (d SQLDialect) normalizeProbeTokens(sql string) string {
+	return d.scanner.MapTokens(sql, func(tok string) string {
 		for _, known := range probeKnownTokens {
 			if strings.EqualFold(tok, known) {
 				return known
@@ -223,7 +223,7 @@ func normalizeProbeTokens(sql string) string {
 // are left verbatim instead of collapsed. The probe replacements only
 // re-emit submatch 1, so the expansion is modeled by the flag rather than
 // a full ${N} expander.
-func replaceAllGuarded(sql string, re *regexp.Regexp, repl string, emitGroup1 bool) string {
+func (d SQLDialect) replaceAllGuarded(sql string, re *regexp.Regexp, repl string, emitGroup1 bool) string {
 	matches := re.FindAllStringSubmatchIndex(sql, -1)
 	if len(matches) == 0 {
 		return sql
@@ -233,11 +233,16 @@ func replaceAllGuarded(sql string, re *regexp.Regexp, repl string, emitGroup1 bo
 	for _, m := range matches {
 		start, end := m[0], m[1]
 		b.WriteString(sql[prev:start])
-		if sqltoken.SpanHasProtectedToken(sql, start, end) {
+		if d.scanner.SpanHasProtectedToken(sql, start, end) {
 			b.WriteString(sql[start:end])
 		} else {
 			if emitGroup1 && len(m) >= 4 && m[2] >= 0 {
 				b.WriteString(sql[m[2]:m[3]])
+			}
+			// A compact comparison such as z=!ZOOM! needs a separator
+			// before the replacement keyword; preserve existing whitespace.
+			if strings.HasPrefix(repl, "IN ") && start > 0 && sql[start-1] > ' ' {
+				b.WriteByte(' ')
 			}
 			b.WriteString(repl)
 		}
@@ -251,14 +256,14 @@ func replaceAllGuarded(sql string, re *regexp.Regexp, repl string, emitGroup1 bo
 // sample window: at most InspectionSampleLimit rows.
 func WrapProbeSQL(sql string) string {
 	return fmt.Sprintf("SELECT * FROM (%s) AS __tegola_bounds_probe LIMIT %d",
-		strings.TrimSuffix(strings.TrimSpace(sql), ";"), InspectionSampleLimit)
+		probeBody(sql), InspectionSampleLimit)
 }
 
 // WrapProbeSQLTopStyle wraps a prepared custom-SQL query in the TOP-style
 // probe sample window used by HANA: at most InspectionSampleLimit rows.
 func WrapProbeSQLTopStyle(sql string) string {
 	return fmt.Sprintf("SELECT TOP %d * FROM (%s) AS __tegola_bounds_probe",
-		InspectionSampleLimit, strings.TrimSuffix(strings.TrimSpace(sql), ";"))
+		InspectionSampleLimit, probeBody(sql))
 }
 
 // RowDecode decodes one raw result-column value into a geometry. isMOS
@@ -387,8 +392,8 @@ func (e ErrSQLGeometryContract) Error() string {
 // — runtime predicates quote identifiers case-sensitively, so callers must
 // persist those instead of the configured spellings. Otherwise resolved is
 // the configured chain passed in.
-func ResolveBoundsSQLContract(layerName, sql, geometryField string, contract SQLGeometryContract, configured BBoxFields) (resolved BBoxFields, boundsInResult bool, err error) {
-	if !sqltoken.ContainsTokenFold(sql, config.BboxToken, "!BOX!") {
+func (d SQLDialect) ResolveBoundsSQLContract(layerName, sql, geometryField string, contract SQLGeometryContract, configured BBoxFields) (resolved BBoxFields, boundsInResult bool, err error) {
+	if !d.scanner.ContainsTokenFold(sql, config.BboxToken, "!BOX!") {
 		return configured, false, ErrSQLGeometryContract{Layer: layerName,
 			Reason: fmt.Sprintf("missing %v token; bounds-backed custom SQL must carry a bounds predicate", config.BboxToken)}
 	}
@@ -471,4 +476,38 @@ func WarnNonMetricScaleTokens(layerName, sql string, srid uint32, providerCfg, l
 		"those tokens are always computed as Web Mercator metres regardless of the layer CRS",
 		layerName, config.ScaleDenominatorToken, config.PixelWidthToken, config.PixelHeightToken)
 	return true
+}
+
+func PrepareProbeSQL(customSQL, geomField, idField, geomType string) string {
+	return Legacy.PrepareProbeSQL(customSQL, geomField, idField, geomType)
+}
+
+func normalizeProbeTokens(sql string) string { return Legacy.normalizeProbeTokens(sql) }
+
+func replaceAllGuarded(sql string, re *regexp.Regexp, repl string, emitGroup1 bool) string {
+	return Legacy.replaceAllGuarded(sql, re, repl, emitGroup1)
+}
+
+func ResolveBoundsSQLContract(layerName, sql, geometryField string, contract SQLGeometryContract, configured BBoxFields) (resolved BBoxFields, boundsInResult bool, err error) {
+	return Legacy.ResolveBoundsSQLContract(layerName, sql, geometryField, contract, configured)
+}
+
+// A line comment at EOF must end before the enclosing probe's closing paren.
+func probeBody(sql string) string {
+	sql = strings.TrimSuffix(strings.TrimSpace(sql), ";")
+	// This public wrapper has no provider context. A newline is harmless in
+	// every dialect, so terminate a possible trailing line comment recognized
+	// by any supported dialect (legacy scanning can miss ordinary backslashes).
+	for _, dialect := range []sqltoken.Dialect{sqltoken.PostgreSQL, sqltoken.MySQL, sqltoken.SQLite, sqltoken.HANA} {
+		segments := dialect.Scan(sql)
+		if len(segments) == 0 {
+			continue
+		}
+		last := segments[len(segments)-1]
+		text := sql[last.Start:last.End]
+		if last.Kind == sqltoken.Comment && (strings.HasPrefix(text, "--") || strings.HasPrefix(text, "#")) {
+			return sql + "\n"
+		}
+	}
+	return sql
 }

@@ -401,13 +401,15 @@ func TestTileFeatures(t *testing.T) {
 			tile:                 provider.NewTile(1, 1, 1, 64, tegola.WebMercator),
 			expectedFeatureCount: 98,
 		},
+		// OSM relation IDs are negative; this fixture tests numeric attributes.
+		// Map them to positive IDs under the provider's uint64 feature-ID contract.
 		"decode numeric(x,x) types": {
 			TCConfig: postgis.TCConfig{
 				LayerConfig: []map[string]any{{
 					postgis.ConfigKeyLayerName:   "buildings",
 					postgis.ConfigKeyGeomIDField: "osm_id",
 					postgis.ConfigKeyGeomField:   "geometry",
-					postgis.ConfigKeySQL:         "SELECT ST_AsBinary(geometry) AS geometry, osm_id, name, nullif(as_numeric(height),-1) AS height, type FROM osm_buildings_test WHERE geometry && !BBOX!",
+					postgis.ConfigKeySQL:         "SELECT ST_AsBinary(geometry) AS geometry, abs(osm_id) AS osm_id, name, nullif(as_numeric(height),-1) AS height, type FROM osm_buildings_test WHERE geometry && !BBOX!",
 				}},
 			},
 			tile:                 provider.NewTile(16, 11241, 26168, 64, tegola.WebMercator),

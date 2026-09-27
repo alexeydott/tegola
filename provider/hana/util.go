@@ -653,7 +653,7 @@ func getGeometryColumnSRID(pool *connectionPoolCollector, dbVersion uint, sql st
 	// Shared bounds-contract probe preparation (audit R1): neutralizes
 	// !BBOX!/!BOX! to "1=1" and expands zoom/position placeholders
 	// permissively so the sample cannot be filtered out by tile tokens.
-	sqlQuery := codec.PrepareProbeSQL(sql, geomFieldName, "", "")
+	sqlQuery := codec.HANA.PrepareProbeSQL(sql, geomFieldName, "", "")
 
 	sqlQuery = fmt.Sprintf("SELECT %[1]v.ST_SRID() FROM %[2]v WHERE %[1]v IS NOT NULL LIMIT 1", quoteIdentifier(geomFieldName), sqlQuery)
 	ctx, cancel := NewInspectionContext(context.Background())
@@ -708,7 +708,7 @@ func sanitizeSQL(sql string) string {
 	// convert !BOX! (MapServer) and !bbox! (Mapnik) to !BBOX! for
 	// compatibility; only in SQL code context — token-looking text in
 	// string literals, identifiers, or comments stays verbatim.
-	return sqltoken.MapTokens(sql, func(tok string) string {
+	return sqltoken.HANA.MapTokens(sql, func(tok string) string {
 		if tok == "!BOX!" || tok == "!bbox!" {
 			return bboxToken
 		}
@@ -741,7 +741,7 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 		return "", terr
 	}
 	var pixelWidth, pixelHeight, scaleDenominator float64
-	if sqltoken.ContainsTokenFold(sql, pixelWidthToken, pixelHeightToken, scaleDenominatorToken) {
+	if sqltoken.HANA.ContainsTokenFold(sql, pixelWidthToken, pixelHeightToken, scaleDenominatorToken) {
 		var err error
 		pixelWidth, pixelHeight, scaleDenominator, err = tileScale(tile, srid)
 		if err != nil {
@@ -782,7 +782,7 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 	// replace query string tokens
 	z, x, y := tile.ZXY()
 	sql = uppercaseTokens(sql)
-	return sqltoken.MapTokens(sql, func(tok string) string {
+	return sqltoken.HANA.MapTokens(sql, func(tok string) string {
 		switch tok {
 		case bboxToken:
 			return bboxFilter
@@ -1271,7 +1271,7 @@ func extractQueryParamValues(pname string, maps []provider.Map, layer *Layer) pr
 // Token-looking text in string literals, identifiers, or comments keeps
 // its exact bytes.
 func uppercaseTokens(str string) string {
-	return sqltoken.MapTokens(str, strings.ToUpper)
+	return sqltoken.HANA.MapTokens(str, strings.ToUpper)
 }
 
 // ctxErr will check if the supplied context has an error (i.e. context canceled)

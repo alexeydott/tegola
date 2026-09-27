@@ -242,8 +242,8 @@ The following tokens are supported in custom `sql` (case-insensitive) and behave
 - `!BBOX!` — for native spatial geometries, replaced with `ST_Intersects(<geom_field>, ST_GeomFromText('POLYGON(...)', <layer_srid>))` using the tile's buffered extent in the layer's SRID. WKT columns are wrapped with the same SRID. For MOS, replaced with an indexed bounds-columns overlap predicate in the raw packed coordinate units. For MOS custom SQL the `!BBOX!` token is **required** and expands into the bounds-columns predicate (the bounds column names are configurable via `bbox_minx_fieldname` / `bbox_maxx_fieldname` / `bbox_miny_fieldname` / `bbox_maxy_fieldname`, defaults `MINX`/`MAXX`/`MINY`/`MAXY`); the provider verifies the token at registration. The bounds columns do not need to appear in the SELECT list — the predicate resolves them in the query's own scope (e.g. the source table's columns). When they are present in the result their actual names are used; when absent, registration logs a warning and the layer uses the resolved names (layer > provider > `MINX`/`MAXX`/`MINY`/`MAXY`).
 - `!ZOOM!`, `!Z!` — the tile's zoom (Z) value.
 - `!X!`, `!Y!` — the tile's X/Y values.
-- `!SCALE_DENOMINATOR!` — scale denominator assuming 90.7 DPI.
-- `!PIXEL_WIDTH!`, `!PIXEL_HEIGHT!` — pixel size in meters for 256x256 tiles.
+- `!SCALE_DENOMINATOR!` — horizontal scale denominator using the OGC 0.28 mm rendering pixel.
+- `!PIXEL_WIDTH!`, `!PIXEL_HEIGHT!` — unbuffered pixel size in the resolved layer CRS units.
 - `!ID_FIELD!` — the layer's id field name.
 - `!GEOM_FIELD!` — the layer's geometry field name.
 - `!GEOM_TYPE!` — the layer's geometry type name (POINT, LINESTRING, ...).
@@ -254,9 +254,8 @@ The registration probe always executes custom SQL without a spatial filter:
 permissive, and the probe is capped at 16 sample rows. Tegola decodes the
 returned geometries and applies the tile intersection check in memory,
 avoiding MySQL spatial functions on an unknown format (including MOS); the
-layer is registered with its configured CRS. Note that the scale tokens are
-computed in Web Mercator meters and are meaningful only for metric CRSs (see
-[docs/crs.md](../../docs/crs.md)). Table-canonical MapplGIS detection never
+layer is registered with its configured CRS. Scale tokens use the shared
+[CRS-aware scale contract](../../docs/crs.md). Table-canonical MapplGIS detection never
 applies to custom `sql` layers, and no system-info record is applied from
 result rows: a MOS custom SQL layer must configure `srid` or `crs_defn`
 explicitly (a missing CRS is a startup error), while `mos_precision` /
@@ -290,3 +289,21 @@ comparison over those columns. Alternatively use a native geometry column
 
 - Only 2D geometries are supported by the decoder for MVT encoding (matching MariaDB's capabilities).
 - Custom SQL used in derived-table inspection must be aliasable — the inspection query wraps it as `SELECT geom FROM (<your sql>) AS __tegola_inspection LIMIT 1`.
+
+### Scale token units
+
+Pixel dimensions use the unbuffered tile extent transformed to the layer CRS,
+with 256×256 pixels by default. Custom tiles may expose `PixelSize()`.
+The scale denominator converts horizontal pixel size to meters and divides by
+the OGC 0.00028 m rendering pixel. Projected CRSs use their registered linear
+units (including feet); supported WGS84 geographic CRSs use a spherical
+parallel-arc approximation at the tile center latitude. Unsupported CRS/units
+produce an error when a scale token is executed. EPSG:3857 defaults are unchanged;
+non-WebMercator SQL thresholds must use the new CRS-aware values.
+
+### SQL token lexical rules
+
+SQL tokens use default MySQL lexical rules, including `#` comments and the
+whitespace requirement after `--`. Single/double-quoted strings use backslash
+escapes; backtick identifiers use doubled backticks. Token scanning does not
+support the nondefault `NO_BACKSLASH_ESCAPES` or `ANSI_QUOTES` SQL modes.

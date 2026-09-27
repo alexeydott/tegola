@@ -322,7 +322,7 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 		if err != nil {
 			return err
 		}
-		qtext = queryParams.ReplaceParams(qtext, &args)
+		qtext = queryParams.ReplaceParamsWithDialect(qtext, &args, provider.SQLDialectSQLite)
 	}
 
 	log.Debugf("qtext: %v", qtext)

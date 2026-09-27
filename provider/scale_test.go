@@ -1,10 +1,8 @@
-package hana
+package provider_test
 
 import (
 	"fmt"
 	"math"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/go-spatial/geom"
@@ -56,7 +54,7 @@ func TestTileScaleUnitsAndSizes(t *testing.T) {
 				t.Run(fmt.Sprint(size), func(t *testing.T) {
 					extent := &geom.Extent{1000 / tc.factor, 2000 / tc.factor, 2024 / tc.factor, 4048 / tc.factor}
 					tile := sizedScaleTile{Tile: fixture.Tile{Bounds: extent, SRID: srid}, width: size[0], height: size[1]}
-					w, h, s, err := tileScale(tile, srid)
+					w, h, s, err := provider.TileScale(tile, srid)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -75,7 +73,7 @@ func TestTileScaleGeographic(t *testing.T) {
 			t.Run(fmt.Sprintf("%g/%d", latitude, size), func(t *testing.T) {
 				extent := &geom.Extent{10, latitude - 1, 12, latitude + 1}
 				tile := sizedScaleTile{Tile: fixture.Tile{Bounds: extent, SRID: 4326}, width: size, height: size}
-				w, h, s, err := tileScale(tile, 4326)
+				w, h, s, err := provider.TileScale(tile, 4326)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -106,14 +104,14 @@ func TestTileScaleReprojectsSlippyTiles(t *testing.T) {
 				minLat := math.Atan(math.Sinh(extent.MinY()/6378137)) * 180 / math.Pi
 				maxLat := math.Atan(math.Sinh(extent.MaxY()/6378137)) * 180 / math.Pi
 				degreesPerPixel := 360 / math.Exp2(float64(z)) / float64(size)
-				for _, srid := range []uint64{4326, 1000004326, 4087, feet} {
-					w, h, s, err := tileScale(tile, srid)
+				for _, srid := range []uint64{4326, 4087, feet} {
+					w, h, s, err := provider.TileScale(tile, srid)
 					if err != nil {
 						t.Fatal(err)
 					}
 					factor := 1.0
 					meters := 111319.49079327358
-					if srid == 4326 || srid == 1000004326 {
+					if srid == 4326 {
 						meters *= math.Cos(centerLat * math.Pi / 180)
 					} else {
 						factor = 111319.49079327358
@@ -152,101 +150,9 @@ func TestTileScaleErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tile := sizedScaleTile{Tile: fixture.Tile{Bounds: tc.extent, SRID: tc.tileCRS}, width: tc.size, height: tc.size}
-			if _, _, _, err := tileScale(tile, tc.layerCRS); err == nil {
+			if _, _, _, err := provider.TileScale(tile, tc.layerCRS); err == nil {
 				t.Fatal("expected scale error")
 			}
 		})
-	}
-}
-
-func TestReplaceScaleTokensWebMercatorCompatibility(t *testing.T) {
-	layer := &Layer{name: "metric", srid: 3857}
-	for _, z := range []slippy.Zoom{0, 2, 11, 22} {
-		t.Run(fmt.Sprint(z), func(t *testing.T) {
-			tile := provider.NewTile(z, 0, 0, 64, 3857)
-			extent, _ := tile.Extent()
-			oldWidth := (extent.MaxX() - extent.MinX()) / 256
-			oldHeight := (extent.MaxY() - extent.MinY()) / 256
-			want := fmt.Sprintf("SELECT %.8f, %.8f, %.8f", oldWidth, oldHeight, oldWidth/0.00028)
-			for _, buffered := range []bool{false, true} {
-				got, err := replaceTokens(4, "SELECT !pixel_width!, !PIXEL_HEIGHT!, !scale_denominator!", layer, nil, layer.SRID(), tile, buffered)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got != want {
-					t.Errorf("SQL = %q, want byte-exact legacy SQL %q", got, want)
-				}
-			}
-		})
-	}
-}
-
-func TestReplaceScaleTokensCRSAndContexts(t *testing.T) {
-	feet, err := basic.RegisterProj4Defn("+proj=eqc +lat_ts=0 +datum=WGS84 +units=ft")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, srid := range []uint64{4326, 1000004326, feet, 4087} {
-		t.Run(fmt.Sprint(srid), func(t *testing.T) {
-			layer := &Layer{name: "source", srid: srid}
-			tile := sizedScaleTile{Tile: provider.NewTile(8, 128, 80, 64, 3857), width: 512, height: 1024}
-			w, h, s, err := tileScale(tile, srid)
-			if err != nil {
-				t.Fatal(err)
-			}
-			protected := ", '!pixel_width!', \"!PIXEL_HEIGHT!\", '!scale_denominator!', '!pixel_width!', '!SCALE_DENOMINATOR!', '!pixel_height!' -- !PIXEL_WIDTH!\n/* !scale_denominator! */"
-			sql := "SELECT !pixel_width!, !PIXEL_HEIGHT!, !scale_denominator!" + protected
-			want := fmt.Sprintf("SELECT %.8f, %.8f, %.8f", w, h, s) + protected
-			for _, buffered := range []bool{false, true} {
-				got, err := replaceTokens(4, sql, layer, nil, layer.SRID(), tile, buffered)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got != want {
-					t.Errorf("SQL = %q, want %q", got, want)
-				}
-			}
-		})
-	}
-}
-
-func TestReplaceScaleTokensUnknownCRS(t *testing.T) {
-	layer := &Layer{name: "unknown", srid: 999999}
-	tile := provider.NewTile(8, 128, 80, 64, 3857)
-	for _, token := range []string{pixelWidthToken, pixelHeightToken, scaleDenominatorToken} {
-		got, err := replaceTokens(4, "SELECT "+token, layer, nil, layer.SRID(), tile, false)
-		if err == nil || got != "" || !strings.Contains(err.Error(), "layer (unknown) scale tokens") {
-			t.Errorf("expected contextual error and empty SQL, got %q, %v", got, err)
-		}
-	}
-	for _, sql := range []string{"SELECT 1", "SELECT '!PIXEL_WIDTH!', \"!pixel_height!\" -- !scale_denominator!\n/* !PIXEL_WIDTH! */"} {
-		got, err := replaceTokens(4, sql, layer, nil, layer.SRID(), tile, false)
-		if err != nil || got != sql {
-			t.Errorf("protected/unused tokens must not need CRS metadata: got %q, %v", got, err)
-		}
-	}
-}
-
-func TestReplaceScaleTokenGeographicExamples(t *testing.T) {
-	// Log operator-visible examples without a database; the old denominator
-	// ignores latitude, while the new one follows the tile center parallel.
-	layer := &Layer{name: "geographic", srid: 4326}
-	for _, tc := range []struct {
-		z    slippy.Zoom
-		x, y uint
-	}{{2, 1, 1}, {11, 1070, 676}} {
-		tile := provider.NewTile(tc.z, tc.x, tc.y, 64, 3857)
-		extent, _ := tile.Extent()
-		oldWidth := (extent.MaxX() - extent.MinX()) / 256
-		sql, err := replaceTokens(4, "!PIXEL_WIDTH!,!SCALE_DENOMINATOR!", layer, nil, layer.SRID(), tile, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		values := strings.Split(sql, ",")
-		newScale, err := strconv.ParseFloat(values[1], 64)
-		if err != nil || newScale >= oldWidth/0.00028 {
-			t.Fatalf("expected latitude-adjusted scale below legacy scale: %v, %v", newScale, err)
-		}
-		t.Logf("z=%d x=%d y=%d old width=%.8f m scale=%.8f; new width=%s degrees scale=%s", tc.z, tc.x, tc.y, oldWidth, oldWidth/0.00028, values[0], values[1])
 	}
 }

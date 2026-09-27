@@ -9,42 +9,27 @@
 // mentioning !ZOOM!). This package scans SQL into code and protected
 // segments and rewrites, detects, or strips tokens in code segments only.
 //
-// Protected contexts (tokens inside them are never touched):
-//
-//   - single-quoted string literals, where a doubled quote and a backslash
-//     both escape a quote
-//   - double-quoted identifiers, with doubled-quote and backslash escaping
-//   - backtick identifiers (MySQL), with doubled-backtick and backslash
-//     escaping
-//   - bracket identifiers (T-SQL/Access), where a doubled closing bracket
-//     escapes the bracket
-//   - line comments: -- ... and MySQL # ... (through end of line)
-//   - block comments: /* ... */ including nesting (PostgreSQL semantics)
-//   - PostgreSQL dollar-quoted strings: $tag$ ... $tag$ and $$ ... $$
-//     where tag is empty or an identifier-like word (so $1-style
-//     placeholders are not dollar quotes)
-//
-// Everything else is code and eligible for token substitution. Text in
-// protected contexts is passed through byte-for-byte: tokens there are not
-// even uppercased. Constructs that are never terminated extend to the end
-// of the input (fail toward protection).
-//
-// Caveats (deliberate, documented behavior):
-//
-//   - '#' always starts a line comment, per the MySQL rule. PostgreSQL
-//     operators such as #>, #>> and #- are therefore treated as comment
-//     starts: tokens appearing after them on the same line are left
-//     verbatim. Queries that combine those operators with !TOKEN!
-//     parameters should place the token on its own line.
-//   - Matching is token-shaped (see TokenRegexp) rather than raw substring
-//     replacement. Malformed edges such as !BOX!xtra! — one token to the
-//     regexp, two substrings to a naive replacer — are handled as a single
-//     token.
+// Dialect methods apply the lexical rules of a specific SQL provider. The
+// package-level functions preserve the historical union of SQL syntaxes for
+// compatibility; providers must use explicit dialects for both detection and
+// substitution. PostgreSQL uses standard_conforming_strings=on, with E strings
+// providing explicit backslash escapes. MySQL uses its default string mode.
 package sqltoken
 
 import (
 	"regexp"
 	"strings"
+)
+
+// Dialect selects SQL lexical rules. Legacy preserves the historical scanner.
+type Dialect uint8
+
+const (
+	Legacy Dialect = iota
+	PostgreSQL
+	MySQL
+	SQLite
+	HANA
 )
 
 // TokenRegexp matches a single tegola interpolation token. Token names
@@ -86,7 +71,7 @@ type Segment struct {
 // Scan classifies sql into consecutive segments covering the entire input.
 // Adjacent segments never share a boundary gap: for i > 0, segs[i].Start ==
 // segs[i-1].End, and the union of the segments is the whole string.
-func Scan(sql string) []Segment {
+func (d Dialect) Scan(sql string) []Segment {
 	var segs []Segment
 	codeStart := 0
 	i := 0
@@ -108,22 +93,21 @@ func Scan(sql string) []Segment {
 		c := sql[i]
 		switch {
 		case c == '\'':
-			add(StringLiteral, i, scanQuoted(sql, i, '\'', true))
+			add(StringLiteral, i, scanQuoted(sql, i, '\'', d == Legacy || d == MySQL || (d == PostgreSQL && postgresEscapePrefix(sql, i))))
 		case c == '"':
-			add(QuotedIdentifier, i, scanQuoted(sql, i, '"', true))
-		case c == '`':
-			add(QuotedIdentifier, i, scanQuoted(sql, i, '`', true))
-		case c == '[':
-			add(QuotedIdentifier, i, scanQuoted(sql, i, ']', false))
-		case c == '-' && i+1 < n && sql[i+1] == '-':
+			add(QuotedIdentifier, i, scanQuoted(sql, i, '"', d == Legacy || d == MySQL))
+		case c == '`' && (d == Legacy || d == MySQL || d == SQLite):
+			add(QuotedIdentifier, i, scanQuoted(sql, i, '`', d == Legacy))
+		case c == '[' && (d == Legacy || d == SQLite):
+			add(QuotedIdentifier, i, scanBracket(sql, i, d == Legacy))
+		case c == '-' && i+1 < n && sql[i+1] == '-' && (d != MySQL || i+2 == n || sql[i+2] <= ' '):
 			add(Comment, i, scanLineComment(sql, i))
-		case c == '#':
-			// MySQL line comment. See the package docs for the
-			// interaction with PostgreSQL #-operators.
+		case c == '#' && (d == Legacy || d == MySQL):
+			// MySQL line comment; PostgreSQL hash operators remain code.
 			add(Comment, i, scanLineComment(sql, i))
 		case c == '/' && i+1 < n && sql[i+1] == '*':
-			add(Comment, i, scanBlockComment(sql, i))
-		case c == '$':
+			add(Comment, i, scanBlockComment(sql, i, d == Legacy || d == PostgreSQL))
+		case c == '$' && (d == Legacy || (d == PostgreSQL && (i == 0 || !identifierByte(sql[i-1])))):
 			if end, ok := scanDollarQuote(sql, i); ok {
 				add(DollarQuoted, i, end)
 			} else {
@@ -179,12 +163,12 @@ func scanLineComment(sql string, start int) int {
 // returns the index just past the closing delimiter. Block comments nest,
 // following PostgreSQL semantics. An unterminated comment extends to the
 // end of sql.
-func scanBlockComment(sql string, start int) int {
+func scanBlockComment(sql string, start int, nested bool) int {
 	depth := 1
 	i := start + 2
 	for i < len(sql) {
 		switch {
-		case sql[i] == '/' && i+1 < len(sql) && sql[i+1] == '*':
+		case nested && sql[i] == '/' && i+1 < len(sql) && sql[i+1] == '*':
 			depth++
 			i += 2
 		case sql[i] == '*' && i+1 < len(sql) && sql[i+1] == '/':
@@ -225,9 +209,9 @@ type Token struct {
 
 // CodeTokens returns every token-shaped match in code segments of sql, in
 // order of appearance. Tokens in protected contexts are not returned.
-func CodeTokens(sql string) []Token {
+func (d Dialect) CodeTokens(sql string) []Token {
 	var toks []Token
-	for _, seg := range Scan(sql) {
+	for _, seg := range d.Scan(sql) {
 		if seg.Kind != Code {
 			continue
 		}
@@ -243,10 +227,10 @@ func CodeTokens(sql string) []Token {
 // MapTokens rebuilds sql with fn applied to each code-context token. The
 // text of protected contexts is copied verbatim. fn receives the token text
 // and returns its replacement; returning the input token keeps it verbatim.
-func MapTokens(sql string, fn func(token string) string) string {
+func (d Dialect) MapTokens(sql string, fn func(token string) string) string {
 	var b strings.Builder
 	last := 0
-	for _, tok := range CodeTokens(sql) {
+	for _, tok := range d.CodeTokens(sql) {
 		b.WriteString(sql[last:tok.Start])
 		b.WriteString(fn(tok.Text))
 		last = tok.End
@@ -257,8 +241,8 @@ func MapTokens(sql string, fn func(token string) string) string {
 
 // ReplaceToken replaces exact matches of token in code context with value.
 // Occurrences of token in protected contexts are left verbatim.
-func ReplaceToken(sql, token, value string) string {
-	return MapTokens(sql, func(t string) string {
+func (d Dialect) ReplaceToken(sql, token, value string) string {
+	return d.MapTokens(sql, func(t string) string {
 		if t == token {
 			return value
 		}
@@ -268,14 +252,14 @@ func ReplaceToken(sql, token, value string) string {
 
 // StripTokens removes every code-context token from sql. Token-looking text
 // in protected contexts is preserved.
-func StripTokens(sql string) string {
-	return MapTokens(sql, func(string) string { return "" })
+func (d Dialect) StripTokens(sql string) string {
+	return d.MapTokens(sql, func(string) string { return "" })
 }
 
 // ContainsToken reports whether sql contains any of tokens in code context,
 // matching token text exactly.
-func ContainsToken(sql string, tokens ...string) bool {
-	for _, tok := range CodeTokens(sql) {
+func (d Dialect) ContainsToken(sql string, tokens ...string) bool {
+	for _, tok := range d.CodeTokens(sql) {
 		for _, want := range tokens {
 			if tok.Text == want {
 				return true
@@ -286,8 +270,8 @@ func ContainsToken(sql string, tokens ...string) bool {
 }
 
 // ContainsTokenFold is ContainsToken with case-insensitive token matching.
-func ContainsTokenFold(sql string, tokens ...string) bool {
-	for _, tok := range CodeTokens(sql) {
+func (d Dialect) ContainsTokenFold(sql string, tokens ...string) bool {
+	for _, tok := range d.CodeTokens(sql) {
 		for _, want := range tokens {
 			if strings.EqualFold(tok.Text, want) {
 				return true
@@ -301,14 +285,14 @@ func ContainsTokenFold(sql string, tokens ...string) bool {
 // byte range [start, end) of sql lies in a protected context. It guards
 // regex-based rewrites that may consume quoted or commented regions: a
 // rewrite span carrying a protected token must not be applied.
-func SpanHasProtectedToken(sql string, start, end int) bool {
+func (d Dialect) SpanHasProtectedToken(sql string, start, end int) bool {
 	if start < 0 {
 		start = 0
 	}
 	if end > len(sql) {
 		end = len(sql)
 	}
-	for _, seg := range Scan(sql) {
+	for _, seg := range d.Scan(sql) {
 		if !seg.Kind.Protected() || seg.End <= start || seg.Start >= end {
 			continue
 		}
@@ -325,4 +309,48 @@ func SpanHasProtectedToken(sql string, start, end int) bool {
 		}
 	}
 	return false
+}
+
+// Scan uses the legacy compatibility scanner.
+func Scan(sql string) []Segment { return Legacy.Scan(sql) }
+
+// CodeTokens uses the legacy compatibility scanner.
+func CodeTokens(sql string) []Token { return Legacy.CodeTokens(sql) }
+
+// MapTokens uses the legacy compatibility scanner.
+func MapTokens(sql string, fn func(token string) string) string { return Legacy.MapTokens(sql, fn) }
+
+// ReplaceToken uses the legacy compatibility scanner.
+func ReplaceToken(sql, token, value string) string { return Legacy.ReplaceToken(sql, token, value) }
+
+// StripTokens uses the legacy compatibility scanner.
+func StripTokens(sql string) string { return Legacy.StripTokens(sql) }
+
+// ContainsToken uses the legacy compatibility scanner.
+func ContainsToken(sql string, tokens ...string) bool { return Legacy.ContainsToken(sql, tokens...) }
+
+// ContainsTokenFold uses the legacy compatibility scanner.
+func ContainsTokenFold(sql string, tokens ...string) bool {
+	return Legacy.ContainsTokenFold(sql, tokens...)
+}
+
+// SpanHasProtectedToken uses the legacy compatibility scanner.
+func SpanHasProtectedToken(sql string, start, end int) bool {
+	return Legacy.SpanHasProtectedToken(sql, start, end)
+}
+
+func identifierByte(c byte) bool {
+	return c >= 128 || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '$'
+}
+func postgresEscapePrefix(sql string, quote int) bool {
+	return quote > 0 && (sql[quote-1] == 'E' || sql[quote-1] == 'e') && (quote == 1 || !identifierByte(sql[quote-2]))
+}
+func scanBracket(sql string, start int, doubled bool) int {
+	if doubled {
+		return scanQuoted(sql, start, ']', false)
+	}
+	if end := strings.IndexByte(sql[start+1:], ']'); end >= 0 {
+		return start + 2 + end
+	}
+	return len(sql)
 }

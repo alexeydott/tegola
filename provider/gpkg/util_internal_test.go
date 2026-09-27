@@ -166,6 +166,7 @@ func TestReplaceTokens(t *testing.T) {
 				!pixel_width!, !pixel_height!, !scale_denominator!`,
 			layer: Layer{
 				idFieldname:   "feature_id",
+				srid:          3857,
 				geomFieldname: "shape",
 				geomType:      geom.Point{},
 			},
@@ -192,6 +193,7 @@ func TestReplaceTokens(t *testing.T) {
 func TestReplaceTokensProtectedContexts(t *testing.T) {
 	layer := Layer{
 		idFieldname:   "feature_id",
+		srid:          3857,
 		geomFieldname: "shape",
 		geomType:      geom.Point{},
 	}

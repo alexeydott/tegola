@@ -167,10 +167,10 @@ func TestReplaceTokensProtectedContexts(t *testing.T) {
 	layer := Layer{srid: tegola.WebMercator, geomField: "geom"}
 	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
 
-	sql := "SELECT '!BBOX!', `!x!`, \"!y!\", [!z!]\n" +
+	sql := "SELECT '!BBOX!', '!x!', \"!y!\", '!z!'\n" +
 		"FROM foo WHERE z = !ZOOM! -- !zoom!\n" +
 		"/* !ID_FIELD! */"
-	want := "SELECT '!BBOX!', `!x!`, \"!y!\", [!z!]\n" +
+	want := "SELECT '!BBOX!', '!x!', \"!y!\", '!z!'\n" +
 		"FROM foo WHERE z = 2 -- !zoom!\n" +
 		"/* !ID_FIELD! */"
 
@@ -308,8 +308,8 @@ func TestUppercaseTokens(t *testing.T) {
 // normalizes code-context tokens only; token text inside string literals,
 // quoted identifiers and comments is left byte-identical.
 func TestUppercaseTokensProtectedContexts(t *testing.T) {
-	str := "SELECT `!x!`, '!y!' -- !z!\nFROM t WHERE !zoom! = 1"
-	want := "SELECT `!x!`, '!y!' -- !z!\nFROM t WHERE !ZOOM! = 1"
+	str := "SELECT '!x!', '!y!' -- !z!\nFROM t WHERE !zoom! = 1"
+	want := "SELECT '!x!', '!y!' -- !z!\nFROM t WHERE !ZOOM! = 1"
 	if out := uppercaseTokens(str); out != want {
 		t.Fatalf("protected contexts must not be uppercased:\n got %q\nwant %q", out, want)
 	}

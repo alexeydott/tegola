@@ -760,7 +760,6 @@ func wkbPoint(t *testing.T, x, y float64) []byte {
 	b := []byte{1} // little-endian bom
 	b = binary.LittleEndian.AppendUint32(b, 1)
 	b = binary.LittleEndian.AppendUint64(b, math.Float64bits(x))
-	b = binary.LittleEndian.AppendUint64(b, 1)
 	b = binary.LittleEndian.AppendUint64(b, math.Float64bits(y))
 	return b
 }
@@ -768,6 +767,9 @@ func wkbPoint(t *testing.T, x, y float64) []byte {
 // TestDecodeMySQLFormat exercises the MySQL native internal geometry layout:
 // [4 bytes SRID (little-endian)][1 byte byte-order][WKB (type + body)]
 func TestDecodeMySQLFormat(t *testing.T) {
+	if got := len(wkbPoint(t, 1.5, 2.5)); got != 21 {
+		t.Fatalf("WKB point length = %d, want 21", got)
+	}
 	wkb := wkbPoint(t, 1.5, 2.5)
 
 	// assemble a MySQL-native geometry blob with SRID 3857
@@ -786,8 +788,8 @@ func TestDecodeMySQLFormat(t *testing.T) {
 	if geo == nil {
 		t.Fatal("expected geometry, got nil")
 	}
-	if _, ok := geo.(geom.Point); !ok {
-		t.Errorf("expected geom.Point, got %T", geo)
+	if point, ok := geo.(geom.Point); !ok || point != (geom.Point{1.5, 2.5}) {
+		t.Errorf("expected point (1.5, 2.5), got %T %v", geo, geo)
 	}
 
 	// too-short blob is an error
@@ -821,8 +823,8 @@ func TestDecodeMariaDBFormat(t *testing.T) {
 	if srid != 4326 {
 		t.Errorf("expected srid 4326, got %v", srid)
 	}
-	if _, ok := geo.(geom.Point); !ok {
-		t.Errorf("expected geom.Point, got %T", geo)
+	if point, ok := geo.(geom.Point); !ok || point != (geom.Point{1.5, 2.5}) {
+		t.Errorf("expected point (1.5, 2.5), got %T %v", geo, geo)
 	}
 
 	// big-endian MariaDB blob with SRID 4326
@@ -1069,6 +1071,7 @@ func TestCheckTableSRIDs(t *testing.T) {
 func TestReplaceTokens(t *testing.T) {
 	layer := &Layer{
 		name:          "testlayer",
+		srid:          3857,
 		geomFieldname: "geom",
 		idFieldname:   "fid",
 	}

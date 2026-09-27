@@ -1091,12 +1091,12 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			// bounds-backed custom SQL (explicit MOS; explicit gpkg; unset
 			// format when the SQL uses the token — its !BBOX! expands into
 			// the bounds-fields predicate) must carry it.
-			if verr := codec.ValidateRawCustomSQL(layerName, layer.geometryFormat, customSQL, conf.BboxToken, "!BOX!"); verr != nil {
+			if verr := codec.SQLite.ValidateRawCustomSQL(layerName, layer.geometryFormat, customSQL, conf.BboxToken, "!BOX!"); verr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, verr)
 			}
-			sqlHasBBox := codec.SQLHasBBoxToken(customSQL, conf.BboxToken, "!BOX!")
+			sqlHasBBox := codec.SQLite.SQLHasBBoxToken(customSQL, conf.BboxToken, "!BOX!")
 			boundsBacked := layer.geometryFormat == codec.FormatMOS || layer.geometryFormat == GeometryFormatGPKG || (layer.geometryFormat == "" && sqlHasBBox)
-			if rerr := codec.RequireBBoxCustomSQL(layerName, boundsBacked, customSQL, conf.BboxToken, "!BOX!"); rerr != nil {
+			if rerr := codec.SQLite.RequireBBoxCustomSQL(layerName, boundsBacked, customSQL, conf.BboxToken, "!BOX!"); rerr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, rerr)
 			}
 
@@ -1109,7 +1109,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			if layer.geomType != nil {
 				probeGeomType = codec.GeomTypeName(layer.geomType)
 			}
-			inspectionSQL := codec.PrepareProbeSQL(customSQL, layer.geomFieldname, layer.idFieldname, probeGeomType)
+			inspectionSQL := codec.SQLite.PrepareProbeSQL(customSQL, layer.geomFieldname, layer.idFieldname, probeGeomType)
 			probeSQL := codec.WrapProbeSQL(inspectionSQL)
 
 			// Bounds-backed / storage-format probe. Runs for explicit MOS,
@@ -1130,7 +1130,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				default:
 					mosEvidence := contract.ValidMOSRows >= codec.MinValidMOSRows
 					if boundsBacked || mosEvidence {
-						resolved, boundsInResult, cerr := codec.ResolveBoundsSQLContract(layerName, customSQL, layer.geomFieldname, contract, layer.bboxFields)
+						resolved, boundsInResult, cerr := codec.SQLite.ResolveBoundsSQLContract(layerName, customSQL, layer.geomFieldname, contract, layer.bboxFields)
 						if cerr != nil {
 							return nil, fmt.Errorf("for layer (%v) %v: %w", i, layerName, cerr)
 						}
@@ -1178,10 +1178,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					}
 				}
 			}
-
-			// Non-metric layer CRS + scale/pixel token warning (part11 1.3,
-			// code half): token values stay Web Mercator metres by design.
-			codec.WarnNonMetricScaleTokens(layerName, customSQL, uint32(layer.srid), config, layerConf)
 
 			// An explicit geometry_type skips only geometry-class inference
 			// and the >=3-sample-row evidence bar, never the structural

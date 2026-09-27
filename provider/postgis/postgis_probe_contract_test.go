@@ -133,15 +133,16 @@ func TestProbeSQLContractRows(t *testing.T) {
 const adversarialProbeSQL = `SELECT * FROM t WHERE min_zoom <= !ZOOM! AND max_zoom >= !ZOOM! AND geom && !BBOX! AND ST_Intersects(geom, !BBOX!) AND cx = !X! AND cy = !Y!`
 
 // TestProbeSQLPreparationR1 asserts both PostGIS inspection probes follow
-// the shared codec.PrepareProbeSQL contract (audit R1): every zoom/position
-// token occurrence is neutralized, !BBOX! becomes "1=1" (never "TRUE", so
-// it stays syntactically valid inside SQL function arguments) and the
+// shared permissive zoom/position handling (audit R1). Raw MOS bounds
+// tokens become boolean predicates, while native PostGIS tokens remain
+// typed geometry operands suitable for spatial function arguments. The
 // query is wrapped in the shared InspectionSampleLimit sample window
 // (docs/provider-contract.md).
 func TestProbeSQLPreparationR1(t *testing.T) {
 	newLayer := func() *Layer {
 		return &Layer{
 			name:       "probe_layer",
+			srid:       3857,
 			sql:        adversarialProbeSQL,
 			idField:    "gid",
 			geomField:  "geom",
@@ -149,7 +150,7 @@ func TestProbeSQLPreparationR1(t *testing.T) {
 		}
 	}
 
-	check := func(t *testing.T, probeSQL string) {
+	check := func(t *testing.T, probeSQL string, native bool) {
 		t.Helper()
 		for _, tok := range []string{"!ZOOM!", "!BBOX!", "!X!", "!Y!"} {
 			if strings.Contains(probeSQL, tok) {
@@ -162,7 +163,11 @@ func TestProbeSQLPreparationR1(t *testing.T) {
 		if strings.Contains(probeSQL, "TRUE") {
 			t.Errorf("bbox token must never neutralize to TRUE (breaks function arguments): %s", probeSQL)
 		}
-		if !strings.Contains(probeSQL, "ST_Intersects(geom, 1=1)") {
+		wantOperand := "ST_Intersects(geom, 1=1)"
+		if native {
+			wantOperand = "ST_Intersects(geom, ST_MakeEnvelope("
+		}
+		if !strings.Contains(probeSQL, wantOperand) {
 			t.Errorf("ST_Intersects(geom, !BBOX!) must probe as ST_Intersects(geom, 1=1): %s", probeSQL)
 		}
 		if !strings.Contains(probeSQL, fmt.Sprintf("LIMIT %v", codec.InspectionSampleLimit)) {
@@ -171,15 +176,18 @@ func TestProbeSQLPreparationR1(t *testing.T) {
 	}
 
 	t.Run("MOS probe neutralizes every token occurrence", func(t *testing.T) {
-		check(t, mosProbeSQL(newLayer()))
+		check(t, mosProbeSQL(newLayer()), false)
 	})
 
 	t.Run("native probe neutralizes every token occurrence", func(t *testing.T) {
-		probeSQL, args := geomTypeProbeSQL(newLayer(), provider.Params{})
+		probeSQL, args, err := geomTypeProbeSQL(newLayer(), provider.Params{})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(args) != 0 {
 			t.Fatalf("args = %v, expected none without custom parameters", args)
 		}
-		check(t, probeSQL)
+		check(t, probeSQL, true)
 	})
 
 	// The coordinator-verified live path: custom parameters substitute
@@ -188,7 +196,10 @@ func TestProbeSQLPreparationR1(t *testing.T) {
 		l := newLayer()
 		l.sql = adversarialProbeSQL + " AND region = !REGION!"
 		params := provider.Params{"!REGION!": {Token: "!REGION!", SQL: "?", Value: "west"}}
-		probeSQL, args := geomTypeProbeSQL(l, params)
+		probeSQL, args, err := geomTypeProbeSQL(l, params)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if strings.Contains(probeSQL, "!REGION!") {
 			t.Fatalf("parameter token must be substituted: %s", probeSQL)
 		}
@@ -218,7 +229,10 @@ func TestProbeSQLPreparationR1(t *testing.T) {
 	t.Run("native probe flow sniffs geometry type from sample rows", func(t *testing.T) {
 		l := newLayer()
 		l.sql = "SELECT ST_AsBinary(geom) AS geom, gid FROM t WHERE min_zoom <= !ZOOM! AND max_zoom >= !ZOOM!"
-		probeSQL, _ := geomTypeProbeSQL(l, provider.Params{})
+		probeSQL, _, err := geomTypeProbeSQL(l, provider.Params{})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if strings.Contains(probeSQL, "!ZOOM!") {
 			t.Fatalf("both !ZOOM! occurrences must be replaced: %s", probeSQL)
 		}
