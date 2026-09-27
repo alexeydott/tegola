@@ -316,3 +316,23 @@ a byte length tied to one PostGIS/GEOS encoder version.
 The earlier exclusions remain: cloud-SDK migrations (2.3), reliance on remote
 CI quota (A16), and transparent remote dependency consumption (A15) are not
 claimed complete by this follow-up.
+
+### Local verification of the completion changes
+
+The complete code and documentation at `1175119f` passed the vendored full
+suite with CGO disabled (1,816 test/subtest passes) and enabled (1,961),
+the full race suite, and golangci-lint (zero issues). PostGIS 16 / PostGIS 3.5,
+MySQL 8.4 and Redis 7.4 were exercised as live local services. Both nested
+fork modules and the independently vendored offline consumer passed; rebuilding
+the vendor tree produced no tracked differences.
+
+The compiled Windows server served a real Athens GeoPackage tile containing
+6,965 decoded features. HTTP checks covered capabilities, the embedded viewer,
+cache MISS/HIT, dirty regeneration, and asynchronous update/status completion.
+The viewer assets were built from the lockfile. Twelve tests were skipped:
+eight live AWS/Azure tests, three live HANA tests, and one intentionally retired
+MySQL runtime-system-info test. These skips are not live-service validation.
+
+For reproducible Windows release flags, source metadata and checksum commands,
+see [Windows release builds](docs/windows-release.md). A local release-mode
+binary is distinct from publishing a GitHub Release or creating a version tag.
