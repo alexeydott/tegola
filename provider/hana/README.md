@@ -70,9 +70,9 @@ id_fieldname = "gid"
   - `!X!` - [Optional] will be replaced with the "X" value of the requested tile.
   - `!Y!` - [Optional] will be replaced with the "Y" value of the requested tile.
   - `!Z!` - [Optional] will be replaced with the "Z" value of the requested tile.
-  - `!SCALE_DENOMINATOR!` - [Optional] scale denominator, assuming 90.7 DPI (i.e. 0.28mm pixel size).
-  - `!PIXEL_WIDTH!` - [Optional] the pixel width in meters, assuming 256x256 tiles.
-  - `!PIXEL_HEIGHT!` - [Optional] the pixel height in meters, assuming 256x256 tiles.
+  - `!SCALE_DENOMINATOR!` - [Optional] horizontal scale denominator using the OGC 0.28mm rendering pixel; see scale tokens below.
+  - `!PIXEL_WIDTH!` - [Optional] unbuffered pixel width in the resolved layer's CRS units.
+  - `!PIXEL_HEIGHT!` - [Optional] unbuffered pixel height in the resolved layer's CRS units.
   - `!ID_FIELD!` - [Optional] the id field name.
   - `!GEOM_FIELD!` - [Optional] the geom field name.
   - `!GEOM_TYPE!` - [Optional] the geom type field name.
@@ -86,6 +86,54 @@ The HANA provider implements the common geometry contract documented in
 `geometry_type` layer key, `geometry_format`, `mos_precision`, `mos_units`
 and the CRS keys above follow the shared semantics; mixed-content features
 under an explicit `geometry_type` are permitted with a one-time warning.
+
+### Scale tokens
+
+At query time HANA transforms the unbuffered tile perimeter into the resolved
+layer CRS and uses its enclosing extent (including sampled edges for curved
+projections). `!PIXEL_WIDTH! = extent width / pixel columns` and
+`!PIXEL_HEIGHT! = extent height / pixel rows`, in **layer CRS units**.
+The pixel dimensions are independent of the MVT integer coordinate extent and
+tile buffer. The built-in slippy tiles use the framework's
+`slippy.DefaultTileSize` (currently 256). There is no map/tile-size config key;
+custom Go `provider.Tile` implementations may expose
+`PixelSize() (width, height uint)` for other dimensions, including rectangular
+tiles. Zero dimensions are rejected.
+
+`!SCALE_DENOMINATOR! = pixel width * meters per CRS unit / 0.00028`,
+using the OGC standard rendering pixel of 0.28 mm:
+
+- Projected CRSs use the projection engine's linear unit conversion:
+  meters = 1, international feet = 0.3048, US survey feet = 1200/3937,
+  and other supported PROJ.4 `+units` / `+to_meter` definitions.
+  This is **projected map scale**, not geodesic ground scale; no local
+  projection-distortion correction is applied. EPSG:3857 retains its
+  previous SQL values byte for byte with the default tile size.
+- EPSG:4326 (including HANA's planar-equivalent 1000004326) uses degrees
+  for pixel dimensions. Meters per longitude degree are approximated by
+  `6378137 * pi / 180 * cos(latitude)`, with latitude at the tile center.
+  This spherical parallel-arc approximation uses the WGS84 semi-major
+  radius; it is not an ellipsoidal geodesic and is only a representative
+  horizontal scale for a large tile. Latitude is obtained by transforming
+  the original tile center, not averaging the transformed north/south edges.
+- An unknown projection/unit definition or an invalid/non-finite extent
+  causes a clear layer-scoped query error **only when a scale token occurs
+  in executable SQL**. Database-only SRS definitions must also be known to
+  Tegola to use these tokens. Other geographic CRSs, including generic
+  `+proj=longlat` definitions, remain subject to the existing projection
+  engine's registration restrictions; use `srid = 4326` for WGS84 degrees.
+
+The normal tile extent is EPSG:3857. Custom tiles already in the layer CRS
+are also supported; other tile-to-layer CRS combinations return an explicit
+error. No token-looking text in quoted SQL, identifiers, or comments is
+evaluated or rewritten. Startup inspection still uses representative probe
+values, not a requested tile's scale.
+
+**Compatibility:** non-WebMercator layers now receive source-unit pixel
+dimensions and a CRS-aware scale denominator, replacing the old
+WebMercator-meter values. SQL thresholds written around the old values
+may need adjustment. These semantics are HANA-specific; the other providers'
+scale-token limitations are unchanged.
 
 ### HANA-specific restrictions
 

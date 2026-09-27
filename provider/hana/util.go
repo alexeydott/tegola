@@ -722,9 +722,9 @@ func sanitizeSQL(sql string) string {
 // !X! - the tile X value
 // !Y! - the tile Y value
 // !Z! - the tile Z value
-// !SCALE_DENOMINATOR! - scale denominator, assuming 90.7 DPI (i.e. 0.28mm pixel size)
-// !PIXEL_WIDTH! - the pixel width in meters, assuming 256x256 tiles
-// !PIXEL_HEIGHT! - the pixel height in meters, assuming 256x256 tiles
+// !SCALE_DENOMINATOR! - horizontal scale using the OGC 0.28mm rendering pixel
+// !PIXEL_WIDTH! - unbuffered pixel width in the resolved layer CRS units
+// !PIXEL_HEIGHT! - unbuffered pixel height in the resolved layer CRS units
 // !GEOM_FIELD! - the geom field name
 // !GEOM_TYPE! - the geom field type if defined otherwise ""
 //
@@ -736,14 +736,18 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 		geoType string
 	)
 
-	extent, _, terr := getTileExtent(tile, false)
+	_, _, terr := getTileExtent(tile, false)
 	if terr != nil {
 		return "", terr
 	}
-	// TODO: Always convert to meter if we support different projections
-	pixelWidth := (extent.MaxX() - extent.MinX()) / 256
-	pixelHeight := (extent.MaxY() - extent.MinY()) / 256
-	scaleDenominator := pixelWidth / 0.00028 /* px size in m */
+	var pixelWidth, pixelHeight, scaleDenominator float64
+	if sqltoken.ContainsTokenFold(sql, pixelWidthToken, pixelHeightToken, scaleDenominatorToken) {
+		var err error
+		pixelWidth, pixelHeight, scaleDenominator, err = tileScale(tile, srid)
+		if err != nil {
+			return "", fmt.Errorf("layer (%v) scale tokens: %w", l.name, err)
+		}
+	}
 
 	if geomFieldType != nil {
 		geoType = fmt.Sprintf("%v", geomFieldType)
