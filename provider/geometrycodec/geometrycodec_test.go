@@ -117,6 +117,19 @@ func TestValidateRawCustomSQL(t *testing.T) {
 			format:    geometrycodec.FormatWKB,
 			sql:       "",
 		},
+		// SQL-context-aware token detection (UPSTREAM 2.6): a bbox token
+		// inside a comment or string literal is not a real usage and must
+		// not trip the raw-format rejection.
+		"raw wkb comment token accepted": {
+			layerName: "roads",
+			format:    geometrycodec.FormatWKB,
+			sql:       "SELECT id, geom FROM roads -- !BBOX!",
+		},
+		"raw wkb string literal token accepted": {
+			layerName: "roads",
+			format:    geometrycodec.FormatWKB,
+			sql:       "SELECT id, geom, '!BBOX!' FROM roads",
+		},
 	}
 
 	for name, tc := range tests {
@@ -182,10 +195,61 @@ func TestRequireBBoxCustomSQL(t *testing.T) {
 			boundsBacked: true,
 			sql:          "",
 		},
+		// SQL-context-aware token detection (UPSTREAM 2.6): a bbox token
+		// inside a comment does not satisfy the bounds-backed requirement.
+		"bounds-backed comment-only token rejected": {
+			layerName:    "mos_layer",
+			boundsBacked: true,
+			sql:          "SELECT id, geom FROM t -- !BBOX!",
+			expectedErr:  []string{"mos_layer", "bounds-backed", "must use !BBOX!"},
+		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+// TestSQLContextAwareBBoxTokenDetection pins SQL-context-aware bbox token
+// detection (UPSTREAM 2.6): only SQL code-context occurrences count.
+func TestSQLContextAwareBBoxTokenDetection(t *testing.T) {
+	tests := map[string]struct {
+		sql      string
+		expected bool
+	}{
+		"code token":            {sql: "SELECT id, geom FROM roads WHERE !BBOX!", expected: true},
+		"code token lowercase":  {sql: "SELECT id, geom FROM roads WHERE !bbox!", expected: true},
+		"code token mixed case": {sql: "SELECT id, geom FROM roads WHERE !BbOx!", expected: true},
+		"string literal":        {sql: "SELECT id, geom, '!BBOX!' FROM roads", expected: false},
+		"dollar quoted":         {sql: "SELECT id, geom FROM roads WHERE a = $tag$!BBOX!$tag$", expected: false},
+		"double quoted ident":   {sql: "SELECT id, geom FROM roads WHERE \"!BBOX!\" IS NOT NULL", expected: false},
+		"line comment":          {sql: "SELECT id, geom FROM roads -- !BBOX!", expected: false},
+		"block comment":         {sql: "SELECT id, geom FROM roads /* !BBOX! */ WHERE z = 3", expected: false},
+		"not a token":           {sql: "SELECT id, geom FROM roads WHERE !NOT_A_BBOX!", expected: false},
+		"no token":              {sql: "SELECT id, geom FROM roads", expected: false},
+	}
+
+	for name, tc := range tests {
+		if got := geometrycodec.SQLHasBBoxToken(tc.sql, "!BBOX!", "!BOX!"); got != tc.expected {
+			t.Errorf("case %q: SQLHasBBoxToken(%q) = %t, want %t", name, tc.sql, got, tc.expected)
+		}
+	}
+}
+
+// TestPrepareProbeSQLProtectedContexts pins SQL-context-aware neutralization
+// (UPSTREAM 2.6): token-shaped text in string literals, quoted identifiers
+// and comments survives verbatim while code-context tokens neutralize.
+func TestPrepareProbeSQLProtectedContexts(t *testing.T) {
+	customSQL := "SELECT f(!x!), '!X!', `!Y!`, \"!ZOOM!\", [!Z!]\n" +
+		"FROM t -- !BBOX!\n" +
+		"/* !ID_FIELD! */ WHERE a = '!PIXEL_WIDTH!'"
+	expected := "SELECT f(0), '!X!', `!Y!`, \"!ZOOM!\", [!Z!]\n" +
+		"FROM t -- !BBOX!\n" +
+		"/* !ID_FIELD! */ WHERE a = '!PIXEL_WIDTH!'"
+
+	prepared := geometrycodec.PrepareProbeSQL(customSQL, "g", "id", "gs")
+	if prepared != expected {
+		t.Fatalf("PrepareProbeSQL(%q)\n got %q\nwant %q", customSQL, prepared, expected)
 	}
 }
 

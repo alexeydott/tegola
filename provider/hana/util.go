@@ -18,6 +18,7 @@ import (
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/internal/env"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/internal/sqltoken"
 	"github.com/go-spatial/tegola/provider"
 	"github.com/go-spatial/tegola/provider/crsconfig"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
@@ -704,8 +705,15 @@ func validateTileExtent(extent *geom.Extent) error {
 }
 
 func sanitizeSQL(sql string) string {
-	// convert !BOX! (MapServer) and !bbox! (Mapnik) to !BBOX! for compatibility
-	return strings.Replace(strings.Replace(sql, "!BOX!", bboxToken, -1), "!bbox!", bboxToken, -1)
+	// convert !BOX! (MapServer) and !bbox! (Mapnik) to !BBOX! for
+	// compatibility; only in SQL code context — token-looking text in
+	// string literals, identifiers, or comments stays verbatim.
+	return sqltoken.MapTokens(sql, func(tok string) string {
+		if tok == "!BOX!" || tok == "!bbox!" {
+			return bboxToken
+		}
+		return tok
+	})
 }
 
 // replaceTokens replaces tokens in the provided SQL string
@@ -719,6 +727,10 @@ func sanitizeSQL(sql string) string {
 // !PIXEL_HEIGHT! - the pixel height in meters, assuming 256x256 tiles
 // !GEOM_FIELD! - the geom field name
 // !GEOM_TYPE! - the geom field type if defined otherwise ""
+//
+// Only tokens in SQL code context are substituted; token-looking text
+// inside string literals, quoted identifiers, comments, or dollar-quoted
+// strings is left verbatim.
 func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geometry, srid uint64, tile provider.Tile, withBuffer bool) (string, error) {
 	var (
 		geoType string
@@ -765,23 +777,32 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 
 	// replace query string tokens
 	z, x, y := tile.ZXY()
-	tokenReplacer := strings.NewReplacer(
-		bboxToken, bboxFilter,
-		zoomToken, strconv.FormatUint(uint64(z), 10),
-		zToken, strconv.FormatUint(uint64(z), 10),
-		xToken, strconv.FormatUint(uint64(x), 10),
-		yToken, strconv.FormatUint(uint64(y), 10),
-		idFieldToken, quoteTokenIdentifier(l.IDFieldName()),
-		geomFieldToken, quoteTokenIdentifier(l.geomField),
-		geomTypeToken, geoType,
-		scaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
-		pixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
-		pixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-	)
-
-	uppercaseTokenSQL := uppercaseTokens(sql)
-
-	return tokenReplacer.Replace(uppercaseTokenSQL), nil
+	sql = uppercaseTokens(sql)
+	return sqltoken.MapTokens(sql, func(tok string) string {
+		switch tok {
+		case bboxToken:
+			return bboxFilter
+		case zoomToken, zToken:
+			return strconv.FormatUint(uint64(z), 10)
+		case xToken:
+			return strconv.FormatUint(uint64(x), 10)
+		case yToken:
+			return strconv.FormatUint(uint64(y), 10)
+		case idFieldToken:
+			return quoteTokenIdentifier(l.IDFieldName())
+		case geomFieldToken:
+			return quoteTokenIdentifier(l.geomField)
+		case geomTypeToken:
+			return geoType
+		case scaleDenominatorToken:
+			return strconv.FormatFloat(scaleDenominator, 'f', 8, 64)
+		case pixelWidthToken:
+			return strconv.FormatFloat(pixelWidth, 'f', 8, 64)
+		case pixelHeightToken:
+			return strconv.FormatFloat(pixelHeight, 'f', 8, 64)
+		}
+		return tok
+	}), nil
 }
 
 func getFieldDescriptions(layerName, geomFieldname, idFieldname string, columns []*sql.ColumnType, checkFieldType bool) ([]FieldDescription, error) {
@@ -1241,12 +1262,12 @@ func extractQueryParamValues(pname string, maps []provider.Map, layer *Layer) pr
 	return result
 }
 
-var tokenRe = regexp.MustCompile("![a-zA-Z0-9_-]+!")
-
-// uppercaseTokens converts all !tokens! to uppercase !TOKENS!. Tokens can
-// contain alphanumerics, dash and underline chars.
+// uppercaseTokens converts all !tokens! in SQL code context to uppercase
+// !TOKENS!. Tokens can contain alphanumerics, dash and underline chars.
+// Token-looking text in string literals, identifiers, or comments keeps
+// its exact bytes.
 func uppercaseTokens(str string) string {
-	return tokenRe.ReplaceAllStringFunc(str, strings.ToUpper)
+	return sqltoken.MapTokens(str, strings.ToUpper)
 }
 
 // ctxErr will check if the supplied context has an error (i.e. context canceled)

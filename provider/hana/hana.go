@@ -18,6 +18,7 @@ import (
 	"github.com/go-spatial/geom/encoding/wkt"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/internal/sqltoken"
 	"github.com/go-spatial/tegola/mos"
 	"github.com/go-spatial/tegola/observability"
 	"github.com/go-spatial/tegola/provider"
@@ -1014,8 +1015,9 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 	// placeholders that were never bound and broke the query). Strip the
 	// parameter tokens for inspection; crossing our fingers that the query
 	// is still valid 🤞 if not, the user will have to specify
-	// `geometry_type` in the config.
-	sqlQuery = provider.ParameterTokenRegexp.ReplaceAllString(sqlQuery, "")
+	// `geometry_type` in the config. Only code-context tokens are
+	// stripped; tokens in string literals or comments stay verbatim.
+	sqlQuery = sqltoken.StripTokens(sqlQuery)
 
 	// Shared sample window (docs/provider-contract.md): the probe reads at
 	// most codec.InspectionSampleLimit rows.
@@ -1100,7 +1102,7 @@ func mosProbeSQL(l *Layer) string {
 		probeGeomType = codec.GeomTypeName(l.geomType)
 	}
 	sql := codec.PrepareProbeSQL(l.sql, l.GeomFieldName(), l.IDFieldName(), probeGeomType)
-	sql = provider.ParameterTokenRegexp.ReplaceAllString(sql, "")
+	sql = sqltoken.StripTokens(sql)
 	return codec.WrapProbeSQLTopStyle(sql)
 }
 
@@ -1201,9 +1203,11 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
 	}
-	// catch-all: drop any remaining !TOKEN! the shared preparation could not
-	// neutralize so a leftover placeholder cannot break the probe statement
-	probeSQL = provider.ParameterTokenRegexp.ReplaceAllString(probeSQL, "")
+	// catch-all: drop any remaining code-context !TOKEN! the shared
+	// preparation could not neutralize so a leftover placeholder cannot
+	// break the probe statement (tokens in string literals or comments
+	// are left verbatim)
+	probeSQL = sqltoken.StripTokens(probeSQL)
 
 	// audit P5-16: the sample probe runs under the inspection timeout.
 	ctx, cancel := NewInspectionContext(context.Background())

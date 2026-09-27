@@ -48,6 +48,30 @@ func TestReplaceTokensQuotesIdentifierTokens(t *testing.T) {
 	}
 }
 
+// SQL-context-aware token substitution (UPSTREAM 2.6): tokens inside
+// string literals, quoted identifiers and comments stay verbatim and are
+// not uppercased; only SQL code-context tokens substitute.
+func TestReplaceTokensProtectedContexts(t *testing.T) {
+	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
+	extent := geom.NewExtent([2]float64{-10, -10}, [2]float64{10, 10})
+	layer := &Layer{geomFieldname: "geom", bboxFields: codec.DefaultBBoxFields()}
+
+	sql := "SELECT '!zoom!', `!x!`, \"!y!\", [!z!]\n" +
+		"FROM t WHERE z = !ZOOM! # !BBOX!\n" +
+		"-- !id_field!"
+	want := "SELECT '!zoom!', `!x!`, \"!y!\", [!z!]\n" +
+		"FROM t WHERE z = 2 # !BBOX!\n" +
+		"-- !id_field!"
+
+	out, err := replaceTokens(sql, layer, tile, extent)
+	if err != nil {
+		t.Fatalf("replaceTokens: %v", err)
+	}
+	if out != want {
+		t.Fatalf("protected contexts must stay verbatim:\n got %q\nwant %q", out, want)
+	}
+}
+
 // TestReplaceTokensPreservesTrailingClauses covers the regression matrix row
 // "WHERE ... AND !BBOX! ORDER BY ... -> ORDER BY preserved": the runtime
 // token replacement must keep trailing clauses verbatim.

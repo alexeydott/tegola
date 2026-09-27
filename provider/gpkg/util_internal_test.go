@@ -171,7 +171,10 @@ func TestReplaceTokens(t *testing.T) {
 			},
 			tile: provider.NewTile(11, 1070, 676, 64, tegola.WebMercator),
 			// P5-10: !ID_FIELD!/!GEOM_FIELD! substitute quoted identifiers.
-			expected: "SELECT `feature_id`, `shape`, 'POINT',\n" +
+			// SQL-context-aware substitution (UPSTREAM 2.6): '!geom_type!'
+			// sits inside a string literal and stays verbatim instead of
+			// being interpolated.
+			expected: "SELECT `feature_id`, `shape`, '!geom_type!',\n" +
 				"				11, 1070, 676, 11,\n" +
 				"				76.43702829, 76.43702829, 272989.38673277",
 		},
@@ -179,6 +182,35 @@ func TestReplaceTokens(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+// SQL-context-aware token substitution (UPSTREAM 2.6): tokens inside
+// string literals (mind quote doubling and backslash escapes), quoted
+// identifiers and comments stay verbatim and are not uppercased; only SQL
+// code-context tokens substitute.
+func TestReplaceTokensProtectedContexts(t *testing.T) {
+	layer := Layer{
+		idFieldname:   "feature_id",
+		geomFieldname: "shape",
+		geomType:      geom.Point{},
+	}
+	tile := provider.NewTile(11, 1070, 676, 64, tegola.WebMercator)
+	extent, _ := tile.BufferedExtent()
+
+	qtext := "SELECT '!zoom!', `!x!`, \"!y!\", [!z!]\n" +
+		"FROM t WHERE z = !zoom! -- !BBOX!\n" +
+		"/* !id_field! */ AND a = 'it''s \\!x!' AND b = '\\!y!'"
+	want := "SELECT '!zoom!', `!x!`, \"!y!\", [!z!]\n" +
+		"FROM t WHERE z = 11 -- !BBOX!\n" +
+		"/* !id_field! */ AND a = 'it''s \\!x!' AND b = '\\!y!'"
+
+	out, err := replaceTokens(qtext, &layer, tile, extent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != want {
+		t.Fatalf("protected contexts must stay verbatim:\n got %q\nwant %q", out, want)
 	}
 }
 

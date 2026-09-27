@@ -160,6 +160,29 @@ func TestReplaceTokens(t *testing.T) {
 	}
 }
 
+// SQL-context-aware token substitution (UPSTREAM 2.6): tokens inside
+// string literals, quoted identifiers and comments stay verbatim and are
+// not uppercased; only SQL code-context tokens substitute.
+func TestReplaceTokensProtectedContexts(t *testing.T) {
+	layer := Layer{srid: tegola.WebMercator, geomField: "geom"}
+	tile := provider.NewTile(2, 1, 1, 64, tegola.WebMercator)
+
+	sql := "SELECT '!BBOX!', `!x!`, \"!y!\", [!z!]\n" +
+		"FROM foo WHERE z = !ZOOM! -- !zoom!\n" +
+		"/* !ID_FIELD! */"
+	want := "SELECT '!BBOX!', `!x!`, \"!y!\", [!z!]\n" +
+		"FROM foo WHERE z = 2 -- !zoom!\n" +
+		"/* !ID_FIELD! */"
+
+	out, err := replaceTokens(4, sql, &layer, layer.GeomType(), layer.SRID(), tile, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != want {
+		t.Fatalf("protected contexts must stay verbatim:\n got %q\nwant %q", out, want)
+	}
+}
+
 // TestGenSQLRawFormat covers the R3-08 provider-level regression for the
 // HANA SQL generation matrix: raw geometry columns (wkb / wkt / mos) must
 // bypass ST_Geometry wrappers and spatial predicates, while native format
@@ -278,6 +301,17 @@ func TestUppercaseTokens(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, fn(tc))
+	}
+}
+
+// SQL-context-aware token substitution (UPSTREAM 2.6): uppercaseTokens
+// normalizes code-context tokens only; token text inside string literals,
+// quoted identifiers and comments is left byte-identical.
+func TestUppercaseTokensProtectedContexts(t *testing.T) {
+	str := "SELECT `!x!`, '!y!' -- !z!\nFROM t WHERE !zoom! = 1"
+	want := "SELECT `!x!`, '!y!' -- !z!\nFROM t WHERE !ZOOM! = 1"
+	if out := uppercaseTokens(str); out != want {
+		t.Fatalf("protected contexts must not be uppercased:\n got %q\nwant %q", out, want)
 	}
 }
 

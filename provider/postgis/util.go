@@ -14,6 +14,7 @@ import (
 	"github.com/go-spatial/tegola/config"
 	"github.com/go-spatial/tegola/internal/env"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/internal/sqltoken"
 	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -166,6 +167,10 @@ func genSQL(
 // !PIXEL_HEIGHT! - the pixel height in meters, assuming 256x256 tiles
 // !GEOM_FIELD! - the geom field name
 // !GEOM_TYPE! - the geom field type if defined otherwise ""
+//
+// Only tokens in SQL code context are substituted; token-looking text
+// inside string literals, quoted identifiers, comments, or dollar-quoted
+// strings is left verbatim.
 func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) (string, error) {
 	var (
 		extent  *geom.Extent
@@ -234,23 +239,32 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 
 	// replace query string tokens
 	z, x, y := tile.ZXY()
-	tokenReplacer := strings.NewReplacer(
-		config.BboxToken, bbox,
-		config.ZoomToken, strconv.FormatUint(uint64(z), 10),
-		config.ZToken, strconv.FormatUint(uint64(z), 10),
-		config.XToken, strconv.FormatUint(uint64(x), 10),
-		config.YToken, strconv.FormatUint(uint64(y), 10),
-		config.ScaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
-		config.PixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
-		config.PixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-		config.IdFieldToken, quoteTokenIdentifier(lyr.IDFieldName()),
-		config.GeomFieldToken, quoteTokenIdentifier(lyr.GeomFieldName()),
-		config.GeomTypeToken, geoType,
-	)
-
-	uppercaseTokenSQL := uppercaseTokens(sql)
-
-	return tokenReplacer.Replace(uppercaseTokenSQL), nil
+	sql = uppercaseTokens(sql)
+	return sqltoken.MapTokens(sql, func(tok string) string {
+		switch tok {
+		case config.BboxToken:
+			return bbox
+		case config.ZoomToken, config.ZToken:
+			return strconv.FormatUint(uint64(z), 10)
+		case config.XToken:
+			return strconv.FormatUint(uint64(x), 10)
+		case config.YToken:
+			return strconv.FormatUint(uint64(y), 10)
+		case config.ScaleDenominatorToken:
+			return strconv.FormatFloat(scaleDenominator, 'f', 8, 64)
+		case config.PixelWidthToken:
+			return strconv.FormatFloat(pixelWidth, 'f', 8, 64)
+		case config.PixelHeightToken:
+			return strconv.FormatFloat(pixelHeight, 'f', 8, 64)
+		case config.IdFieldToken:
+			return quoteTokenIdentifier(lyr.IDFieldName())
+		case config.GeomFieldToken:
+			return quoteTokenIdentifier(lyr.GeomFieldName())
+		case config.GeomTypeToken:
+			return geoType
+		}
+		return tok
+	}), nil
 }
 
 // pgQuoteIdent wraps a PostgreSQL identifier in double quotes, doubling any
@@ -375,10 +389,12 @@ func extractQueryParamValues(pname string, maps []provider.Map, layer *Layer) pr
 	return result
 }
 
-// uppercaseTokens converts all !tokens! to uppercase !TOKENS!. Tokens can
-// contain alphanumerics, dash and underline chars.
+// uppercaseTokens converts all !tokens! in SQL code context to uppercase
+// !TOKENS!. Tokens can contain alphanumerics, dash and underline chars.
+// Token-looking text in string literals, identifiers, or comments keeps
+// its exact bytes.
 func uppercaseTokens(str string) string {
-	return provider.ParameterTokenRegexp.ReplaceAllStringFunc(str, strings.ToUpper)
+	return sqltoken.MapTokens(str, strings.ToUpper)
 }
 
 func transformVal(valType uint32, val any) (any, error) {

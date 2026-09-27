@@ -3,12 +3,12 @@ package provider
 import (
 	"context"
 	"fmt"
-	"regexp"
 
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/geom/slippy"
 	"github.com/go-spatial/tegola/dict"
 	"github.com/go-spatial/tegola/internal/log"
+	"github.com/go-spatial/tegola/internal/sqltoken"
 )
 
 // providerType defines the type of providers we have in the system.
@@ -118,7 +118,7 @@ type Tile interface {
 }
 
 // ParameterTokenRegexp to validate QueryParameters
-var ParameterTokenRegexp = regexp.MustCompile("![a-zA-Z0-9_-]+!")
+var ParameterTokenRegexp = sqltoken.TokenRegexp
 
 // Tiler is a Layers that allows one to encode features in that layer
 type Tiler interface {

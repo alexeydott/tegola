@@ -9,11 +9,15 @@ import (
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/basic"
 	"github.com/go-spatial/tegola/config"
+	"github.com/go-spatial/tegola/internal/sqltoken"
 	"github.com/go-spatial/tegola/provider"
 	codec "github.com/go-spatial/tegola/provider/geometrycodec"
 )
 
 // replaceTokens replaces tile and layer metadata tokens in a SQL query.
+// Only tokens in SQL code context are substituted; token-looking text
+// inside string literals, quoted identifiers, comments, or dollar-quoted
+// strings is left verbatim.
 //
 // bboxExtent must be the tile's buffered extent transformed to the layer's
 // source SRID. Pixel dimensions and scale denominator are intentionally
@@ -21,15 +25,16 @@ import (
 // PostGIS and GPKG providers.
 //
 // The bounds predicate is built lazily: only queries that actually carry a
-// bbox token pay for it. Predicate build errors are fail-closed in
-// bounds-backed modes (MOS custom SQL) and for the native spatial filter:
-// they are returned to the caller instead of silently degrading to 1=1.
+// bbox token (in code context) pay for it. Predicate build errors are
+// fail-closed in bounds-backed modes (MOS custom SQL) and for the native
+// spatial filter: they are returned to the caller instead of silently
+// degrading to 1=1.
 func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *geom.Extent) (string, error) {
 	qtext = uppercaseTokens(qtext)
 
 	// only build a bounds predicate when the query carries a bbox token
 	bboxSQL := "1=1"
-	if strings.Contains(qtext, config.BboxToken) || strings.Contains(qtext, "!BOX!") {
+	if sqltoken.ContainsTokenFold(qtext, config.BboxToken, "!BOX!") {
 		var err error
 		bboxSQL, err = boundsSQLForLayer(layer, bboxExtent)
 		if err != nil {
@@ -48,22 +53,31 @@ func replaceTokens(qtext string, layer *Layer, tile provider.Tile, bboxExtent *g
 	}
 
 	z, x, y := tile.ZXY()
-	tokenReplacer := strings.NewReplacer(
-		config.BboxToken, bboxSQL,
-		"!BOX!", bboxSQL,
-		config.ZoomToken, strconv.FormatUint(uint64(z), 10),
-		config.ZToken, strconv.FormatUint(uint64(z), 10),
-		config.XToken, strconv.FormatUint(uint64(x), 10),
-		config.YToken, strconv.FormatUint(uint64(y), 10),
-		config.ScaleDenominatorToken, strconv.FormatFloat(scaleDenominator, 'f', 8, 64),
-		config.PixelWidthToken, strconv.FormatFloat(pixelWidth, 'f', 8, 64),
-		config.PixelHeightToken, strconv.FormatFloat(pixelHeight, 'f', 8, 64),
-		config.IdFieldToken, quoteTokenIdentifier(layer.idFieldname),
-		config.GeomFieldToken, quoteTokenIdentifier(layer.geomFieldname),
-		config.GeomTypeToken, geomType,
-	)
-
-	return tokenReplacer.Replace(qtext), nil
+	return sqltoken.MapTokens(qtext, func(tok string) string {
+		switch tok {
+		case config.BboxToken, "!BOX!":
+			return bboxSQL
+		case config.ZoomToken, config.ZToken:
+			return strconv.FormatUint(uint64(z), 10)
+		case config.XToken:
+			return strconv.FormatUint(uint64(x), 10)
+		case config.YToken:
+			return strconv.FormatUint(uint64(y), 10)
+		case config.ScaleDenominatorToken:
+			return strconv.FormatFloat(scaleDenominator, 'f', 8, 64)
+		case config.PixelWidthToken:
+			return strconv.FormatFloat(pixelWidth, 'f', 8, 64)
+		case config.PixelHeightToken:
+			return strconv.FormatFloat(pixelHeight, 'f', 8, 64)
+		case config.IdFieldToken:
+			return quoteTokenIdentifier(layer.idFieldname)
+		case config.GeomFieldToken:
+			return quoteTokenIdentifier(layer.geomFieldname)
+		case config.GeomTypeToken:
+			return geomType
+		}
+		return tok
+	}), nil
 }
 
 // rawGeometryBoundsWarning returns the registration-time warning for a
@@ -205,9 +219,11 @@ func mosBoundsSQL(layer *Layer, bboxExtent *geom.Extent) (string, error) {
 	)
 }
 
-// uppercaseTokens makes SQL tokens case-insensitive, matching PostGIS and GPKG.
+// uppercaseTokens makes SQL tokens case-insensitive, matching PostGIS and
+// GPKG. Only code-context tokens are normalized; token-looking text in
+// string literals, identifiers, or comments keeps its exact bytes.
 func uppercaseTokens(str string) string {
-	return provider.ParameterTokenRegexp.ReplaceAllStringFunc(str, strings.ToUpper)
+	return sqltoken.MapTokens(str, strings.ToUpper)
 }
 
 func trimTrailingSemicolon(sqlText string) string {
