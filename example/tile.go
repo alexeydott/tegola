@@ -1,9 +1,10 @@
-//!build
+// !build
 package main
 
 import (
 	"bytes"
-	"log"
+
+	"github.com/go-spatial/tegola/internal/log"
 
 	"context"
 
@@ -82,7 +83,7 @@ func TileExample() {
 		panic(err)
 	}
 	// Print out the Marshaled tile as a string.
-	log.Println(prototext.Format(vtile))
+	log.Info(prototext.Format(vtile))
 }
 
 func main() {

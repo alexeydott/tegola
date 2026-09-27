@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"runtime"
 	"sort"
@@ -14,6 +13,7 @@ import (
 	svg "github.com/ajstarks/svgo"
 	"github.com/go-spatial/geom"
 	"github.com/go-spatial/tegola/internal/convert"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/maths"
 	"github.com/go-spatial/tegola/maths/hitmap"
 	"github.com/go-spatial/tegola/maths/points"
@@ -714,23 +714,23 @@ func merge2AdjectRC(c1, c2 RingCol) (col RingCol) {
 			if elapsed.Minutes() > 10 {
 				//if elapsed.Seconds() > 1 {
 				fn := genWriteoutCols(c1, c2)
-				log.Println("Taking too long, writing file to ", fn)
+				log.Warnf("Taking too long, writing file to  %v", fn)
 
 				panic("Took too long")
 			}
 			if ptcounter[pt] > 5 {
-				log.Println("Col1:", c1.String())
-				log.Println("Col2:", c2.String())
-				log.Println("On ring:", ccoli, cri)
-				log.Println(cols[ccoli].Rings[cri].Points)
+				log.Warnf("Col1: %v", c1.String())
+				log.Warnf("Col2: %v", c2.String())
+				log.Warnf("On ring: %v %v", ccoli, cri)
+				log.Warnf("%v", cols[ccoli].Rings[cri].Points)
 				pi := walkedRings[len(walkedRings)-2]
-				log.Println("Previous ring:", pi[0], pi[1])
-				log.Println(cols[pi[0]].Rings[pi[1]].Points)
-				log.Println("Processing ", p, "(", ringsToProcess[p], ") of the following rings that needed to be processed.:", ringsToProcess)
-				log.Println(cols[ringsToProcess[p][0]].Rings[ringsToProcess[p][1]].Points)
-				log.Println("Walked rings:", walkedRings)
+				log.Warnf("Previous ring: %v %v", pi[0], pi[1])
+				log.Warnf("%v", cols[pi[0]].Rings[pi[1]].Points)
+				log.Warnf("Processing  %v ( %v ) of the following rings that needed to be processed.: %v", p, ringsToProcess[p], ringsToProcess)
+				log.Warnf("%v", cols[ringsToProcess[p][0]].Rings[ringsToProcess[p][1]].Points)
+				log.Warnf("Walked rings: %v", walkedRings)
 				fn := genWriteoutCols(c1, c2)
-				log.Println("Wrote out columns info to:", fn)
+				log.Warnf("Wrote out columns info to: %v", fn)
 				writeOutSVG(fn, cols[:], walkedRings)
 
 				panic("Inif loop?")
@@ -840,7 +840,7 @@ func merge2AdjectRC(c1, c2 RingCol) (col RingCol) {
 		}
 		if plen < 3 {
 			fn := genWriteoutCols(c1, c2)
-			log.Println("Generated a ring with fewer then 3 points: ", fn, nring)
+			log.Warnf("Generated a ring with fewer then 3 points:  %v %v", fn, nring)
 
 			panic("Generated a ring with fewer then 3 points. ")
 		}
@@ -885,8 +885,8 @@ func merge2AdjectRC(c1, c2 RingCol) (col RingCol) {
 					}
 				}
 				if !found {
-					log.Println("col", col.String())
-					log.Println("Did not find r when trying to fix up Y1.", i, j)
+					log.Warnf("col %v", col.String())
+					log.Warnf("Did not find r when trying to fix up Y1. %v %v", i, j)
 					panic("Did not find r when trying to fix up Y1.")
 				}
 			}
@@ -913,8 +913,8 @@ func merge2AdjectRC(c1, c2 RingCol) (col RingCol) {
 					}
 				}
 				if !found {
-					log.Println("col", col.String())
-					log.Println("Did not find r when trying to fix up Y2.", i, j)
+					log.Warnf("col %v", col.String())
+					log.Warnf("Did not find r when trying to fix up Y2. %v %v", i, j)
 					panic("Did not find r when trying to fix up Y2.")
 				}
 			}

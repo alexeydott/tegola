@@ -1,9 +1,8 @@
 package basic
 
 import (
-	"log"
-
 	"github.com/go-spatial/tegola"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/maths"
 )
 
@@ -59,7 +58,7 @@ func (p Polygon) IsValid() bool {
 	   A Polygon is valid if the first linestring is clockwise and
 	*/
 	if !(p[0].IsValid() && p[0].Direction() == maths.Clockwise) {
-		log.Println("Line 0", p[0].IsValid(), p[0].Direction())
+		log.Debugf("Line 0 %v %v", p[0].IsValid(), p[0].Direction())
 		return false
 	}
 	/*

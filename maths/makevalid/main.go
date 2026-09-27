@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"runtime"
 	"sort"
 	"sync"
 
 	"github.com/go-spatial/geom"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/maths"
 	"github.com/go-spatial/tegola/maths/hitmap"
 	"github.com/go-spatial/tegola/maths/makevalid/plyg"
@@ -166,7 +166,7 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 	clipbox, intersect := cpbx.Intersect(plygsbb)
 	if !intersect {
 		if debug {
-			log.Println("clip area too small: Clipbox:", cpbx)
+			log.Debugf("clip area too small: Clipbox: %v", cpbx)
 		}
 		return nil, nil
 	}
@@ -178,14 +178,14 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 
 	var lines []maths.Line
 	if debug {
-		log.Println("Destructure5 called.")
+		log.Debug("Destructure5 called.")
 		defer func() {
 			if debug {
-				log.Println("Destructure5 ended.")
+				log.Debug("Destructure5 ended.")
 			}
 		}()
-		log.Printf("segments /*(%v)*/ := %#v", len(segments), segments)
-		log.Printf("clipbox := %#v", clipbox)
+		log.Debugf("segments /*(%v)*/ := %#v", len(segments), segments)
+		log.Debugf("clipbox := %#v", clipbox)
 	}
 
 	flines, err := splitSegments(ctx, segments, clipbox)
@@ -194,7 +194,7 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 	}
 
 	if debug {
-		log.Printf("flines := %#v", flines)
+		log.Debugf("flines := %#v", flines)
 	}
 
 	pts := allPointsForSegments(flines)
@@ -254,7 +254,7 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 		logout := fmt.Sprintf("clipbox := %v\n", clipbox)
 		logout += fmt.Sprintf("plygs := %v\n", plygs)
 		logout += logOutBuildRings(pt2MaxY, xs, x2pts)
-		log.Println("Going to buld out rings:", logout)
+		log.Debugf("Going to buld out rings: %v", logout)
 	}
 
 	var worker = func(id int, ctx context.Context) {
@@ -289,7 +289,7 @@ func destructure5(ctx context.Context, hm hitmap.Interface, cpbx *geom.Extent, p
 						logout := fmt.Sprintf("clipbox := %v\n", clipbox)
 						logout += fmt.Sprintf("plygs := %v\n", plygs)
 						logout += logOutBuildRings(pt2MaxY, xs, x2pts)
-						log.Println(logout+"For ", i, "Got error (", buildErr, ") trying to process ")
+						log.Debugf("%vFor  %v Got error ( %v ) trying to process ", logout, i, buildErr)
 					}
 					//panic(err)
 				}

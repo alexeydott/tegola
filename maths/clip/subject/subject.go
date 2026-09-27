@@ -2,9 +2,9 @@ package subject
 
 import (
 	"errors"
-	"log"
 
 	"github.com/go-spatial/tegola/container/singlelist/point/list"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/maths"
 )
 
@@ -55,7 +55,7 @@ func (s *Subject) FirstPair() *Pair {
 
 func (s *Subject) GetPair(idx int) *Pair {
 	p := s.FirstPair()
-	log.Println(p)
+	log.Debugf("%v", p)
 	for i := 0; i < idx; i++ {
 		p = p.Next()
 		if p == nil {
@@ -94,7 +94,7 @@ func (s *Subject) Contains(pt maths.Pt) bool {
 		}
 	}
 
-	log.Println("Contains Count:", count)
+	log.Debugf("Contains Count: %v", count)
 
 	// If it's odd then it's inside of the polygon, otherwise it's outside of the polygon.
 	return count%2 != 0

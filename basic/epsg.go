@@ -2,7 +2,6 @@ package basic
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"sort"
 	"strconv"
@@ -11,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/go-spatial/proj"
+	"github.com/go-spatial/tegola/internal/log"
 )
 
 // This file extends the three EPSG codes built into github.com/go-spatial/proj
@@ -254,7 +254,7 @@ func claimDefnSRIDFrom(defn string, owners map[uint64]string, codes map[string]u
 			return code, true
 		case defn < owner:
 			if code != skipCode {
-				log.Printf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", defn, owner, code)
+				log.Warnf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", defn, owner, code)
 			}
 			owners[code] = defn
 			codes[defn] = code
@@ -265,7 +265,7 @@ func claimDefnSRIDFrom(defn string, owners map[uint64]string, codes map[string]u
 			return code, true
 		default:
 			if code != skipCode {
-				log.Printf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", owner, defn, code)
+				log.Warnf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", owner, defn, code)
 			}
 			code += defnSRIDProbeStep
 			if code >= SyntheticSRIDMin+defnSRIDSpan {
