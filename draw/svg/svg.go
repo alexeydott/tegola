@@ -4,10 +4,10 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
 
 	svg "github.com/ajstarks/svgo"
 	"github.com/go-spatial/tegola"
+	"github.com/go-spatial/tegola/internal/log"
 	"github.com/go-spatial/tegola/maths"
 )
 
@@ -169,7 +169,7 @@ func (canvas *Canvas) DrawLine(l tegola.LineString, id string, style string, poi
 }
 
 func (canvas *Canvas) DrawMathSegments(ls []maths.Line, s ...string) {
-	log.Printf("Drawing lines(%v) ", len(ls))
+	log.Debugf("Drawing lines(%v) ", len(ls))
 	for _, line := range ls {
 		canvas.Line(
 			int(line[0].X),
@@ -181,7 +181,7 @@ func (canvas *Canvas) DrawMathSegments(ls []maths.Line, s ...string) {
 	}
 }
 func (canvas *Canvas) DrawMathPoints(pts []maths.Pt, s ...string) {
-	log.Printf("Drawing Points (%v)", len(pts))
+	log.Debugf("Drawing Points (%v)", len(pts))
 	prefix := "M"
 	var path string
 	for i := range pts {

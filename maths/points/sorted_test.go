@@ -1,17 +1,12 @@
 package points
 
 import (
-	"log"
 	"reflect"
 	"testing"
 
 	"github.com/gdey/tbltest"
 	"github.com/go-spatial/tegola/maths"
 )
-
-func init() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-}
 
 func TestSortAndUnique(t *testing.T) {
 	type tcase struct {

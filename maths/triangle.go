@@ -3,27 +3,24 @@ package maths
 import (
 	"errors"
 	"fmt"
-	"log"
 	"sort"
 	"time"
+
+	"github.com/go-spatial/tegola/internal/log"
 )
 
 func trace(msg string) func() {
 	tracer := time.Now()
-	log.Println(msg, "started at:", tracer)
+	log.Debugf("%v started at: %v", msg, tracer)
 	return func() {
 		etracer := time.Now()
-		log.Println(msg, "ElapsedTime in seconds:", etracer.Sub(tracer))
+		log.Debugf("%v ElapsedTime in seconds: %v", msg, etracer.Sub(tracer))
 	}
 }
 
 const adjustBBoxBy = 10
 
 type Triangle [3]Pt
-
-func init() {
-	log.SetFlags(log.Lshortfile | log.Ldate | log.Ltime)
-}
 
 func (t *Triangle) FindEdge(e Line) (idx int, err error) {
 	switch {
@@ -648,18 +645,18 @@ func (em *EdgeMap) trianglesForEdge(pt1, pt2 Pt) (*Triangle, *Triangle, error) {
 
 	apts, ok := em.SubKeys(pt1)
 	if !ok {
-		log.Println("Error 1")
+		log.Debug("Error 1")
 		return nil, nil, fmt.Errorf("Point one is not connected to any other points. Invalid edge? (%v  %v)", pt1, pt2)
 	}
 	bpts, ok := em.SubKeys(pt2)
 	if !ok {
-		log.Println("Error 2")
+		log.Debug("Error 2")
 		return nil, nil, fmt.Errorf("Point two is not connected to any other points. Invalid edge? (%v  %v)", pt1, pt2)
 	}
 
 	// Check to make sure pt1 and pt2 are connected.
 	if _, ok := em.Map[pt1][pt2]; !ok {
-		log.Println("Error 3")
+		log.Debug("Error 3")
 		return nil, nil, fmt.Errorf("Point one and Point do not form an edge. Invalid edge? (%v  %v)", pt1, pt2)
 	}
 
@@ -862,7 +859,7 @@ func (em *EdgeMap) Triangulate1() {
 		}
 	}
 	etime := time.Now()
-	log.Println("Finding all lines took: ", etime.Sub(stime))
+	log.Debugf("Finding all lines took:  %v", etime.Sub(stime))
 
 	// Now we need to do a line sweep to see which of the possible edges we want to keep.
 	offset := len(lines)
@@ -874,7 +871,7 @@ func (em *EdgeMap) Triangulate1() {
 	stime = time.Now()
 	eq := NewEventQueue(lines)
 	etime = time.Now()
-	log.Println("building event queue took: ", etime.Sub(stime))
+	log.Debugf("building event queue took:  %v", etime.Sub(stime))
 	stime = etime
 	FindAllIntersectsWithEventQueueWithoutIntersectNotPolygon(eq, lines,
 		func(src, dest int) bool { return skiplines[src] || skiplines[dest] },
@@ -901,7 +898,7 @@ func (em *EdgeMap) Triangulate1() {
 			}
 		})
 	etime = time.Now()
-	log.Println("Find Intersects took: ", etime.Sub(stime))
+	log.Debugf("Find Intersects took:  %v", etime.Sub(stime))
 	stime = etime
 	// Add the remaining possible Edges to the edgeMap.
 	for i := range lines {

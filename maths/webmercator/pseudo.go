@@ -3,7 +3,7 @@ package webmercator
 import (
 	"math"
 
-	"log"
+	"github.com/go-spatial/tegola/internal/log"
 )
 
 // PLonToX projects a WGS84 longitude to a Web Mercator x coordinate.
@@ -63,12 +63,12 @@ func PYToLat(y float64) float64 {
 	val := RadToDeg(atanexp2x - PiDiv2)
 
 	if math.IsNaN(val) {
-		log.Println("Whe have an issue with y", y,
-			"ydivr", ydivr,
-			"ydivexp", ydivexp,
-			"atanexp", atanexp,
-			"atanexp2x", atanexp2x,
-			"atanexp2x-π/2", atanexp2x-PiDiv2,
+		log.Warnf("Whe have an issue with y %v ydivr %v ydivexp %v atanexp %v atanexp2x %v atanexp2x-π/2 %v", y,
+			ydivr,
+			ydivexp,
+			atanexp,
+			atanexp2x,
+			atanexp2x-PiDiv2,
 		)
 	}
 	return val
