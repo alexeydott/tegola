@@ -40,6 +40,7 @@ Module migration
 
 Bugs
 
+* Serve layer URLs from a seeded whole-map MVT on layer-cache misses, avoiding redundant provider queries and geometry rendering. Preserve individual-layer cache precedence and source TTL. File-cache startup now resolves and logs the absolute cache root.
 * Automatic MOS detection accepts a completed short SQL result with one valid geometry, even when other rows are discarded. Automatically detected MOS layers skip undecodable rows during class inference and tile rendering, preserving valid features.
 * Explicit MOS custom SQL now checks metadata without sampling or unpacking geometries for format detection. With an explicit geometry type, startup performs no format/class decoding. Automatic MOS detection stops after three valid geometries within its 16-row search window.
 * Reject synthetic SRID hash collisions without rebinding existing layers or cached transformations; explicit registrations cannot overwrite an ID owned by another `crs_defn`. Cover registration order and stored layer IDs with regression tests.

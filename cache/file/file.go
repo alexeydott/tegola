@@ -11,6 +11,7 @@ import (
 	"github.com/alexeydott/tegola"
 	"github.com/alexeydott/tegola/cache"
 	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 var ErrMissingBasepath = errors.New("filecache: missing required param 'basepath'")
@@ -60,6 +61,13 @@ func New(config dict.Dicter) (cache.Interface, error) {
 	if fc.Basepath == "" {
 		return nil, ErrMissingBasepath
 	}
+
+	// Resolve once so subsequent working-directory changes cannot redirect I/O.
+	fc.Basepath, err = filepath.Abs(fc.Basepath)
+	if err != nil {
+		return nil, err
+	}
+	log.Infof("file cache: basepath=%s max_zoom=%d ttl=%s", fc.Basepath, fc.MaxZoom, fc.Expiration)
 
 	// make our basepath if it does not exist
 	if err = os.MkdirAll(fc.Basepath, os.ModePerm); err != nil {

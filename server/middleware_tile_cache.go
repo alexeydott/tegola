@@ -108,6 +108,13 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 			return
 		}
 
+		if !hit && key.LayerName != "" {
+			cachedTile, hit, err = cachedMapLayer(r.Context(), a, cacher, key)
+			if err != nil {
+				log.Warnf("cache middleware: cannot reuse map tile for %s: %v", key.String(), err)
+			}
+		}
+
 		if hit {
 			// mimetype for mapbox vector tiles
 			w.Header().Add("Content-Type", mvt.MimeType)

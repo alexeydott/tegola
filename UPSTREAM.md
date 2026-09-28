@@ -432,3 +432,22 @@ for format inspection.
 
 Validation: full CGO0/1 suites, shared-codec/provider race checks and lint
 passed after the short-result change.
+
+## Seed/serve cache interoperability follow-up (2026-09-28)
+
+Layer URLs now reuse a seeded whole-map tile on an individual-layer cache
+miss, preserving encoded feature geometry and attributes without provider
+queries. Existing layer cache entries retain precedence; derived responses
+are not stored with a fresh TTL. Parameterized requests still bypass this
+cache path. File caches resolve their root once and log the absolute path.
+
+The supplied MapplVectorTiles warmup/start scripts both use the project root
+and mysql-luna.toml; their directories agree. The mismatch was whole-map seed
+keys versus index3.html layer URL keys. A real RU-CHE 12/2719/1326 seed followed
+by a separate server with cold memory returned HIT for the map and water-poly
+layer. Regression tests cover seed-to-file-to-serve, layer aliases, separate
+layer precedence, TTL, parameter bypass and working-directory changes.
+
+Validation: full CGO0/1 suites, race checks for server/cache/atlas/seed, and
+zero-issue lint passed. The production listener was not restarted during
+the isolated live seed/serve check.

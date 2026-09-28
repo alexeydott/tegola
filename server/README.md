@@ -68,3 +68,19 @@ The viewer can be excluded during building by using the build flag `noViewer`. F
 ```bash
 go build -tags "noViewer"
 ```
+
+### Serving seeded map tiles through layer URLs
+
+`cache seed --map MAP` writes `MAP/z/x/y`, while a layer URL normally reads
+`MAP/LAYER/z/x/y`. On a layer-cache miss, serve now checks the whole-map tile
+and selects the requested MVT layer without querying a provider or rendering
+geometry again. This is reported as `Tegola-Cache: HIT`. A separately cached
+layer takes precedence. The extracted response is not persisted, so it cannot
+extend the map tile TTL. Unsupported/ambiguous aliases and invalid cached
+content fall back to normal rendering; parameterized requests retain their
+existing cache bypass. Only layers configured at the requested zoom qualify.
+
+For file and multilevel caches, compare the absolute `file cache: basepath=`
+startup messages from seed and serve. Relative paths use the process working
+directory. Seeded tiles expire according to the file TTL; `ttl = 0` disables
+expiry. Seeding a map does not precompute arbitrary query-parameter variants.

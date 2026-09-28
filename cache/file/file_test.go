@@ -39,6 +39,12 @@ func TestNew(t *testing.T) {
 				return
 			}
 
+			if tc.expected != nil {
+				tc.expected.Basepath, err = filepath.Abs(tc.expected.Basepath)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if !reflect.DeepEqual(tc.expected, output) {
 				t.Errorf("expected %+v got %+v", tc.expected, output)
 				return
@@ -560,5 +566,23 @@ func TestPurgeConcurrentIsIdempotent(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(basepath, key.String())); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("tile should be gone after purge, stat error = %v", err)
+	}
+}
+
+func TestRelativeCacheRootIsFixedAtConstruction(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	c, err := file.New(dict.Dict{"basepath": "tiles"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := &cache.Key{MapName: "map", Z: 0, X: 0, Y: 0}
+	if err = c.Set(context.Background(), key, []byte("seeded")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	value, hit, err := c.Get(context.Background(), key)
+	if err != nil || !hit || string(value) != "seeded" {
+		t.Fatalf("cache moved with cwd: hit=%v value=%q err=%v", hit, value, err)
 	}
 }
