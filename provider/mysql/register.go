@@ -747,7 +747,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 								layerGeometryFormat = codec.FormatMOS
 							}
 							log.Infof("layer '%v': bounds-backed MOS custom SQL contract detected (source %v, %v valid MOS sample rows)", layerName, layer.mapplSource, contract.ValidMOSRows)
-						} else if !gtypeExplicit {
+						} else if !strict && !gtypeExplicit {
 							log.Warnf("layer '%v': bounds-backed MOS custom SQL sample carried %v decodable MOS rows (need %v for sql-sample tagging)", layerName, contract.ValidMOSRows, codec.MinValidMOSRows)
 						}
 						// MOS blobs carry no CRS metadata: the source CRS
@@ -764,7 +764,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 
 			// An explicit geometry_type skips only geometry-class
-			// inference and the >=3-sample-row evidence bar, never the
+			// inference, never format inference or the
 			// structural validation above (A03). Empty result sets are
 			// allowed for explicitly-typed layers.
 			if gtypeExplicit {
@@ -851,6 +851,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 // sample column names for diagnostics. SystemInfo rows are skipped, never
 // applied: SQL-sample detection carries no projection contract.
 func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string, geometryFormat string, serverFlavor string) ([]string, codec.SQLGeometryContract, error) {
+	if geometryFormat == codec.FormatMOS {
+		probeSQL = codec.MetadataProbeSQL(probeSQL)
+	}
 	ctx, cancel := codec.NewInspectionContext()
 	defer cancel()
 
@@ -886,14 +889,14 @@ func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string, geomet
 		return vals, true, nil
 	}
 
-	// Explicit MOS counts only positive-signature MOS rows; inference
+	// Explicit MOS uses metadata only; automatic format inference
 	// accepts native/WKB/WKT rows first and falls back to MOS only for
 	// blobs with a positive MOS signature (7.1.3). SystemInfo rows are
 	// skipped, never applied: SQL-sample detection carries no projection
 	// contract.
 	var decode codec.RowDecode
 	if geometryFormat == GeometryFormatMOS {
-		decode = codec.MOSRowDecode(layer.mosConfig)
+		decode = nil // explicit MOS needs structural metadata, not format inference
 	} else {
 		decode = codec.AutoRowDecode(func(value interface{}) (geom.Geometry, error) {
 			if value == nil {

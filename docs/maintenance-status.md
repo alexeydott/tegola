@@ -33,6 +33,7 @@ continue to match their published module versions.
 | Geographic datum conversion | `longlat` uses the existing three-/seven-parameter datum transformations; independent PROJ references cover both directions and synthetic `crs_defn` registration. |
 | Geographic scale | All four SQL providers share source-ellipsoid local parallel scale at the transformed tile center; SQL pixel dimensions use source units. |
 | Complex polygon simplification | Ring and component relationships are validated before accepting candidates; unsafe or inconclusive candidates preserve the original geometry. |
+| MOS startup sampling | Explicit MOS checks column metadata without format sampling; an explicit geometry type also skips class decoding. Automatic inference stops at three valid MOS geometries within 16 rows. Provider fixtures and a real SQLite startup regression cover the behavior. |
 | SQL probes and token parsing | Providers use explicit dialects; PostgreSQL hash operators and arrays are executable SQL. Probe, missing-layer and geometry-column regressions have tests. |
 | Cache and tile operations | Unique file-cache temp names, safe purge races, authenticated/rate-limited maintenance, queued regeneration status, bounds filtering and MVT-only cache writes are implemented. |
 | Other historical findings | Azure missing-object purge/URL validation, GCS self-test hit/content checks, empty GPKG geometry, WebMercator latitude validation and qualified MySQL identifiers are covered by implementation and regression tests. |

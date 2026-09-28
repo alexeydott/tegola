@@ -511,3 +511,9 @@ func probeBody(sql string) string {
 	}
 	return sql
 }
+
+// MetadataProbeSQL preserves result columns without requesting sample rows.
+// The input is already token-expanded and may include a sample limit.
+func MetadataProbeSQL(sql string) string {
+	return fmt.Sprintf("SELECT * FROM (%s) AS __tegola_metadata_probe WHERE 1=0", probeBody(sql))
+}

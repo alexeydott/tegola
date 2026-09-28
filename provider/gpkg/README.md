@@ -99,8 +99,8 @@ The GPKG provider implements the common geometry contract documented in
 - `geometry_type` (string): [Optional, **layer level only**] explicit layer
   geometry type
   (`Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`,
-  `MultiPolygon`, `GeometryCollection`). Skips geometry-class inference and
-  the >=3-sample-row requirement (empty data is allowed); structural
+  `MultiPolygon`, `GeometryCollection`). Skips geometry-class inference (empty data is allowed); automatic MOS format
+  detection still requires three valid samples. Structural
   validation of custom SQL still runs. Mixed content is permitted with a
   one-time warning.
 - `geometry_format` (string): [Optional] `gpkg` (GeoPackage native binary,
@@ -239,3 +239,17 @@ non-WebMercator SQL thresholds must use the new CRS-aware values.
 SQL tokens use SQLite lexical rules. Backslashes in strings are literal;
 double-quoted, bracketed, and backtick identifiers are protected. PostgreSQL
 dollar quoting and MySQL hash comments are not interpreted as SQLite quoting.
+
+### MOS registration sampling
+
+An effective `geometry_format = "mos"` at provider or layer level disables
+storage-format sampling. Registration obtains result-column metadata with a
+zero-row query; geometry-column, bounds-token and explicit CRS validation
+still apply. If `geometry_type` is also configured, no geometry is unpacked
+for startup format/class inference. Otherwise class inference remains a
+separate probe. Explicit MOS does not acquire the inferred `sql-sample` tag.
+
+Automatic MOS detection stops after **three successfully decoded, nonempty
+MOS geometries**, within at most **16 result rows**. NULL, malformed, empty
+and SystemInfo values do not count. Setting `geometry_type` alone does not
+select a storage format or disable automatic format detection.

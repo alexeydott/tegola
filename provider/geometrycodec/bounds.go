@@ -261,9 +261,9 @@ type SQLGeometryContract struct {
 // MinValidMOSRows is the minimum number of decodable MOS rows the SQL sample
 // probe requires before a custom-SQL layer is treated as bounds-backed
 // MapplGIS SQL and switched to the MOS storage format. It is an inference
-// evidence bar only: layers with an explicit geometry type skip the
-// >=3-sample-row requirement, and row-count evidence never substitutes for
-// the structural contract.
+// evidence bar only: an explicit MOS format skips sampling altogether.
+// geometry_type controls class inference independently; row-count evidence
+// never substitutes for the structural contract.
 const MinValidMOSRows = 3
 
 // InspectSQLGeometryContract runs a registration-time probe over a sample of
@@ -280,6 +280,8 @@ const MinValidMOSRows = 3
 // the query through PrepareProbeSQL/WrapProbeSQL so the probe always
 // executes the SQL without a spatial filter.
 //
+// A nil decode requests column metadata only and never calls next.
+// Sampling stops after MinValidMOSRows successfully decoded MOS geometries.
 // decode is the provider's row decoder (MOSRowDecode / AutoRowDecode):
 // rows whose decode errors, or whose geometry is empty or carries no
 // coordinates, are skipped and never counted; SystemInfo/layerinfo rows are
@@ -319,6 +321,11 @@ func InspectSQLGeometryContract(
 		}
 	}
 
+	// Explicit storage formats need column metadata only. Do not consume rows.
+	if decode == nil {
+		return contract, nil
+	}
+
 	for read := 0; read < InspectionSampleLimit; read++ {
 		row, ok, err := next()
 		if err != nil {
@@ -345,6 +352,9 @@ func InspectSQLGeometryContract(
 		contract.ValidRows++
 		if isMOS {
 			contract.ValidMOSRows++
+			if contract.ValidMOSRows >= MinValidMOSRows {
+				break
+			}
 		}
 	}
 	return contract, nil

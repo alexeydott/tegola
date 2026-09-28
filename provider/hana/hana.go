@@ -868,7 +868,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 								l.geometryFormat = codec.FormatMOS
 							}
 							log.Infof("layer '%v': bounds-backed MOS custom SQL contract detected (source %v, %v valid MOS sample rows)", lName, l.mapplSource, contract.ValidMOSRows)
-						} else if geomType == "" {
+						} else if !strict && geomType == "" {
 							log.Warnf("layer '%v': bounds-backed MOS custom SQL sample carried %v decodable MOS rows (need %v for sql-sample tagging)", lName, contract.ValidMOSRows, codec.MinValidMOSRows)
 						}
 						// MOS blobs carry no CRS metadata: the source CRS
@@ -1196,6 +1196,9 @@ func blobBytes(v interface{}) ([]byte, bool) {
 // applied: SQL-sample detection carries no projection contract. The actual
 // result-column names are returned so the caller can persist them (A09).
 func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string, codec.SQLGeometryContract, error) {
+	if l.geometryFormat == codec.FormatMOS {
+		probeSQL = codec.MetadataProbeSQL(probeSQL)
+	}
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
 	}
@@ -1243,7 +1246,7 @@ func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string
 		return decodeGeometryValue(value, l.geometryFormat, l.mosConfig)
 	}, l.mosConfig)
 	if l.geometryFormat == codec.FormatMOS {
-		decode = codec.MOSRowDecode(l.mosConfig)
+		decode = nil // explicit MOS needs structural metadata, not format inference
 	}
 
 	contract, cerr := codec.InspectSQLGeometryContract(

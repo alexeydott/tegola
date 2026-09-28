@@ -1180,7 +1180,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 
 			// An explicit geometry_type skips only geometry-class inference
-			// and the >=3-sample-row evidence bar, never the structural
+			// but never format inference or the structural
 			// validation above (A03). Empty result sets are allowed for
 			// explicitly-typed layers (empty-layer policy).
 			if gtypeExplicit {
@@ -1401,10 +1401,13 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 // codec.InspectionSampleLimit rows. Real scanned row values reach the
 // decode closure (A01). Native GeoPackage decode is primary for the unset/
 // gpkg formats with a MOS fallback so native rows can never count as MOS
-// while a positive MOS signature does (A04/7.1.3); explicit MOS decodes
-// strictly as MOS. SystemInfo rows are skipped, never applied: SQL-sample
+// while a positive MOS signature does (A04/7.1.3). Explicit MOS
+// inspects metadata without consuming or decoding rows. SystemInfo rows are skipped, never applied: SQL-sample
 // detection carries no projection contract.
 func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string) ([]string, codec.SQLGeometryContract, error) {
+	if layer.geometryFormat == codec.FormatMOS {
+		probeSQL = codec.MetadataProbeSQL(probeSQL)
+	}
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
 	}
@@ -1430,7 +1433,7 @@ func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string) ([]str
 		return decoded, err
 	}, layer.mosConfig)
 	if layer.geometryFormat == codec.FormatMOS {
-		decode = codec.MOSRowDecode(layer.mosConfig)
+		decode = nil // explicit MOS needs structural metadata, not format inference
 	}
 
 	next := func() ([]interface{}, bool, error) {

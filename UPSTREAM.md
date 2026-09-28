@@ -404,3 +404,17 @@ Validation: the full root suite passed with CGO disabled and enabled; lint
 reported zero issues. The focused registration/provider tests also passed
 with the race detector. Documentation review included local link checks and
 an independent final review of the changed contracts.
+
+## MOS startup sampling follow-up (2026-09-28)
+
+Explicit MOS now uses a zero-row metadata query for the custom-SQL contract
+in all four standard providers. Geometry-class inference is independent and
+is skipped when geometry_type is configured. Automatic MOS inference stops
+after three successful nonempty geometries within a 16-row window. Structural
+checks and explicit CRS requirements remain active; explicit MOS no longer
+receives an inferred sql-sample tag. Regression coverage includes provider
+probes, bounded/early-stop inference and SQLite expressions that would fail
+if evaluated during explicit MOS plus geometry_type registration.
+
+Validation: full root tests passed with CGO off/on, race tests passed for
+all four providers and the shared codec, and lint reported zero issues.

@@ -67,7 +67,7 @@ func openContractStubCtxs(t *testing.T, columns []string, rows [][]driver.Value)
 func TestProbeMOSCustomSQLContract(t *testing.T) {
 	probe := func(t *testing.T, columns []string, rows [][]interface{}, format string) ([]string, codec.SQLGeometryContract, *Layer) {
 		t.Helper()
-		db := openContractStub(t, columns, fixture.DriverRows(rows))
+		db, queries := openContractStubLogged(t, columns, fixture.DriverRows(rows))
 		p := Provider{pool: &connectionPoolCollector{pool: db}}
 		layer := &Layer{
 			name:           "probe_layer",
@@ -80,11 +80,21 @@ func TestProbeMOSCustomSQLContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("probe: %v", err)
 		}
+		if format == codec.FormatMOS && (len(*queries) != 1 || !strings.HasSuffix((*queries)[0], "WHERE 1=0")) {
+			t.Fatalf("not a metadata-only query: %v", *queries)
+		}
 		return cols, contract, layer
 	}
 
+	t.Run("explicit MOS inspects metadata without decoding valid rows", func(t *testing.T) {
+		_, c, _ := probe(t, mosfixture.Columns(), mosfixture.ValidRows(), codec.FormatMOS)
+		if !c.HasBounds || c.GeometryField != "geom" || c.ValidRows != 0 || c.ValidMOSRows != 0 {
+			t.Fatalf("unexpected explicit MOS contract: %+v", c)
+		}
+	})
+
 	t.Run("three real MOS rows report the identical shared contract", func(t *testing.T) {
-		cols, contract, _ := probe(t, mosfixture.Columns(), mosfixture.ValidRows(), codec.FormatMOS)
+		cols, contract, _ := probe(t, mosfixture.Columns(), mosfixture.ValidRows(), "")
 		for i, c := range mosfixture.Columns() {
 			if cols[i] != c {
 				t.Fatalf("column %d = %q, expected %q", i, cols[i], c)
@@ -96,14 +106,14 @@ func TestProbeMOSCustomSQLContract(t *testing.T) {
 	})
 
 	t.Run("one malformed row plus three valid rows counts three", func(t *testing.T) {
-		_, contract, _ := probe(t, mosfixture.Columns(), mosfixture.RowsWithMalformed(), codec.FormatMOS)
+		_, contract, _ := probe(t, mosfixture.Columns(), mosfixture.RowsWithMalformed(), "")
 		if contract.ValidMOSRows != 3 {
 			t.Fatalf("ValidMOSRows = %d, expected 3 (malformed rows skipped, never counted)", contract.ValidMOSRows)
 		}
 	})
 
 	t.Run("system info row is skipped and never applied", func(t *testing.T) {
-		_, contract, layer := probe(t, mosfixture.Columns(), mosfixture.RowsWithSystemInfo(), codec.FormatMOS)
+		_, contract, layer := probe(t, mosfixture.Columns(), mosfixture.RowsWithSystemInfo(), "")
 		if contract.ValidMOSRows != 3 {
 			t.Fatalf("ValidMOSRows = %d, expected 3 (system info row skipped)", contract.ValidMOSRows)
 		}
@@ -113,7 +123,7 @@ func TestProbeMOSCustomSQLContract(t *testing.T) {
 	})
 
 	t.Run("lower-case bounds columns persist actual names", func(t *testing.T) {
-		_, contract, _ := probe(t, mosfixture.LowerCaseColumns(), mosfixture.ValidRows(), codec.FormatMOS)
+		_, contract, _ := probe(t, mosfixture.LowerCaseColumns(), mosfixture.ValidRows(), "")
 		if contract != mosfixture.ExpectedLowerCaseContract() {
 			t.Fatalf("contract %+v, expected %+v (actual result-column names)", contract, mosfixture.ExpectedLowerCaseContract())
 		}

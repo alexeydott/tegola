@@ -196,3 +196,7 @@ SQL tokens use HANA lexical rules: single-quoted strings, double-quoted
 identifiers, `--` comments, and block comments are protected. Backslashes are
 literal characters; PostgreSQL dollar quoting and MySQL backticks/hash comments
 are not treated as HANA quoting.
+
+For MOS startup metadata checks, automatic sample limits and the distinction
+between format and geometry-class inference, see the
+[shared sampling contract](../../docs/provider-contract.md#mos-registration-sampling).

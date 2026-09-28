@@ -60,8 +60,7 @@ in [docs/provider-contract.md](../../docs/provider-contract.md). Alongside the
 format keys above, the common `geometry_type` layer key is supported: an
 explicit value (`Point`, `LineString`, `Polygon`, `MultiPoint`,
 `MultiLineString`, `MultiPolygon`, `GeometryCollection`) fixes the layer
-geometry type before any data is read and skips geometry-class inference and
-the >=3-sample-row requirement (empty data is allowed); structural validation
+geometry type before any data is read and skips geometry-class inference (empty data is allowed); structural validation
 of custom SQL still runs.
 It is orthogonal to MapplGIS table detection: a `tablename` layer is still
 checked for the MapplGIS signature and still receives system-info
@@ -156,7 +155,7 @@ In practice this means a MapplGIS table needs no `mos_precision`/`mos_units`/`sr
 
 Table-canonical MapplGIS detection never applies to custom `sql` layers, and
 `LayerSystemInfo` is never applied from result rows. Custom `sql` layers are
-still subject to SQL-sample storage detection: a `mos` (or `auto`) SQL layer
+still subject to SQL-sample storage detection: an `auto` SQL layer
 whose registration probe reports the MapplGIS signature is tagged `MapplGIS`
 without system info and without applying any projection from the sample. A
 MOS custom SQL layer must configure `srid` or `crs_defn` explicitly (a
@@ -312,3 +311,17 @@ SQL tokens use default MySQL lexical rules, including `#` comments and the
 whitespace requirement after `--`. Single/double-quoted strings use backslash
 escapes; backtick identifiers use doubled backticks. Token scanning does not
 support the nondefault `NO_BACKSLASH_ESCAPES` or `ANSI_QUOTES` SQL modes.
+
+### MOS registration sampling
+
+An effective `geometry_format = "mos"` at provider or layer level disables
+storage-format sampling. Registration obtains result-column metadata with a
+zero-row query; geometry-column, bounds-token and explicit CRS validation
+still apply. If `geometry_type` is also configured, no geometry is unpacked
+for startup format/class inference. Otherwise class inference remains a
+separate probe. Explicit MOS does not acquire the inferred `sql-sample` tag.
+
+Automatic MOS detection stops after **three successfully decoded, nonempty
+MOS geometries**, within at most **16 result rows**. NULL, malformed, empty
+and SystemInfo values do not count. Setting `geometry_type` alone does not
+select a storage format or disable automatic format detection.

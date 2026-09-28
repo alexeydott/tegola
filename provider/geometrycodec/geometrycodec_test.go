@@ -566,8 +566,8 @@ func TestInspectSQLGeometryContract(t *testing.T) {
 			expected: geometrycodec.SQLGeometryContract{
 				BoundsFields:  geometrycodec.BBoxFields{"MINX", "MAXX", "MINY", "MAXY"},
 				GeometryField: "geom",
-				ValidRows:     4,
-				ValidMOSRows:  4,
+				ValidRows:     3,
+				ValidMOSRows:  3,
 				HasBounds:     true,
 			},
 		},
@@ -1509,4 +1509,44 @@ func TestPrepareProbeSQLComparisonNeutralization(t *testing.T) {
 			t.Fatalf("PrepareProbeSQL(%q) = %q, want right-side zoom range preserved", custom, got)
 		}
 	})
+}
+
+func TestContractMetadataDoesNotReadRows(t *testing.T) {
+	next := func() ([]interface{}, bool, error) { t.Fatal("metadata probe consumed a row"); return nil, false, nil }
+	c, err := geometrycodec.InspectSQLGeometryContract(next, []string{"geom", "minx", "maxx", "miny", "maxy"}, "geom", geometrycodec.DefaultBBoxFields(), nil)
+	if err != nil || !c.HasBounds || c.GeometryField != "geom" || c.ValidRows != 0 {
+		t.Fatalf("contract=%+v err=%v", c, err)
+	}
+}
+
+func TestMOSInferenceStopsAfterThreeSuccesses(t *testing.T) {
+	reads, decodes := 0, 0
+	next := func() ([]interface{}, bool, error) {
+		reads++
+		if reads > 5 {
+			t.Fatal("read past third successful geometry")
+		}
+		return []interface{}{reads}, true, nil
+	}
+	decode := func(value interface{}) (geom.Geometry, bool, error) {
+		decodes++
+		if value.(int) <= 2 {
+			return nil, false, fmt.Errorf("invalid sample")
+		}
+		return geom.Point{1, 2}, true, nil
+	}
+	c, err := geometrycodec.InspectSQLGeometryContract(next, []string{"geom"}, "geom", geometrycodec.DefaultBBoxFields(), decode)
+	if err != nil || c.ValidMOSRows != 3 || reads != 5 || decodes != 5 {
+		t.Fatalf("contract=%+v reads=%d decodes=%d err=%v", c, reads, decodes, err)
+	}
+}
+
+func TestMOSInferenceSampleBudget(t *testing.T) {
+	reads := 0
+	next := func() ([]interface{}, bool, error) { reads++; return []interface{}{1}, true, nil }
+	decode := func(interface{}) (geom.Geometry, bool, error) { return nil, false, fmt.Errorf("invalid") }
+	c, err := geometrycodec.InspectSQLGeometryContract(next, []string{"geom"}, "geom", geometrycodec.DefaultBBoxFields(), decode)
+	if err != nil || reads != geometrycodec.InspectionSampleLimit || c.ValidMOSRows != 0 {
+		t.Fatalf("contract=%+v reads=%d err=%v", c, reads, err)
+	}
 }

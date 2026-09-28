@@ -62,13 +62,9 @@ func IsRawFormat(format string) bool {
 	return false
 }
 
-// InspectionSampleLimit is the uniform number of rows every provider samples
-// during startup inspection to infer the layer geometry type (first decodable
-// geometry wins). It is used for geometry-type inference only: MapplGIS
-// identity detection is a separate one-time, structural check at registration
-// (DDL + primary key + required indexes + an OKEY=1 probe row), and custom
-// SQL layers never apply system info from result rows. See
-// docs/provider-contract.md.
+// InspectionSampleLimit bounds startup geometry-class and automatic MOS format
+// inference. Format inference stops after MinValidMOSRows successful geometries;
+// explicit MOS uses column metadata only for the storage contract.
 const InspectionSampleLimit = 16
 
 // ValidateMVTGeometryFormat rejects raw geometry formats on MVT passthrough

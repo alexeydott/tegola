@@ -1045,6 +1045,9 @@ func (p Provider) setLayerGeomType(l *Layer, geomType string) error {
 // applied: SQL-sample detection carries no projection contract. The actual
 // result-column names are returned so the caller can persist them (A09).
 func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string, codec.SQLGeometryContract, error) {
+	if l.geometryFormat == codec.FormatMOS {
+		probeSQL = codec.MetadataProbeSQL(probeSQL)
+	}
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
 	}
@@ -1091,7 +1094,7 @@ func probeSQLContractRows(l *Layer, rows pgx.Rows) ([]string, codec.SQLGeometryC
 		return decodeGeometryValue(value, l.geometryFormat, l.mosConfig)
 	}, l.mosConfig)
 	if l.geometryFormat == codec.FormatMOS {
-		decode = codec.MOSRowDecode(l.mosConfig)
+		decode = nil // explicit MOS needs structural metadata, not format inference
 	}
 
 	contract, cerr := codec.InspectSQLGeometryContract(

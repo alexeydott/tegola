@@ -1056,3 +1056,29 @@ func TestConfiguredBoundsFilterAndPlainMinxTag(t *testing.T) {
 		}
 	})
 }
+
+// SQLite raises integer overflow if the geometry expression is evaluated.
+// Explicit MOS plus a geometry type must obtain metadata without doing that.
+func TestExplicitMOSCustomSQLDoesNotEvaluateGeometry(t *testing.T) {
+	for _, providerFormat := range []bool{false, true} {
+		t.Run(fmt.Sprintf("providerFormat=%v", providerFormat), func(t *testing.T) {
+			fx := newRawFixture(t, []string{"CREATE TABLE parcels (id INTEGER PRIMARY KEY, geom BLOB)", "INSERT INTO parcels VALUES (1, X'00')"})
+			layer := map[string]interface{}{
+				"name": "raw_layer", "geometry_fieldname": "geom", "id_fieldname": "id",
+				"geometry_type": "Point", "srid": 3857,
+				"sql": "SELECT id, abs(-9223372036854775808) AS geom, 0 AS MINX, 1 AS MAXX, 0 AS MINY, 1 AS MAXY FROM parcels WHERE !BBOX!",
+			}
+			conf := dict.Dict{"filepath": fx.path, "layers": []map[string]interface{}{layer}}
+			if providerFormat {
+				conf["geometry_format"] = "mos"
+			} else {
+				layer["geometry_format"] = "mos"
+			}
+			_, err := gpkg.NewTileProvider(conf, nil)
+			if err != nil {
+				t.Fatalf("explicit MOS evaluated geometry: %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+		})
+	}
+}
