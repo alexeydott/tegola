@@ -43,7 +43,7 @@ const (
 	MapplGISNone MapplGISSource = iota
 	// MapplGISTableCanonical: DDL + PK + indexes + OKEY=1 SystemInfo probe.
 	MapplGISTableCanonical
-	// MapplGISSQLSample: bounds columns + geometry + >=3 valid MOS rows.
+	// MapplGISSQLSample: bounds contract plus automatic MOS evidence (DetectsMOS).
 	MapplGISSQLSample
 )
 
@@ -256,11 +256,18 @@ type SQLGeometryContract struct {
 	ValidMOSRows int
 	// HasBounds reports whether all four bounds columns were found.
 	HasBounds bool
+	// SampleComplete means EOF was reached before the sampling budget.
+	SampleComplete bool
 }
 
-// MinValidMOSRows is the minimum number of decodable MOS rows the SQL sample
-// probe requires before a custom-SQL layer is treated as bounds-backed
-// MapplGIS SQL and switched to the MOS storage format. It is an inference
+// DetectsMOS accepts three valid samples, or a shorter completed result
+// containing at least one valid MOS geometry. Budget exhaustion is not EOF.
+func (c SQLGeometryContract) DetectsMOS() bool {
+	return c.ValidMOSRows >= MinValidMOSRows || (c.SampleComplete && c.ValidMOSRows > 0)
+}
+
+// MinValidMOSRows is the early-stop threshold for automatic MOS detection.
+// A completed shorter result needs only one valid MOS row (see DetectsMOS). It is an inference
 // evidence bar only: an explicit MOS format skips sampling altogether.
 // geometry_type controls class inference independently; row-count evidence
 // never substitutes for the structural contract.
@@ -332,6 +339,7 @@ func InspectSQLGeometryContract(
 			return contract, err
 		}
 		if !ok {
+			contract.SampleComplete = true
 			break
 		}
 		if geomIdx < 0 || geomIdx >= len(row) {

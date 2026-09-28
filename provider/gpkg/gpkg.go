@@ -414,6 +414,11 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 
 				_, geo, err := decodeGeometryValue(vals[i], pLayer.geometryFormat, pLayer.mosConfig)
 				if err != nil {
+					if pLayer.mapplSource == codec.MapplGISSQLSample {
+						log.Warnf("layer %v: skipping undecodable auto-detected MOS geometry: %v", pLayer.name, err)
+						skipRow = true
+						break
+					}
 					log.Errorf("error decoding geometry: %v", err)
 					return err
 				}

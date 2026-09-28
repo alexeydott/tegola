@@ -713,7 +713,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 					// is the sql-sample evidence bar; the structural
 					// contract is fail-closed for explicit MOS and for
 					// inference with MOS evidence (A02/A05).
-					mosEvidence := contract.ValidMOSRows >= codec.MinValidMOSRows
+					mosEvidence := contract.DetectsMOS()
 					if strict || mosEvidence {
 						resolved, boundsInResult, cerr := codec.MySQL.ResolveBoundsSQLContract(layerName, customSQL, layer.geomFieldname, contract, layer.bboxFields)
 						if cerr != nil {

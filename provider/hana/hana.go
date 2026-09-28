@@ -835,7 +835,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 					// is the sql-sample evidence bar; the structural
 					// contract is fail-closed for explicit MOS and for
 					// inference with MOS evidence (A02/A05).
-					mosEvidence := contract.ValidMOSRows >= codec.MinValidMOSRows
+					mosEvidence := contract.DetectsMOS()
 					if strict || mosEvidence {
 						resolved, boundsInResult, cerr := codec.HANA.ResolveBoundsSQLContract(lName, l.sql, geomfld, contract, l.bboxFields)
 						if cerr != nil {
@@ -1159,6 +1159,9 @@ func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
 			if l.geomType == nil {
 				g, derr := codec.DecodeMOS(raw, l.mosConfig)
 				if derr != nil {
+					if l.mapplSource == codec.MapplGISSQLSample {
+						continue
+					}
 					return fmt.Errorf("layer (%v): %w", l.name, derr)
 				}
 				l.geomType = g
@@ -1409,6 +1412,10 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		// decode our geometry according to the layer's geometry format
 		geometry, err := decodeGeometryValue(geobytes, plyr.geometryFormat, mosCfg)
 		if err != nil {
+			if plyr.mapplSource == codec.MapplGISSQLSample {
+				log.Warnf("layer %v: skipping undecodable auto-detected MOS geometry: %v", layer, err)
+				continue
+			}
 			if plyr.geometryFormat == "" {
 				var ugt wkb.ErrUnknownGeometryType
 				if errors.As(err, &ugt) {

@@ -375,6 +375,10 @@ func (p Provider) TileFeatures(
 		// decode our geometry according to the layer's geometry format
 		geometry, err := decodeGeometryValue(geobytes, plyr.geometryFormat, plyr.mosConfig)
 		if err != nil {
+			if plyr.mapplSource == codec.MapplGISSQLSample {
+				log.Warnf("layer %v: skipping undecodable auto-detected MOS geometry: %v", layer, err)
+				continue
+			}
 			if plyr.geometryFormat == "" {
 				var ugt wkb.ErrUnknownGeometryType
 				if errors.As(err, &ugt) {
@@ -835,6 +839,9 @@ func inspectMOSGeomTypeRows(l *Layer, probeSQL string, rows pgx.Rows) error {
 			if l.geomType == nil {
 				g, derr := codec.DecodeMOS(raw, l.mosConfig)
 				if derr != nil {
+					if l.mapplSource == codec.MapplGISSQLSample {
+						continue
+					}
 					return fmt.Errorf("layer (%v): %w", l.name, derr)
 				}
 				l.geomType = g
@@ -1727,7 +1734,7 @@ func CreateProvider(
 					// decision 3: MOS evidence needs a positive MOS
 					// signature AND >=3 decodable MOS sample rows; native
 					// rows never count (7.1.3)
-					mosEvidence := contract.ValidMOSRows >= codec.MinValidMOSRows
+					mosEvidence := contract.DetectsMOS()
 					if boundsBacked || mosEvidence {
 						// A02: the structural contract is a startup error,
 						// validated AFTER format resolution so an

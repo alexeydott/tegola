@@ -1128,7 +1128,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				case perr != nil:
 					log.Warnf("layer '%v': custom SQL storage-format probe failed; format not detected: %v", layerName, perr)
 				default:
-					mosEvidence := contract.ValidMOSRows >= codec.MinValidMOSRows
+					mosEvidence := contract.DetectsMOS()
 					if boundsBacked || mosEvidence {
 						resolved, boundsInResult, cerr := codec.SQLite.ResolveBoundsSQLContract(layerName, customSQL, layer.geomFieldname, contract, layer.bboxFields)
 						if cerr != nil {
@@ -1337,6 +1337,9 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 			}
 			_, geo, derr := decodeGeometryValue(geomData, layer.geometryFormat, layer.mosConfig)
 			if derr != nil {
+				if layer.mapplSource == codec.MapplGISSQLSample {
+					continue
+				}
 				return nil, nil, false, fmt.Errorf("layer '%v' decode %v geometry: %v", layerName, layer.geometryFormat, derr)
 			}
 			if geo != nil {

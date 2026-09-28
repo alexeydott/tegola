@@ -1082,3 +1082,33 @@ func TestExplicitMOSCustomSQLDoesNotEvaluateGeometry(t *testing.T) {
 		})
 	}
 }
+
+func TestAutoMOSShortSQLRegistersAndRenders(t *testing.T) {
+	for _, badPosition := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("badPosition=%d", badPosition), func(t *testing.T) {
+			fx := newRawFixture(t, []string{"CREATE TABLE parcels (id INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB, MINX REAL, MAXX REAL, MINY REAL, MAXY REAL)"})
+			good := []interface{}{mosPointBlob([][2]int32{{200, 400}}), 0, 1000, 0, 1000}
+			bad := []interface{}{[]byte{255, 0}, 0, 1000, 0, 1000}
+			rows := [][]interface{}{good}
+			if badPosition == 0 {
+				rows = [][]interface{}{bad, good}
+			} else if badPosition == 1 {
+				rows = append(rows, bad)
+			}
+			insertRows(t, fx.path, "parcels", []string{"geom", "MINX", "MAXX", "MINY", "MAXY"}, rows)
+			conf := dict.Dict{"filepath": fx.path, "layers": []map[string]interface{}{{"name": "short", "geometry_fieldname": "geom", "id_fieldname": "id", "srid": 3857, "sql": "SELECT id, geom, MINX, MAXX, MINY, MAXY FROM parcels WHERE !BBOX! ORDER BY id"}}}
+			p, err := gpkg.NewTileProvider(conf, nil)
+			if err != nil {
+				t.Fatalf("registration: %v", err)
+			}
+			t.Cleanup(gpkg.Cleanup)
+			bounds := geom.NewExtent([2]float64{0, 0}, [2]float64{10, 10})
+			tile := &fixture.Tile{SRID: 3857, Bounds: bounds, BufferedBounds: bounds}
+			count := 0
+			err = p.TileFeatures(context.Background(), "short", tile, nil, func(f *provider.Feature) error { count++; return nil })
+			if err != nil || count != 1 {
+				t.Fatalf("render count=%d err=%v", count, err)
+			}
+		})
+	}
+}

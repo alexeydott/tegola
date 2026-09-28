@@ -34,7 +34,7 @@ raw geometry format / MOS parts of this contract.
 | `sql` | string | Custom SQL. Mutually exclusive with `tablename`. Supports `!BBOX!`, `!ZOOM!`, `!X!`, `!Y!`, `!Z!`, `!SCALE_DENOMINATOR!`, `!PIXEL_WIDTH!`, `!PIXEL_HEIGHT!`, `!ID_FIELD!`, `!GEOM_FIELD!`, `!GEOM_TYPE!` (token support varies slightly per provider; unknown tokens are rejected). |
 | `geometry_fieldname` | string | Geometry column. Defaults to `geom` for generated table SQL. For custom SQL the column must be present in the result set; an empty `geometry_fieldname` means the geometry column is the last column of the result set. |
 | `id_fieldname` | string | Feature id column. Defaults: `fid` for `mysql`/`gpkg`, empty for `postgis`/`hana`. |
-| `geometry_type` | string | Explicit layer geometry type, valid for every standard provider: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`. An explicit value fixes the layer geometry type and skips geometry-class inference (empty data is allowed); automatic format detection still needs three valid MOS samples; structural validation of custom SQL still runs. It is orthogonal to MapplGIS table detection: a `tablename` layer is still checked for the MapplGIS signature and still receives system-info configuration when detected. Mixed content is permitted: features whose decoded type differs from the declared value are rendered, and the mismatch is logged once per layer. |
+| `geometry_type` | string | Explicit layer geometry type, valid for every standard provider: `Point`, `LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`, `GeometryCollection`. An explicit value fixes the layer geometry type and skips geometry-class inference (empty data is allowed); automatic format detection needs three valid MOS samples, or one in a completed short result; structural validation of custom SQL still runs. It is orthogonal to MapplGIS table detection: a `tablename` layer is still checked for the MapplGIS signature and still receives system-info configuration when detected. Mixed content is permitted: features whose decoded type differs from the declared value are rendered, and the mismatch is logged once per layer. |
 | `srid` / `crs_defn` | int / string | Layer CRS override; see [crs.md](crs.md). |
 | `geometry_format` | string | Layer-level geometry format override. |
 | `mos_precision` / `mos_units` | int / string | Layer-level MOS overrides (only with `mos`). |
@@ -86,7 +86,7 @@ columns in the query's own scope (e.g. the source table's columns), so they
 do not have to be selected. This rule is identical in every SQL provider
 (`mysql`, `postgis`, `hana`, `gpkg`). An explicit `geometry_type` never
 skips structural validation — it skips geometry-class inference (explicitly typed layers may have empty data).
-Automatic MOS format detection still requires three valid samples.
+Automatic MOS format detection requires three valid samples, or one in a completed short result.
 
 - **Table layers** are inspected via database metadata / a sample query.
 - **Custom SQL** in automatic format mode is sampled within a window of 16 rows,
@@ -240,6 +240,12 @@ for startup format/class inference. Otherwise class inference remains a
 separate probe. Explicit MOS does not acquire the inferred `sql-sample` tag.
 
 Automatic MOS detection stops after **three successfully decoded, nonempty
-MOS geometries**, within at most **16 result rows**. NULL, malformed, empty
+MOS geometries**, within at most **16 result rows**. If the result ends before
+that threshold, **one valid MOS geometry is sufficient**. Reaching the 16-row
+budget without three successes is not treated as the end of a short result. NULL, malformed, empty
 and SystemInfo values do not count. Setting `geometry_type` alone does not
 select a storage format or disable automatic format detection.
+
+For automatically detected MOS, undecodable feature rows are skipped with a
+warning at tile rendering, consistently with the probe. A bad row does not
+hide other valid features. Explicit-format error policies are unchanged.

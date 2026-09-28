@@ -322,6 +322,12 @@ for startup format/class inference. Otherwise class inference remains a
 separate probe. Explicit MOS does not acquire the inferred `sql-sample` tag.
 
 Automatic MOS detection stops after **three successfully decoded, nonempty
-MOS geometries**, within at most **16 result rows**. NULL, malformed, empty
+MOS geometries**, within at most **16 result rows**. If the result ends before
+that threshold, **one valid MOS geometry is sufficient**. Reaching the 16-row
+budget without three successes is not treated as the end of a short result. NULL, malformed, empty
 and SystemInfo values do not count. Setting `geometry_type` alone does not
 select a storage format or disable automatic format detection.
+
+For automatically detected MOS, undecodable feature rows are skipped with a
+warning at tile rendering, consistently with the probe. A bad row does not
+hide other valid features. Explicit-format error policies are unchanged.

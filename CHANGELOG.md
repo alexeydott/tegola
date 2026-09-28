@@ -40,6 +40,7 @@ Module migration
 
 Bugs
 
+* Automatic MOS detection accepts a completed short SQL result with one valid geometry, even when other rows are discarded. Automatically detected MOS layers skip undecodable rows during class inference and tile rendering, preserving valid features.
 * Explicit MOS custom SQL now checks metadata without sampling or unpacking geometries for format detection. With an explicit geometry type, startup performs no format/class decoding. Automatic MOS detection stops after three valid geometries within its 16-row search window.
 * Reject synthetic SRID hash collisions without rebinding existing layers or cached transformations; explicit registrations cannot overwrite an ID owned by another `crs_defn`. Cover registration order and stored layer IDs with regression tests.
 * In-process simplification is enabled by default below its configured maximum zoom again. `ZEpislon()` now converts the tolerance from MVT coordinate units into WebMercator meters before simplification. The default is 10 units in the 4096-unit MVT extent, not 10 screen pixels. Layer/global opt-outs remain available. Polygons with holes and multi-component MultiPolygons now simplify when bounded validation confirms simple rings, unchanged winding/containment and disjoint filled interiors. Unsafe or inconclusive candidates preserve the original geometry, including existing boundary contacts.

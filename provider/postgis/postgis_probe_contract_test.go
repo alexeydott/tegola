@@ -88,6 +88,25 @@ func TestProbeSQLContractRows(t *testing.T) {
 		}
 	})
 
+	for _, badFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("short auto MOS badFirst=%v", badFirst), func(t *testing.T) {
+			rows := mosfixture.ValidRows()[:1]
+			c, _ := probe(t, mosfixture.Columns(), rows, "")
+			if !c.DetectsMOS() || !c.SampleComplete || c.ValidMOSRows != 1 {
+				t.Fatalf("single MOS: %+v", c)
+			}
+			bad := mosfixture.RowsWithMalformed()[0]
+			if badFirst {
+				rows = append([][]interface{}{bad}, rows...)
+			} else {
+				rows = append(rows, bad)
+			}
+			c, _ = probe(t, mosfixture.Columns(), rows, "")
+			if !c.DetectsMOS() || c.ValidMOSRows != 1 {
+				t.Fatalf("mixed short MOS: %+v", c)
+			}
+		})
+	}
 	t.Run("three real MOS rows report the identical shared contract", func(t *testing.T) {
 		contract, _ := probe(t, mosfixture.Columns(), mosfixture.ValidRows(), "")
 		if contract != mosfixture.ExpectedContract() {

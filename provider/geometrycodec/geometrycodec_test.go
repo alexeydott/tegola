@@ -1550,3 +1550,29 @@ func TestMOSInferenceSampleBudget(t *testing.T) {
 		t.Fatalf("contract=%+v reads=%d err=%v", c, reads, err)
 	}
 }
+
+func TestShortMOSDetectionRequiresCompletedNonemptyEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		rows, valid int
+		want        bool
+	}{{1, 1, true}, {2, 1, true}, {0, 0, false}, {2, 0, false}, {16, 1, false}, {16, 0, false}} {
+		reads := 0
+		next := func() ([]interface{}, bool, error) {
+			if reads == tc.rows {
+				return nil, false, nil
+			}
+			reads++
+			return []interface{}{reads}, true, nil
+		}
+		decode := func(v interface{}) (geom.Geometry, bool, error) {
+			if v.(int) <= tc.valid {
+				return geom.Point{1, 2}, true, nil
+			}
+			return nil, false, fmt.Errorf("invalid")
+		}
+		c, err := geometrycodec.InspectSQLGeometryContract(next, []string{"geom"}, "geom", geometrycodec.DefaultBBoxFields(), decode)
+		if err != nil || c.DetectsMOS() != tc.want {
+			t.Fatalf("rows=%d valid=%d contract=%+v err=%v", tc.rows, tc.valid, c, err)
+		}
+	}
+}

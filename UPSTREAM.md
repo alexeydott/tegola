@@ -418,3 +418,17 @@ if evaluated during explicit MOS plus geometry_type registration.
 
 Validation: full root tests passed with CGO off/on, race tests passed for
 all four providers and the shared codec, and lint reported zero issues.
+
+### Short automatic MOS results
+
+A completed probe result with fewer than three valid samples now detects MOS
+when at least one nonempty MOS geometry decoded successfully. Exhausting the
+16-row window does not qualify as early EOF. Invalid rows in automatically
+detected MOS layers no longer prevent class inference or rendering of valid
+features. Tests cover one valid row, valid plus invalid in either order, empty
+and all-invalid results, budget exhaustion, all provider probe adapters and
+real SQLite registration plus feature output. Explicit MOS remains metadata-only
+for format inspection.
+
+Validation: full CGO0/1 suites, shared-codec/provider race checks and lint
+passed after the short-result change.
