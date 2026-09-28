@@ -124,30 +124,33 @@ catch the "error is checked, then deliberately swallowed as a cache miss" bug cl
 
 ## Fork-specific deferred debt (wave 2)
 
-The following items were identified in the fork-vs-upstream audit but are intentionally
-**not** addressed in this wave. They are tracked here so they are not forgotten.
+The table records the current disposition of the original audit items. All
+numbered implementation items are closed except the agreed exclusions 2.3
+and A16. The closure log below preserves the sequence of fixes; see
+[documentation status](docs/maintenance-status.md) for scope and remaining
+capability/verification limits.
 
 | Audit ID | Description |
 | --- | --- |
-| 2.1 | ~~Async metatile regeneration - metatile regeneration currently blocks the HTTP tile request; it should be moved off the request path.~~ вЂ” **closed** (wave 2): regeneration moved off the request path onto a bounded single-flight scheduler; `?tile=update` now returns 202. Closure log below. |
-| 2.2 | ~~Redis cache: URI-only configuration. The `go-redis` v9 migration is **done** (module `github.com/redis/go-redis/v9`, `cache/redis/redis.go`); the remaining decision is whether to drop the legacy `address` key in favour of `uri` (the legacy key is still accepted as a fallback).~~ вЂ” **closed** (wave 2, decision: drop the legacy key): `uri` is the only connection key; legacy keys fail at startup with a migration example. Closure log below. |
+| 2.1 | ~~Async metatile regeneration - metatile regeneration currently blocks the HTTP tile request; it should be moved off the request path.~~ — **closed** (wave 2): regeneration moved off the request path onto a bounded single-flight scheduler; `?tile=update` now returns 202. Closure log below. |
+| 2.2 | ~~Redis cache: URI-only configuration. The `go-redis` v9 migration is **done** (module `github.com/redis/go-redis/v9`, `cache/redis/redis.go`); the remaining decision is whether to drop the legacy `address` key in favour of `uri` (the legacy key is still accepted as a fallback).~~ — **closed** (wave 2, decision: drop the legacy key): `uri` is the only connection key; legacy keys fail at startup with a migration example. Closure log below. |
 | 2.3 | Migrate cloud SDK usage to AWS SDK v2 and the current Azure SDK. |
-| 2.4 | ~~Common provider test harness - consolidate duplicated provider test setup (`provider/test/provider.go` TODO).~~ вЂ” **closed** (wave 2): shared `provider/test/fixture` harness; the `MVTForLayers` mock TODO is resolved. Closure log below. |
-| 2.5 | ~~Logging consolidation on `log/slog`.~~ вЂ” **closed** (wave 2): stdlib `slog` TextHandler behind the `internal/log` facade. Closure log below. |
-| 2.6 | ~~SQL-context-aware token substitution: `!BBOX!`-style token replacement is plain string interpolation and does not protect SQL strings or comments (`provider/gpkg/util.go`, `provider/geometrycodec/probe.go`); the proper fix is an SQL lexer + parametrization effort.~~ вЂ” **closed** (wave 2): context-aware substitution via `internal/sqltoken`. Closure log below. |
-| part12 0.6 | ~~HANA and PostGIS probes continue with a zero `Layer` when the configured layer is not found: `log.Warnf` and fall through with an empty value instead of failing the request (upstream behaviour; deferred).~~ вЂ” **closed** (wave 2): missing-layer MVT queries fail with `ErrLayerNotFound` before any SQL. Closure log below. |
-| part12 0.6b | ~~`provider/gpkg` raw-table SQL relies on the GeoPackage RTree without checking that the RTree entry exists (same as upstream). An existence probe (`SELECT` from `gpkg_contents`/`pg_class`) would change query plans and performance relative to upstream behaviour, so this is tracked as upstream debt instead of a fork fix.~~ вЂ” **closed** (wave 2): RTree presence is probed at registration (`sqlite_master`) with a WARN + query-plan fallback. Closure log below. |
-| 3.6 | ~~`basic/line.go` simplification correctness: line simplification does not check point intersection ("malformed geoprocessing with providers of type not mvt_postgis", an open upstream bug noted in v0.21.0). Geometry behavior is left unchanged until a test corpus exists.~~ вЂ” **closed** (wave 2): intersection-aware Douglas-Peucker in `maths/simplify` with a 25-case corpus (9 pre-fix failures в†’ 0). Closure log below. |
-| part10 A15 | ~~External dependency portability - `third_party` `replace` directives complicate out-of-tree consumption.~~ вЂ” **partially closed** (wave 2, bounded mitigation): replace inventory CI-guarded, checkout-based consumption documented and smoke-tested, geom `go.sum` repaired. **Closed by the publication follow-up below:** versioned `alexeydott/geom` and `alexeydott/proj` modules replace the local dependencies, with Tegola migrated to `github.com/alexeydott/tegola`. Closure log below. |
+| 2.4 | ~~Common provider test harness - consolidate duplicated provider test setup (`provider/test/provider.go` TODO).~~ — **closed** (wave 2): shared `provider/test/fixture` harness; the `MVTForLayers` mock TODO is resolved. Closure log below. |
+| 2.5 | ~~Logging consolidation on `log/slog`.~~ — **closed** (wave 2): stdlib `slog` TextHandler behind the `internal/log` facade. Closure log below. |
+| 2.6 | ~~SQL-context-aware token substitution: `!BBOX!`-style token replacement is plain string interpolation and does not protect SQL strings or comments (`provider/gpkg/util.go`, `provider/geometrycodec/probe.go`); the proper fix is an SQL lexer + parametrization effort.~~ — **closed** (wave 2): context-aware substitution via `internal/sqltoken`. Closure log below. |
+| part12 0.6 | ~~HANA and PostGIS probes continue with a zero `Layer` when the configured layer is not found: `log.Warnf` and fall through with an empty value instead of failing the request (upstream behaviour; deferred).~~ — **closed** (wave 2): missing-layer MVT queries fail with `ErrLayerNotFound` before any SQL. Closure log below. |
+| part12 0.6b | ~~`provider/gpkg` raw-table SQL relies on the GeoPackage RTree without checking that the RTree entry exists (same as upstream). An existence probe (`SELECT` from `gpkg_contents`/`pg_class`) would change query plans and performance relative to upstream behaviour, so this is tracked as upstream debt instead of a fork fix.~~ — **closed** (wave 2): RTree presence is probed at registration (`sqlite_master`) with a WARN + query-plan fallback. Closure log below. |
+| 3.6 | ~~`basic/line.go` simplification correctness: line simplification does not check point intersection ("malformed geoprocessing with providers of type not mvt_postgis", an open upstream bug noted in v0.21.0). Geometry behavior is left unchanged until a test corpus exists.~~ — **closed** (wave 2): intersection-aware Douglas-Peucker in `maths/simplify` with a 25-case corpus (9 pre-fix failures → 0). Closure log below. |
+| part10 A15 | ~~External dependency portability - `third_party` `replace` directives complicate out-of-tree consumption.~~ — **closed** (publication follow-up): versioned `alexeydott/geom` and `alexeydott/proj` modules replace the local dependencies, with Tegola migrated to `github.com/alexeydott/tegola`. Closure log below. |
 | part10 A16 | Green CI runs are unavailable for this fork (no GitHub Actions quota), so the standing policy is local re-verification on the exact pushed SHA: `go test -mod vendor -count=1 ./...` with `CGO_ENABLED=0` and `CGO_ENABLED=1`, plus `golangci-lint run ./...`. Not a contradiction with "Linting (CI)" above: the workflow defines what is checked, this row records that the runs themselves cannot be relied upon. |
-| part13 P6.5 | ~~HANA scale tokens: `!PIXEL_WIDTH!` and `!SCALE_DENOMINATOR!` in `provider/hana/util.go` (`replaceTokens`, TODOs next to the token definitions and the `// TODO: Always convert to meter if we support different projections` note) compute pixel width and scale denominator assuming WebMercator meters and 256x256 tiles regardless of the configured layer CRS; `// TODO: it's currently assumed the tile will always be in WebMercator` is the same debt. Deferred: the fix needs per-CRS scale math and the provider is owned outside this wave. Same debt class as the postgis scale-token work recorded in the part12 audit.~~ вЂ” **closed** (wave 2): CRS-aware scale math in `provider/hana/scale.go`. The follow-up below closes the equivalent PostGIS, MySQL and GeoPackage scale-token debt. |
+| part13 P6.5 | ~~HANA scale tokens: `!PIXEL_WIDTH!` and `!SCALE_DENOMINATOR!` in `provider/hana/util.go` (`replaceTokens`, TODOs next to the token definitions and the `// TODO: Always convert to meter if we support different projections` note) compute pixel width and scale denominator assuming WebMercator meters and 256x256 tiles regardless of the configured layer CRS; `// TODO: it's currently assumed the tile will always be in WebMercator` is the same debt. Deferred: the fix needs per-CRS scale math and the provider is owned outside this wave. Same debt class as the postgis scale-token work recorded in the part12 audit.~~ — **closed** (wave 2): CRS-aware scale math in `provider/hana/scale.go`. The follow-up below closes the equivalent PostGIS, MySQL and GeoPackage scale-token debt. |
 
 ### Wave-2 closure log
 
 Closure details for the wave-2 items struck through above. A16 and 2.3 remain
 open by decision and are unchanged.
 
-* **2.6 вЂ” SQL-context-aware token substitution.** The providers' `!TOKEN!`
+* **2.6 — SQL-context-aware token substitution.** The providers' `!TOKEN!`
   replacement was plain string interpolation; it is now a shared, lexically
   context-aware substitution (`internal/sqltoken`) used by gpkg, mysql,
   postgis, hana, query-parameter values and geometrycodec probes. Tokens are
@@ -163,21 +166,21 @@ open by decision and are unchanged.
   `standard_conforming_strings=on`; MySQL assumes default string escaping
   (not `NO_BACKSLASH_ESCAPES` or `ANSI_QUOTES`). Bind-parameter rewrite remains
   out of scope by design.
-* **2.5 вЂ” Logging consolidation on `log/slog`.** `internal/log` remains the
+* **2.5 — Logging consolidation on `log/slog`.** `internal/log` remains the
   single logging facade but is now implemented on stdlib `log/slog`
   (TextHandler) as the one backend, with a `*slog.Logger` accessor for new code
   and nil-writer-safe constructors. Every ad-hoc `log.Printf`/`fmt.Print*`
   diagnostic in first-party code (cache, basic, maths, makevalid/plyg,
   container, draw, cmd/tegola, server, example) was routed through it with
   message texts preserved; level words stay greppable; no new dependencies.
-* **part12 0.6 вЂ” Missing-layer MVT queries.** HANA and PostGIS `MVTForLayers`
+* **part12 0.6 — Missing-layer MVT queries.** HANA and PostGIS `MVTForLayers`
   now fail with a wrapped `ErrLayerNotFound` naming the layer before any SQL is
   issued, instead of `log.Warnf` + falling through with a zero-valued `Layer`.
-  DELIBERATE warnв†’error change. The bounds-contract gate is deliberately
+  DELIBERATE warn→error change. The bounds-contract gate is deliberately
   unchanged: custom SQL omitting the bounds columns still registers with a WARN;
   the two behaviours are kept explicitly distinct in the error message and in
   `TestMVTForLayersMissingLayerVsMissingBoundsContract` (both providers).
-* **part12 0.6b вЂ” GPKG RTree dependence.** `provider/gpkg` raw-table layers now
+* **part12 0.6b — GPKG RTree dependence.** `provider/gpkg` raw-table layers now
   detect the GeoPackage RTree at layer-registration time (one `sqlite_master`
   probe for `rtree_<table>_<column>`; `gpkg_extensions` deliberately not the
   gate) and cache a per-layer query plan: RTree JOIN when present (SQL
@@ -185,9 +188,9 @@ open by decision and are unchanged.
   when absent, full-table-scan + mandatory in-memory exact filter when neither
   exists. Fallbacks register with a WARN + `CreateRTreeIndex` hint (DELIBERATE
   change from the fork's previous registration error). The request path keeps
-  exactly one SQL round trip per tile request вЂ” no per-request probes вЂ” pinned
+  exactly one SQL round trip per tile request — no per-request probes — pinned
   by `TestTileQueryPlanSelection`.
-* **3.6 вЂ” Line simplification correctness.** A test corpus
+* **3.6 — Line simplification correctness.** A test corpus
   (`basic/line_simplify_corpus_test.go`) now pins the failure modes (fold-back
   needles, created self-crossings, ring spike-drops, integer truncation) with
   explicit expected-failure markers (9 known failures pre-fix), and
@@ -205,14 +208,14 @@ open by decision and are unchanged.
   named `basic/line.go`, but the actual simplifier is `maths/simplify`, called
   from `atlas/map.go` `encodeMVTFeature`; `basic/line.go` carried only a TODO
   comment and there is no `basic/ring.go`.)
-* **2.1 вЂ” Async metatile regeneration.** Metatile regeneration now runs off the
+* **2.1 — Async metatile regeneration.** Metatile regeneration now runs off the
   HTTP request path: `serveTileOperation` schedules the 8x8 render loop on a
   bounded background scheduler (`server/metatile_regen.go`, max 2 concurrent
   regenerations, 18 admitted goroutines, excess shed with 503) with
   single-flight per metatile key, so N concurrent requests trigger at most one
   regeneration (the file cache stampede property is preserved). `?tile=update`
   answers `202 Accepted` immediately (was 204 after a synchronous 64-tile
-  rebuild вЂ” the one API deviation, documented in the README);
+  rebuild — the one API deviation, documented in the README);
   `?tile=getupdated` answers the requested tile with one synchronous render
   (`writeStable` drops its cache write in favor of the regeneration's fresher
   output) and joins the shared background regen. Failures log at WARN and are
@@ -221,14 +224,14 @@ open by decision and are unchanged.
   tests cover single-flight sharing, failure retry, bounded concurrency,
   shutdown, and panic recovery; full suite green including `-race`. Out of
   scope of the original closure: the reported file-cache shared-tempfile race (`cache/file/file.go`)
-  вЂ” the follow-up below corrects this stale finding.
-* **2.2 вЂ” Redis cache URI-only.** (Decision: drop the legacy key.) The
+  — the follow-up below corrects this stale finding.
+* **2.2 — Redis cache URI-only.** (Decision: drop the legacy key.) The
   `address`/`network`/`password`/`db`/`ssl` keys are removed; `uri` is the
   single redis cache connection key, parsed with go-redis v9 `ParseURL`
   (`redis://`, `rediss://`, `unix://`), and legacy-key or invalid-uri configs
   fail at registration with a migration-friendly error containing a concrete
-  beforeв†’after example. See `cache/redis/README.md`.
-* **2.4 вЂ” Common provider test harness.** Implemented in
+  before→after example. See `cache/redis/README.md`.
+* **2.4 — Common provider test harness.** Implemented in
   `provider/test/fixture`; duplicated SQL drivers/row conversion, config
   assembly, GPKG database setup, and GPKG/HANA tile mocks migrated and removed.
   `provider/test/provider.go` `MVTForLayers` TODO resolved with a documented
@@ -238,7 +241,7 @@ open by decision and are unchanged.
   API/behavior unchanged. Verified vendored build/vet, full CGO=0 and CGO=1
   suites, clean gofmt, and golangci-lint (0 issues). Live DB tests remain
   gated/unrun without credentials.
-* **part10 A15 вЂ” External dependency portability (bounded mitigation).**
+* **part10 A15 — External dependency portability (bounded mitigation).**
   Inventoried and CI-guarded the two local geom/proj `replace` directives;
   documented and verified an explicit three-module checkout-based consumer
   setup, public geom type compatibility, retained fork behavior, and offline
@@ -248,12 +251,13 @@ open by decision and are unchanged.
   read-only nested-module verification. **Closed by the publication follow-up:** tagged fork modules are now adopted
   without replacements. This deliberately changes public geom type identity;
   external Go consumers must migrate imports to the alexeydott namespace.
-* **part13 P6.5 вЂ” HANA scale tokens.** HANA scale tokens now derive pixel
+* **part13 P6.5 — HANA scale tokens.** HANA scale tokens now derive pixel
   dimensions from the unbuffered tile extent in the resolved layer CRS and
   actual optional tile pixel dimensions (framework default otherwise).
   Projected CRS units use the projection engine's linear conversion; EPSG:4326
-  / planar equivalent use the documented spherical cos(center-latitude)
-  meters-per-degree approximation; the OGC scale denominator uses 0.00028 m/px.
+  / planar equivalent initially used a spherical approximation. The later
+  ellipsoidal-scale follow-up supersedes it for all providers; the OGC scale
+  denominator still uses 0.00028 m/px.
   Unknown CRS/units fail explicitly for executable scale tokens. WebMercator
   values remain byte-exact; `internal/sqltoken` context safety retained;
   obsolete HANA warning/TODO removed. Purely additive
@@ -281,8 +285,8 @@ not assumed to remain open from the earlier session notes.
    retain the existing self-intersection validation.
 3. **Closed: scale tokens outside HANA.** All four providers share
    `provider.TileScale`: unbuffered source-CRS dimensions, optional tile pixel
-   size (256x256 default), projected-unit conversion and latitude-adjusted
-   WGS84 degrees, with the OGC 0.00028 m pixel. HANA planar aliases remain
+   size (256x256 default), projected-unit conversion and source-ellipsoid
+   geographic scale at the tile center, with the OGC 0.00028 m pixel. HANA planar aliases remain
    supported. Unsupported CRS/unit data errors only when executable scale
    tokens require it; WebMercator defaults remain compatible.
 4. **Geographic datum support completed in the Go fork.** The projection fork
@@ -375,5 +379,28 @@ zero-issue lint, and the external consumer with published geom/proj versions
 passed. Both standalone fork suites passed; geom was tested with CGO off/on.
 The supplied Windows SpatiaLite 5.1.0 extension also passed the actual recorder
 test without skips, plus synchronous Point/MultiLineString/Polygon write and
-readback with SRID verification. Remote Tegola publication is checked separately
-with the `-revision` consumer mode after push.
+readback with SRID verification. The published Tegola commit `d417e73b` also
+passed the `-revision` consumer mode in a fresh module cache, without any
+replacements, followed by offline vendored build/test. Its release executable
+passed the GeoPackage HTTP/cache/update smoke check (6,965 decoded features).
+
+## Complete Markdown audit and SRID collision follow-up (2026-09-28)
+
+The audit covered all 199 tracked Markdown documents, including provider,
+server, cache, Lambda, internal-package and historical guides. The current
+[maintenance status](docs/maintenance-status.md) records closed work, the
+agreed exclusions A16/2.3 and actual capability/verification boundaries.
+Obsolete build, dependency, SQL, scale and endpoint instructions were corrected;
+vendored and frozen dependency history was preserved.
+
+A follow-up to synthetic SRID allocation found that collision resolution could
+rebind an ID retained by an existing layer. Collisions now fail registration
+without changing the registry or projection cache. Explicit registration also
+cannot overwrite a synthetic ID owned by another definition. Regression tests
+cover both registration orders, idempotence, cached forward/inverse transforms
+and the provider layer retaining its original ID; focused race tests pass.
+
+Validation: the full root suite passed with CGO disabled and enabled; lint
+reported zero issues. The focused registration/provider tests also passed
+with the race detector. Documentation review included local link checks and
+an independent final review of the changed contracts.

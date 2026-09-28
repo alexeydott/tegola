@@ -80,11 +80,12 @@ Dependencies are vendored. To change a dependency:
 3. commit the updated `go.mod`, `go.sum` and `vendor/` together with your
    change.
 
-Some low-level packages (`geom`, `maths/makevalid`, the vendored `proj`
-bindings) live under `third_party/` or are replaced via `go.mod` `replace`
-directives - see [third_party/README.md](third_party/README.md) for the
-constraints this imposes. When patching such a package, keep the patch
-minimal and re-run `go mod vendor`.
+The low-level `geom` and `proj` modules are published forks under
+`github.com/alexeydott/`; there are no dependency replacements. Patch their
+standalone repositories, test and tag a new version, then update Tegola
+requirements and regenerate vendor. The old `third_party/go-spatial` trees
+are frozen audit snapshots, not active sources. `maths/makevalid` is Tegola
+code. See [dependency ownership and migration](third_party/README.md).
 
 ## Branches and pull requests
 
@@ -97,8 +98,9 @@ minimal and re-run `go mod vendor`.
 
 ## Conventions
 
-* Format code with `gofmt -s ./...`. If formatting changes touch code you
+* Format code with `go fmt ./...`. If formatting changes touch code you
   are not working on, submit them as a separate PR.
+* Do not add `Co-authored-by` trailers to commit messages.
 * Error variables are declared as `var ErrSomething = errors.New("provider: message")`
   - lowercase text, no trailing punctuation.
 * New provider config keys must be documented in the provider README and,
@@ -110,5 +112,6 @@ minimal and re-run `go mod vendor`.
 
 * New behaviour needs tests. Unit tests must run without a database; use
   sqlmock or in-memory sqlite where appropriate.
-* Both CGO and non-CGO builds must pass, since CI runs both.
+* Both CGO and non-CGO builds must pass locally. The workflow defines the
+  same matrix; remote CI availability is tracked as A16 in `UPSTREAM.md`.
 * Run `go vet ./...` and keep the non-test code clean.

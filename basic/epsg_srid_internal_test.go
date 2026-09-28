@@ -1,8 +1,7 @@
 package basic
 
 import (
-	"bytes"
-	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -106,34 +105,19 @@ func TestResolveDefnSRIDDistinctDefinitions(t *testing.T) {
 	}
 }
 
-// TestResolveDefnSRIDCollisionPath verifies the deterministic probe step: when
-// a definition's first choice is owned by a different definition, allocation
-// walks forward with a fixed step until a free slot is found and re-resolving
-// the same definition in the same registry is idempotent.
+// A collision must fail without modifying the existing owner.
 func TestResolveDefnSRIDCollisionPath(t *testing.T) {
 	start := defnFirstChoice(testDefnA)
-	// Another definition already owns A's first choice and the next slot;
-	// A must land on the second probe.
-	registry := map[uint64]string{
-		start: "some other definition",
+	registry := map[uint64]string{start: testDefnB}
+	if _, ok := resolveDefnSRID(testDefnA, registry); ok {
+		t.Fatal("collision unexpectedly accepted")
 	}
-	codeA, ok := resolveDefnSRID(testDefnA, registry)
-	if !ok {
-		t.Fatal("resolveDefnSRID(testDefnA) failed")
+	if registry[start] != testDefnB || len(registry) != 1 {
+		t.Fatal("collision changed registry")
 	}
-	want := start + defnSRIDProbeStep
-	if codeA != want {
-		t.Fatalf("collision probe gave SRID %v, want %v (start %v + step %v)", codeA, want, start, defnSRIDProbeStep)
-	}
-
-	// idempotent: once A owns the probed slot, resolving it again returns it.
-	registry[codeA] = testDefnA
-	codeAgain, ok := resolveDefnSRID(testDefnA, registry)
-	if !ok {
-		t.Fatal("resolveDefnSRID(testDefnA) re-run failed")
-	}
-	if codeAgain != codeA {
-		t.Fatalf("re-resolving testDefnA gave %v, want %v", codeAgain, codeA)
+	registry[start] = testDefnA
+	if code, ok := resolveDefnSRID(testDefnA, registry); !ok || code != start {
+		t.Fatal("same definition must be idempotent")
 	}
 }
 
@@ -255,72 +239,78 @@ const (
 	collideDefnB = "+proj=merc +a=6370997 +b=6370997 +lon_0=0 +lat_0=0 +x_0=00092200 +units=m +no_defs"
 )
 
-// TestRegisterProj4DefnCollisionOrderIndependent guards P5-11: two distinct
-// definitions mapping to the same synthetic SRID must resolve identically
-// regardless of registration order, and the collision must be reported via a
-// warning naming both definitions instead of being silently resolved by load
-// order.
-func TestRegisterProj4DefnCollisionOrderIndependent(t *testing.T) {
-	if defnFirstChoice(collideDefnA) != defnFirstChoice(collideDefnB) {
-		t.Fatal("test pair must share a synthetic SRID first choice")
-	}
-
-	type runResult struct {
-		codes map[string]uint64
-		warn  string
-	}
-	run := func(order ...string) runResult {
-		t.Helper()
-		proj4RegisteredMu.Lock()
-		savedOwners := proj4Registered
-		savedCodes := proj4DefnCodes
-		proj4Registered = map[uint64]string{}
-		proj4DefnCodes = map[string]uint64{}
-		proj4RegisteredMu.Unlock()
-
-		var buf bytes.Buffer
-		prev := slog.Default()
-		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-		defer slog.SetDefault(prev)
-
-		got := map[string]uint64{}
-		for _, d := range order {
-			if _, err := RegisterProj4Defn(d); err != nil {
-				t.Fatalf("RegisterProj4Defn(%q) returned error: %v", d, err)
+// Previously the second registration silently rebound a code held by a layer.
+// Exercise both orders and warm the projection cache before attempting either
+// synthetic or explicit overwrites.
+func TestRegisterProj4DefnCollisionPreservesExistingCRS(t *testing.T) {
+	for _, order := range [][2]string{{collideDefnA, collideDefnB}, {collideDefnB, collideDefnA}} {
+		t.Run(order[0], func(t *testing.T) {
+			code := defnFirstChoice(order[0])
+			if code != defnFirstChoice(order[1]) {
+				t.Fatal("expected collision pair")
 			}
-		}
-		// order-independence is a property of the final registry state:
-		// an earlier registration's SRID may legitimately change when a
-		// colliding smaller definition displaces it (re-query via
-		// Proj4DefnSRID), so read the codes back instead of caching the
-		// values returned at registration time.
+			proj4RegisteredMu.Lock()
+			savedOwners, savedCodes := proj4Registered, proj4DefnCodes
+			proj4Registered, proj4DefnCodes = map[uint64]string{}, map[string]uint64{}
+			proj4RegisteredMu.Unlock()
+			t.Cleanup(func() {
+				proj4RegisteredMu.Lock()
+				proj4Registered, proj4DefnCodes = savedOwners, savedCodes
+				proj4RegisteredMu.Unlock()
+				if original, ok := savedOwners[code]; ok {
+					proj.CustomProjection(proj.EPSGCode(code), original)
+				} else {
+					proj.RemoveCustomProjection(proj.EPSGCode(code))
+				}
+			})
+			stored, err := RegisterProj4Defn(order[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := proj.Convert(proj.EPSGCode(stored), []float64{10, 50})
+			if err != nil {
+				t.Fatal(err)
+			}
+			inverse, err := proj.Inverse(proj.EPSGCode(stored), before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := RegisterProj4Defn(order[1]); err == nil || !strings.Contains(err.Error(), "collision") {
+				t.Fatalf("expected collision error, got %v", err)
+			}
+			if err := RegisterProj4SRID(stored, order[1]); err == nil {
+				t.Fatal("explicit registration overwrote synthetic CRS")
+			}
+			if got, err := RegisterProj4Defn(order[0]); err != nil || got != stored {
+				t.Fatalf("registration changed: %d, %v", got, err)
+			}
+			if _, ok := Proj4DefnSRID(order[1]); ok {
+				t.Fatal("rejected definition registered")
+			}
+			after, err := proj.Convert(proj.EPSGCode(stored), []float64{10, 50})
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("forward changed: %v %v", after, err)
+			}
+			inverseAfter, err := proj.Inverse(proj.EPSGCode(stored), before)
+			if err != nil || !reflect.DeepEqual(inverseAfter, inverse) {
+				t.Fatalf("inverse changed: %v %v", inverseAfter, err)
+			}
+		})
+	}
+}
+
+func TestRegisterProj4DefnRejectsExplicitSRIDCollision(t *testing.T) {
+	code := defnFirstChoice(collideDefnA)
+	if err := RegisterProj4SRID(code, collideDefnB); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
 		proj4RegisteredMu.Lock()
-		for d, c := range proj4DefnCodes {
-			got[d] = c
-		}
-		proj4Registered = savedOwners
-		proj4DefnCodes = savedCodes
+		delete(proj4Registered, code)
 		proj4RegisteredMu.Unlock()
-		for _, c := range got {
-			proj.RemoveCustomProjection(proj.EPSGCode(c))
-		}
-		return runResult{codes: got, warn: buf.String()}
-	}
-
-	r1 := run(collideDefnA, collideDefnB)
-	r2 := run(collideDefnB, collideDefnA)
-
-	for _, d := range []string{collideDefnA, collideDefnB} {
-		if r1.codes[d] != r2.codes[d] {
-			t.Fatalf("definition %q got SRID %d when registered A-first but %d when registered B-first; synthetic SRID allocation must not depend on load order", d, r1.codes[d], r2.codes[d])
-		}
-	}
-	if r1.codes[collideDefnA] == r1.codes[collideDefnB] {
-		t.Fatalf("distinct definitions share synthetic SRID %d", r1.codes[collideDefnA])
-	}
-	for name, r := range map[string]runResult{"A-first": r1, "B-first": r2} {
-		if !strings.Contains(r.warn, collideDefnA) || !strings.Contains(r.warn, collideDefnB) {
-			t.Fatalf("%s: collision warning must name both definitions, got %q", name, r.warn)
-		}
+		proj.RemoveCustomProjection(proj.EPSGCode(code))
+	})
+	if _, err := RegisterProj4Defn(collideDefnA); err == nil || !strings.Contains(err.Error(), "collision") {
+		t.Fatalf("expected collision, got %v", err)
 	}
 }

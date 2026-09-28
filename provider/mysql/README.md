@@ -183,7 +183,7 @@ Tile-dependent custom SQL (queries containing `!X!`/`!Y!`/`!Z!` and friends) def
 
 ### Reprojection
 
-Reprojection between the layer SRID and Web Mercator uses the vendored `go-spatial/proj` library. Any SRID can be made available in two ways:
+Reprojection between the layer SRID and Web Mercator uses the vendored `alexeydott/proj` library. Any SRID can be made available in two ways:
 
 1. **Built-in table** — registered automatically at startup (`basic.RegisterBuiltinProj4SRIDs`), covering ~220 widely used systems:
 

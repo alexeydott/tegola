@@ -90,6 +90,12 @@ Tegola-internal synthetic codes allocated by `basic.RegisterProj4Defn` for
 - reprojection of features out of a synthetic CRS happens on the client side
   via the registered PROJ.4 definition.
 
+The trimmed definition determines a stable hash-based ID. If another definition
+already owns that ID, registration fails without changing existing layers or
+cached transformations. Re-registering the same definition is idempotent.
+`RegisterProj4SRID` also rejects replacing a synthetic ID owned by another
+definition; callers using explicit registrations must choose a different ID.
+
 ## Built-in CRS registry
 
 The fork ships a built-in registry of commonly used projected CRSs

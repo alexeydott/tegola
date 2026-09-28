@@ -5,7 +5,7 @@ The client side code for tegola's internal viewer. This codebase is built using 
 ## Project setup
 
 ```shell
-npm install
+npm ci --ignore-scripts --no-audit --no-fund
 ```
 
 Note: package install scripts are denied by default (`.npmrc`, supply-chain
@@ -26,9 +26,15 @@ npm run build
 
 ## Building for inclusion in tegola
 
-In order to compile the UI for inclusion in tegola, run the following commands from the `ui` folder:
+Build the locked assets from the `ui` folder before compiling Tegola:
 
 ```shell
-go run build.go
+npm ci --ignore-scripts --no-audit --no-fund
+npm run build
+git restore -- dist/.keep
 ```
 
+
+`ui/embed.go` embeds `dist` at Go build time. The legacy `go run build.go`
+helper also updates the browserslist database and can change lockfiles; use
+the commands above for a reproducible release build.

@@ -28,23 +28,37 @@ Access-Control-Allow-Origin = "*"
 
 ### Tile operations (`[webserver.tile_operations]`)
 
-The tile endpoints accept maintenance parameters: `?tile=update` and `?tile=getupdated` (cache regeneration), `?tile=status` (cache state) and `?dirty=true` (force regeneration, bypassing the cache). `?tile=update` and `?tile=getupdated` schedule the metatile regeneration (up to 64 tile renders and cache writes) on a bounded background worker pool and answer the request immediately, so they are **disabled by default** and, when enabled, require an authentication token.
+The tile endpoints accept maintenance parameters: `?tile=update` and `?tile=getupdated` (cache regeneration), `?tile=status` (cache state) and `?dirty=true` (force regeneration, bypassing the cache). Both update operations schedule metatile regeneration (up to 64 tile renders and cache writes) on a bounded background worker pool. `?tile=update` returns `202 Accepted` after enqueueing. `?tile=getupdated` waits for a render of the requested tile and returns that tile while the metatile continues in the background. Maintenance operations are **disabled by default** and, when enabled, require an authentication token.
 
 - `enabled` (bool): [Optional] Enables the tile maintenance parameters above. Defaults to `false`. When disabled, any request carrying `?tile=...` or a regenerating `?dirty` (see below) is rejected with `403 Forbidden` — the parameters are not silently ignored — and no tile is rendered or written to the cache. Ordinary tile serving is unaffected.
 - `token` (string): [Required when `enabled` is true] Shared secret clients must send in the `X-Tegola-Tile-Operations-Token` header. A missing or wrong token yields `403 Forbidden`; if `enabled` is true and no token is configured, all tile operations fail closed with `403`.
 - `rate_per_minute` (int): [Optional] Maximum number of tile-operation requests accepted per minute. Defaults to `60`. Requests over the limit receive `429 Too Many Requests`.
-- `max_concurrent` (int): [Optional] Maximum number of tile operations executing at the same time. Defaults to `4`. Additional mutating requests (`?tile=update`, `?tile=getupdated`, `?dirty=true`) receive `503 Service Unavailable`; `?tile=status` is exempt from the concurrency slot as it never renders. `?tile=update` and `?tile=getupdated` hold their slot only for their own prompt response — the background metatile regeneration runs outside the gate.
+- `max_concurrent` (int): [Optional] Maximum number of tile operations executing at the same time. Defaults to `4`. Additional mutating requests (`?tile=update`, `?tile=getupdated`, `?dirty=true`) receive `503 Service Unavailable`; `?tile=status` is exempt from the concurrency slot as it never renders. `?tile=update` holds its slot through enqueueing and response; `?tile=getupdated` also holds it while waiting for the requested tile. Background metatile regeneration has its own bounded scheduler.
 
 Note: `max_concurrent` limits tile *operations*; requests over the limit fail fast rather than queue, so a burst of cache-maintenance traffic cannot exhaust the server.
 
 Note: only the regenerating `?dirty` variants (`?dirty`, `?dirty=1`, `?dirty=true`, case-insensitive) are tile operations. Falsy values such as `?dirty=0` or `?dirty=false` request no regeneration: they are treated exactly like a request without the parameter, are served as ordinary cache queries, and never require the token or the `enabled` gate.
 
+### Tile format
+
+Tile output is MVT (`.pbf`). A missing suffix defaults to `pbf`; another
+suffix, including `.json`, logs a warning and still returns MVT for backward
+compatibility. A different suffix does not select another output format.
+
+Dirty regeneration applies when `dirty` is the only query parameter.
+Additional query parameters follow the uncached query path; do not combine
+`dirty` with filter parameters expecting the canonical cache entry to change.
+
 ## Local development of the embedded viewer
 
-Tegola's built in viewer code is stored in the `ui/` directory. To build the ui `npm` must be installed. Once `npm` is installed the following command can be run from the repository root to generate a .go file for inclusion in the tegola binary:
+Tegola's viewer lives in `ui/`. Build its assets with Node/npm before compiling
+Tegola; `ui/embed.go` embeds `ui/dist` directly. No generated Go source file is
+needed. From the repository root:
 
 ```
-go generate ./server
+npm --prefix ui ci --ignore-scripts --no-audit --no-fund
+npm --prefix ui run build
+git restore -- ui/dist/.keep
 ```
 
 ## Disabling the viewer

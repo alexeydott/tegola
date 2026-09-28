@@ -137,8 +137,8 @@ values, not a requested tile's scale.
 **Compatibility:** non-WebMercator layers now receive source-unit pixel
 dimensions and a CRS-aware scale denominator, replacing the old
 WebMercator-meter values. SQL thresholds written around the old values
-may need adjustment. These semantics are HANA-specific; the other providers'
-scale-token limitations are unchanged.
+may need adjustment. All four SQL providers share this scale contract through
+`provider.TileScale`; HANA additionally normalizes its planar-equivalent SRIDs.
 
 ### HANA-specific restrictions
 

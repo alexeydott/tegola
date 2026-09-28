@@ -2,6 +2,11 @@
 
 This fork's documentation lives in the following places:
 
+* [maintenance-status.md](maintenance-status.md) — current audit disposition,
+  agreed exclusions, capability limits and verification evidence.
+* [audit/tegola_review_part12.md](audit/tegola_review_part12.md) — historical
+  audit findings; its original statuses are not the current task list.
+
 ## Architecture and contracts
 
 * [crs.md](crs.md) — CRS resolution order, `srid` / `crs_defn`, synthetic
@@ -42,9 +47,9 @@ Each cache back end documents itself under `cache/<backend>/README.md`:
 
 ## Third-party code
 
-* [third_party/README.md](../third_party/README.md) — vendored /
-  replaced low-level packages (`geom`, `maths/makevalid`, proj bindings)
-  and the constraints on modifying them.
+* [third_party/README.md](../third_party/README.md) — published `geom` and
+  `proj` modules, migration to the alexeydott namespace, frozen audit snapshots
+  and independent consumer verification.
 
 ## Contributing
 

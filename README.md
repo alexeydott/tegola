@@ -359,7 +359,7 @@ go build -tags 'noRedisCache noGpkgProvider noViewer'
 ```bash
 # first set some env to make it easier to read:
 BUILD_PKG=github.com/alexeydott/tegola/internal/build
-VERSION=0.21.0
+VERSION="v0.21.0-fork.1+git.$(git rev-parse --short=8 HEAD)"
 GIT_BRANCH=$(git branch --no-color --show-current)
 GIT_REVISION=$(git log HEAD --oneline | head -n 1 | cut -d ' ' -f 1)
 

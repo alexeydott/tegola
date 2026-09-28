@@ -1,9 +1,10 @@
 # tegola_lambda
 
-Run tegola on AWS lambda. This implementation uses the native Go AWS Lambda rutime. There are a couple limitations to using lambda to run tegola:
-
-- No connection pooling: The database connection will be rebuilt on every lambda request.
-- No built in viewer: Lambda + API Gateway have limitations which restrict the configuration from being easily setup to support the built in viewer and return vector tiles.
+Run Tegola on AWS Lambda with an OS-only Go runtime. Providers, database
+pools and the HTTP router are initialized once per execution environment and
+can be reused by warm invocations; separate environments have separate pools.
+Viewer availability depends on embedded assets and API Gateway routing. The
+minimal build below explicitly omits the viewer and CGO GeoPackage support.
 
 The following steps assume you have a working tegola configuration. 
 
@@ -13,7 +14,7 @@ The following steps assume you have a working tegola configuration.
 
 - Navigate to lambda and click "Create function". We're going to "Author from scratch".
   - Name: name your function whatever you like.
-  - Runtime: At the bottom of the drop down select "Provide your own bootstrap on Amazon Linux 2".
+  - Runtime: use `provided.al2023` (Amazon Linux 2023), as described in the [AWS Go runtime guide](https://docs.aws.amazon.com/lambda/latest/dg/lambda-golang.html).
   - Architecture: Select your desired architecture. There's a tegola lambda version for both `x86_64` and `arm64` available.
   - Role: Depends on your environment. For the sake of this walk through we will "Create a new role from template"
   - Role Name: Up to you. `tegola` is a good role name. 
@@ -36,11 +37,11 @@ Back in the AWS console for the function that was created earlier, locate the se
 
 - Under "Basic Settings" 
   - Memory: Adjust to your preference. Depending on the config.toml file you may need more or less memory for the function. 
-  - Timeout: Set to max time (5 minutes).
+  - Timeout: choose a value suitable for tile rendering and the gateway timeout; the standard function setting permits up to 900 seconds. See [AWS timeout configuration](https://docs.aws.amazon.com/lambda/latest/dg/configuration-timeout.html).
 
 ## Deployment
 
-AWS Supports several ways to trigger lambda functions (i.e. API Gateway, ALB, Function URL). `tegola_lambda` uses the [algnhsa](github.com/akrylysov/algnhsa) package as the AWS lambda shim. Various [deployment configs are documented in the README](https://github.com/akrylysov/algnhsa#deployment) for `algnhsa`.
+AWS Supports several ways to trigger lambda functions (i.e. API Gateway, ALB, Function URL). `tegola_lambda` uses the [algnhsa](https://github.com/akrylysov/algnhsa) package as the AWS lambda shim. Various [deployment configs are documented in the README](https://github.com/akrylysov/algnhsa#deployment) for `algnhsa`.
 
 ### Setting up API Gateway
 
@@ -52,10 +53,10 @@ When using API Gateway there are a few key details that need to be configured du
 
 ## Building from source
 
-Building `tegola_lambda` works the same way as building normal tegola with the exception that it must be built for linux. Navigate to the repository root then `cmd/tegola_lambda` and execute the following command to create an arm64 binary:
+Building `tegola_lambda` works the same way as building normal tegola with the exception that it must be built for linux. From the repository root, use a POSIX shell to create an arm64 binary:
 
 ```console
-GOARCH=arm64 GOOS=linux go build -tags lambda.norpc -o bootstrap main.go
+CGO_ENABLED=0 GOARCH=arm64 GOOS=linux go build -mod=vendor -tags "lambda.norpc noViewer" -o bootstrap ./cmd/tegola_lambda
 ```
 
 A binary named `bootstrap` will be created.

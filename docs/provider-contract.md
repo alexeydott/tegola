@@ -123,16 +123,21 @@ defaults (see [geometry-formats.md](geometry-formats.md#mos-quantization)).
 
 ## SQL-context-aware token substitution
 
-Token substitution (`!BBOX!` and the other `!TOKEN!` placeholders) applies
-only in SQL code context. Tokens inside single-quoted string literals
-(including `''` doubling and backslash escapes), double-quoted, backtick or
-bracket identifiers, line comments (`--`, MySQL `#`) and block comments, and
-PostgreSQL dollar-quoted strings are left verbatim and are not uppercased.
-The same rule governs token *detection*: a `!BBOX!` mention inside a comment
-or literal does not satisfy the custom-SQL token requirements and does not
-trigger the raw-format (`wkb`/`wkt`) token rejection. Put tokens on their own
-line when using MySQL `#` comments: `#`-comment scanning is unconditional, so
-PostgreSQL's `#>`/`#>>`/`#-` operators swallow the rest of the line.
+Token substitution and detection use the provider's SQL dialect through
+`internal/sqltoken`. Only executable SQL contains substitution sites; literals,
+quoted identifiers and comments recognized by that dialect remain unchanged.
+A protected `!BBOX!` mention neither satisfies a custom-SQL token requirement
+nor triggers raw-format (`wkb`/`wkt`) token rejection.
+
+PostgreSQL preserves dollar-quoted strings and distinguishes ordinary strings
+(`standard_conforming_strings=on`) from backslash-escaped `E'...'` strings.
+Its `#>`, `#>>`, `#-` operators and array brackets remain executable SQL.
+MySQL recognizes `#` comments and its whitespace-sensitive `--` comments,
+using the default backslash-escape mode. SQLite and HANA use their own quoting
+rules; SQLite backslashes do not escape string quotes. Nondefault PostgreSQL
+and MySQL string modes are outside the documented scanner contract.
+The legacy package-level scanner remains for compatibility; providers use
+explicit dialects for both runtime substitution and registration probes.
 
 ## System info auto-configuration (MapplGIS tables only)
 

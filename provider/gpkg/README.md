@@ -38,10 +38,7 @@ id_fieldname = "fid"
 - `crs_defn` (string): [Optional] layer-level full PROJ.4 definition used instead of a numeric `srid`. Wins over `srid` at the same level.
 - `geometry_fieldname` (string): [Optional] the name of the geometry field. defaults to `geom`. Note: for layers backed by a GeoPackage `tablename` (native `gpkg` format), the geometry column is taken from `gpkg_geometry_columns` and this setting is ignored. Use a custom `sql` layer (or a raw `geometry_format`) if you need to point at a different geometry column.
 - `sql` (string): [*Required] custom SQL to use. Required if `tablename` is not defined. Supports the following WHERE-clause tokens:
-  - !BBOX! - [Required] will be replaced with the bounding box of the tile before the query is sent to the database.  To support this token, your custom SQL must do a couple of things. 
-    - You must join your feature table to the spatial index table: i.e. `FROM feature_table ft JOIN rtree_feature_table_geom si ON ft.fid = si.id`
-	- Include the following fields in your SELECT clause: si.minx, si.miny, si.maxx, si.maxy
-	- Note that the id field for your feature table may be something other than `fid`
+  - `!BBOX!` - spatial filter token; requirements depend on the effective geometry format (see [the shared contract](../../docs/provider-contract.md)). For native indexed GeoPackage SQL, the recommended pattern joins `rtree_feature_table_geom` on the actual feature ID and selects its `minx`, `miny`, `maxx`, `maxy` bounds. This is an indexed example, not a requirement to join an RTree for every custom query. Raw WKB/WKT rules and missing-bounds fallback are documented below.
   - `!ZOOM!` - [Optional] will be replaced with the "Z" (zoom) value of the requested tile.
   - `!X!` - [Optional] will be replaced with the "X" value of the requested tile.
   - `!Y!` - [Optional] will be replaced with the "Y" value of the requested tile.

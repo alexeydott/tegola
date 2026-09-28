@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 
 	"github.com/alexeydott/proj"
-	"github.com/alexeydott/tegola/internal/log"
 )
 
 // This file extends the three EPSG codes built into github.com/alexeydott/proj
@@ -134,6 +133,11 @@ func RegisterProj4SRID(srid uint64, proj4 string) error {
 	if prev, ok := proj4Registered[srid]; ok && prev == proj4 {
 		return nil
 	}
+	for defn, code := range proj4DefnCodes {
+		if code == srid && defn != proj4 {
+			return fmt.Errorf("RegisterProj4SRID: srid %d is reserved for registered crs_defn %q; choose a different explicit srid", srid, defn)
+		}
+	}
 	proj4Registered[srid] = proj4
 
 	proj4RegisterOnce.Do(func() {})
@@ -158,20 +162,10 @@ func IsSyntheticSRID(srid uint64) bool {
 // synthesized from raw PROJ.4 definitions (crs_defn config options) rather
 // than assigned a real EPSG code.
 //
-// Synthetic SRIDs are derived deterministically from the definition instead of
-// being handed out by a counter: the same crs_defn must resolve to the same
-// SRID in every process and under any config load order, because SRIDs end up
-// in cache keys, logs and external systems. The allocation is
-// SyntheticSRIDMin + hash(definition) % defnSRIDSpan, with deterministic
-// collision resolution (see resolveDefnSRID).
-const (
-	// defnSRIDSpan bounds the synthetic SRID space:
-	// [SyntheticSRIDMin, SyntheticSRIDMin+defnSRIDSpan).
-	defnSRIDSpan = 100000000
-	// defnSRIDProbeStep is the fixed step used to move to the next candidate
-	// when a hash collision puts a different definition on the first choice.
-	defnSRIDProbeStep = 1
-)
+// Synthetic SRIDs are derived from the trimmed definition using a stable hash.
+// A collision is rejected without changing any prior registration: providers
+// retain the numeric SRID returned during startup, so it must never be rebound.
+const defnSRIDSpan = 100000000
 
 // proj4DefnCodes maps PROJ.4 definitions registered through RegisterProj4Defn
 // to their synthetic SRIDs so repeated registrations of the same definition
@@ -200,84 +194,13 @@ func defnFirstChoice(defn string) uint64 {
 	return SyntheticSRIDMin + defnHash(defn)%defnSRIDSpan
 }
 
-// resolveDefnSRID returns the synthetic SRID for defn given the current
-// ownership map of SRID -> definition. The first choice is deterministic
-// (defnFirstChoice); when a different definition already owns it, the next
-// SRIDs are probed with the fixed step defnSRIDProbeStep, wrapping inside the
-// synthetic SRID space, until a free slot (or one already owned by defn
-// itself) is found. The result therefore depends only on the definition and
-// the set of already-allocated SRIDs, never on a process-local counter. ok is
-// false only if the whole synthetic SRID space is exhausted.
+// resolveDefnSRID returns the sole deterministic candidate for defn. A
+// different owner is a collision, never permission to move an existing CRS or
+// select an alternative code dependent on registration order.
 func resolveDefnSRID(defn string, owners map[uint64]string) (uint64, bool) {
-	start := defnFirstChoice(defn)
-	code := start
-	for {
-		if owner, taken := owners[code]; !taken || owner == defn {
-			return code, true
-		}
-		code += defnSRIDProbeStep
-		if code >= SyntheticSRIDMin+defnSRIDSpan {
-			code = SyntheticSRIDMin
-		}
-		if code == start {
-			return 0, false
-		}
-	}
-}
-
-// claimDefnSRID allocates the synthetic SRID for defn, updating the owners
-// (SRID -> definition) and codes (definition -> SRID) maps. Two distinct
-// definitions with the same first choice must resolve identically regardless
-// of registration order (P5-11): the lexicographically smaller definition
-// owns the contested slot, the larger one re-resolves along its own probe
-// chain, and a displaced earlier registration re-resolves recursively. Every
-// contested slot logs a warning naming both definitions and the SRID, so
-// silent load-order resolution is no longer possible. The result depends only
-// on the set of registered definitions.
-func claimDefnSRID(defn string, owners map[uint64]string, codes map[string]uint64) (uint64, bool) {
-	return claimDefnSRIDFrom(defn, owners, codes, 0)
-}
-
-// claimDefnSRIDFrom is claimDefnSRID with skipCode: a slot whose collision was
-// already reported (the slot the definition was just displaced from), so the
-// displacement does not log the same pair twice. Note the returned SRID of an
-// earlier registration may change when a colliding lexicographically smaller
-// definition is registered later; callers that stored a previously returned
-// code should re-query it with Proj4DefnSRID.
-func claimDefnSRIDFrom(defn string, owners map[uint64]string, codes map[string]uint64, skipCode uint64) (uint64, bool) {
-	start := defnFirstChoice(defn)
-	code := start
-	for {
-		owner, taken := owners[code]
-		switch {
-		case !taken || owner == defn:
-			owners[code] = defn
-			codes[defn] = code
-			return code, true
-		case defn < owner:
-			if code != skipCode {
-				log.Warnf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", defn, owner, code)
-			}
-			owners[code] = defn
-			codes[defn] = code
-			delete(codes, owner)
-			if _, ok := claimDefnSRIDFrom(owner, owners, codes, code); !ok {
-				return 0, false
-			}
-			return code, true
-		default:
-			if code != skipCode {
-				log.Warnf("WARNING: synthetic SRID collision: definitions %q and %q both map to SRID %d; keeping the lexicographically smaller definition", owner, defn, code)
-			}
-			code += defnSRIDProbeStep
-			if code >= SyntheticSRIDMin+defnSRIDSpan {
-				code = SyntheticSRIDMin
-			}
-			if code == start {
-				return 0, false
-			}
-		}
-	}
+	code := defnFirstChoice(defn)
+	owner, taken := owners[code]
+	return code, !taken || owner == defn
 }
 
 // RegisterProj4Defn registers an arbitrary PROJ.4 coordinate system definition
@@ -287,7 +210,8 @@ func claimDefnSRIDFrom(defn string, owners map[uint64]string, codes map[string]u
 // expected: layer config, !BBOX! reprojection and feature SRIDs. Registering
 // the same definition twice returns the same synthetic SRID, and the SRID is
 // derived deterministically from the definition, so the same crs_defn resolves
-// to the same SRID across processes and config load orders.
+// to the same SRID across processes and config load orders. A hash collision
+// with a different registered definition fails without altering either CRS.
 func RegisterProj4Defn(proj4 string) (uint64, error) {
 	proj4 = strings.TrimSpace(proj4)
 	if proj4 == "" {
@@ -302,35 +226,16 @@ func RegisterProj4Defn(proj4 string) (uint64, error) {
 	if code, ok := proj4DefnCodes[proj4]; ok {
 		return code, nil
 	}
-	prevCodes := make(map[string]uint64, len(proj4DefnCodes))
-	for d, c := range proj4DefnCodes {
-		prevCodes[d] = c
-	}
-	code, ok := claimDefnSRID(proj4, proj4Registered, proj4DefnCodes)
+	code, ok := resolveDefnSRID(proj4, proj4Registered)
 	if !ok {
-		return 0, fmt.Errorf("RegisterProj4Defn: synthetic SRID space exhausted")
+		return 0, fmt.Errorf("RegisterProj4Defn: synthetic SRID collision at %d between %q and registered definition %q; use distinct explicit SRIDs via RegisterProj4SRID instead of crs_defn", code, proj4, proj4Registered[code])
 	}
+	proj4Registered[code] = proj4
+	proj4DefnCodes[proj4] = code
 
 	proj4RegisterOnce.Do(func() {})
 	proj4ProjectionMu.Lock()
 	proj.CustomProjection(proj.EPSGCode(code), proj4)
-	// a collision may have displaced earlier definitions to new SRIDs:
-	// register every changed definition under its new code, then drop stale
-	// codes that no current definition claims (a stale code may have been
-	// reused by the definition that caused the displacement).
-	currentCodes := make(map[uint64]bool, len(proj4DefnCodes))
-	for d, c := range proj4DefnCodes {
-		currentCodes[c] = true
-		if prev, ok := prevCodes[d]; !ok || prev != c {
-			proj.CustomProjection(proj.EPSGCode(c), d)
-		}
-	}
-	for d, prev := range prevCodes {
-		c, ok := proj4DefnCodes[d]
-		if (!ok || c != prev) && !currentCodes[prev] {
-			proj.RemoveCustomProjection(proj.EPSGCode(prev))
-		}
-	}
 	proj4ProjectionMu.Unlock()
 	return code, nil
 }

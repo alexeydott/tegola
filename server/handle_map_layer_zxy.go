@@ -308,7 +308,7 @@ func (req *HandleMapLayerZXY) parseURI(r *http.Request) error {
 
 	// Only MVT ("pbf") tile output is implemented. Other extensions (e.g. "json")
 	// are not supported and are served as pbf; warn so the fallback is not silent.
-	// Wiring real extension-aware output is tracked as deferred debt (UPSTREAM.md).
+	// This compatibility fallback is documented in server/README.md.
 	if req.extension != "pbf" {
 		log.Warnf("unsupported tile extension %q; serving tile as pbf (mvt)", req.extension)
 	}
@@ -718,8 +718,6 @@ func metatileLockKeyForCacheKey(key *cache.Key) string {
 // configured bounds. Maps without bounds contain every tile. Errors indicate
 // the tile extent could not be computed or projected.
 func tileWithinMapBounds(m *atlas.Map, tile slippy.Tile) (bool, error) {
-	// TODO(@ear7h): use a more efficient version of Intersect that doesn't
-	// make a new extent
 	ext3857, err := slippy.Extent(webmercatorGrid, tile)
 	if err != nil {
 		return false, fmt.Errorf("unable to generate extent for tile %d/%d/%d: %w", tile.Z, tile.X, tile.Y, err)
