@@ -7,9 +7,9 @@ import (
 	"path"
 	"testing"
 
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/mapbox/style"
-	"github.com/go-spatial/tegola/server"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/mapbox/style"
+	"github.com/alexeydott/tegola/server"
 	"github.com/go-test/deep"
 )
 

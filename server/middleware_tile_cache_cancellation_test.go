@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-spatial/geom/encoding/mvt"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/cache"
+	"github.com/alexeydott/geom/encoding/mvt"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/cache"
 )
 
 // TestTileCacheCancelledLeadersNeverServeEmptyToLiveWaiter is the audit's

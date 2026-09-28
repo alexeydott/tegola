@@ -8,12 +8,12 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/maths"
-	"github.com/go-spatial/tegola/maths/hitmap"
-	"github.com/go-spatial/tegola/maths/makevalid/plyg"
-	"github.com/go-spatial/tegola/maths/points"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/maths"
+	"github.com/alexeydott/tegola/maths/hitmap"
+	"github.com/alexeydott/tegola/maths/makevalid/plyg"
+	"github.com/alexeydott/tegola/maths/points"
 )
 
 var numWorkers = 1

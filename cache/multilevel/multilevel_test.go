@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/env"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/env"
 )
 
 type fakeCache struct {

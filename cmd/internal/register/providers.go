@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/provider"
 )
 
 var (

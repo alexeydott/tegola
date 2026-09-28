@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/test"
-	"github.com/go-spatial/tegola/server"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/test"
+	"github.com/alexeydott/tegola/server"
 )
 
 // blockingTiler wraps the test tile provider and can hold the first N

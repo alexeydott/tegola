@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/provider"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/provider"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // TestReplaceTokensQuotesIdentifierTokens (audit P5-10) pins identifier

@@ -3,9 +3,9 @@ package mysql
 import (
 	"testing"
 
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/test/fixture"
-	"github.com/go-spatial/tegola/provider/test/mosfixture"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/provider/test/fixture"
+	"github.com/alexeydott/tegola/provider/test/mosfixture"
 )
 
 // TestProbeMOSCustomSQLContract runs the shared bounds-contract fixture

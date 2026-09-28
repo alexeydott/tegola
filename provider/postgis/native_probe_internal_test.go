@@ -2,10 +2,10 @@ package postgis
 
 import (
 	"fmt"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/internal/ttools"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/test/mosfixture"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/internal/ttools"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/provider/test/mosfixture"
 	"strings"
 	"testing"
 )

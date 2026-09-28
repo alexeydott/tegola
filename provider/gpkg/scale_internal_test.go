@@ -2,8 +2,8 @@ package gpkg
 
 import (
 	"fmt"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/provider"
 	"math"
 	"strings"
 	"testing"
@@ -31,7 +31,7 @@ func TestScaleTokensSourceCRS(t *testing.T) {
 		t.Run(fmt.Sprint(srid), func(t *testing.T) {
 			layer := &Layer{name: "scale", srid: srid}
 			w, h := 90.0/512, (maxLat-minLat)/1024
-			scale := w * 6378137 * math.Pi / 180 * math.Cos(centerLat) / 0.00028
+			scale := w * 6378137 * math.Pi / 180 * math.Cos(centerLat) / math.Sqrt(1-0.0066943799901413165*math.Sin(centerLat)*math.Sin(centerLat)) / 0.00028
 			if srid == 3857 {
 				w, h = (extent.MaxX()-extent.MinX())/512, (extent.MaxY()-extent.MinY())/1024
 				scale = w / 0.00028

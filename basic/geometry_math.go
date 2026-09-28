@@ -6,11 +6,11 @@ import (
 
 	"errors"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/proj"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/maths/webmercator"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/proj"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/maths/webmercator"
 )
 
 // ApplyToPoints applys the given function to each point in the geometry and any sub geometries, return a new transformed geometry.
@@ -224,7 +224,7 @@ func CloneGeometry(geometry geom.Geometry) (geom.Geometry, error) {
 }
 
 // projToWebMercator converts points encoded in an arbitrary projected SRID
-// known to github.com/go-spatial/proj (e.g. EPSG:3395 World Mercator,
+// known to github.com/alexeydott/proj (e.g. EPSG:3395 World Mercator,
 // EPSG:4087, or any SRID registered via RegisterProj4SRID) to Web Mercator
 // (3857) by routing through WGS84 lon/lat. SRIDs handled by dedicated
 // switches in ToWebMercator / FromWebMercator (3857, 4326) never reach here,
@@ -260,7 +260,7 @@ func ToWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
 }
 
 // projFromWebMercator converts points encoded in Web Mercator (3857) to an
-// arbitrary projected SRID known to github.com/go-spatial/proj by routing
+// arbitrary projected SRID known to github.com/alexeydott/proj by routing
 // through WGS84 lon/lat. See projToWebMercator for details.
 func projFromWebMercator(SRID uint64, geometry geom.Geometry) (geom.Geometry, error) {
 	if !proj.IsKnownConversionSRID(proj.EPSGCode(SRID)) {

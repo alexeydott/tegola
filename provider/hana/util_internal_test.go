@@ -3,10 +3,10 @@ package hana
 import (
 	"testing"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/provider"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/provider"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 func TestValidateCRSFormatCompatibility(t *testing.T) {

@@ -9,11 +9,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/go-spatial/proj"
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/proj"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
-// This file extends the three EPSG codes built into github.com/go-spatial/proj
+// This file extends the three EPSG codes built into github.com/alexeydott/proj
 // (3395, 3857, 4087) with a built-in table of commonly used projected
 // coordinate systems and a RegisterProj4SRID hook so configs can register any
 // additional SRID via a PROJ.4 string. Projections are described in PROJ.4

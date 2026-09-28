@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom/slippy"
+	"github.com/alexeydott/geom/slippy"
 )
 
 func TestGenerateTilesForTileList(t *testing.T) {

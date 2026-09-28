@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/ttools"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/postgis"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/ttools"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/postgis"
 
 	"github.com/jackc/pgx/v5"
 )

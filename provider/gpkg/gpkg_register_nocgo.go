@@ -3,8 +3,8 @@
 package gpkg
 
 import (
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/provider"
 )
 
 func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, error) {

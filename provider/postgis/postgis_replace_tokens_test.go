@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/provider"
 )
 
 // SQL-context-aware token substitution (UPSTREAM 2.6): tokens inside

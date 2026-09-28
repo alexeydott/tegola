@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 // captureLogs runs fn with slog's default logger writing text output to the

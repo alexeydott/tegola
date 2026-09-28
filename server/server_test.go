@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexeydott/geom"
 	"github.com/dimfeld/httptreemux"
-	"github.com/go-spatial/geom"
 
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/mapbox/style"
-	"github.com/go-spatial/tegola/provider/test"
-	"github.com/go-spatial/tegola/server"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/mapbox/style"
+	"github.com/alexeydott/tegola/provider/test"
+	"github.com/alexeydott/tegola/server"
 )
 
 // test server config

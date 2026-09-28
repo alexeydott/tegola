@@ -7,9 +7,9 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/dict"
 )
 
 // Config shallow-copies base, applies overrides, and appends layers to the

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-spatial/tegola/basic"
+	"github.com/alexeydott/tegola/basic"
 )
 
 func TestCleanGeometryWithoutClipExtent(t *testing.T) {

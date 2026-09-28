@@ -9,11 +9,11 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/encoding/mvt"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/maths"
-	"github.com/go-spatial/tegola/maths/simplify"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/encoding/mvt"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/maths"
+	"github.com/alexeydott/tegola/maths/simplify"
 	"google.golang.org/protobuf/proto"
 )
 

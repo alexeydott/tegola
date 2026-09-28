@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/encoding/mvt"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/encoding/mvt"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/provider"
 )
 
 // Exercise the production encode boundary with meter coordinates: a five-unit

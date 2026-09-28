@@ -3,10 +3,10 @@ package hitmap
 import (
 	"sort"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/internal/convert"
-	"github.com/go-spatial/tegola/maths"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/internal/convert"
+	"github.com/alexeydott/tegola/maths"
 )
 
 type Interface interface {

@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 type seedPurgeWorkerTileError struct {

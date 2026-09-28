@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/go-spatial/tegola/mapbox/style"
+	"github.com/alexeydott/tegola/mapbox/style"
 )
 
 func TestStringToColorHex(t *testing.T) {

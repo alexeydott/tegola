@@ -5,9 +5,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/cache/memory"
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/cache/memory"
+	"github.com/alexeydott/tegola/dict"
 )
 
 func TestSetGetPurge(t *testing.T) {

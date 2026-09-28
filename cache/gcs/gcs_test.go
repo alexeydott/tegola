@@ -10,7 +10,7 @@ import (
 
 	"cloud.google.com/go/storage"
 
-	"github.com/go-spatial/tegola/cache"
+	"github.com/alexeydott/tegola/cache"
 )
 
 // errTransient simulates a backend failure (e.g. a network blip or a 5xx).

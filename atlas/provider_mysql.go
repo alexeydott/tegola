@@ -9,5 +9,5 @@ package atlas
 //
 // go build -tags 'noMysqlProvider'
 import (
-	_ "github.com/go-spatial/tegola/provider/mysql"
+	_ "github.com/alexeydott/tegola/provider/mysql"
 )

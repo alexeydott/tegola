@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/provider/test/fixture"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/provider/test/fixture"
 )
 
 // TestReplaceTokensNilExtentError pins audit P6-20: a tile reporting a

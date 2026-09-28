@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/internal/sqltoken"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/sqltoken"
 )
 
 // providerType defines the type of providers we have in the system.

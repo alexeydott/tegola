@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola/mos"
+	"github.com/alexeydott/tegola/mos"
 )
 
 // buildBlob encodes a minimal valid LayerSystemInfo blob with the given
@@ -21,7 +21,7 @@ func buildBlob(precision int, units byte, unitsDefined bool, projection string) 
 	}
 	le(11, uint32(precision))
 	buf[15] = 1 // flProjection
-	le(26, 42) // LayerID
+	le(26, 42)  // LayerID
 	le(60, uint32(len(projection)))
 	copy(buf[64:], projection)
 	buf[52] = units

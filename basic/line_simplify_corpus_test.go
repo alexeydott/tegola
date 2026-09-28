@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/maths"
-	"github.com/go-spatial/tegola/maths/simplify"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/maths"
+	"github.com/alexeydott/tegola/maths/simplify"
 )
 
 // Test corpus for line/ring simplification correctness (UPSTREAM.md debt 3.6).
@@ -382,7 +382,7 @@ func runSimplifyCase(c simplifyCorpusCase) (in, out []maths.Pt, ring bool) {
 				out = v[0][0].AsPts()
 			}
 		}
-		return c.in, out, true
+		return c.in, loopOpen(out), true
 	}
 	panic("unknown surface " + string(c.surface))
 }

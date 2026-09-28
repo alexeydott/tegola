@@ -115,10 +115,15 @@ tile extent transformed into the resolved layer CRS, divided by the tile's
 pixel dimensions. `!SCALE_DENOMINATOR!` converts the horizontal pixel width
 to meters and divides by the OGC standard pixel size of 0.00028 m. Projected
 CRSs use their PROJ.4 linear units; EPSG:4326 and supported `longlat`
-definitions use a spherical, latitude-adjusted meters-per-longitude-degree
-approximation at the tile center. This scale approximation retains the WGS84
-semi-major radius of 6378137 m even for other supported geographic datums;
-it does not calculate ellipsoidal ground scale. Unknown CRS/unit definitions
+definitions use the source ellipsoid's local parallel-arc length per longitude
+degree at the transformed tile center:
+`N(phi) * cos(phi) * pi / 180`, where
+`N(phi) = a / sqrt(1 - e^2 * sin^2(phi))`, `a` is the semi-major axis and `e^2`
+is the squared eccentricity. Both ellipsoid parameters and latitude belong to
+the resolved layer CRS, including geographic `crs_defn` definitions with
+`+towgs84`. This is a local horizontal scale; a large tile is represented by
+its center rather than a finite geodesic or diagonal distance. Pixel dimensions
+remain in source degrees. Singular pole latitudes and unknown CRS/unit definitions
 cause a query error for executable
 scale tokens. Default EPSG:3857 SQL values are unchanged. See the
 [HANA scale token contract](../provider/hana/README.md#scale-tokens) for tile

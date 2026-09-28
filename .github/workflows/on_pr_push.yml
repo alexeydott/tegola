@@ -153,20 +153,14 @@ jobs:
         go mod vendor
         git diff --exit-code -- vendor/
 
-    - name: Test nested third_party modules
-      run: |
-        pushd third_party/go-spatial/geom
-        go build -mod=readonly ./...
-        go test -mod=readonly ./...
-        popd
-        pushd third_party/go-spatial/proj
-        go build -mod=readonly ./...
-        go test -mod=readonly ./...
-        popd
-        git diff --exit-code -- third_party/
-
-    - name: Verify replacement inventory and external consumer
+    - name: Verify published fork dependencies and external consumer
       run: go run -mod=vendor ./ci/check-dependencies
+
+    - name: Verify published Tegola without replacements
+      if: github.event_name == 'push' && github.repository == 'alexeydott/tegola'
+      env:
+        TEGOLA_REVISION: ${{ github.sha }}
+      run: go run -mod=vendor ./ci/check-dependencies -revision "$TEGOLA_REVISION"
 
   docker-build:
     name: Docker image build

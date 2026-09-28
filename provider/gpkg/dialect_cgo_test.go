@@ -3,9 +3,9 @@
 package gpkg
 
 import (
-	"github.com/go-spatial/tegola/provider"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/test/fixture"
+	"github.com/alexeydott/tegola/provider"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/provider/test/fixture"
 	_ "github.com/mattn/go-sqlite3"
 	"testing"
 )

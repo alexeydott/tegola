@@ -9,7 +9,7 @@ package gpkg
 import (
 	"testing"
 
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // gpkgHeader builds a minimal GeoPackage binary header: magic GP, given

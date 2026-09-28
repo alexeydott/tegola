@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/go-spatial/tegola/provider/test/fixture"
+	"github.com/alexeydott/tegola/provider/test/fixture"
 	_ "github.com/mattn/go-sqlite3"
 )
 

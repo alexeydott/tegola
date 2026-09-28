@@ -6,11 +6,11 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/mapbox/tilejson"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/mapbox/tilejson"
+	"github.com/alexeydott/tegola/provider"
 )
 
 func webMercatorMapFromConfigMap(cfg provider.Map) (newMap atlas.Map) {

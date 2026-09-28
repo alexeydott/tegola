@@ -17,12 +17,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/encoding/wkb"
-	"github.com/go-spatial/geom/encoding/wkt"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/mos"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/encoding/wkb"
+	"github.com/alexeydott/geom/encoding/wkt"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/mos"
 )
 
 // Common configuration keys. Providers may expose additional

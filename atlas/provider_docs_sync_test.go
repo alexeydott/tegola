@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/go-spatial/tegola/provider/gpkg"
-	_ "github.com/go-spatial/tegola/provider/hana"
-	_ "github.com/go-spatial/tegola/provider/mysql"
-	_ "github.com/go-spatial/tegola/provider/postgis"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola/provider"
+	_ "github.com/alexeydott/tegola/provider/gpkg"
+	_ "github.com/alexeydott/tegola/provider/hana"
+	_ "github.com/alexeydott/tegola/provider/mysql"
+	_ "github.com/alexeydott/tegola/provider/postgis"
 )
 
 // TestProviderContractMatrixSync keeps docs/provider-contract.md in sync with

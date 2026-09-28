@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 // Metatile regeneration runs off the HTTP request path: ?tile=update and

@@ -6,8 +6,8 @@ package env
 import (
 	"reflect"
 
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 // Dict is a decoded configuration map. Config values are parsed from TOML via

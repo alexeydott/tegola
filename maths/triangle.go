@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 func trace(msg string) func() {

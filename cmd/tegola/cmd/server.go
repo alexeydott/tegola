@@ -8,15 +8,15 @@ import (
 	"os"
 	"time"
 
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/internal/build"
+	gdcmd "github.com/alexeydott/tegola/internal/cmd"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/observability"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/server"
 	"github.com/go-spatial/cobra"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/internal/build"
-	gdcmd "github.com/go-spatial/tegola/internal/cmd"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/observability"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/server"
 )
 
 var (

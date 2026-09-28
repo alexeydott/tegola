@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-spatial/geom/encoding/mvt"
-	"github.com/go-spatial/tegola/cache"
+	"github.com/alexeydott/geom/encoding/mvt"
+	"github.com/alexeydott/tegola/cache"
 )
 
 func TestRenderTileForCacheCachesImplicitSuccessfulWrite(t *testing.T) {

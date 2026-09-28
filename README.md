@@ -358,7 +358,7 @@ go build -tags 'noRedisCache noGpkgProvider noViewer'
 
 ```bash
 # first set some env to make it easier to read:
-BUILD_PKG=github.com/go-spatial/tegola/internal/build
+BUILD_PKG=github.com/alexeydott/tegola/internal/build
 VERSION=0.21.0
 GIT_BRANCH=$(git branch --no-color --show-current)
 GIT_REVISION=$(git log HEAD --oneline | head -n 1 | cut -d ' ' -f 1)
@@ -375,3 +375,10 @@ See [license](LICENSE.md) file in the repo.
 
 After Tegola is running you're likely going to want to work on your map's cartography.
 Give [fresco](https://github.com/go-spatial/fresco) a try!
+
+## Go module consumers
+
+This fork uses `github.com/alexeydott/tegola` and published, versioned
+`github.com/alexeydott/geom` / `github.com/alexeydott/proj` dependencies.
+Consumers must use the fork import paths; no local replacements are needed.
+See [dependency migration and verification](third_party/README.md).

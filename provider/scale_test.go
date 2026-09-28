@@ -5,11 +5,11 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/test/fixture"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/test/fixture"
 )
 
 type sizedScaleTile struct {
@@ -68,7 +68,13 @@ func TestTileScaleUnitsAndSizes(t *testing.T) {
 }
 
 func TestTileScaleGeographic(t *testing.T) {
-	for _, latitude := range []float64{0, 45, 60, -60, 80} {
+	// Independent 50-digit decimal reference calculations using the WGS84
+	// inverse flattening 298.257223563 and local parallel curvature.
+	for _, reference := range []struct{ latitude, meters float64 }{
+		{0, 111319.49079327357}, {45, 78846.83509397811},
+		{60, 55800.00157243613}, {-60, 55800.00157243613}, {80, 19393.485528132147},
+	} {
+		latitude := reference.latitude
 		for _, size := range []uint{256, 512} {
 			t.Run(fmt.Sprintf("%g/%d", latitude, size), func(t *testing.T) {
 				extent := &geom.Extent{10, latitude - 1, 12, latitude + 1}
@@ -79,7 +85,7 @@ func TestTileScaleGeographic(t *testing.T) {
 				}
 				assertScaleClose(t, "width degrees", w, 2/float64(size))
 				assertScaleClose(t, "height degrees", h, 2/float64(size))
-				assertScaleClose(t, "denominator", s, 2/float64(size)*111319.49079327358*math.Cos(latitude*math.Pi/180)/0.00028)
+				assertScaleClose(t, "denominator", s, 2/float64(size)*reference.meters/0.00028)
 			})
 		}
 	}
@@ -112,7 +118,8 @@ func TestTileScaleReprojectsSlippyTiles(t *testing.T) {
 					factor := 1.0
 					meters := 111319.49079327358
 					if srid == 4326 {
-						meters *= math.Cos(centerLat * math.Pi / 180)
+						phi := centerLat * math.Pi / 180
+						meters *= math.Cos(phi) / math.Sqrt(1-0.0066943799901413165*math.Sin(phi)*math.Sin(phi))
 					} else {
 						factor = 111319.49079327358
 						if srid == feet {
@@ -155,4 +162,47 @@ func TestTileScaleErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTileScaleSourceEllipsoid(t *testing.T) {
+	for _, tc := range []struct {
+		name, defn string
+		meters     float64
+	}{
+		{"Bessel", "+proj=longlat +ellps=bessel +towgs84=41,-107.6,-93", 55793.108216124725},
+		{"custom", "+proj=longlat +a=6378200 +rf=298.3 +towgs84=23.92,-141.27,-80.9,0,-0.35,-0.82,-0.12", 55800.53258131389},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srid, err := basic.RegisterProj4Defn(tc.defn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tile := sizedScaleTile{Tile: fixture.Tile{Bounds: &geom.Extent{10, 59, 12, 61}, SRID: srid}, width: 512, height: 256}
+			w, h, s, err := provider.TileScale(tile, srid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertScaleClose(t, "width degrees", w, 2.0/512)
+			assertScaleClose(t, "height degrees", h, 2.0/256)
+			assertScaleClose(t, "source ellipsoid denominator", s, 2.0/512*tc.meters/0.00028)
+		})
+	}
+}
+
+func TestTileScaleUsesTransformedGeographicLatitude(t *testing.T) {
+	srid, err := basic.RegisterProj4Defn("+proj=longlat +ellps=bessel +towgs84=41,-107.6,-93")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PROJ 9.5.1 maps this WGS84 (37.6,55.7) center to source latitude
+	// 55.69966788487392. The Bessel parallel there is 62868.02857200517 m/deg.
+	const x, y = 4185612.8538270863, 7498924.477653493
+	tile := sizedScaleTile{Tile: fixture.Tile{
+		Bounds: &geom.Extent{x - 10000, y - 10000, x + 10000, y + 10000}, SRID: 3857,
+	}, width: 512, height: 256}
+	w, _, scale, err := provider.TileScale(tile, srid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertScaleClose(t, "source center meters per degree", scale*0.00028/w, 62868.02857200517)
 }

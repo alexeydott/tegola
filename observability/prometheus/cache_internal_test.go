@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	tegolaCache "github.com/go-spatial/tegola/cache"
+	tegolaCache "github.com/alexeydott/tegola/cache"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

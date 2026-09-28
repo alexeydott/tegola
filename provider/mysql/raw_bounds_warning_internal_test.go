@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // P6-19 regression: raw geometry formats (wkb/wkt/mos) whose per-tile query

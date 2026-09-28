@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/tegola/dict"
 )
 
 // NewProviderInternal creates a provider via NewTileProvider so tests can inspect

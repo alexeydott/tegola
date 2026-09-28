@@ -4,13 +4,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/cmd/internal/register"
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/env"
-	"github.com/go-spatial/tegola/mapbox/tilejson"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/cmd/internal/register"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/env"
+	"github.com/alexeydott/tegola/mapbox/tilejson"
+	"github.com/alexeydott/tegola/provider"
 )
 
 func TestMaps(t *testing.T) {

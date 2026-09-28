@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/server"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/server"
 )
 
 // TestResolveServerPort asserts the CLI --port / config precedence for the

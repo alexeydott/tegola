@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/basic"
 )
 
 // TileScale uses unbuffered source-CRS bounds, not the MVT coordinate extent.
@@ -62,9 +62,12 @@ func TileScale(tile Tile, layerSRID uint64) (width, height, denominator float64,
 				return 0, 0, 0, fmt.Errorf("expected scale center point, got %T", converted)
 			}
 		}
-		// Spherical parallel-arc approximation at the tile center latitude,
-		// using the WGS84 semi-major radius. This is not a geodesic chord.
-		metersPerUnit = 6378137 * math.Pi / 180 * math.Cos(center[1]*math.Pi/180)
+		// Local parallel-arc scale on the source ellipsoid, evaluated at the
+		// transformed tile center. Pixel width/height remain in source degrees.
+		metersPerUnit, err = basic.GeographicMetersPerLongitudeDegree(layerSRID, center[1])
+		if err != nil {
+			return 0, 0, 0, err
+		}
 	} else {
 		metersPerUnit, err = basic.ProjectedMetersPerUnit(layerSRID)
 		if err != nil {

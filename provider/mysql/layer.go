@@ -1,9 +1,9 @@
 package mysql
 
 import (
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/mos"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/mos"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 type Layer struct {

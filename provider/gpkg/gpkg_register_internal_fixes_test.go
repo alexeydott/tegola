@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/provider/test/fixture"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/provider/test/fixture"
 	_ "github.com/mattn/go-sqlite3"
 )
 

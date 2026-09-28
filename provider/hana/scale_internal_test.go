@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/test/fixture"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/test/fixture"
 )
 
 type sizedScaleTile struct {
@@ -70,7 +70,12 @@ func TestTileScaleUnitsAndSizes(t *testing.T) {
 }
 
 func TestTileScaleGeographic(t *testing.T) {
-	for _, latitude := range []float64{0, 45, 60, -60, 80} {
+	// Independent decimal reference values for the WGS84 ellipsoid parallel.
+	for _, reference := range []struct{ latitude, meters float64 }{
+		{0, 111319.49079327357}, {45, 78846.83509397811},
+		{60, 55800.00157243613}, {-60, 55800.00157243613}, {80, 19393.485528132147},
+	} {
+		latitude := reference.latitude
 		for _, size := range []uint{256, 512} {
 			t.Run(fmt.Sprintf("%g/%d", latitude, size), func(t *testing.T) {
 				extent := &geom.Extent{10, latitude - 1, 12, latitude + 1}
@@ -81,7 +86,7 @@ func TestTileScaleGeographic(t *testing.T) {
 				}
 				assertScaleClose(t, "width degrees", w, 2/float64(size))
 				assertScaleClose(t, "height degrees", h, 2/float64(size))
-				assertScaleClose(t, "denominator", s, 2/float64(size)*111319.49079327358*math.Cos(latitude*math.Pi/180)/0.00028)
+				assertScaleClose(t, "denominator", s, 2/float64(size)*reference.meters/0.00028)
 			})
 		}
 	}
@@ -114,7 +119,11 @@ func TestTileScaleReprojectsSlippyTiles(t *testing.T) {
 					factor := 1.0
 					meters := 111319.49079327358
 					if srid == 4326 || srid == 1000004326 {
-						meters *= math.Cos(centerLat * math.Pi / 180)
+						phi := centerLat * math.Pi / 180
+						// Both the geographic and HANA planar alias resolve to WGS84.
+						const flattening = 1 / 298.257223563
+						const e2 = flattening * (2 - flattening)
+						meters *= math.Cos(phi) / math.Sqrt(1-e2*math.Sin(phi)*math.Sin(phi))
 					} else {
 						factor = 111319.49079327358
 						if srid == feet {

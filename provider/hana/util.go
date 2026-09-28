@@ -13,15 +13,15 @@ import (
 	"strings"
 
 	"github.com/SAP/go-hdb/driver"
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/internal/env"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/internal/sqltoken"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/crsconfig"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/internal/env"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/sqltoken"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/crsconfig"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 const (

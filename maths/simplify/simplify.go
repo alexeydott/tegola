@@ -3,9 +3,9 @@ package simplify
 import (
 	"math"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/maths"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/maths"
 )
 
 // SimplifyGeometry applies the DouglasPeucker simplification routine to the supplied geometry
@@ -15,26 +15,17 @@ func SimplifyGeometry(g tegola.Geometry, tolerance float64) tegola.Geometry {
 		return simplifyPolygon(gg, tolerance)
 
 	case tegola.MultiPolygon:
-		// Independent simplification can make disjoint polygons overlap.
-		// Preserve component relationships until cross-component validation exists.
-		if len(gg.Polygons()) > 1 {
-			return g
+		polygons := gg.Polygons()
+		original := make(basic.MultiPolygon, len(polygons))
+		candidate := make(basic.MultiPolygon, len(polygons))
+		for i, p := range polygons {
+			original[i] = basic.ClonePolygon(p)
+			candidate[i] = polygonCandidate(p, tolerance)
 		}
-		var newMP basic.MultiPolygon
-
-		for _, p := range gg.Polygons() {
-			sp := simplifyPolygon(p, tolerance)
-			if sp == nil {
-				continue
-			}
-			newMP = append(newMP, sp)
+		if !preservesPolygonTopology(original, candidate) {
+			return original
 		}
-
-		if len(newMP) == 0 {
-			return nil
-		}
-
-		return newMP
+		return candidate
 
 	case tegola.LineString:
 		return simplifyLineString(gg, tolerance)
@@ -79,78 +70,38 @@ func simplifyLineString(g tegola.LineString, tolerance float64) basic.Line {
 }
 
 func simplifyPolygon(g tegola.Polygon, tolerance float64) basic.Polygon {
-	lines := g.Sublines()
-	// An individually valid simplified shell can exclude an unchanged hole,
-	// or a simplified hole can cross the shell/another hole. Keep the polygon
-	// unchanged until simplification can validate relationships between rings.
-	if len(lines) > 1 {
-		return basic.ClonePolygon(g)
+	original := basic.ClonePolygon(g)
+	candidate := polygonCandidate(g, tolerance)
+	if !preservesPolygonTopology(basic.MultiPolygon{original}, basic.MultiPolygon{candidate}) {
+		return original
 	}
-	if len(lines) <= 0 {
-		return nil
+	return candidate
+}
+
+// Build independent ring candidates; the caller validates their relationships
+// together before accepting any changes to the polygon or multipolygon.
+func polygonCandidate(g tegola.Polygon, tolerance float64) basic.Polygon {
+	poly := basic.ClonePolygon(g)
+	if tolerance <= 0 || math.IsNaN(tolerance) || math.IsInf(tolerance, 0) {
+		return poly
 	}
-
-	var poly basic.Polygon
-	sqTolerance := tolerance * tolerance
-	// First lets look the first line, then we will simplify the other lines.
-	for i := range lines {
-		area := maths.AreaOfPolygonLineString(lines[i])
-		l := basic.CloneLine(lines[i])
-
-		if area < sqTolerance {
-			if i == 0 {
-				return basic.ClonePolygon(g)
-			}
-			// don't simplify the internal line
-			poly = append(poly, l)
+	for i, line := range poly {
+		original := openRing(line.AsPts())
+		if len(original) <= 4 || math.Abs(ringArea(original)) < tolerance*tolerance {
 			continue
 		}
-
-		pts := l.AsPts()
-		if len(pts) <= 2 {
-			if i == 0 {
-				return nil
-			}
+		pts := normalizePoints(original)
+		if len(pts) > 4 {
+			pts = DouglasPeucker(pts, tolerance)
+		}
+		if !validRing(pts) || ringArea(original)*ringArea(pts) <= 0 {
 			continue
 		}
-
-		normalized := normalizePoints(pts)
-		pts = normalized
-		if len(pts) <= 4 {
-			if i == 0 {
-				return basic.ClonePolygon(g)
-			}
-			poly = append(poly, l)
-			continue
+		if len(line) > 1 && line[0] == line[len(line)-1] {
+			pts = append(pts, pts[0])
 		}
-
-		pts = DouglasPeucker(pts, tolerance)
-		if len(pts) <= 2 {
-			if i == 0 {
-				return nil
-			}
-			//log.Println("\t Skipping polygon subline.")
-			continue
-		}
-
-		// Ring topology backstop: DouglasPeucker validates the open chain, but
-		// a ring also has the closing edge from last point back to first. When
-		// the closed ring self-intersects and the pre-simplify ring did not
-		// (or validation is inconclusive), fall back to the normalized ring,
-		// which preserves the input geometry exactly.
-		if intersects, complete := selfIntersects(pts, true); !complete || intersects {
-			if inIntersects, inComplete := selfIntersects(normalized, true); !inComplete || !inIntersects {
-				pts = normalized
-			}
-		}
-
-		poly = append(poly, basic.NewLineFromPt(pts...))
+		poly[i] = basic.NewLineFromPt(pts...)
 	}
-
-	if len(poly) == 0 {
-		return nil
-	}
-
 	return poly
 }
 

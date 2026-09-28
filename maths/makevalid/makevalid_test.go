@@ -9,11 +9,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/draw/svg"
+	"github.com/alexeydott/tegola/maths"
+	"github.com/alexeydott/tegola/maths/hitmap"
 	"github.com/gdey/tbltest"
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/draw/svg"
-	"github.com/go-spatial/tegola/maths"
-	"github.com/go-spatial/tegola/maths/hitmap"
 	"github.com/go-test/deep"
 )
 

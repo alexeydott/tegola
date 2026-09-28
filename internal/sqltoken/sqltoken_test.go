@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola/internal/sqltoken"
+	"github.com/alexeydott/tegola/internal/sqltoken"
 )
 
 // wantSegment pairs a classification with the exact text it covers.

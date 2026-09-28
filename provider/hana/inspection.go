@@ -3,7 +3,7 @@ package hana
 import (
 	"context"
 
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // InspectionQueryTimeout is the shared cross-provider probe timeout

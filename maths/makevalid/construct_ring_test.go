@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/alexeydott/tegola/maths"
 	"github.com/gdey/tbltest"
-	"github.com/go-spatial/tegola/maths"
 )
 
 func TestConstuctRing(t *testing.T) {

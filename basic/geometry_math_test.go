@@ -4,10 +4,10 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/proj"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/proj"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/basic"
 )
 
 // TestWebMercator3395 verifies EPSG:3395 (WGS84 World Mercator, ellipsoidal)

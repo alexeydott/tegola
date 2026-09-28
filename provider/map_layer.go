@@ -3,7 +3,7 @@ package provider
 import (
 	"strings"
 
-	"github.com/go-spatial/tegola/internal/env"
+	"github.com/alexeydott/tegola/internal/env"
 )
 
 // MapLayer represents a the config for a layer in a map

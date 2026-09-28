@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/tegola/dict"
 )
 
 func TestConnPlanerConnModeEnv(t *testing.T) {
@@ -178,11 +178,11 @@ func TestConnPlanerConnModeEnv(t *testing.T) {
 
 				RuntimeParams: map[string]string{
 					"application_name": "ratatata",
-					},
-					Pool: PoolSettings{
-						MinConns: 1,
-					},
 				},
+				Pool: PoolSettings{
+					MinConns: 1,
+				},
+			},
 		},
 		"pool settings from config are not runtime params": {
 			mode: connModeURI,
@@ -199,7 +199,7 @@ func TestConnPlanerConnModeEnv(t *testing.T) {
 				EnvTriggerKeys: connModeEnvTriggers,
 
 				URIProvided: true,
-			URIString:   "postgres://user:secret@host:1337/dbname",
+				URIString:   "postgres://user:secret@host:1337/dbname",
 
 				SSLMode:     DefaultSSLMode,
 				SSLKey:      DefaultSSLKey,
@@ -271,7 +271,7 @@ func TestConnPlanerConnModeEnv(t *testing.T) {
 		"canonical pool idle time key wins over deprecated alias": {
 			mode: connModeURI,
 			config: dict.Dict(map[string]any{
-				"uri":                 "postgres://user:secret@host:1337/dbname",
+				"uri":                     "postgres://user:secret@host:1337/dbname",
 				"pool_max_conn_idle_time": "7m",
 			}),
 			envTriggerKeys: connModeEnvTriggers,
@@ -296,16 +296,16 @@ func TestConnPlanerConnModeEnv(t *testing.T) {
 		"invalid pool duration errors": {
 			mode: connModeURI,
 			config: dict.Dict(map[string]any{
-				"uri":                 "postgres://user:secret@host:1337/dbname",
+				"uri":                    "postgres://user:secret@host:1337/dbname",
 				"pool_max_conn_lifetime": "soon",
 			}),
-				envTriggerKeys: connModeEnvTriggers,
-				expectErrFn: func(t *testing.T, err error) {
-					t.Helper()
-					if err == nil || !strings.Contains(err.Error(), "pool_max_conn_lifetime") {
-						t.Fatalf("expected pool_max_conn_lifetime parse error, got %v", err)
-					}
-				},
+			envTriggerKeys: connModeEnvTriggers,
+			expectErrFn: func(t *testing.T, err error) {
+				t.Helper()
+				if err == nil || !strings.Contains(err.Error(), "pool_max_conn_lifetime") {
+					t.Fatalf("expected pool_max_conn_lifetime parse error, got %v", err)
+				}
+			},
 		},
 		"no env overwrites and uri provided and ssl mode overwrite from query": {
 			mode: connModeURI,

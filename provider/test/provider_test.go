@@ -9,8 +9,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/provider"
 )
 
 func TestMVTForLayersCanned(t *testing.T) {

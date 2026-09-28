@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/geom"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // TestMatchBoundColumns covers audit N6: the explicitly configured
@@ -85,7 +85,7 @@ func TestRawBoundsSQLUsesConfiguredColumns(t *testing.T) {
 		t.Fatal("matchBoundColumns returned nil for configured columns present in the table")
 	}
 	l := &Layer{
-		geometryFormat: codec.FormatWKB,
+		geometryFormat:  codec.FormatWKB,
 		boundFieldnames: matched,
 	}
 	extent := geom.NewExtent([2]float64{10, 20}, [2]float64{30, 40})

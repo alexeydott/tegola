@@ -7,15 +7,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-spatial/tegola/internal/build"
+	"github.com/alexeydott/tegola/internal/build"
 	"github.com/prometheus/client_golang/prometheus/push"
 
-	"github.com/go-spatial/tegola/internal/p"
+	"github.com/alexeydott/tegola/internal/p"
 
-	tegolaCache "github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/observability"
+	tegolaCache "github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/observability"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )

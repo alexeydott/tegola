@@ -39,7 +39,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/go-spatial/geom"
+	"github.com/alexeydott/geom"
 )
 
 // MOS object types (THeaderObject.oType).

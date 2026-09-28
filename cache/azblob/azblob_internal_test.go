@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/dict"
 )
 
 func TestValidateContainerURL(t *testing.T) {

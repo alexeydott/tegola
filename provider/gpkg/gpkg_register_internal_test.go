@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/cmp"
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/cmp"
+	"github.com/alexeydott/tegola/dict"
 
 	_ "github.com/mattn/go-sqlite3"
 )

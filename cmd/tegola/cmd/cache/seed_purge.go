@@ -8,16 +8,16 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/proj"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/internal/build"
+	gdcmd "github.com/alexeydott/tegola/internal/cmd"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/observability"
+	"github.com/alexeydott/tegola/provider"
 	"github.com/go-spatial/cobra"
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/proj"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/internal/build"
-	gdcmd "github.com/go-spatial/tegola/internal/cmd"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/observability"
-	"github.com/go-spatial/tegola/provider"
 )
 
 // metricBoundLimit is the canonical Web Mercator world extent in meters:

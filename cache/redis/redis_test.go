@@ -14,10 +14,10 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/cache/redis"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/ttools"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/cache/redis"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/ttools"
 )
 
 // TESTENV is the environment variable that must be set to "yes" to run the

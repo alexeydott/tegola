@@ -1,53 +1,77 @@
-// Command check-dependencies checks the local replacement inventory and a
-// downstream module using the documented checkout-based dependency setup.
+// Command check-dependencies verifies published fork dependencies and an
+// independent downstream consumer. -revision also downloads Tegola remotely.
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
-	"io/fs"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 )
+
+const tegolaModule = "github.com/alexeydott/tegola"
+
+var forkModules = []string{"github.com/alexeydott/geom", "github.com/alexeydott/proj"}
+var releaseVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-fork\.[0-9]+)?$`)
 
 type moduleVersion struct {
 	Path    string
 	Version string
 }
 
+type replacement struct {
+	Old moduleVersion
+	New moduleVersion
+}
+
 type moduleFile struct {
 	Module  moduleVersion
 	Go      string
-	Replace []struct {
-		Old moduleVersion
-		New moduleVersion
-	}
+	Require []moduleVersion
+	Replace []replacement
 }
 
-var forks = map[string]string{
-	"github.com/go-spatial/geom": "./third_party/go-spatial/geom",
-	"github.com/go-spatial/proj": "./third_party/go-spatial/proj",
+type selectedModule struct {
+	Path    string
+	Version string
+	Dir     string
+	Replace *selectedModule
+}
+
+type runner struct {
+	moduleCache string
 }
 
 func main() {
-	if err := check(); err != nil {
+	revision := flag.String("revision", "", "published Tegola revision or tag; downloads all dependencies into a fresh module cache with no replacements")
+	flag.Parse()
+	if err := check(*revision); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func goCommand(dir string, offline bool, args ...string) ([]byte, error) {
+func (r runner) goCommand(dir string, offline bool, args ...string) ([]byte, error) {
 	goName := "go"
 	if runtime.GOOS == "windows" {
 		goName += ".exe"
 	}
 	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", goName), args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=")
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "GOTOOLCHAIN=local")
+	if r.moduleCache != "" {
+		cmd.Env = append(cmd.Env, "GOMODCACHE="+r.moduleCache, "GOFLAGS=-modcacherw",
+			"GOPROXY=https://proxy.golang.org,direct", "GOSUMDB=sum.golang.org",
+			"GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=")
+	}
 	if offline {
-		cmd.Env = append(cmd.Env, "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local")
+		cmd.Env = append(cmd.Env, "GOPROXY=off", "GOSUMDB=off")
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -56,9 +80,9 @@ func goCommand(dir string, offline bool, args ...string) ([]byte, error) {
 	return output, nil
 }
 
-func readModule(dir string) (moduleFile, error) {
+func (r runner) readModule(dir string) (moduleFile, error) {
 	var mod moduleFile
-	output, err := goCommand(dir, false, "mod", "edit", "-json")
+	output, err := r.goCommand(dir, false, "mod", "edit", "-json")
 	if err != nil {
 		return mod, err
 	}
@@ -68,72 +92,122 @@ func readModule(dir string) (moduleFile, error) {
 	return mod, nil
 }
 
-func check() error {
+func forkVersions(mod moduleFile) (map[string]string, error) {
+	if len(mod.Replace) != 0 {
+		return nil, fmt.Errorf("Tegola must resolve its dependencies without replace directives")
+	}
+	versions := make(map[string]string, len(forkModules))
+	for _, requirement := range mod.Require {
+		if requirement.Path == "github.com/go-spatial/geom" || requirement.Path == "github.com/go-spatial/proj" {
+			return nil, fmt.Errorf("unpatched upstream dependency %s", requirement.Path)
+		}
+		for _, path := range forkModules {
+			if requirement.Path == path {
+				if !releaseVersion.MatchString(requirement.Version) {
+					return nil, fmt.Errorf("%s must pin a release tag, got %q", path, requirement.Version)
+				}
+				versions[path] = requirement.Version
+			}
+		}
+	}
+	if len(versions) != len(forkModules) {
+		return nil, fmt.Errorf("Tegola must directly require both published fork modules")
+	}
+	return versions, nil
+}
+
+func (r runner) verifyGraph(consumer, root string, remote bool, versions map[string]string) error {
+	output, err := r.goCommand(consumer, false, "list", "-mod=readonly", "-m", "-json", "all")
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	found := make(map[string]bool)
+	for {
+		var mod selectedModule
+		if err := decoder.Decode(&mod); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		if mod.Path == "github.com/go-spatial/geom" || mod.Path == "github.com/go-spatial/proj" {
+			return fmt.Errorf("consumer selected unpatched upstream dependency %s", mod.Path)
+		}
+		if mod.Replace != nil {
+			if remote || mod.Path != tegolaModule || filepath.Clean(mod.Replace.Dir) != filepath.Clean(root) {
+				return fmt.Errorf("unexpected consumer replacement for %s", mod.Path)
+			}
+		}
+		want, fork := versions[mod.Path]
+		if !fork && mod.Path != tegolaModule {
+			continue
+		}
+		if fork && (mod.Version != want || mod.Replace != nil) {
+			return fmt.Errorf("consumer selected %s@%s; want published %s", mod.Path, mod.Version, want)
+		}
+		if mod.Dir == "" {
+			return fmt.Errorf("module %s was not downloaded", mod.Path)
+		}
+		manifest, err := r.readModule(mod.Dir)
+		if err != nil {
+			return err
+		}
+		if manifest.Module.Path != mod.Path || len(manifest.Replace) != 0 {
+			return fmt.Errorf("module %s has an unexpected module path or replacements", mod.Path)
+		}
+		found[mod.Path] = true
+		fmt.Printf("Consumer selected %s@%s\n", mod.Path, mod.Version)
+	}
+	if len(found) != len(versions)+1 {
+		return fmt.Errorf("consumer graph is missing Tegola or a published fork")
+	}
+	return nil
+}
+
+func check(revision string) error {
 	root, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	mod, err := readModule(root)
+	r := runner{}
+	mod, err := r.readModule(root)
 	if err != nil {
 		return err
 	}
-	if mod.Module.Path != "github.com/go-spatial/tegola" {
-		return fmt.Errorf("run this check from the Tegola repository root")
+	if mod.Module.Path != tegolaModule {
+		return fmt.Errorf("run this check from the alexeydott/tegola repository root")
 	}
-	if len(mod.Replace) != len(forks) {
-		return fmt.Errorf("root replacement inventory changed: review third_party/README.md and this check")
-	}
-	for _, replacement := range mod.Replace {
-		want, ok := forks[replacement.Old.Path]
-		if !ok || replacement.New.Path != want || replacement.Old.Version != "" || replacement.New.Version != "" {
-			return fmt.Errorf("unexpected root replacement: %+v", replacement)
-		}
-	}
-	found := 0
-	err = filepath.WalkDir(filepath.Join(root, "third_party"), func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || entry.Name() != "go.mod" {
-			return nil
-		}
-		nested, err := readModule(filepath.Dir(path))
-		if err != nil {
-			return err
-		}
-		want, ok := forks[nested.Module.Path]
-		if !ok || filepath.Join(root, filepath.FromSlash(want), "go.mod") != path || len(nested.Replace) != 0 {
-			return fmt.Errorf("unexpected nested module or replacement in %s", path)
-		}
-		found++
-		return nil
-	})
+	versions, err := forkVersions(mod)
 	if err != nil {
 		return err
 	}
-	if found != len(forks) {
-		return fmt.Errorf("found %d nested modules, want %d", found, len(forks))
-	}
-	fmt.Println("Replacement inventory: two root local forks, no nested replacements")
-
-	consumer, err := os.MkdirTemp("", "tegola-consumer-")
+	workspace, err := os.MkdirTemp("", "tegola-consumer-")
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if err := os.RemoveAll(consumer); err != nil {
-			fmt.Fprintf(os.Stderr, "remove temporary consumer %s: %v\n", consumer, err)
+		if err := os.RemoveAll(workspace); err != nil {
+			fmt.Fprintf(os.Stderr, "remove temporary consumer %s: %v\n", workspace, err)
 		}
 	}()
-	goMod := fmt.Sprintf("module example.com/tegola-consumer\n\ngo %s\n\nrequire github.com/go-spatial/tegola v0.0.0\n", mod.Go)
+	consumer := filepath.Join(workspace, "consumer")
+	if err := os.Mkdir(consumer, 0700); err != nil {
+		return err
+	}
+	if revision != "" {
+		r.moduleCache = filepath.Join(workspace, "module-cache")
+	}
+	goMod := fmt.Sprintf("module example.com/tegola-consumer\n\ngo %s\n", mod.Go)
 	if err := os.WriteFile(filepath.Join(consumer, "go.mod"), []byte(goMod), 0600); err != nil {
 		return err
 	}
-	replacements := []string{"mod", "edit", "-replace=github.com/go-spatial/tegola=" + filepath.ToSlash(root)}
-	for module, relative := range forks {
-		replacements = append(replacements, "-replace="+module+"="+filepath.ToSlash(filepath.Join(root, filepath.FromSlash(relative))))
+	if revision == "" {
+		_, err = r.goCommand(consumer, false, "mod", "edit", "-require="+tegolaModule+"@v0.0.0", "-replace="+tegolaModule+"="+filepath.ToSlash(root))
+	} else {
+		_, err = r.goCommand(consumer, false, "get", tegolaModule+"@"+revision)
 	}
-	if _, err := goCommand(consumer, false, replacements...); err != nil {
+	if err != nil {
 		return err
 	}
 	for _, name := range []string{"consumer.go", "consumer_test.go"} {
@@ -148,11 +222,18 @@ func check() error {
 	for _, args := range [][]string{
 		{"mod", "tidy"},
 		{"test", "-mod=readonly", "-count=1", "./..."},
-		{"list", "-mod=mod", "-m", "all"},
-		{"mod", "verify"},
-		{"mod", "vendor"},
 	} {
-		output, err := goCommand(consumer, false, args...)
+		output, err := r.goCommand(consumer, false, args...)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Consumer go %v: passed\n%s", args, output)
+	}
+	if err := r.verifyGraph(consumer, root, revision != "", versions); err != nil {
+		return err
+	}
+	for _, args := range [][]string{{"mod", "verify"}, {"mod", "vendor"}} {
+		output, err := r.goCommand(consumer, false, args...)
 		if err != nil {
 			return err
 		}
@@ -162,7 +243,7 @@ func check() error {
 		{"build", "-mod=vendor", "./..."},
 		{"test", "-mod=vendor", "-count=1", "./..."},
 	} {
-		output, err := goCommand(consumer, true, args...)
+		output, err := r.goCommand(consumer, true, args...)
 		if err != nil {
 			return err
 		}

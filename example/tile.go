@@ -4,13 +4,13 @@ package main
 import (
 	"bytes"
 
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/log"
 
 	"context"
 
-	"github.com/go-spatial/geom/encoding/mvt"
-	"github.com/go-spatial/geom/encoding/wkb"
-	"github.com/go-spatial/tegola/internal/convert"
+	"github.com/alexeydott/geom/encoding/mvt"
+	"github.com/alexeydott/geom/encoding/wkb"
+	"github.com/alexeydott/tegola/internal/convert"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 

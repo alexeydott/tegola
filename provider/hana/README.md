@@ -111,13 +111,15 @@ using the OGC standard rendering pixel of 0.28 mm:
   previous SQL values byte for byte with the default tile size.
 - EPSG:4326 (including HANA's planar-equivalent 1000004326) and supported
   geographic `crs_defn` definitions use degrees
-  for pixel dimensions. Meters per longitude degree are approximated by
-  `6378137 * pi / 180 * cos(latitude)`, with latitude at the tile center.
-  This spherical parallel-arc approximation uses the WGS84 semi-major
-  radius even for other supported geographic datums; it is not an
-  ellipsoidal geodesic and is only a representative
-  horizontal scale for a large tile. Latitude is obtained by transforming
-  the original tile center, not averaging the transformed north/south edges.
+  for pixel dimensions. Meters per longitude degree use the source ellipsoid's
+  local parallel-arc factor `N(phi) * cos(phi) * pi / 180`, with
+  `N(phi) = a / sqrt(1 - e^2 * sin^2(phi))`. Here `a` is the source semi-major
+  axis, `e^2` its squared eccentricity, and `phi` the latitude obtained by
+  transforming the original tile center to the layer CRS. Geographic definitions
+  with `+towgs84` therefore use their own ellipsoid and source latitude.
+  This is a local horizontal scale, representative at the center of a large
+  tile; it does not measure a finite geodesic or a diagonal. Exact pole latitudes
+  are rejected because longitude is singular there.
 - An unknown projection/unit definition or an invalid/non-finite extent
   causes a clear layer-scoped query error **only when a scale token occurs
   in executable SQL**. Database-only SRS definitions must also be known to

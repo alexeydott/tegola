@@ -11,14 +11,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/encoding/wkb"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/mos"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/gpkg"
-	"github.com/go-spatial/tegola/provider/test/fixture"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/encoding/wkb"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/mos"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/provider/gpkg"
+	"github.com/alexeydott/tegola/provider/test/fixture"
 )
 
 // openSQLite opens the fixture database; the sqlite3 driver is registered by

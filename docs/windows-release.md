@@ -24,7 +24,7 @@ $revision = git rev-parse HEAD
 $shortRevision = git rev-parse --short=8 HEAD
 $branch = git branch --show-current
 $version = "v0.21.0-fork.1+git.$shortRevision"
-$flags = "-s -w -X github.com/go-spatial/tegola/internal/build.Version=$version -X github.com/go-spatial/tegola/internal/build.GitRevision=$revision -X github.com/go-spatial/tegola/internal/build.GitBranch=$branch"
+$flags = "-s -w -X github.com/alexeydott/tegola/internal/build.Version=$version -X github.com/alexeydott/tegola/internal/build.GitRevision=$revision -X github.com/alexeydott/tegola/internal/build.GitBranch=$branch"
 go build -mod=vendor -trimpath -ldflags $flags -o tegola.exe ./cmd/tegola
 if ($LASTEXITCODE -ne 0) { throw 'release build failed' }
 .\tegola.exe version
@@ -43,8 +43,11 @@ verified scope and remaining limitations are listed in [UPSTREAM.md](../UPSTREAM
 Geographic definitions support WGS84 identity and the Go fork's three- and
 seven-parameter datum transformations; see [the CRS contract](crs.md#geographic-proj-definitions)
 for the remaining grid, unit, axis and prime-meridian restrictions and the
-two-dimensional height convention. SQL token scanning assumes the documented
-default backend string modes.
+two-dimensional height convention. Geographic scale denominators use the source
+ellipsoid's local parallel-arc factor `N(phi) * cos(phi) * pi / 180` at the
+transformed tile center, multiplied by horizontal degrees per pixel and divided
+by 0.00028 m; see [scale tokens](crs.md#scale-tokens). SQL token scanning assumes
+the documented default backend string modes.
 
 Commit messages in this fork must not contain `Co-authored-by` trailers.
 Fetch and reconcile `origin/master`, inspect the outgoing commits, and push

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-spatial/tegola/mapbox/tilejson"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola/mapbox/tilejson"
+	"github.com/alexeydott/tegola/provider"
 )
 
 var ErrUnknownTileJSONVersion = errors.New("tilejson_version invalid. can either be " + tilejson.Version2 + " or " + tilejson.Version3)

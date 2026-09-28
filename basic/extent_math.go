@@ -3,7 +3,7 @@ package basic
 import (
 	"fmt"
 
-	"github.com/go-spatial/geom"
+	"github.com/alexeydott/geom"
 )
 
 const extentEdgeSamples = 16

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/provider"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/test/fixture"
-	"github.com/go-spatial/tegola/provider/test/mosfixture"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/provider"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/provider/test/fixture"
+	"github.com/alexeydott/tegola/provider/test/mosfixture"
 )
 
 // openContractStubLogged opens a fixture whose executed query

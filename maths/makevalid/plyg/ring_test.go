@@ -7,9 +7,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/alexeydott/tegola/maths"
+	"github.com/alexeydott/tegola/maths/hitmap"
 	"github.com/gdey/tbltest"
-	"github.com/go-spatial/tegola/maths"
-	"github.com/go-spatial/tegola/maths/hitmap"
 )
 
 func ringDiff(got, expected *RingCol, cmpYEdges bool) (bool, string) {

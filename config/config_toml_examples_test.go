@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola/config"
+	"github.com/alexeydott/tegola/config"
 )
 
 // TestParseRepoTomlConfigs guards against TOML library upgrades (BurntSushi

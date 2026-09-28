@@ -9,25 +9,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/encoding/wkb"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/encoding/wkb"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
-	conf "github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/internal/sqltoken"
-	"github.com/go-spatial/tegola/mos"
-	"github.com/go-spatial/tegola/observability"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/crsconfig"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/mapplgis"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/basic"
+	conf "github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/sqltoken"
+	"github.com/alexeydott/tegola/mos"
+	"github.com/alexeydott/tegola/observability"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/crsconfig"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/provider/mapplgis"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -1135,7 +1135,7 @@ func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.M
 	// we want to know the geom type instead of returning the geom data so we modify the SQL
 	// TODO (arolek): this strategy wont work if remove the requirement of wrapping ST_AsBinary(geom) in the SQL statements.
 	//
-	// https://github.com/go-spatial/tegola/issues/180
+	// https://github.com/alexeydott/tegola/issues/180
 	//
 	// case insensitive search
 

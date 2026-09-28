@@ -9,22 +9,22 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-spatial/tegola/observability"
+	"github.com/alexeydott/tegola/observability"
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/encoding/mvt"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/convert"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/maths/simplify"
-	"github.com/go-spatial/tegola/maths/validate"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/debug"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/encoding/mvt"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/convert"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/maths/simplify"
+	"github.com/alexeydott/tegola/maths/validate"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/debug"
 )
 
 // NewWebMercatorMap creates a new map with the necessary default values

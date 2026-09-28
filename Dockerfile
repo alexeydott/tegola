@@ -37,7 +37,7 @@
 # Intermediary container for building
 FROM golang:1.26.7-alpine3.23 AS build
 
-ARG BUILDPKG="github.com/go-spatial/tegola/internal/build"
+ARG BUILDPKG="github.com/alexeydott/tegola/internal/build"
 ARG VER="Version Not Set"
 ARG BRANCH="not set"
 ARG REVISION="not set"
@@ -53,13 +53,13 @@ RUN apk update \
 	&& apk add build-base
 
 # Set up source for compilation
-RUN mkdir -p /go/src/github.com/go-spatial/tegola
-COPY . /go/src/github.com/go-spatial/tegola
+RUN mkdir -p /go/src/github.com/alexeydott/tegola
+COPY . /go/src/github.com/alexeydott/tegola
 
 # Debug image stage: builds with compiler optimizations disabled.
 # Prefer the default (production) target unless you need to debug the binary.
 FROM build AS debug
-RUN cd /go/src/github.com/go-spatial/tegola/cmd/tegola \
+RUN cd /go/src/github.com/alexeydott/tegola/cmd/tegola \
 	&& go build -v  \
 	-ldflags "-w -X '${BUILD_PKG}.Version=${VERSION}' -X '${BUILD_PKG}.GitRevision=${GIT_REVISION}' -X '${BUILD_PKG}.GitBranch=${GIT_BRANCH}'" \
 	-gcflags "-N -l" \
@@ -70,7 +70,7 @@ RUN cd /go/src/github.com/go-spatial/tegola/cmd/tegola \
 # Each stage builds its own /opt/tegola so the final image copies the
 # production binary (the debug stage keeps the -gcflags build).
 FROM build AS release
-RUN cd /go/src/github.com/go-spatial/tegola/cmd/tegola \
+RUN cd /go/src/github.com/alexeydott/tegola/cmd/tegola \
 	&& go build -v  \
 	-ldflags "-w -X '${BUILD_PKG}.Version=${VERSION}' -X '${BUILD_PKG}.GitRevision=${GIT_REVISION}' -X '${BUILD_PKG}.GitBranch=${GIT_BRANCH}'" \
 	-o /opt/tegola \

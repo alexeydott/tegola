@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/mos"
-	"github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/mos"
+	"github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 func TestValidateMOSPrecision(t *testing.T) {

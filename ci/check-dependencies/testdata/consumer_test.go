@@ -5,14 +5,19 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/encoding/mvt"
-	vectorTile "github.com/go-spatial/geom/encoding/mvt/vector_tile"
-	"github.com/go-spatial/tegola/basic"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/encoding/mvt"
+	vectorTile "github.com/alexeydott/geom/encoding/mvt/vector_tile"
+	"github.com/alexeydott/tegola/basic"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 func TestForkMVT(t *testing.T) {
+	options := vectorTile.File_vector_tile_proto.Options().(*descriptorpb.FileOptions)
+	if options.GetGoPackage() != "github.com/alexeydott/geom/encoding/mvt/vector_tile;vectorTile" {
+		t.Fatalf("unexpected generated protobuf package: %s", options.GetGoPackage())
+	}
 	feature := mvt.Feature{Geometry: geom.LineString{{1, 2}}}
 	tileFeature, err := feature.VTileFeature(context.Background(), nil, nil)
 	if err != nil || tileFeature != nil {
@@ -40,5 +45,21 @@ func TestForkDatumShift(t *testing.T) {
 	want := geom.Point{4175652.829, 7526703.655}
 	if math.IsNaN(got[0]) || math.IsNaN(got[1]) || math.Abs(got[0]-want[0]) > 0.1 || math.Abs(got[1]-want[1]) > 0.1 {
 		t.Fatalf("datum shift: got %v, want %v within 0.1 metre", got, want)
+	}
+}
+
+func TestGeographicForkDatumShift(t *testing.T) {
+	code, err := basic.RegisterProj4Defn("+proj=longlat +ellps=bessel +towgs84=41,-107.6,-93")
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, err := basic.ToWebMercator(code, geom.Point{37.6, 55.7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := converted.(geom.Point)
+	want := geom.Point{4185417.6034322004, 7498990.087942868}
+	if !ok || math.IsNaN(got[0]) || math.IsNaN(got[1]) || math.Abs(got[0]-want[0]) > 0.001 || math.Abs(got[1]-want[1]) > 0.001 {
+		t.Fatalf("geographic datum: got %v, want %v", converted, want)
 	}
 }

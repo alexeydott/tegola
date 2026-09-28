@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/go-spatial/tegola/internal/env"
+	"github.com/alexeydott/tegola/internal/env"
 	"github.com/go-test/deep"
 )
 

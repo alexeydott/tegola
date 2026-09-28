@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/maths/webmercator"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/maths/webmercator"
 )
 
 const (

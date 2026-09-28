@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/go-spatial/tegola/cache"
+	"github.com/alexeydott/tegola/cache"
 )
 
 // P5-17 regression: ParseKey must reject empty, "." and ".." map/layer name

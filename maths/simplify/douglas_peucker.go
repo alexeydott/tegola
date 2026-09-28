@@ -1,7 +1,7 @@
 package simplify
 
 import (
-	"github.com/go-spatial/tegola/maths"
+	"github.com/alexeydott/tegola/maths"
 )
 
 // DouglasPeucker is a geometry simplification routine

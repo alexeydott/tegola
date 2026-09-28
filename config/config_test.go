@@ -10,13 +10,13 @@ import (
 
 	"github.com/go-test/deep"
 
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/internal/env"
-	"github.com/go-spatial/tegola/mapbox/tilejson"
-	"github.com/go-spatial/tegola/provider"
-	_ "github.com/go-spatial/tegola/provider/debug"
-	_ "github.com/go-spatial/tegola/provider/postgis"
-	_ "github.com/go-spatial/tegola/provider/test"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/internal/env"
+	"github.com/alexeydott/tegola/mapbox/tilejson"
+	"github.com/alexeydott/tegola/provider"
+	_ "github.com/alexeydott/tegola/provider/debug"
+	_ "github.com/alexeydott/tegola/provider/postgis"
+	_ "github.com/alexeydott/tegola/provider/test"
 )
 
 const (

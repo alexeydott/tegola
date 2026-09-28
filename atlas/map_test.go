@@ -10,13 +10,13 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	vectorTile "github.com/go-spatial/geom/encoding/mvt/vector_tile"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/internal/p"
-	"github.com/go-spatial/tegola/provider/test"
-	"github.com/go-spatial/tegola/provider/test/collection"
-	"github.com/go-spatial/tegola/provider/test/emptycollection"
+	vectorTile "github.com/alexeydott/geom/encoding/mvt/vector_tile"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/internal/p"
+	"github.com/alexeydott/tegola/provider/test"
+	"github.com/alexeydott/tegola/provider/test/collection"
+	"github.com/alexeydott/tegola/provider/test/emptycollection"
 )
 
 func TestMapFilterLayersByZoom(t *testing.T) {

@@ -1,7 +1,7 @@
 package geometrycodec_test
 
 import (
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 	"strings"
 	"testing"
 )

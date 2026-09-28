@@ -5,8 +5,8 @@ import (
 
 	_ "github.com/theckman/goconstraint/go1.8/gte"
 
-	"github.com/go-spatial/tegola/cmd/tegola/cmd"
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/cmd/tegola/cmd"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 func main() {

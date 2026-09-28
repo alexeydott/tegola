@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/proj"
+	"github.com/alexeydott/proj"
 )
 
 // The synthetic SRID allocation must be deterministic across processes: two

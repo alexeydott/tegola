@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-test/deep"
 
-	"github.com/go-spatial/tegola/internal/env"
+	"github.com/alexeydott/tegola/internal/env"
 )
 
 func TestParseURL(t *testing.T) {

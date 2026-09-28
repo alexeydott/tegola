@@ -3,10 +3,10 @@ package intersect
 import (
 	"fmt"
 
-	"github.com/go-spatial/tegola/container/singlelist"
-	ptList "github.com/go-spatial/tegola/container/singlelist/point/list"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/maths"
+	"github.com/alexeydott/tegola/container/singlelist"
+	ptList "github.com/alexeydott/tegola/container/singlelist/point/list"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/maths"
 )
 
 type Point struct {

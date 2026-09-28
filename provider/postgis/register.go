@@ -1,8 +1,8 @@
 package postgis
 
 import (
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/provider"
 )
 
 func init() {

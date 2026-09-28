@@ -22,13 +22,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/internal/sqltoken"
-	"github.com/go-spatial/tegola/mos"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/sqltoken"
+	"github.com/alexeydott/tegola/mos"
 )
 
 // Web Mercator (EPSG:3857) half-extent in metres. The probe reference tile

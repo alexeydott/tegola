@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-spatial/geom"
+	"github.com/alexeydott/geom"
 )
 
 func TestRegisterGeographicDefinition(t *testing.T) {

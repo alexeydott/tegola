@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // TestParseQuotedIdent covers the quoted-identifier validation used by

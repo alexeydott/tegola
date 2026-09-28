@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/internal/log"
 	"github.com/go-spatial/cobra" // The config from the main app
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/internal/log"
 )
 
 // Config from the main app

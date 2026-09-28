@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/provider"
 )
 
 // TestDoWorkSkipsMapsWithCustomParams ensures maps with custom parameters are

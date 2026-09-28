@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/alexeydott/geom"
 	"github.com/dimfeld/httptreemux"
-	"github.com/go-spatial/geom"
 	"gopkg.in/go-playground/colors.v1"
 
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/mapbox/style"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/mapbox/style"
 )
 
 type HandleMapStyle struct {

@@ -1,9 +1,9 @@
 package hana
 
 import (
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/tegola/provider"
 )
 
 // scaleTile normalizes HANA planar-equivalent labels without changing bounds

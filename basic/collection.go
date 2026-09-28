@@ -1,6 +1,6 @@
 package basic
 
-import "github.com/go-spatial/tegola"
+import "github.com/alexeydott/tegola"
 
 type Geometry interface {
 	basicType() // does nothing, but there to make collection only work with basic types.

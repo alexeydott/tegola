@@ -1,7 +1,7 @@
 package sqltoken_test
 
 import (
-	"github.com/go-spatial/tegola/internal/sqltoken"
+	"github.com/alexeydott/tegola/internal/sqltoken"
 	"strings"
 	"testing"
 )

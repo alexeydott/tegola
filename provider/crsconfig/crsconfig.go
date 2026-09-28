@@ -28,9 +28,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 // Config keys shared by every standard storage provider.

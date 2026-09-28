@@ -4,7 +4,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/go-spatial/tegola/cache"
+	"github.com/alexeydott/tegola/cache"
 )
 
 // P6-33 regression: Key.String must join key parts with forward slashes on

@@ -4,10 +4,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/internal/env"
-	"github.com/go-spatial/tegola/provider"
-	_ "github.com/go-spatial/tegola/provider/debug"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/internal/env"
+	"github.com/alexeydott/tegola/provider"
+	_ "github.com/alexeydott/tegola/provider/debug"
 )
 
 // TestValidateMapNamesAndZooms covers the part13 P6-29 validation:
@@ -38,13 +38,13 @@ func TestValidateMapNamesAndZooms(t *testing.T) {
 				},
 				Maps: []provider.Map{
 					{
-						Name:   "osm",
+						Name: "osm",
 						Layers: []provider.MapLayer{
 							{ProviderLayer: "provider1.water", MinZoom: env.UintPtr(0), MaxZoom: env.UintPtr(10)},
 						},
 					},
 					{
-						Name:   "osm",
+						Name: "osm",
 						Layers: []provider.MapLayer{
 							{ProviderLayer: "provider1.water", MinZoom: env.UintPtr(0), MaxZoom: env.UintPtr(10)},
 						},
@@ -60,13 +60,13 @@ func TestValidateMapNamesAndZooms(t *testing.T) {
 				},
 				Maps: []provider.Map{
 					{
-						Name:   "osm",
+						Name: "osm",
 						Layers: []provider.MapLayer{
 							{ProviderLayer: "provider1.water", MinZoom: env.UintPtr(0), MaxZoom: env.UintPtr(10)},
 						},
 					},
 					{
-						Name:   "osm2",
+						Name: "osm2",
 						Layers: []provider.MapLayer{
 							{ProviderLayer: "provider1.water", MinZoom: env.UintPtr(11), MaxZoom: env.UintPtr(20)},
 						},
@@ -82,7 +82,7 @@ func TestValidateMapNamesAndZooms(t *testing.T) {
 				},
 				Maps: []provider.Map{
 					{
-						Name:   "osm",
+						Name: "osm",
 						Layers: []provider.MapLayer{
 							{ProviderLayer: "provider1.water", MinZoom: env.UintPtr(10), MaxZoom: env.UintPtr(5)},
 						},
@@ -103,7 +103,7 @@ func TestValidateMapNamesAndZooms(t *testing.T) {
 				},
 				Maps: []provider.Map{
 					{
-						Name:   "osm",
+						Name: "osm",
 						Layers: []provider.MapLayer{
 							{ProviderLayer: "provider1.water", MinZoom: env.UintPtr(5), MaxZoom: env.UintPtr(5)},
 						},

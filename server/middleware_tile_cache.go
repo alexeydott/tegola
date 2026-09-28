@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-spatial/geom/encoding/mvt"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/geom/encoding/mvt"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 // tileRenders deduplicates concurrent cache-miss renders of the same tile so a

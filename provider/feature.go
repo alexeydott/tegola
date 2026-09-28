@@ -5,7 +5,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/go-spatial/geom"
+	"github.com/alexeydott/geom"
 )
 
 type Feature struct {

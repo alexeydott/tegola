@@ -13,19 +13,19 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/encoding/mvt"
+	"github.com/alexeydott/geom/slippy"
+	"github.com/alexeydott/proj"
 	"github.com/dimfeld/httptreemux"
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/encoding/mvt"
-	"github.com/go-spatial/geom/slippy"
-	"github.com/go-spatial/proj"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/maths"
-	"github.com/go-spatial/tegola/observability"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/maths"
+	"github.com/alexeydott/tegola/observability"
+	"github.com/alexeydott/tegola/provider"
 )
 
 var (

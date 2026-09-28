@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/cache/file"
-	"github.com/go-spatial/tegola/cache/memory"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/cache/file"
+	"github.com/alexeydott/tegola/cache/memory"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 const CacheType = "multilevel"

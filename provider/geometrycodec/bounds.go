@@ -13,9 +13,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/geom/cmp"
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/geom/cmp"
+	"github.com/alexeydott/tegola/dict"
 )
 
 // BBox field-name configuration keys. These name the result columns/aliases

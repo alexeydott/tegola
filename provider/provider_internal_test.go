@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/tegola/dict"
 )
 
 // TestConvertFeatureIDInvalidValues (audit P6-10) pins the feature-ID

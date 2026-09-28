@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/tegola/dict"
 )
 
 // SSLMode represents a PostgreSQL sslmode value.

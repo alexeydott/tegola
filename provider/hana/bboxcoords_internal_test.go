@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/basic"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/basic"
 )
 
 func mustProjectPoint(t *testing.T, srid uint64, x, y float64) geom.Point {

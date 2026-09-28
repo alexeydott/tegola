@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/internal/env"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/mapbox/tilejson"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/internal/env"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/mapbox/tilejson"
+	"github.com/alexeydott/tegola/provider"
 )
 
 const (

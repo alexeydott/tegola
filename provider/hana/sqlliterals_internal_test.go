@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/provider"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/provider"
 )
 
 // audit P5-8: values interpolated into SQL string literals must escape

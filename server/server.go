@@ -9,10 +9,10 @@ import (
 
 	"github.com/dimfeld/httptreemux"
 
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/internal/build"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/observability"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/internal/build"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/observability"
 )
 
 const (
@@ -66,7 +66,7 @@ var (
 	// ProxyProtocol is a custom protocol that will be used to generate the URLs
 	// included in the capabilities endpoint responses. This is useful when he
 	// server sits behind a reverse proxy
-	// (See https://github.com/go-spatial/tegola/pull/967)
+	// (See https://github.com/alexeydott/tegola/pull/967)
 	ProxyProtocol string
 
 	// DefaultCORSHeaders define the default CORS response headers added to all requests

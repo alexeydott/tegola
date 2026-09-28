@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	geom "github.com/go-spatial/geom"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	geom "github.com/alexeydott/geom"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // assertInspectionDeadline asserts that ctx carries the P5-16 inspection

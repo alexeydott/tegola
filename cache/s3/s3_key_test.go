@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/cache/s3"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/cache/s3"
 )
 
 // ctxRoundTripper honors request context cancellation the way http.Transport

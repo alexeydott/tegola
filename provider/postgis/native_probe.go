@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/internal/sqltoken"
-	"github.com/go-spatial/tegola/provider"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/internal/sqltoken"
+	"github.com/alexeydott/tegola/provider"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // Native PostGIS placeholders are geometry operands, unlike raw MOS bounds

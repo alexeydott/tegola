@@ -11,18 +11,18 @@ import (
 	"strings"
 	"sync"
 
-	conf "github.com/go-spatial/tegola/config"
+	conf "github.com/alexeydott/tegola/config"
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/mos"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/crsconfig"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
-	"github.com/go-spatial/tegola/provider/mapplgis"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/mos"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/crsconfig"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/provider/mapplgis"
 )
 
 func customSQLNeedsDeferredInspection(sqlText string) bool {

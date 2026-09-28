@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
+	"github.com/alexeydott/tegola"
 	"github.com/gdey/tbltest"
-	"github.com/go-spatial/tegola"
 )
 
 func TestTileNum2Deg(t *testing.T) {

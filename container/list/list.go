@@ -3,7 +3,7 @@ package list
 import (
 	"fmt"
 
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 type Elementer interface {

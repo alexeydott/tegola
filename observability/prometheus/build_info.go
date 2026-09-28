@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/go-spatial/tegola/internal/build"
+	"github.com/alexeydott/tegola/internal/build"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

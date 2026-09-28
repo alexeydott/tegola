@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/basic"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/basic"
 )
 
 // TestRegisterProj4Defn verifies the crs_defn path: a full PROJ.4 definition

@@ -8,8 +8,8 @@ import (
 	"encoding/binary"
 	"math"
 
-	"github.com/go-spatial/tegola/mos"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/mos"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // Columns returns the result-column names of the reference fixture. The

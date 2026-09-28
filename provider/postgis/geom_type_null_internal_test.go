@@ -1,7 +1,7 @@
 package postgis
 
 import (
-	"github.com/go-spatial/geom"
+	"github.com/alexeydott/geom"
 	"reflect"
 	"testing"
 )

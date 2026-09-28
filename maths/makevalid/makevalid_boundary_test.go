@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/maths"
-	"github.com/go-spatial/tegola/maths/hitmap"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/maths"
+	"github.com/alexeydott/tegola/maths/hitmap"
 )
 
 func TestMakeValidPreservesBoundaryCoincidentWithClipbox(t *testing.T) {

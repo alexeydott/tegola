@@ -3,8 +3,8 @@ package crsconfig
 import (
 	"testing"
 
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/dict"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/dict"
 )
 
 func TestResolveProvider(t *testing.T) {
@@ -200,10 +200,10 @@ func TestApplySystemInfoCRS(t *testing.T) {
 		expectedApply: false,
 	})
 	fn(t, tcase{
-		name:        "explicit provider srid suppresses projection",
-		currentSRID: 3857,
-		explicit:    true,
-		projection:  "+proj=utm +zone=34 +datum=WGS84 +units=m +no_defs",
+		name:          "explicit provider srid suppresses projection",
+		currentSRID:   3857,
+		explicit:      true,
+		projection:    "+proj=utm +zone=34 +datum=WGS84 +units=m +no_defs",
 		expectedSRID:  3857,
 		expectedApply: false,
 	})

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-spatial/geom"
+	"github.com/alexeydott/geom"
 )
 
 // systemInfoBlobBuilder assembles a MapplGIS LayerInfo blob mirroring the

@@ -3,7 +3,7 @@ package webmercator
 import (
 	"math"
 
-	"github.com/go-spatial/tegola/internal/log"
+	"github.com/alexeydott/tegola/internal/log"
 )
 
 // PLonToX projects a WGS84 longitude to a Web Mercator x coordinate.

@@ -5,14 +5,14 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/cmd/internal/register"
+	cachecmd "github.com/alexeydott/tegola/cmd/tegola/cmd/cache"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/build"
+	"github.com/alexeydott/tegola/internal/log"
 	"github.com/go-spatial/cobra"
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/cmd/internal/register"
-	cachecmd "github.com/go-spatial/tegola/cmd/tegola/cmd/cache"
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/build"
-	"github.com/go-spatial/tegola/internal/log"
 )
 
 var (

@@ -4,7 +4,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/go-spatial/tegola/maths"
+	"github.com/alexeydott/tegola/maths"
 )
 
 // Segment-level geometry predicates that make simplification intersection

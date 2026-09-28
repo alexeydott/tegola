@@ -1,4 +1,4 @@
-module github.com/go-spatial/tegola
+module github.com/alexeydott/tegola
 
 go 1.26.7
 
@@ -9,12 +9,12 @@ require (
 	github.com/SAP/go-hdb v1.18.11
 	github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b
 	github.com/akrylysov/algnhsa v1.1.0
+	github.com/alexeydott/geom v0.1.1
+	github.com/alexeydott/proj v0.3.1
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/dimfeld/httptreemux v5.0.1+incompatible
 	github.com/gdey/tbltest v0.0.0-20180914212833-1865222d591f
 	github.com/go-spatial/cobra v0.0.3-0.20181105183926-68194e4fbcc6
-	github.com/go-spatial/geom v0.1.0
-	github.com/go-spatial/proj v0.3.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/go-test/deep v1.1.1
 	github.com/google/uuid v1.6.0
@@ -26,14 +26,6 @@ require (
 	github.com/theckman/goconstraint v1.11.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/go-playground/colors.v1 v1.2.0
-)
-
-// In-repo forks carrying fork-specific fixes (vendor tree patches moved here,
-// see third_party/README.md). Keep the require versions above in sync with
-// the upstream baselines the forks were created from.
-replace (
-	github.com/go-spatial/geom => ./third_party/go-spatial/geom
-	github.com/go-spatial/proj => ./third_party/go-spatial/proj
 )
 
 require (

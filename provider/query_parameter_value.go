@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-spatial/tegola/internal/sqltoken"
+	"github.com/alexeydott/tegola/internal/sqltoken"
 )
 
 // Query parameter holds normalized parameter data ready to be inserted in the

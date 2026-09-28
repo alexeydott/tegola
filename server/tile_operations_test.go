@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/cache"
-	"github.com/go-spatial/tegola/cache/memory"
-	"github.com/go-spatial/tegola/server"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/cache"
+	"github.com/alexeydott/tegola/cache/memory"
+	"github.com/alexeydott/tegola/server"
 )
 
 const testTileOpsToken = "test-tile-ops-token"

@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-spatial/tegola/mos"
+	"github.com/alexeydott/tegola/mos"
 )
 
 // GeometryField is the geometry column of a detected MapplGIS table.

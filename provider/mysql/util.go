@@ -6,12 +6,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-spatial/geom"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/internal/sqltoken"
-	"github.com/go-spatial/tegola/provider"
-	codec "github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/internal/sqltoken"
+	"github.com/alexeydott/tegola/provider"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // replaceTokens replaces tile and layer metadata tokens in a SQL query.

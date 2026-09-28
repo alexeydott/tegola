@@ -7,16 +7,16 @@ import (
 	"os"
 
 	"github.com/akrylysov/algnhsa"
+	"github.com/alexeydott/geom/encoding/mvt"
 	"github.com/dimfeld/httptreemux"
-	"github.com/go-spatial/geom/encoding/mvt"
 
-	"github.com/go-spatial/tegola/atlas"
-	"github.com/go-spatial/tegola/cmd/internal/register"
-	"github.com/go-spatial/tegola/config"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/build"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/server"
+	"github.com/alexeydott/tegola/atlas"
+	"github.com/alexeydott/tegola/cmd/internal/register"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/build"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/server"
 )
 
 // mux is a reference to the http muxer. it's stored as a package

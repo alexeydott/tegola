@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // TestSplitTableName covers the audit N7 identifier handling: quoted

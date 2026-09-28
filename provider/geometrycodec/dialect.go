@@ -1,6 +1,6 @@
 package geometrycodec
 
-import "github.com/go-spatial/tegola/internal/sqltoken"
+import "github.com/alexeydott/tegola/internal/sqltoken"
 
 // SQLDialect applies consistent lexical rules to registration probes and checks.
 type SQLDialect struct{ scanner sqltoken.Dialect }

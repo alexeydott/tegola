@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-spatial/tegola/container/list"
-	"github.com/go-spatial/tegola/internal/log"
-	"github.com/go-spatial/tegola/maths"
+	"github.com/alexeydott/tegola/container/list"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/maths"
 )
 
 type Elementer interface {

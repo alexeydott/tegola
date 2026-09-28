@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-spatial/tegola"
-	"github.com/go-spatial/tegola/basic"
-	"github.com/go-spatial/tegola/dict"
-	"github.com/go-spatial/tegola/internal/ttools"
-	"github.com/go-spatial/tegola/provider"
-	"github.com/go-spatial/tegola/provider/geometrycodec"
+	"github.com/alexeydott/tegola"
+	"github.com/alexeydott/tegola/basic"
+	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/ttools"
+	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/geometrycodec"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
