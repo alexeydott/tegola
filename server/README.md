@@ -4,6 +4,7 @@ The server package is responsible for handling webserver requests for map tiles 
 
 ```toml
 [webserver]
+tile_http_max_age = 300     # optional browser/proxy cache lifetime in seconds
 port = ":9090"              # set something different than default ":8080"
 ssl_cert = "fullchain.pem"  # ssl cert for serving by https
 ssl_key = "privkey.pem"     # ssl key for serving by https
@@ -25,6 +26,41 @@ Access-Control-Allow-Origin = "*"
 - `uri_prefix` (string): [Optional] A prefix to add to all API routes. This is useful when tegola is behind a proxy (i.e. example.com/tegola). The prexfix will be added to all URLs included in the capabilities endpoint responses.
 - `ssl_cert` (string): [Optional, unless ssl_key provided] Path to a certificate file for serving through HTTPS
 - `ssl_key` (string): [Optional, unless ssl_cert provided] Path to a private key file for serving through HTTPS
+
+### Tile HTTP cache
+
+`webserver.tile_http_max_age` is a non-negative integer in seconds (environment
+substitution is supported). Omitted or `0` preserves existing header behavior;
+negative values are rejected. For example:
+
+```toml
+[webserver]
+port = ":8082"
+tile_http_max_age = 300
+```
+
+When positive, anonymous GET requests without a query string receive
+`Cache-Control: public, max-age=300` only for HTTP 200 vector-tile responses.
+The policy is identical for rendered tiles, shared renders, cache hits, and layer
+tiles extracted from seeded map tiles, including when no server cache is configured.
+`Vary: Accept-Encoding` is preserved for gzip and uncompressed representations.
+
+All other responses on tile routes receive `Cache-Control: no-store`: errors,
+non-tile responses, query-dependent requests, all `?tile=...` / `?dirty...` requests,
+and requests carrying Authorization or Cookie headers. Existing maintenance
+`no-store` is retained. This route-specific policy overrides generic
+`webserver.headers` Cache-Control and removes Expires on tile routes; capabilities,
+styles, and other routes are unchanged. With the option disabled, generic headers
+retain their previous behavior.
+
+This lifetime is independent of memory/file cache TTL. Regenerating or deleting a
+server-side tile does not invalidate an already fresh browser/proxy copy: clients
+may continue to display it until its HTTP lifetime expires. Use a short lifetime
+for frequently edited data; the server does not add ETag/Last-Modified validators
+or implement conditional 304 responses as part of this option. Reloading configuration
+requires restarting the server. Public caching is intended for tiles shared by all
+clients; deployments with identity-aware proxies must account for that proxy's
+cache policy separately.
 
 ### Tile operations (`[webserver.tile_operations]`)
 

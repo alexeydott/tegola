@@ -59,6 +59,10 @@ var (
 	// configurable via the tegola config.toml file (set in main.go)
 	Headers = map[string]string{}
 
+	// TileHTTPMaxAge enables HTTP caching of ordinary tile responses, in seconds.
+	// Zero preserves the previous header behavior. Set before creating the router.
+	TileHTTPMaxAge int
+
 	// URIPrefix sets a prefix on all server endpoints. This is often used
 	// when the server sits behind a reverse proxy with a prefix (i.e. /tegola)
 	URIPrefix = "/"
@@ -105,9 +109,9 @@ func NewRouter(a *atlas.Atlas) *httptreemux.TreeMux {
 	// map tiles
 	hMapLayerZXY := HandleMapLayerZXY{Atlas: a}
 	group.UsingContext().
-		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:z/:x/:y", o, HeadersHandler(GZipHandler(TileCacheHandler(a, hMapLayerZXY)))))
+		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:z/:x/:y", o, HeadersHandler(TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, hMapLayerZXY))))))
 	group.UsingContext().
-		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:layer_name/:z/:x/:y", o, HeadersHandler(GZipHandler(TileCacheHandler(a, hMapLayerZXY)))))
+		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:layer_name/:z/:x/:y", o, HeadersHandler(TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, hMapLayerZXY))))))
 
 	// map style
 	group.UsingContext().

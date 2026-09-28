@@ -55,6 +55,7 @@ var serverCmd = &cobra.Command{
 
 		// set our server version
 		server.Version = build.Version
+		server.TileHTTPMaxAge = int(conf.Webserver.TileHTTPMaxAge)
 		build.Commands = append(build.Commands, cmd.Name())
 		atlas.StartSubProcesses()
 

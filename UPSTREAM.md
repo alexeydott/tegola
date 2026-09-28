@@ -9,6 +9,18 @@ This file records upstream provenance, the bugs fixed in the fork that are candi
 upstream PRs, the versioning scheme, the sync methodology, and the technical debt deferred
 to a later wave.
 
+## Tile HTTP caching (fork extension)
+
+`webserver.tile_http_max_age` now configures browser/shared-cache freshness for
+successful ordinary tile responses (default `0`, opt-in). The outer tile middleware
+applies the same policy after cache lookup/rendering and gzip handling, so cache
+hits and misses agree and decompression failures are not cacheable. Query-bearing
+requests, maintenance operations, errors, and credential-bearing requests remain
+`no-store` when enabled. Existing service-operation `no-store` is not removed.
+See [server configuration](server/README.md#tile-http-cache) for TTL and invalidation
+semantics. Regression coverage: `server/middleware_tile_http_cache_test.go` and
+`config/tile_http_cache_test.go`.
+
 ## Version scheme
 
 Fork releases use the scheme `v0.21.0-fork.N`, where the base is upstream `master`

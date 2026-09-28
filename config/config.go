@@ -121,6 +121,7 @@ func (c *Config) reservedTokens() map[string]struct{} {
 
 // Webserver represents the config options for the webserver part of Tegola
 type Webserver struct {
+	TileHTTPMaxAge env.Int              `toml:"tile_http_max_age"`
 	HostName       env.URL              `toml:"hostname"`
 	Port           env.String           `toml:"port"`
 	URIPrefix      env.String           `toml:"uri_prefix"`
@@ -395,6 +396,10 @@ func (c *Config) Validate() error {
 			"Caching is disabled for these maps, since they have configured custom parameters: %s",
 			strings.Join(mapsWithCustomParams, ", "),
 		)
+	}
+
+	if c.Webserver.TileHTTPMaxAge < 0 {
+		return fmt.Errorf("webserver.tile_http_max_age must be non-negative")
 	}
 
 	// check for blacklisted headers
