@@ -61,31 +61,34 @@ func TestTileHTTPCacheRouterHitMiss(t *testing.T) {
 	defer func() { server.TileHTTPMaxAge, server.URIPrefix = oldAge, oldPrefix }()
 	server.TileHTTPMaxAge, server.URIPrefix = 300, "/"
 	for _, uri := range []string{"/maps/test-map/10/2/3.pbf", "/maps/test-map/test-layer/4/2/3.pbf"} {
-		for _, encoding := range []string{"", "gzip"} {
-			a := newTestMapWithLayers(testLayer1, testLayer2, testLayer3)
-			c, _ := memory.New(nil)
-			a.SetCache(c)
-			router := server.NewRouter(a)
-			var first []byte
-			for _, expected := range []string{"MISS", "HIT"} {
-				r := httptest.NewRequest("GET", uri, nil)
-				r.Header.Set("Accept-Encoding", encoding)
-				w := httptest.NewRecorder()
-				router.ServeHTTP(w, r)
-				if w.Code != 200 || w.Header().Get("Tegola-Cache") != expected || w.Header().Get("Cache-Control") != "public, max-age=300" {
-					t.Fatalf("%s %s: status %d headers %v", uri, expected, w.Code, w.Header())
-				}
-				if w.Header().Get("Vary") != "Accept-Encoding" {
-					t.Fatal("encoding variation lost")
-				}
-				if first == nil {
-					first = append([]byte(nil), w.Body.Bytes()...)
-				} else if !bytes.Equal(first, w.Body.Bytes()) {
-					t.Fatal("HIT body changed")
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			for _, encoding := range []string{"", "gzip"} {
+				a := newTestMapWithLayers(testLayer1, testLayer2, testLayer3)
+				c, _ := memory.New(nil)
+				a.SetCache(c)
+				router := server.NewRouter(a)
+				var first []byte
+				for _, expected := range []string{"MISS", "HIT"} {
+					r := httptest.NewRequest(method, uri, nil)
+					r.Header.Set("Accept-Encoding", encoding)
+					w := httptest.NewRecorder()
+					router.ServeHTTP(w, r)
+					if w.Code != 200 || w.Header().Get("Tegola-Cache") != expected || w.Header().Get("Cache-Control") != "public, max-age=300" {
+						t.Fatalf("%s %s: status %d headers %v", uri, expected, w.Code, w.Header())
+					}
+					if w.Header().Get("Vary") != "Accept-Encoding" {
+						t.Fatal("encoding variation lost")
+					}
+					if first == nil {
+						first = append([]byte(nil), w.Body.Bytes()...)
+					} else if !bytes.Equal(first, w.Body.Bytes()) {
+						t.Fatal("HIT body changed")
+					}
 				}
 			}
 		}
 	}
+
 }
 
 func TestTileHTTPCacheGzipFailure(t *testing.T) {

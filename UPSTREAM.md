@@ -12,7 +12,7 @@ to a later wave.
 ## Tile HTTP caching (fork extension)
 
 `webserver.tile_http_max_age` now configures browser/shared-cache freshness for
-successful ordinary tile responses (default `0`, opt-in). The outer tile middleware
+successful ordinary GET/HEAD tile responses (default `0`, opt-in). The outer tile middleware
 applies the same policy after cache lookup/rendering and gzip handling, so cache
 hits and misses agree and decompression failures are not cacheable. Query-bearing
 requests, maintenance operations, errors, and credential-bearing requests remain

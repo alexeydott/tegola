@@ -17,7 +17,7 @@ func TileHTTPCacheHandler(maxAge int, next http.Handler) http.Handler {
 	}
 	policy := "public, max-age=" + strconv.Itoa(maxAge)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ordinary := r.Method == http.MethodGet && r.URL.RawQuery == "" && !r.URL.ForceQuery &&
+		ordinary := (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.URL.RawQuery == "" && !r.URL.ForceQuery &&
 			r.Header.Get("Authorization") == "" && r.Header.Get("Cookie") == ""
 		out := &tileHTTPResponseWriter{ResponseWriter: w, ordinary: ordinary, policy: policy}
 		next.ServeHTTP(out, r)

@@ -39,7 +39,7 @@ port = ":8082"
 tile_http_max_age = 300
 ```
 
-When positive, anonymous GET requests without a query string receive
+When positive, anonymous GET and HEAD requests without a query string receive
 `Cache-Control: public, max-age=300` only for HTTP 200 vector-tile responses.
 The policy is identical for rendered tiles, shared renders, cache hits, and layer
 tiles extracted from seeded map tiles, including when no server cache is configured.
