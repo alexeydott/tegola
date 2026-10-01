@@ -420,7 +420,10 @@ func checkResponse(result provider.FeatureQueryResult, got []provider.Feature, c
 					}
 				}
 			}
-			if !reflect.DeepEqual(gotFeature, expected) {
+			actual := cloneFeature(gotFeature)
+			actual.Geometry = normalizeRingClosure(actual.Geometry)
+			expected.Geometry = normalizeRingClosure(expected.Geometry)
+			if !reflect.DeepEqual(actual, expected) {
 				issues = append(issues, fmt.Sprintf("feature %d values/geometry/CRS/properties changed", gotFeature.ID))
 			}
 		}
@@ -558,4 +561,24 @@ func cloneFixture(f Fixture) Fixture {
 	}
 	f.Rows = rows
 	return f
+}
+
+// normalizeRingClosure changes only an exact terminal duplicate of a polygon
+// ring's first coordinate. It works on detached snapshots and preserves holes,
+// nesting, dimensions, order and all other values without a tolerance.
+func normalizeRingClosure(g geom.Geometry) geom.Geometry {
+	g = cloneGeometry(g)
+	switch value := g.(type) {
+	case geom.Collection:
+		for i, child := range value {
+			value[i] = normalizeRingClosure(child)
+		}
+	case geom.Polygon:
+		for i, ring := range value {
+			if len(ring) > 1 && ring[0] == ring[len(ring)-1] {
+				value[i] = ring[:len(ring)-1]
+			}
+		}
+	}
+	return g
 }

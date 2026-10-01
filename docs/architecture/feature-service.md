@@ -73,3 +73,8 @@ The optional contract is declared in [provider/query.go](../../provider/query.go
 PostGIS reuses decipherFields and decodeGeometryValue; HANA reuses readRowValues and decodeGeometryValue; shared geometrycodec owns format decoding and geometric predicates. MySQL's deferred CRS/retry flow remains unchanged: its local construction seam is finalized with the FeatureQuerier implementation. No new query path may duplicate those decoders.
 
 Raw null/normalized-empty geometry follows [ADR-0002](decisions/ADR-0002-absent-feature-geometry.md), including bbox matching. The [contract harness](../../provider/internal/querytest/querytest.go) supplies explicit fixture expectations; its reference adapter demonstrates harness behavior, without proving real provider or database parity.
+## Temporal metadata and collection construction
+
+[ADR-0003](decisions/ADR-0003-temporal-metadata-and-resolved-collections.md) defines immutable source temporal mappings and resolved collection inputs. Feature publication requires explicit provider eligibility and temporal metadata. Original query bounds remain with the provider for exact matching before pagination; FeatureService transforms response geometry to CRS84.
+
+The first GPKG feature profile admits table-backed layers with unique integer IDs. Custom SQL remains available to tiles and is unsupported for feature queries in this profile. Cross-CRS selection may need a bounded-memory source scan when a conservative indexed envelope cannot be established. These are capability and performance limits to report during acceptance, rather than completed runtime claims.

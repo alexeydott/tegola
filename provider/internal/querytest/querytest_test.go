@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -200,5 +201,28 @@ func TestSetupErrorsAreClassified(t *testing.T) {
 	}
 	if issues, handled := checkSetup(Instance{}, caseSpec{}); !handled || len(issues) == 0 {
 		t.Fatal("missing querier accepted without setup error")
+	}
+}
+
+func TestGeometryRingClosureComparison(t *testing.T) {
+	closed := geom.Collection{geom.Polygon{{{0, 0}, {4, 0}, {4, 4}, {0, 0}}, {{1, 1}, {2, 1}, {2, 2}, {1, 1}}, {{3, 3}, {3.5, 3}, {3.5, 3.5}, {3, 3}}}}
+	implicit := geom.Collection{geom.Polygon{{{0, 0}, {4, 0}, {4, 4}}, {{1, 1}, {2, 1}, {2, 2}}, {{3, 3}, {3.5, 3}, {3.5, 3.5}}}}
+	before := cloneGeometry(closed)
+	if !reflect.DeepEqual(normalizeRingClosure(closed), normalizeRingClosure(implicit)) {
+		t.Fatal("equivalent ring closure rejected")
+	}
+	if !reflect.DeepEqual(closed, before) {
+		t.Fatal("ring normalization mutated fixture")
+	}
+	changed := cloneGeometry(implicit).(geom.Collection)
+	changed[0].(geom.Polygon)[0][1][0] = 4.1
+	if reflect.DeepEqual(normalizeRingClosure(closed), normalizeRingClosure(changed)) {
+		t.Fatal("changed coordinate accepted")
+	}
+	reordered := cloneGeometry(implicit).(geom.Collection)
+	polygon := reordered[0].(geom.Polygon)
+	polygon[1], polygon[2] = polygon[2], polygon[1]
+	if reflect.DeepEqual(normalizeRingClosure(closed), normalizeRingClosure(reordered)) {
+		t.Fatal("changed hole order accepted")
 	}
 }

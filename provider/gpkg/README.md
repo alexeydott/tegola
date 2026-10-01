@@ -259,3 +259,59 @@ select a storage format or disable automatic format detection.
 For automatically detected MOS, undecodable feature rows are skipped with a
 warning at tile rendering, consistently with the probe. A bad row does not
 hide other valid features. Explicit-format error policies are unchanged.
+
+## Raw feature queries
+
+The optional `FeatureQuerier` capability queries table-backed layers with a
+schema-proven single-column unique `INTEGER` identity. Existing tile layers
+remain available when this feature profile is unsupported. Custom SQL is not
+eligible for raw feature publication. IDs above SQLite's signed integer range
+produce no match; they are never converted to negative IDs.
+
+Queries use a read transaction and ordered candidate chunks. Exact geometry
+intersection precedes logical offset and limit; one additional exact match
+establishes `HasMore`. An exhausted query can report an exact matched total;
+otherwise that total remains unknown. NULL and decoded empty geometries match
+spatial constraints; NULL identities and MOS metadata do not invent features.
+Malformed feature geometry fails even for auto-detected MOS, independently of
+the legacy tile warning/skip policy.
+
+### Temporal geometry
+
+Configure either an instant or two interval endpoint fields on a provider layer:
+
+```toml
+temporal_field = "observed_at"
+temporal_storage = "unix_milliseconds"
+# Alternatively:
+# temporal_start_field = "valid_from"
+# temporal_end_field = "valid_until"
+```
+
+Supported storage profiles are `unix_seconds`, `unix_milliseconds`,
+`unix_microseconds`, and `unix_nanoseconds`. Values must be SQLite INTEGERs;
+TEXT/REAL values are not coerced. Field mappings resolve during registration,
+independently of property projection. Missing, mixed, partial or duplicate
+endpoint mappings fail registration. Explicit temporal configuration on custom
+SQL is unsupported. No temporal keys declares absent temporal geometry.
+
+Intervals intersect inclusively. A NULL endpoint is open; both NULL endpoints
+mean absent temporal geometry and match valid temporal queries. Reversed source
+intervals fail validation. Exact integer bound conversion preserves negative
+epochs, nanosecond boundaries and query dates outside the storage range.
+
+### Spatial query limits
+
+Same-CRS queries use available RTree/raw bounds for ordinary candidates and
+separate conservative branches for absent or unclassifiable geometry. The
+absence branch may scan source metadata. Native/WKB Polygon, Multi and
+GeometryCollection payloads are conservatively inspected outside their stored
+bounds when SQL cannot prove they are nonempty; MOS non-Point payloads have the
+same limitation. This is not a claim that every geometry family avoids scanning.
+Cross-CRS bounds use ordered source chunks and exact transformed geometry
+matching; no heuristic inverse envelope is used to discard candidates.
+
+The initial SQL predicate profile accepts at most 512 requested IDs and 128
+ordinary bounds. Unsupported profiles/ranges preserve `errors.Is(ErrUnsupported)`;
+field selection is restricted to resolved public properties. No feature query
+calls `TileFeatures` or constructs a tile.

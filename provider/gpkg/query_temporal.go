@@ -1,0 +1,101 @@
+//go:build cgo
+
+package gpkg
+
+import (
+	"math/big"
+	"strings"
+	"time"
+
+	"github.com/alexeydott/tegola/provider"
+)
+
+// epochBound preserves precision beyond UnixNano's representable date range.
+func epochBound(t time.Time, scale int64, ceil bool) *big.Int {
+	value := new(big.Int).Mul(big.NewInt(t.Unix()), big.NewInt(scale))
+	numerator := new(big.Int).Mul(big.NewInt(int64(t.Nanosecond())), big.NewInt(scale))
+	quotient, remainder := new(big.Int), new(big.Int)
+	quotient.QuoRem(numerator, big.NewInt(1000000000), remainder)
+	value.Add(value, quotient)
+	if ceil && remainder.Sign() != 0 {
+		value.Add(value, big.NewInt(1))
+	}
+	return value
+}
+
+func integerBoundSQL(field, operator string, bound *big.Int, args *[]any) string {
+	if bound.IsInt64() {
+		*args = append(*args, bound.Int64())
+		return field + operator + "?"
+	}
+	// Stored endpoints are signed int64. Simplify out-of-range comparisons.
+	truth := (operator == ">=" && bound.Sign() < 0) || (operator == "<=" && bound.Sign() > 0)
+	if truth {
+		return "1"
+	}
+	return "0"
+}
+
+func temporalPredicate(layer *Layer, temporal *provider.TemporalConstraint, args *[]any) string {
+	m := layer.temporalMapping
+	if temporal == nil || m == (provider.TemporalMapping{}) {
+		return "1"
+	}
+	var comparisons, invalid []string
+	if m.InstantField != "" {
+		field := "l." + quoteIdent(m.InstantField)
+		invalid = append(invalid, "("+field+" IS NOT NULL AND typeof("+field+")<>'integer')")
+		if temporal.Start != nil {
+			comparisons = append(comparisons, integerBoundSQL(field, ">=", epochBound(*temporal.Start, layer.temporalScale, true), args))
+		}
+		if temporal.End != nil {
+			comparisons = append(comparisons, integerBoundSQL(field, "<=", epochBound(*temporal.End, layer.temporalScale, false), args))
+		}
+		return "(" + strings.Join(invalid, " OR ") + " OR " + field + " IS NULL OR (" + strings.Join(comparisons, " AND ") + "))"
+	}
+	start, end := "l."+quoteIdent(m.StartField), "l."+quoteIdent(m.EndField)
+	invalid = []string{
+		"(" + start + " IS NOT NULL AND typeof(" + start + ")<>'integer')",
+		"(" + end + " IS NOT NULL AND typeof(" + end + ")<>'integer')",
+		"(" + start + " IS NOT NULL AND " + end + " IS NOT NULL AND " + start + ">" + end + ")",
+	}
+	if temporal.Start != nil {
+		comparisons = append(comparisons, "("+end+" IS NULL OR "+integerBoundSQL(end, ">=", epochBound(*temporal.Start, layer.temporalScale, true), args)+")")
+	}
+	if temporal.End != nil {
+		comparisons = append(comparisons, "("+start+" IS NULL OR "+integerBoundSQL(start, "<=", epochBound(*temporal.End, layer.temporalScale, false), args)+")")
+	}
+	return "(" + strings.Join(invalid, " OR ") + " OR (" + strings.Join(comparisons, " AND ") + "))"
+}
+
+func validateTemporalRow(layer *Layer, columns []string, values []any) error {
+	m := layer.temporalMapping
+	if m == (provider.TemporalMapping{}) {
+		return nil
+	}
+	var start, end *int64
+	for i, column := range columns {
+		if column != m.InstantField && column != m.StartField && column != m.EndField {
+			continue
+		}
+		if values[i] == nil {
+			continue
+		}
+		value, ok := values[i].(int64)
+		if !ok {
+			return invalidQuery("temporal", "source value is not an INTEGER")
+		}
+		if column == m.StartField {
+			v := value
+			start = &v
+		}
+		if column == m.EndField {
+			v := value
+			end = &v
+		}
+	}
+	if start != nil && end != nil && *start > *end {
+		return invalidQuery("temporal", "source interval is reversed")
+	}
+	return nil
+}

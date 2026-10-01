@@ -3,6 +3,7 @@ package gpkg
 import (
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/tegola/mos"
+	"github.com/alexeydott/tegola/provider"
 	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
@@ -59,8 +60,19 @@ type Layer struct {
 	// rtree_<table>_<geom> shadow table exists (checked via sqlite_master
 	// once per layer at registration, never per request), planBBox when the
 	// table carries bounds columns, planScan otherwise.
-	tileQueryPlan tileQueryPlan
+	tileQueryPlan     tileQueryPlan
+	temporalMapping   provider.TemporalMapping
+	temporalScale     int64
+	featureQueryError error
+	featureColumns    []string
+	featureRowIDAlias string
 }
+
+// TemporalMapping returns immutable registration-time temporal metadata.
+func (l Layer) TemporalMapping() (provider.TemporalMapping, error) { return l.temporalMapping, nil }
+
+// FeatureQuerySupported reports whether this layer has a proven query profile.
+func (l Layer) FeatureQuerySupported() error { return l.featureQueryError }
 
 // tileQueryPlan selects the spatial pre-filter baked into the tile-query
 // SQL of a native (GeoPackage geometry) tablename layer. The plan is

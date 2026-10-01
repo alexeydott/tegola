@@ -1264,6 +1264,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		p.layers[layer.name] = &layer
 	}
 
+	if err := p.registerFeatureQueries(layers); err != nil {
+		return nil, err
+	}
+
 	// track the provider so we can clean it up later
 	providersMu.Lock()
 	providers = append(providers, &p)
