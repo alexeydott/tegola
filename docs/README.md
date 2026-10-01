@@ -15,6 +15,19 @@ Tegola documentation covers HTTP behavior, configuration, provider contracts, ge
 * [Maintenance status](maintenance-status.md) — current work disposition and verification boundaries.
 * [Windows release builds](windows-release.md) — Windows build and packaging workflow.
 
+## Feature API Baselines
+
+These sources prepare OGC API Features work; they do not advertise an implemented Feature API.
+
+* [Feature-service source baseline](architecture/feature-service.md) - existing contracts and integration points.
+* [OGC API Features editions](architecture/ogc-api-features.md) - selected normative sources and verification boundary.
+* [Jivan route inventory](migration/jivan-feature-matrix.md) - registered resources and internal/deployment behavior.
+
+## Feature-service contribution process
+
+* [Team roles](development/ogc-team-roles.md) - responsibilities, independent reviewers and escalation.
+* [Review and gates](development/ogc-review-gates.md) - required evidence and dependency transitions.
+
 ## Provider Guides
 
 * [GeoPackage](../provider/gpkg/README.md) — native binary, raw tables, RTree, and bounds columns.
