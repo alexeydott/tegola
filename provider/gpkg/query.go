@@ -40,7 +40,7 @@ func (p *Provider) QueryFeatures(
 	if err := layer.FeatureQuerySupported(); err != nil {
 		return result, err
 	}
-	if len(query.IDs) > 512 || len(query.Bounds) > 128 {
+	if len(query.IDs) > 512 || len(query.Bounds)+len(query.Bounds3D) > 128 {
 		return result, fmt.Errorf("gpkg feature query exceeds bounded predicate profile: %w", provider.ErrUnsupported)
 	}
 	fields, err := resolveQueryFields(layer, query.Fields)
@@ -50,7 +50,11 @@ func (p *Provider) QueryFeatures(
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	if len(query.Bounds) != 0 && query.BoundsSRID != resolvedLayerSRID(layer) {
+	spatial, err := newSpatialQuery(layer, query)
+	if err != nil {
+		return result, err
+	}
+	if (len(query.Bounds) != 0 || len(query.Bounds3D) != 0) && query.BoundsSRID != resolvedLayerSRID(layer) && layer.heightProjection == nil {
 		if err := validateQueryCRS(resolvedLayerSRID(layer)); err != nil {
 			return result, err
 		}
@@ -105,25 +109,25 @@ func (p *Provider) QueryFeatures(
 			if values[0] != nil {
 				id, ok := values[0].(int64)
 				if !ok || id < 0 {
-					return false, invalidQuery("id", "source identity is not a nonnegative INTEGER")
+					return false, featureSourceError(invalidQuery("id", "source identity is not a nonnegative INTEGER"))
 				}
 				cursor, started = id, true
 			}
-			decoded, decodeErr := p.decodeRow(ctx, layer, columns, values, rowDecodePolicy{})
+			decoded, decodeErr := p.decodeRow(ctx, layer, columns, values, rowDecodePolicy{dimensionalRaw: true})
 			if decodeErr != nil {
-				return false, fmt.Errorf("gpkg feature decode: %w", decodeErr)
+				return false, fmt.Errorf("gpkg feature decode: %w", featureSourceError(wrapSpatialError(decodeErr)))
 			}
 			if !decoded.Representable {
 				return false, nil
 			}
 			if temporalErr := validateTemporalRow(layer, columns, values); temporalErr != nil {
-				return false, temporalErr
+				return false, featureSourceError(temporalErr)
 			}
 			feature := decoded.Feature
 			if decoded.HadAbsentGeometry {
 				feature.Geometry = nil
 			}
-			exact, exactErr := featureMatchesBounds(feature.Geometry, feature.SRID, query)
+			exact, exactErr := spatial.matches(feature.Geometry, feature.SRID, query)
 			if exactErr != nil {
 				return false, exactErr
 			}
@@ -164,6 +168,16 @@ func (p *Provider) QueryFeatures(
 			return result, nil
 		}
 	}
+}
+
+// Source integrity is distinct from invalid request parameters. Decoder profile
+// failures describe source data here; admission and requested-transform failures
+// are classified before or after this seam. Cancellation retains its identity.
+func featureSourceError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return provider.FeatureDataError{Err: err}
 }
 
 // Each chunk owns its rows in a separate scope; every exit closes the cursor
@@ -343,8 +357,15 @@ func featureCandidatePredicate(layer *Layer, query provider.FeatureQuery) (strin
 		predicates = append(predicates, "l."+quoteIdent(layer.idFieldname)+" IN ("+strings.Join(placeholders, ",")+")")
 	}
 	predicates = append(predicates, temporalPredicate(layer, query.Temporal, &args))
-	if len(query.Bounds) != 0 && query.BoundsSRID == resolvedLayerSRID(layer) {
-		spatial, err := spatialCandidatePredicate(layer, query.Bounds, &args)
+	bounds := query.Bounds
+	if len(query.Bounds3D) != 0 {
+		bounds = make([]geom.Extent, len(query.Bounds3D))
+		for i, b := range query.Bounds3D {
+			bounds[i] = geom.Extent{b[0], b[1], b[3], b[4]}
+		}
+	}
+	if len(bounds) != 0 && query.BoundsSRID == resolvedLayerSRID(layer) {
+		spatial, err := spatialCandidatePredicate(layer, bounds, &args)
 		if err != nil {
 			return "", nil, false, err
 		}
@@ -369,7 +390,7 @@ func absenceCandidateSQL(layer *Layer) string {
 	case GeometryFormatWKT:
 		return base + " OR typeof(" + field + ")<>'text' OR upper(" + field + ") LIKE '%EMPTY%'"
 	case GeometryFormatWKB:
-		return base + " OR typeof(" + field + ")<>'blob' OR length(" + field + ")<=9 OR hex(substr(" + field + ",2,4)) NOT IN ('01000000','00000001','02000000','00000002')"
+		return base + " OR typeof(" + field + ")<>'blob' OR length(" + field + ")<=9 OR hex(substr(" + field + ",2,4)) NOT IN ('01000000','00000001','02000000','00000002') OR (" + rawEmptyPointSQL(field) + ")"
 	case GeometryFormatMOS:
 		return base + " OR typeof(" + field + ")<>'blob' OR length(" + field + ")<10 OR hex(substr(" + field + ",1,1))<>'02' OR hex(substr(" + field + ",7,4))='00000000'"
 	}

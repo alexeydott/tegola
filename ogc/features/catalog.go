@@ -4,29 +4,56 @@ package features
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/alexeydott/proj"
 	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/crsconfig"
 )
 
 // CollectionSource binds a public collection to an already initialized provider layer.
 // Provider metadata must be final before service construction.
 type CollectionSource struct {
-	ID      string
-	Layer   provider.LayerInfo
-	Querier provider.FeatureQuerier
+	ID          string
+	Title       string
+	Description string
+	Layer       provider.LayerInfo
+	Querier     provider.FeatureQuerier
 }
 
 type resolvedCollection struct {
-	layer    string
-	srid     uint64
-	temporal provider.TemporalMapping
-	querier  provider.FeatureQuerier
+	metadata         CollectionMetadata
+	layer            string
+	srid             uint64
+	temporal         provider.TemporalMapping
+	spatial          provider.SpatialMetadata
+	heightProjection *crsconfig.HeightProjection
+	querier          provider.FeatureQuerier
 }
 
 // Service owns immutable collection metadata; provider implementations own their concurrency.
 type Service struct{ collections map[string]resolvedCollection }
+
+// CollectionMetadata contains detached public discovery information.
+type CollectionMetadata struct{ ID, Title, Description string }
+
+func (s *Service) Collections() []CollectionMetadata {
+	metadata := make([]CollectionMetadata, 0, len(s.collections))
+	for _, collection := range s.collections {
+		metadata = append(metadata, collection.metadata)
+	}
+	sort.Slice(metadata, func(i, j int) bool { return metadata[i].ID < metadata[j].ID })
+	return metadata
+}
+
+func (s *Service) Collection(id string) (CollectionMetadata, error) {
+	collection, ok := s.collections[id]
+	if !ok {
+		return CollectionMetadata{}, CollectionNotFoundError{CollectionID: id}
+	}
+	return collection.metadata, nil
+}
 
 // CollectionNotFoundError identifies an unpublished collection.
 type CollectionNotFoundError struct{ CollectionID string }
@@ -82,10 +109,31 @@ func NewService(sources []CollectionSource) (*Service, error) {
 			return nil, fmt.Errorf("features: collection %q temporal mapping: %w", source.ID, err)
 		}
 		srid := source.Layer.SRID()
-		if err := validateSRID(srid); err != nil {
-			return nil, fmt.Errorf("features: collection %q CRS: %w", source.ID, err)
+		spatialInfo, ok := source.Layer.(provider.SpatialLayerInfo)
+		if !ok {
+			return nil, fmt.Errorf("features: collection %q has unknown spatial metadata: %w", source.ID, provider.ErrUnsupported)
 		}
-		service.collections[source.ID] = resolvedCollection{layer: layer, srid: srid, temporal: mapping, querier: source.Querier}
+		spatial, err := spatialInfo.SpatialMetadata()
+		if err != nil {
+			return nil, fmt.Errorf("features: collection %q spatial metadata: %w", source.ID, err)
+		}
+		if err := spatial.Validate(); err != nil {
+			return nil, fmt.Errorf("features: collection %q spatial profile: %w", source.ID, err)
+		}
+		var heightProjection *crsconfig.HeightProjection
+		if spatial.Dimension == provider.DimensionXY {
+			if err := validateSRID(srid); err != nil {
+				return nil, fmt.Errorf("features: collection %q CRS: %w", source.ID, err)
+			}
+		} else {
+			// Provider eligibility establishes effective source provenance;
+			// this owned canonical adapter never consults mutable registry state.
+			heightProjection, err = crsconfig.NewHeightProjection(srid)
+			if err != nil {
+				return nil, fmt.Errorf("features: collection %q height-preserving CRS: %w: %w", source.ID, provider.ErrUnsupported, err)
+			}
+		}
+		service.collections[source.ID] = resolvedCollection{metadata: CollectionMetadata{ID: source.ID, Title: source.Title, Description: source.Description}, layer: layer, srid: srid, temporal: mapping, spatial: spatial, heightProjection: heightProjection, querier: source.Querier}
 	}
 	return service, nil
 }

@@ -25,6 +25,9 @@ func (l *testLayer) TemporalMapping() (provider.TemporalMapping, error) {
 	return l.mapping, l.temporalError
 }
 func (l *testLayer) FeatureQuerySupported() error { return l.eligibility }
+func (*testLayer) SpatialMetadata() (provider.SpatialMetadata, error) {
+	return provider.SpatialMetadata{Dimension: provider.DimensionXY}, nil
+}
 
 type plainLayer struct{}
 

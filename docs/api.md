@@ -112,8 +112,137 @@ Return [TileJSON](https://github.com/mapbox/tilejson-spec) details about the map
 
 Return an automatically generated [Mapbox GL Style](https://www.mapbox.com/mapbox-gl-js/style-spec/) for the configured map.
 
+## Feature API (opt-in)
+
+Feature publication is disabled by default. Enable `[features]` and explicitly
+map public collection IDs to eligible `provider.layer` sources. The default
+base path is `/features`; configured server URI prefixes also apply. Map layers
+are not automatically published as collections. The initial GeoPackage profile
+supports eligible table-backed layers with a schema-proven unique INTEGER ID;
+custom SQL and MVT-only providers are not eligible.
+
+The following paths are relative to the feature base path. Each supports GET
+and HEAD; HEAD returns the same status and headers without a response body.
+
+| Path | Resource | Canonical response media type |
+| --- | --- | --- |
+| `/` (base path itself) | Landing page and discovery links | `application/json` |
+| `/api` | OpenAPI description | `application/vnd.oai.openapi+json;version=3.0` |
+| `/conformance` | Advertised conformance classes | `application/json` |
+| `/collections` | Explicitly published collection catalog | `application/json` |
+| `/collections/{collectionId}` | Collection metadata | `application/json` |
+| `/collections/{collectionId}/items` | GeoJSON FeatureCollection | `application/geo+json` |
+| `/collections/{collectionId}/items/{featureId}` | One GeoJSON Feature | `application/geo+json` |
+
+For example, the landing resource is `/features`, and collection items are
+`/features/collections/roads/items`. Feature IDs in URLs are unsigned decimal
+integers; GeoJSON IDs are numeric. Discovery and single-feature resources accept
+no query parameters.
+
+An absent `Accept` header or an acceptable matching wildcard selects the
+canonical representation. A malformed or incompatible `Accept` returns 406
+before querying the provider. An explicit matching `q=0` excludes that
+representation even if a broader wildcard permits it. Feature payloads do not
+have an `application/json` alias. Feature responses, errors and feature-route
+redirects carry `Cache-Control: no-store`.
+
+### Item query parameters and paging
+
+Only the following parameters are accepted on the items resource. Unknown or
+repeated parameters return 400. Spatial and temporal constraints combine by AND.
+
+| Parameter | Behavior |
+| --- | --- |
+| `limit` | Positive decimal page size; defaults to 100 and clamps to the configured maximum (default 10000). Zero and nondecimal values are invalid. |
+| `offset` | Nonnegative decimal offset in stable feature-ID order; defaults to 0. This is a Tegola paging extension. |
+| `bbox` | Four CRS84 or six CRS84h coordinates, described below. |
+| `datetime` | RFC3339 instant or inclusive interval, described below. |
+
+Exact filtering and deduplication precede offset and limit. Responses include
+`numberReturned` and paging links (`self`, `next` when more matches
+exist, and `prev` when offset is nonzero). `numberMatched` is present only when
+the provider knows an exact total; its absence does not mean zero. Follow the
+returned links, which retain bbox and datetime constraints. Paging is evaluated
+against each request's source snapshot; it does not freeze data across requests.
+
+```text
+/features/collections/roads/items?limit=25&offset=0&bbox=-10,40,10,55
+/features/collections/observations/items?datetime=2020-01-01T00:00:00Z/..
+```
+
+### Spatial bounds and source profiles
+
+Four-coordinate bbox order is `west,south,east,north`, in longitude/latitude
+degrees (CRS84). Six-coordinate order is
+`west,south,minHeight,east,north,maxHeight`; heights are WGS84 ellipsoidal metres
+(CRS84h). Coordinates must be finite, longitude must lie within −180..180 and
+latitude within −90..90. South cannot exceed north, and minimum height cannot
+exceed maximum height. Equal endpoints are allowed; boundaries are inclusive.
+West greater than east selects an antimeridian-crossing union, with the same
+height interval on both sides.
+
+XY source members intersect the horizontal bounds with an unconstrained
+vertical dimension, including under six-coordinate bbox. This is an explicit
+application policy; it supplies no invented height. XYZ members retain Z and
+use exact segment/box or planar polygon-surface intersection, including holes.
+Four-coordinate bbox tests their XY projection while retaining output Z.
+Nonplanar XYZ polygon surfaces are unsupported. Nil or valid decoded empty
+spatial geometry matches a valid bbox and is returned as null geometry;
+an empty child does not make a populated collection absent. Malformed geometry
+remains an error.
+
+Published sources declare `xy`, `xyz` or `mixed_xy_xyz` dimensional metadata.
+Native GeoPackage derives dimensional eligibility from its schema; raw WKB/WKT
+default to XY and need explicit configuration for XYZ/mixed. XYZ/mixed requires
+`vertical_crs = "http://www.opengis.net/def/crs/OGC/0/CRS84h"`.
+The initial raw profile supports ISO-WKB Z and WKT Z geometry families; MOS
+remains XY. Actual M/ZM and EWKB profiles are unsupported. Source dimensional
+declarations are checked against encountered bodies.
+
+XYZ/mixed coordinate conversion admits canonical WGS84 EPSG:4326, EPSG:3857
+and WGS84 UTM zones 32601–32660/32701–32760. Other/custom source definitions and
+other vertical references are unsupported. Projection retains height exactly;
+transformed vertices define straight segments and planar surfaces. If projection
+makes a polygon nonplanar, the query is unsupported. GeoJSON uses
+longitude/latitude and preserves the third height ordinate where present.
+
+### Exact datetime constraints
+
+`datetime` accepts an RFC3339 instant or `start/end` interval. One endpoint may
+be open, written `..` or empty; both open and reversed ranges are invalid.
+Offsets and lowercase `t`/`z` are accepted. Fractional seconds may have more than
+nine digits: comparisons preserve the remaining decimal precision rather than
+rounding the request to nanoseconds. Encode a positive timezone offset's `+`
+as `%2B` in a query URL.
+
+Second 60 is accepted only for a known positive leap insertion, checked after
+timezone normalization. The production date table contains the 27 announced
+insertions through 2016-12-31; future unannounced leap seconds are rejected and
+the table requires an explicit update when new insertions are announced.
+
+GeoPackage temporal mappings support integer POSIX seconds, milliseconds,
+microseconds or nanoseconds. An instant finer than a source tick matches only
+an exactly representable stored instant. POSIX storage has no timestamp inside
+an inserted leap second, so such an instant selects no populated instant value;
+intervals spanning it can still overlap. Absent temporal geometry matches valid
+temporal constraints. A NULL interval endpoint is open; two NULL endpoints are
+absent. Invalid stored types or reversed source intervals fail the request.
+
+### Errors and conformance status
+
+Invalid request parameters return 400, missing collections/features 404,
+unacceptable representations 406, cancellation/deadlines 408, and unsupported
+requested operations 501. Source-row corruption and other internal failures
+return generic 500 responses without exposing source details.
+
+`/conformance` currently returns `{"conformsTo":[]}`. Implemented endpoints do
+not constitute an OGC Core conformance declaration or certification. Official
+conformance verification/certification is deferred; consult this page and the
+OpenAPI resource for the implemented application profile.
+
 ## See Also
 
 - [Configuration](configuration.md) — server and cache settings
 - [Provider contract](provider-contract.md) — provider runtime behavior
 - [CRS contract](crs.md) — coordinate reference system behavior
+- [GeoPackage provider](../provider/gpkg/README.md) — raw source eligibility, temporal mappings and dimensional configuration

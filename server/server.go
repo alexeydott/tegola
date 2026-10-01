@@ -82,6 +82,22 @@ var (
 
 // NewRouter set's up our routes.
 func NewRouter(a *atlas.Atlas) *httptreemux.TreeMux {
+	return assembleRouter(a, RouterOptions{})
+}
+
+// NewRouterWithOptions validates optional feature publication before adding routes.
+func NewRouterWithOptions(a *atlas.Atlas, options RouterOptions) (*Router, error) {
+	if err := validateRouterOptions(options); err != nil {
+		return nil, err
+	}
+	router := &Router{TreeMux: assembleRouter(a, options)}
+	if options.Features != nil {
+		router.featureBasePath = strings.TrimSuffix(URIPrefix, "/") + options.Features.cfg.BasePath
+	}
+	return router, nil
+}
+
+func assembleRouter(a *atlas.Atlas, options RouterOptions) *httptreemux.TreeMux {
 	o := a.Observer()
 	r := httptreemux.New()
 	group := r.NewGroup(URIPrefix)
@@ -117,6 +133,10 @@ func NewRouter(a *atlas.Atlas) *httptreemux.TreeMux {
 	group.UsingContext().
 		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/style.json", o, HeadersHandler(HandleMapStyle{})))
 
+	if options.Features != nil {
+		options.Features.register(r, group, o)
+	}
+
 	// setup viewer routes, which can be excluded via build flags
 	setupViewer(o, group)
 
@@ -125,12 +145,20 @@ func NewRouter(a *atlas.Atlas) *httptreemux.TreeMux {
 
 // Start starts the tile server binding to the provided port
 func Start(a *atlas.Atlas, port string) *http.Server {
-	// notify the user the server is starting
-	log.Infof("starting tegola server (%v) on port %v", build.Version, port)
+	return startRouter(NewRouter(a), port)
+}
 
-	// Register all routes before the listener starts so there is no window in
-	// which a request can arrive before the routes are wired up.
-	router := NewRouter(a)
+// StartWithOptions validates and assembles routes before starting the listener.
+func StartWithOptions(a *atlas.Atlas, port string, options RouterOptions) (*http.Server, error) {
+	router, err := NewRouterWithOptions(a, options)
+	if err != nil {
+		return nil, err
+	}
+	return startRouter(router, port), nil
+}
+
+func startRouter(router http.Handler, port string) *http.Server {
+	log.Infof("starting tegola server (%v) on port %v", build.Version, port)
 
 	srv := &http.Server{Addr: port, Handler: router}
 

@@ -1,9 +1,11 @@
 package gpkg
 
 import (
+	"errors"
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/crsconfig"
 	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
@@ -66,13 +68,23 @@ type Layer struct {
 	featureQueryError error
 	featureColumns    []string
 	featureRowIDAlias string
+	spatialMetadata   provider.SpatialMetadata
+	spatialError      error
+	nativeZ, nativeM  int
+	heightProjection  *crsconfig.HeightProjection
+	dimensionalSample bool
 }
 
 // TemporalMapping returns immutable registration-time temporal metadata.
 func (l Layer) TemporalMapping() (provider.TemporalMapping, error) { return l.temporalMapping, nil }
 
 // FeatureQuerySupported reports whether this layer has a proven query profile.
-func (l Layer) FeatureQuerySupported() error { return l.featureQueryError }
+func (l Layer) FeatureQuerySupported() error { return errors.Join(l.featureQueryError, l.spatialError) }
+
+// SpatialMetadata returns immutable registration-time dimensional evidence.
+func (l Layer) SpatialMetadata() (provider.SpatialMetadata, error) {
+	return l.spatialMetadata, l.spatialError
+}
 
 // tileQueryPlan selects the spatial pre-filter baked into the tile-query
 // SQL of a native (GeoPackage geometry) tablename layer. The plan is

@@ -1,0 +1,242 @@
+package server
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/observability"
+	"github.com/alexeydott/tegola/ogc/features"
+	"github.com/dimfeld/httptreemux"
+)
+
+// FeatureAPIConfig supplies immutable HTTP publication settings.
+type FeatureAPIConfig struct {
+	BasePath     string
+	DefaultLimit uint
+	MaxLimit     uint
+	Title        string
+	Description  string
+}
+
+// FeatureAPI wraps a resolved service. Build it with NewFeatureAPI before routing.
+type FeatureAPI struct {
+	service   *features.Service
+	cfg       FeatureAPIConfig
+	uriPrefix string
+}
+
+// RouterOptions enables explicit feature publication; nil Features preserves legacy behavior.
+type RouterOptions struct{ Features *FeatureAPI }
+
+// NewFeatureAPI validates settings and public IDs independently of TOML callers.
+func NewFeatureAPI(service *features.Service, cfg FeatureAPIConfig) (*FeatureAPI, error) {
+	if service == nil {
+		return nil, fmt.Errorf("features: nil publication service")
+	}
+	if err := config.ValidateFeatureBasePath(cfg.BasePath); err != nil {
+		return nil, err
+	}
+	if cfg.DefaultLimit == 0 || cfg.MaxLimit == 0 || cfg.DefaultLimit > cfg.MaxLimit {
+		return nil, fmt.Errorf("features: invalid publication limits")
+	}
+	collections := service.Collections()
+	if len(collections) == 0 {
+		return nil, fmt.Errorf("features: publication has no collections")
+	}
+	for _, collection := range collections {
+		if err := config.ValidateFeatureCollectionID(collection.ID); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.Title == "" {
+		cfg.Title = "Tegola Feature API"
+	}
+	return &FeatureAPI{service: service, cfg: cfg}, nil
+}
+
+func validateRouterOptions(options RouterOptions) error {
+	if options.Features == nil {
+		return nil
+	}
+	if _, err := NewFeatureAPI(options.Features.service, options.Features.cfg); err != nil {
+		return err
+	}
+	if err := validateFeatureURIPrefix(URIPrefix); err != nil {
+		return err
+	}
+	return validateFeatureViewerPath(options.Features.cfg.BasePath)
+}
+
+func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.Group, observer observability.APIObserver) {
+	// Each router snapshots its own prefix, including when the API is reused.
+	bound := *api
+	bound.uriPrefix = strings.TrimSuffix(URIPrefix, "/")
+	routes := []struct {
+		path    string
+		handler http.Handler
+	}{
+		{path: "", handler: http.HandlerFunc(bound.serveLanding)},
+		{path: "/api", handler: http.HandlerFunc(bound.serveAPI)},
+		{path: "/conformance", handler: http.HandlerFunc(bound.serveConformance)},
+		{path: "/collections", handler: http.HandlerFunc(bound.serveCollections)},
+		{path: "/collections/:collection", handler: http.HandlerFunc(bound.serveCollection)},
+		{path: "/collections/:collection/items", handler: http.HandlerFunc(bound.serveItems)},
+		{path: "/collections/:collection/items/:feature", handler: http.HandlerFunc(bound.serveItem)},
+		{path: "/*feature_path", handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			bound.writeError(w, r, http.StatusNotFound, "NotFound", "Resource not found")
+		})},
+	}
+	for _, route := range routes {
+		path := bound.cfg.BasePath + route.path
+		mediaType := "application/json"
+		if route.path == "/api" {
+			mediaType = "application/vnd.oai.openapi+json;version=3.0"
+		} else if strings.Contains(route.path, "/items") {
+			mediaType = "application/geo+json"
+		}
+		handler := HeadersHandler(featureNoStoreHandler(bound.negotiate(route.handler, mediaType)))
+		group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodGet, path, observer, handler))
+		group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodHead, path, observer, handler))
+	}
+	oldOptions := router.OptionsHandler
+	router.OptionsHandler = func(w http.ResponseWriter, r *http.Request, params map[string]string) {
+		oldOptions(w, r, params)
+		if bound.ownsPath(r.URL.Path) {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+	}
+	oldMethod := router.MethodNotAllowedHandler
+	router.MethodNotAllowedHandler = func(w http.ResponseWriter, r *http.Request, methods map[string]httptreemux.HandlerFunc) {
+		if !bound.ownsPath(r.URL.Path) {
+			oldMethod(w, r, methods)
+			return
+		}
+		setHeaders(w)
+		w.Header().Set("Cache-Control", "no-store")
+		for method := range methods {
+			w.Header().Add("Allow", method)
+		}
+		bound.writeError(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "Method not supported")
+	}
+}
+
+func featureNoStoreHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (api *FeatureAPI) ownsPath(path string) bool {
+	base := api.uriPrefix + api.cfg.BasePath
+	return path == base || strings.HasPrefix(path, base+"/")
+}
+
+type featureLink struct {
+	Href  string `json:"href"`
+	Rel   string `json:"rel"`
+	Type  string `json:"type,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
+func (api *FeatureAPI) link(r *http.Request, suffix, relation, mediaType string) featureLink {
+	root := URLRoot(r)
+	rootPath := strings.Trim(root.Path, "/")
+	if rootPath != "" {
+		rootPath = "/" + rootPath
+	}
+	target := url.URL{Scheme: root.Scheme, Host: root.Host, Path: rootPath + api.uriPrefix + api.cfg.BasePath + suffix}
+	return featureLink{Href: target.String(), Rel: relation, Type: mediaType}
+}
+
+func (api *FeatureAPI) writeJSON(w http.ResponseWriter, r *http.Request, status int, mediaType string, value any) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		log.Error("feature response encoding failed", err)
+		raw = []byte(`{"code":"InternalError","description":"Response encoding failed"}`)
+		status = http.StatusInternalServerError
+		mediaType = "application/json"
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+	w.WriteHeader(status)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := w.Write(raw); err != nil {
+		log.Error("feature response write failed", err)
+	}
+}
+
+func (api *FeatureAPI) writeError(w http.ResponseWriter, r *http.Request, status int, code, description string) {
+	api.writeJSON(w, r, status, "application/json", struct {
+		Code        string `json:"code"`
+		Description string `json:"description"`
+	}{Code: code, Description: description})
+}
+
+func (api *FeatureAPI) discoveryQueryValid(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.RawQuery != "" {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "This resource accepts no query parameters")
+		return false
+	}
+	return true
+}
+
+// Existing tile-only callers retain their historical prefix behavior. Explicit
+// feature publication requires static segments so routes and links agree.
+func validateFeatureURIPrefix(prefix string) error {
+	if prefix == "/" {
+		return nil
+	}
+	if prefix == "" || !strings.HasPrefix(prefix, "/") || strings.HasSuffix(prefix, "//") {
+		return fmt.Errorf("features: invalid static URI prefix")
+	}
+	path := strings.TrimSuffix(strings.TrimPrefix(prefix, "/"), "/")
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "" || segment == "." || segment == ".." || strings.ContainsAny(segment, "%:*?#[\\] \t\r\n") {
+			return fmt.Errorf("features: URI prefix must contain static unencoded segments")
+		}
+	}
+	return nil
+}
+
+// Router preserves TreeMux APIs while guarding feature responses outside route
+// handlers, including canonical redirects generated internally by TreeMux.
+type Router struct {
+	*httptreemux.TreeMux
+	featureBasePath string
+}
+
+// ServeHTTP applies feature cache policy to original or canonical feature paths.
+// Requests outside the published namespace reach the legacy mux unchanged.
+func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if router.featureBasePath != "" {
+		owns := func(path string) bool {
+			return path == router.featureBasePath || strings.HasPrefix(path, router.featureBasePath+"/")
+		}
+		if owns(r.URL.Path) || owns(httptreemux.Clean(r.URL.Path)) {
+			w.Header().Set("Cache-Control", "no-store")
+			w = &featureCacheResponseWriter{ResponseWriter: w}
+		}
+	}
+	router.TreeMux.ServeHTTP(w, r)
+}
+
+type featureCacheResponseWriter struct{ http.ResponseWriter }
+
+func (w *featureCacheResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *featureCacheResponseWriter) WriteHeader(status int) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.ResponseWriter.WriteHeader(status)
+}
+func (w *featureCacheResponseWriter) Write(data []byte) (int, error) {
+	w.Header().Set("Cache-Control", "no-store")
+	return w.ResponseWriter.Write(data)
+}

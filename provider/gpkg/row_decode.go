@@ -5,6 +5,7 @@ package gpkg
 import (
 	"context"
 	"encoding/base64"
+	"github.com/alexeydott/geom"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ type decodedRow struct {
 // Its zero value is strict: malformed geometry is returned as an error.
 type rowDecodePolicy struct {
 	tolerateAutoDetectedMOS bool
+	dimensionalRaw          bool
 }
 
 // decodeRow shares row construction without tile/query filtering. A false
@@ -99,7 +101,13 @@ func (p *Provider) decodeRow(
 				continue
 			}
 
-			_, geo, err := decodeGeometryValue(values[i], layer.geometryFormat, layer.mosConfig)
+			var geo geom.Geometry
+			var err error
+			if policy.dimensionalRaw {
+				geo, err = decodeRawGeometryValue(values[i], layer)
+			} else {
+				_, geo, err = decodeGeometryValue(values[i], layer.geometryFormat, layer.mosConfig)
+			}
 			if err != nil {
 				if policy.tolerateAutoDetectedMOS && layer.mapplSource == codec.MapplGISSQLSample {
 					log.Warnf("layer %v: skipping undecodable auto-detected MOS geometry: %v", layer.name, err)

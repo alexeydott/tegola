@@ -62,7 +62,10 @@ func TestFeatureQueryContract(t *testing.T) {
 				}
 			}
 			if row.EmptyGeometry {
-				geometry = featureHeader(true, 4326)
+				body := binary.LittleEndian.AppendUint32([]byte{1}, 1)
+				body = binary.LittleEndian.AppendUint64(body, math.Float64bits(math.NaN()))
+				body = binary.LittleEndian.AppendUint64(body, math.Float64bits(math.NaN()))
+				geometry = append(featureHeader(true, 4326), body...)
 			}
 			if row.MalformedGeometry != "" {
 				geometry = []byte{0xff}

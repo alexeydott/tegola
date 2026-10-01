@@ -8,7 +8,6 @@ import (
 
 	"github.com/akrylysov/algnhsa"
 	"github.com/alexeydott/geom/encoding/mvt"
-	"github.com/dimfeld/httptreemux"
 
 	"github.com/alexeydott/tegola/atlas"
 	"github.com/alexeydott/tegola/cmd/internal/register"
@@ -21,7 +20,7 @@ import (
 
 // mux is a reference to the http muxer. it's stored as a package
 // var so we can take advantage of Lambda's "Global State".
-var mux *httptreemux.TreeMux
+var mux http.Handler
 
 const DefaultConfLocation = "config.toml"
 
@@ -115,8 +114,27 @@ func init() {
 		server.URIPrefix = string(conf.Webserver.URIPrefix)
 	}
 
+	// Bind the same explicit publications as the CLI before assembling routes.
+	service, err := register.Features(conf.Features, providers)
+	if err != nil {
+		log.Error(err)
+		os.Exit(1)
+	}
+	options := server.RouterOptions{}
+	if service != nil {
+		settings := conf.Features.Resolved()
+		options.Features, err = server.NewFeatureAPI(service, server.FeatureAPIConfig{BasePath: string(settings.BasePath), DefaultLimit: uint(*settings.DefaultLimit), MaxLimit: uint(*settings.MaxLimit), Title: string(settings.Title), Description: string(settings.Description)})
+		if err != nil {
+			log.Error(err)
+			os.Exit(1)
+		}
+	}
 	// http route setup
-	mux = server.NewRouter(nil)
+	mux, err = server.NewRouterWithOptions(nil, options)
+	if err != nil {
+		log.Error(err)
+		os.Exit(1)
+	}
 }
 
 func main() {

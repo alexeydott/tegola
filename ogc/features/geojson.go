@@ -9,6 +9,7 @@ import (
 	"math/big"
 
 	"github.com/alexeydott/geom"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // Feature contains detached GeoJSON geometry and JSON-domain properties.
@@ -87,6 +88,34 @@ func encodeGeometry(geometry geom.Geometry) (json.RawMessage, error) {
 	switch shape := geometry.(type) {
 	case geom.Point:
 		value = map[string]any{"type": "Point", "coordinates": shape}
+	case geom.PointZ:
+		value = map[string]any{"type": "Point", "coordinates": shape}
+	case geom.MultiPointZ:
+		value = map[string]any{"type": "MultiPoint", "coordinates": shape}
+	case geom.LineStringZ:
+		if len(shape) < 2 {
+			return nil, fmt.Errorf("invalid XYZ LineString coordinate count")
+		}
+		value = map[string]any{"type": "LineString", "coordinates": shape}
+	case geom.MultiLineStringZ:
+		for _, line := range shape {
+			if len(line) < 2 {
+				return nil, fmt.Errorf("invalid XYZ MultiLineString coordinate count")
+			}
+		}
+		value = map[string]any{"type": "MultiLineString", "coordinates": shape}
+	case geom.PolygonZ:
+		if err := normalizePolygonZ(shape); err != nil {
+			return nil, err
+		}
+		value = map[string]any{"type": "Polygon", "coordinates": shape}
+	case codec.MultiPolygonZ:
+		for _, polygon := range shape {
+			if err := normalizePolygonZ(geom.PolygonZ(polygon)); err != nil {
+				return nil, err
+			}
+		}
+		value = map[string]any{"type": "MultiPolygon", "coordinates": shape}
 	case geom.MultiPoint:
 		value = map[string]any{"type": "MultiPoint", "coordinates": shape}
 	case geom.LineString:
@@ -134,6 +163,59 @@ func encodeGeometry(geometry geom.Geometry) (json.RawMessage, error) {
 		return nil, err
 	}
 	return raw, nil
+}
+
+// normalizePolygonZ closes response-owned rings without changing heights.
+// Prefer XY winding for ordinary surfaces; vertical surfaces use the first
+// nonzero projected exterior area in YZ, then ZX, as a deterministic in-plane
+// orientation. Holes use the same frame and opposite orientation.
+func normalizePolygonZ(polygon geom.PolygonZ) error {
+	if err := codec.ValidateFeatureSpatialGeometry(polygon); err != nil {
+		return err
+	}
+	if len(polygon) == 0 {
+		return fmt.Errorf("XYZ polygon has no rings")
+	}
+	axes := [2]int{0, 1}
+	project := func(ring [][3]float64) [][2]float64 {
+		out := make([][2]float64, len(ring))
+		for i, p := range ring {
+			out[i] = [2]float64{p[axes[0]], p[axes[1]]}
+		}
+		if len(out) != 0 && ring[0] != ring[len(ring)-1] {
+			out = append(out, out[0])
+		}
+		return out
+	}
+	for _, pair := range [][2]int{{0, 1}, {1, 2}, {2, 0}} {
+		axes = pair
+		if ringAreaSign(project(polygon[0])) != 0 {
+			break
+		}
+	}
+	for i, ring := range polygon {
+		vertices := make(map[[3]float64]struct{}, len(ring))
+		for _, p := range ring {
+			vertices[p] = struct{}{}
+		}
+		if len(vertices) < 3 {
+			return fmt.Errorf("XYZ polygon ring has fewer than three distinct positions")
+		}
+		if ring[0] != ring[len(ring)-1] {
+			ring = append(ring, ring[0])
+			polygon[i] = ring
+		}
+		orientation := ringAreaSign(project(ring))
+		if orientation == 0 {
+			return fmt.Errorf("zero XYZ polygon surface area")
+		}
+		if i == 0 && orientation < 0 || i != 0 && orientation > 0 {
+			for left, right := 0, len(ring)-1; left < right; left, right = left+1, right-1 {
+				ring[left], ring[right] = ring[right], ring[left]
+			}
+		}
+	}
+	return nil
 }
 
 // normalizePolygon operates only on the response-owned copy. RFC 7946 exterior

@@ -90,9 +90,10 @@ type Config struct {
 	// If this is an empty string, it means that the location was unknown. This is the case if
 	// the Parse() function is used directly.
 	LocationName string
-	Webserver    Webserver `toml:"webserver"`
-	Cache        env.Dict  `toml:"cache"`
-	Observer     env.Dict  `toml:"observer"`
+	Webserver    Webserver      `toml:"webserver"`
+	Features     FeaturesConfig `toml:"features"`
+	Cache        env.Dict       `toml:"cache"`
+	Observer     env.Dict       `toml:"observer"`
 	// Map of providers.
 	//  all providers must have at least two entries.
 	// 1. name -- this is the name that is referenced in
@@ -223,6 +224,9 @@ func (c *Config) ValidateAndRegisterParams(mapName string, params []provider.Que
 
 // Validate checks the config for issues
 func (c *Config) Validate() error {
+	if err := c.Features.Validate(); err != nil {
+		return err
+	}
 	var knownTypes []string
 	drivers := make(map[string]int)
 	for _, name := range provider.Drivers(provider.TypeStd) {

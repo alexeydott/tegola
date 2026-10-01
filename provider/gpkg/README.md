@@ -302,12 +302,45 @@ epochs, nanosecond boundaries and query dates outside the storage range.
 
 ### Spatial query limits
 
+Raw feature layers support `spatial_dimension = "xy"`, `"xyz"`, or
+`"mixed_xy_xyz"`. Raw WKB/WKT default to XY. Explicit XYZ/mixed configuration
+requires `vertical_crs = "http://www.opengis.net/def/crs/OGC/0/CRS84h"`, declaring
+WGS84 ellipsoidal height in metres. Native GeoPackage derives dimension from
+`gpkg_geometry_columns.z` (0/1/2); an explicit dimension must agree. Missing or
+invalid native dimensional schema is an unsupported feature capability. Native
+inferred XYZ without a vertical binding remains usable through the legacy tile
+path. Mandatory measures are unsupported; optional measures do not reject rows
+without M. MOS remains XY.
+
+The raw codec supports base XY and ISO-WKB Z families and explicit WKT Z. It
+retains Z and checks encountered bodies against the declared profile. Native
+NONE/XY envelopes permit XYZ bodies; XYZ envelopes require Z bodies. XYM/XYZM
+envelopes, actual M/ZM and EWKB profiles are unsupported. The native empty flag
+must agree with a complete decoded empty body; a header alone is malformed in
+raw queries. The legacy tile decoder is separate and retains its prior policy.
+
+Six-coordinate bounds test XYZ geometry against a closed 3D box, including
+segment correlation and planar polygon surfaces with holes. Nonplanar surfaces
+are unsupported. XY members have an unconstrained vertical dimension and use
+exact horizontal intersection; they retain XY coordinates without invented
+height. Horizontal queries validate and retain source Z while selecting the XY
+projection. Exact predicates precede pagination and counts.
+
+XYZ/mixed transformations admit canonical WGS84 EPSG:4326, EPSG:3857 and northern
+and southern WGS84 UTM zones only. Custom/synthetic source definitions and other
+vertical references are unsupported. Converters are independently owned and
+do not consult mutable projection registrations. Transformed vertices define
+the query-frame geometry; a polygon made nonplanar by projection is unsupported.
+
 Same-CRS queries use available RTree/raw bounds for ordinary candidates and
 separate conservative branches for absent or unclassifiable geometry. The
 absence branch may scan source metadata. Native/WKB Polygon, Multi and
 GeometryCollection payloads are conservatively inspected outside their stored
 bounds when SQL cannot prove they are nonempty; MOS non-Point payloads have the
 same limitation. This is not a claim that every geometry family avoids scanning.
+ISO-WKB Z families currently use the conservative binary classification path,
+so XYZ points/lines can also require inspection outside stored bounds. Raw WKB
+all-NaN points are absence candidates even with misleading bounds.
 Cross-CRS bounds use ordered source chunks and exact transformed geometry
 matching; no heuristic inverse envelope is used to discard candidates.
 

@@ -12,12 +12,27 @@ import (
 
 // epochBound preserves precision beyond UnixNano's representable date range.
 func epochBound(t time.Time, scale int64, ceil bool) *big.Int {
+	return exactEpochBound(t, scale, ceil, "", false)
+}
+
+// exactEpochBound rounds against POSIX source coordinates without truncating
+// query fractions. An inserted leap second has no integer POSIX instant: its
+// lower bound is the next ordinary second, and its upper bound the prior tick.
+func exactEpochBound(t time.Time, scale int64, ceil bool, fraction string, leap bool) *big.Int {
+	if leap {
+		next := new(big.Int).Add(big.NewInt(t.Unix()), big.NewInt(1))
+		value := next.Mul(next, big.NewInt(scale))
+		if !ceil {
+			value.Sub(value, big.NewInt(1))
+		}
+		return value
+	}
 	value := new(big.Int).Mul(big.NewInt(t.Unix()), big.NewInt(scale))
 	numerator := new(big.Int).Mul(big.NewInt(int64(t.Nanosecond())), big.NewInt(scale))
 	quotient, remainder := new(big.Int), new(big.Int)
 	quotient.QuoRem(numerator, big.NewInt(1000000000), remainder)
 	value.Add(value, quotient)
-	if ceil && remainder.Sign() != 0 {
+	if ceil && (remainder.Sign() != 0 || strings.Trim(fraction, "0") != "") {
 		value.Add(value, big.NewInt(1))
 	}
 	return value
@@ -46,10 +61,10 @@ func temporalPredicate(layer *Layer, temporal *provider.TemporalConstraint, args
 		field := "l." + quoteIdent(m.InstantField)
 		invalid = append(invalid, "("+field+" IS NOT NULL AND typeof("+field+")<>'integer')")
 		if temporal.Start != nil {
-			comparisons = append(comparisons, integerBoundSQL(field, ">=", epochBound(*temporal.Start, layer.temporalScale, true), args))
+			comparisons = append(comparisons, integerBoundSQL(field, ">=", exactEpochBound(*temporal.Start, layer.temporalScale, true, temporal.StartSubNanosecond, temporal.StartLeapSecond), args))
 		}
 		if temporal.End != nil {
-			comparisons = append(comparisons, integerBoundSQL(field, "<=", epochBound(*temporal.End, layer.temporalScale, false), args))
+			comparisons = append(comparisons, integerBoundSQL(field, "<=", exactEpochBound(*temporal.End, layer.temporalScale, false, temporal.EndSubNanosecond, temporal.EndLeapSecond), args))
 		}
 		return "(" + strings.Join(invalid, " OR ") + " OR " + field + " IS NULL OR (" + strings.Join(comparisons, " AND ") + "))"
 	}
@@ -60,10 +75,10 @@ func temporalPredicate(layer *Layer, temporal *provider.TemporalConstraint, args
 		"(" + start + " IS NOT NULL AND " + end + " IS NOT NULL AND " + start + ">" + end + ")",
 	}
 	if temporal.Start != nil {
-		comparisons = append(comparisons, "("+end+" IS NULL OR "+integerBoundSQL(end, ">=", epochBound(*temporal.Start, layer.temporalScale, true), args)+")")
+		comparisons = append(comparisons, "("+end+" IS NULL OR "+integerBoundSQL(end, ">=", exactEpochBound(*temporal.Start, layer.temporalScale, true, temporal.StartSubNanosecond, temporal.StartLeapSecond), args)+")")
 	}
 	if temporal.End != nil {
-		comparisons = append(comparisons, "("+start+" IS NULL OR "+integerBoundSQL(start, "<=", epochBound(*temporal.End, layer.temporalScale, false), args)+")")
+		comparisons = append(comparisons, "("+start+" IS NULL OR "+integerBoundSQL(start, "<=", exactEpochBound(*temporal.End, layer.temporalScale, false, temporal.EndSubNanosecond, temporal.EndLeapSecond), args)+")")
 	}
 	return "(" + strings.Join(invalid, " OR ") + " OR (" + strings.Join(comparisons, " AND ") + "))"
 }

@@ -1,6 +1,49 @@
 [← API Reference](api.md) · [Back to README](../README.md) · [Development and Builds →](development.md)
 # Configuration
 
+## Feature publication
+
+Raw feature publication is disabled by default and uses explicit source mappings,
+independently of map presentation layers:
+
+```toml
+[features]
+enabled = true
+basepath = "/features"
+default_limit = 100
+max_limit = 10000
+title = "Feature data"
+
+[[features.collections]]
+id = "hydro"
+provider_layer = "gpkg.hydro"
+title = "Hydrography"
+description = "Published hydrographic features"
+```
+
+The defaults are `/features`, a page limit of 100 and a maximum of 10000. Limits
+must be positive, and the default cannot exceed the maximum. Provider bindings
+use exactly one dot between provider and layer names. Public IDs and base-path
+segments use ASCII letters, digits, `-`, `.`, `_` and `~`; empty, `.` and `..`
+segments are invalid. Base paths start with `/` and have no trailing slash.
+Existing map, capabilities, metrics and embedded viewer namespaces are reserved.
+
+Only explicitly mapped standard-provider layers are exposed. Missing sources,
+MVT-only providers and unsupported query metadata fail startup. Disabled
+publication still validates configuration syntax but does not resolve sources
+or register feature routes. The initial GeoPackage query profile supports
+eligible table-backed layers; custom SQL remains available for tile use.
+
+Published reads follow the server's existing read-access policy. Protect them
+through the deployment's access controls when required. Feature responses use
+`Cache-Control: no-store` and do not use the tile cache. The configured server
+URI prefix also applies to the feature base path.
+
+Discovery resources and implemented conformance declarations are available under
+the base path; configuring publication alone establishes no OGC conformance
+claim. See the [feature architecture](architecture/feature-service.md) and
+[publication decision](architecture/decisions/ADR-0004-feature-publication-and-runtime.md).
+
 ## Cache backend guides
 
 | Registry name | Backend guide |

@@ -631,11 +631,25 @@ func sampleRawTableLayer(db *sql.DB, layer *Layer) error {
 			continue
 		}
 
-		_, geo, derr := decodeGeometryValue(value, layer.geometryFormat, layer.mosConfig)
+		var geo geom.Geometry
+		var derr error
+		if layer.dimensionalSample && layer.geometryFormat == GeometryFormatWKB {
+			geo, derr = codec.DecodeRawWKB(value)
+		} else if layer.dimensionalSample && layer.geometryFormat == GeometryFormatWKT {
+			geo, derr = codec.DecodeRawWKT(value)
+		} else {
+			_, geo, derr = decodeGeometryValue(value, layer.geometryFormat, layer.mosConfig)
+		}
 		if derr != nil {
 			return fmt.Errorf("table %q decode %v geometry: %v", layer.tablename, layer.geometryFormat, derr)
 		}
 		if geo != nil {
+			if layer.dimensionalSample {
+				geo, derr = codec.FeatureGeometryXYProjection(geo)
+				if derr != nil {
+					return fmt.Errorf("table %q dimensional sample: %w", layer.tablename, derr)
+				}
+			}
 			layer.geomType = geo
 		}
 	}
@@ -819,6 +833,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			return nil, gerr
 		}
 		layer.geometryFormat = layerGeometryFormat
+		if dimension, ok := layerConf.Interface("spatial_dimension"); ok {
+			layer.dimensionalSample = dimension == "xyz" || dimension == "mixed_xy_xyz"
+		}
 		layer.mosConfig = codec.MergeMOSConfig(providerMOSCfg, layerMOSCfg)
 		if layer.geometryFormat != GeometryFormatMOS {
 			codec.WarnAndResetMOSParams(layer.geometryFormat, &layer.mosConfig, layerName)

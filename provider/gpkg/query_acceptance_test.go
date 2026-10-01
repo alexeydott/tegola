@@ -354,7 +354,23 @@ func acceptanceNative(t *testing.T, g geom.Geometry, empty bool) []byte {
 	t.Helper()
 	header := acceptanceHeader(empty)
 	if empty {
-		return header
+		body := binary.LittleEndian.AppendUint32([]byte{1}, 1)
+		body = binary.LittleEndian.AppendUint64(body, math.Float64bits(math.NaN()))
+		body = binary.LittleEndian.AppendUint64(body, math.Float64bits(math.NaN()))
+		return append(header, body...)
 	}
 	return append(header, acceptanceWKB(t, g)...)
+}
+
+func TestQueryAcceptanceNativeHeaderOnlyRawStrict(t *testing.T) {
+	header := acceptanceHeader(true)
+	p, _ := acceptanceProvider(t, "gpkg", false, nil, [][]any{acceptanceRow(10, header, nil, nil, [4]float64{100, 100, 100, 100})})
+	ids, _, err := acceptanceIDs(p, provider.FeatureQuery{Limit: 10, Bounds: []geom.Extent{{0, 0, 1, 1}}, BoundsSRID: 4326})
+	if err == nil || len(ids) != 0 {
+		t.Fatalf("header-only raw source must fail: %v %v", ids, err)
+	}
+	_, legacy, err := decodeGeometryValue(header, GeometryFormatGPKG, p.layers["source"].mosConfig)
+	if err != nil || legacy != nil {
+		t.Fatalf("legacy tile decode changed: %v %v", legacy, err)
+	}
 }

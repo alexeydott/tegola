@@ -314,6 +314,9 @@ CREATE VIRTUAL TABLE rtree_items_geom USING rtree(id,minx,maxx,miny,maxy);`, map
 	}
 	header := binary.LittleEndian.AppendUint32([]byte{'G', 'P', 0, 1}, 4326)
 	emptyHeader := binary.LittleEndian.AppendUint32([]byte{'G', 'P', 0, 17}, 4326)
+	emptyPoint := binary.LittleEndian.AppendUint32([]byte{1}, 1)
+	emptyPoint = binary.LittleEndian.AppendUint64(emptyPoint, math.Float64bits(math.NaN()))
+	emptyPoint = binary.LittleEndian.AppendUint64(emptyPoint, math.Float64bits(math.NaN()))
 	emptyCollection, err := wkb.EncodeBytes(geom.Collection{geom.Collection{}})
 	if err != nil {
 		t.Fatal(err)
@@ -324,8 +327,8 @@ CREATE VIRTUAL TABLE rtree_items_geom USING rtree(id,minx,maxx,miny,maxy);`, map
 		indexed bool
 	}{
 		{1, append(append([]byte{}, header...), point...), true},
-		{2, emptyHeader, true},
-		{3, append(append([]byte{}, header...), emptyCollection...), true},
+		{2, append(append([]byte{}, emptyHeader...), emptyPoint...), true},
+		{3, append(append([]byte{}, emptyHeader...), emptyCollection...), true},
 		{4, nil, true},
 		{5, append(append([]byte{}, header...), point...), false},
 	} {

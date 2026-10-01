@@ -18,6 +18,14 @@ import (
 type TemporalConstraint struct {
 	Start *time.Time
 	End   *time.Time
+	// SubNanosecond digits encode the remaining decimal fraction of one
+	// nanosecond. Empty or all-zero digits mean no additional fraction.
+	StartSubNanosecond string
+	EndSubNanosecond   string
+	// LeapSecond assigns the endpoint fraction to an inserted UTC second;
+	// Time contains the preceding ordinary second and the fractional part.
+	StartLeapSecond bool
+	EndLeapSecond   bool
 }
 
 // Validate rejects empty or reversed temporal constraints without changing them.
@@ -25,7 +33,13 @@ func (t TemporalConstraint) Validate() error {
 	if t.Start == nil && t.End == nil {
 		return InvalidFeatureQueryError{Field: "temporal", Reason: "both bounds are open"}
 	}
-	if t.Start != nil && t.End != nil && t.Start.After(*t.End) {
+	if err := validateTemporalEndpoint(t.Start, t.StartSubNanosecond, t.StartLeapSecond); err != nil {
+		return err
+	}
+	if err := validateTemporalEndpoint(t.End, t.EndSubNanosecond, t.EndLeapSecond); err != nil {
+		return err
+	}
+	if t.Start != nil && t.End != nil && compareTemporalEndpoints(*t.Start, t.StartSubNanosecond, t.StartLeapSecond, *t.End, t.EndSubNanosecond, t.EndLeapSecond) > 0 {
 		return InvalidFeatureQueryError{Field: "temporal", Reason: "start follows end"}
 	}
 	return nil
@@ -33,7 +47,8 @@ func (t TemporalConstraint) Validate() error {
 
 // FeatureQuery describes a bounded non-tile query. All dimensions are combined
 // with AND; bounds are combined with OR, as are the members of IDs.
-// Empty Bounds, IDs or Fields impose no spatial, ID or property restriction.
+// Empty Bounds and Bounds3D impose no spatial restriction; empty IDs or Fields
+// impose no identity or property restriction.
 // Fields restrict properties only; feature identity and geometry remain present.
 // Providers must neither mutate inputs nor retain them after QueryFeatures returns.
 type FeatureQuery struct {
@@ -41,7 +56,11 @@ type FeatureQuery struct {
 	// Wrapping bounds must be split into ordinary extents by the caller.
 	// Bounds do not represent or imply support for vertical bounding boxes.
 	Bounds []geom.Extent
-	// BoundsSRID must be positive with Bounds and zero without them. A numeric
+	// Bounds3D are closed XYZ extents; do not combine them with Bounds.
+	Bounds3D []Extent3D
+	// BoundsVerticalCRS declares the height reference for Bounds3D.
+	BoundsVerticalCRS string
+	// BoundsSRID must be positive with either bounds slice and zero without both. A numeric
 	// SRID alone does not establish provider support for that CRS or transforms.
 	BoundsSRID uint64
 	Temporal   *TemporalConstraint
@@ -65,11 +84,33 @@ func (q FeatureQuery) Validate() error {
 	if q.Offset > math.MaxUint64-uint64(q.Limit) {
 		return InvalidFeatureQueryError{Field: "offset", Reason: "offset and limit overflow"}
 	}
-	if len(q.Bounds) == 0 && q.BoundsSRID != 0 {
+	if len(q.Bounds) != 0 && len(q.Bounds3D) != 0 {
+		return InvalidFeatureQueryError{Field: "bounds", Reason: "horizontal and three-dimensional bounds are mutually exclusive"}
+	}
+	hasBounds := len(q.Bounds) != 0 || len(q.Bounds3D) != 0
+	if !hasBounds && q.BoundsSRID != 0 {
 		return InvalidFeatureQueryError{Field: "bounds_srid", Reason: "requires bounds"}
 	}
-	if len(q.Bounds) != 0 && q.BoundsSRID == 0 {
+	if hasBounds && q.BoundsSRID == 0 {
 		return InvalidFeatureQueryError{Field: "bounds_srid", Reason: "must be positive with bounds"}
+	}
+	if len(q.Bounds3D) == 0 && q.BoundsVerticalCRS != "" {
+		return InvalidFeatureQueryError{Field: "bounds_vertical_crs", Reason: "requires three-dimensional bounds"}
+	}
+	if len(q.Bounds3D) != 0 && strings.TrimSpace(q.BoundsVerticalCRS) == "" {
+		return InvalidFeatureQueryError{Field: "bounds_vertical_crs", Reason: "required with three-dimensional bounds"}
+	}
+	for _, bounds := range q.Bounds3D {
+		for _, coordinate := range bounds {
+			if math.IsNaN(coordinate) || math.IsInf(coordinate, 0) {
+				return InvalidFeatureQueryError{Field: "bounds3d", Reason: "coordinates must be finite"}
+			}
+		}
+		for axis := range 3 {
+			if bounds[axis] > bounds[axis+3] {
+				return InvalidFeatureQueryError{Field: "bounds3d", Reason: "minimum exceeds maximum"}
+			}
+		}
 	}
 	for _, bounds := range q.Bounds {
 		for _, coordinate := range bounds {
