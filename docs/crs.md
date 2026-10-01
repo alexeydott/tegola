@@ -1,3 +1,5 @@
+[← Provider Contract](provider-contract.md) · [Back to README](../README.md) · [Geometry Formats →](geometry-formats.md)
+
 # CRS Contract
 
 This document describes the unified coordinate reference system (CRS) contract
@@ -188,3 +190,9 @@ limits of the fork, not limitations of `crs_defn` or the PROJ library generally.
 | gpkg | yes | yes | Explicit config wins over `gpkg_contents.srs_id` (table layers) and the sampled header srs id (custom-SQL layers). |
 | mysql | yes | yes | `MapplGIS LayerInfo projection` applies only when no explicit CRS is configured. |
 | hana | yes | yes | `crs_defn` requires a raw `geometry_format` (`wkb`/`wkt`/`mos`); native `ST_Geometry` columns use a database-side SRS. Not supported for MVT providers. Round-earth SRSs are used through their planar-equivalent SRIDs (`PLANAR_SRID_OFFSET = 1000000000`). |
+
+## See Also
+
+- [Provider contract](provider-contract.md) — provider-level and layer-level CRS keys
+- [Geometry formats](geometry-formats.md) — geometry decoding and projection
+- [Configuration](configuration.md) — TOML configuration examples

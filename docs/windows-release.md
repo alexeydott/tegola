@@ -1,3 +1,5 @@
+[← Maintenance Status](maintenance-status.md) · [Back to README](../README.md)
+
 # Windows release builds
 
 Build from the committed source with Go matching `go.mod`, Node/npm and an
@@ -54,3 +56,9 @@ Fetch and reconcile `origin/master`, inspect the outgoing commits, and push
 `master` without force. Keep generated binaries, checksums, logs and local
 datasets out of source commits. Building or pushing source does not create
 a GitHub Release or a tag.
+
+## See Also
+
+- [Development and builds](development.md) — source build and debugging guidance
+- [Contributing](../CONTRIBUTING.md) — repository build and test workflow
+- [Security policy](../SECURITY.md) — report a vulnerability

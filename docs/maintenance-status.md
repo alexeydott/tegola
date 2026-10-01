@@ -1,3 +1,5 @@
+[← Geometry Formats](geometry-formats.md) · [Back to README](../README.md) · [Windows Release →](windows-release.md)
+
 # Current maintenance status
 
 This is the current disposition of documented Tegola work, checked against
@@ -81,3 +83,9 @@ Do not convert the historical audit into a new task list by searching for
 TODO words alone, or mark an unsupported capability as implemented merely
 to remove a debt marker. New confirmed findings must have an explicit status
 and reproducible evidence here or in UPSTREAM.
+
+## See Also
+
+- [Upstream provenance](../UPSTREAM.md) — detailed fork history and evidence
+- [Historical audit](audit/tegola_review_part12.md) — original audit findings
+- [Provider contract](provider-contract.md) — currently supported provider behavior

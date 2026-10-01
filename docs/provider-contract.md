@@ -1,3 +1,5 @@
+[← Development and Builds](development.md) · [Back to README](../README.md) · [CRS Contract →](crs.md)
+
 # Provider contract
 
 This document describes the configuration keys and runtime semantics that are
@@ -249,3 +251,9 @@ select a storage format or disable automatic format detection.
 For automatically detected MOS, undecodable feature rows are skipped with a
 warning at tile rendering, consistently with the probe. A bad row does not
 hide other valid features. Explicit-format error policies are unchanged.
+
+## See Also
+
+- [Configuration](configuration.md) — cache, provider, and TOML examples
+- [CRS contract](crs.md) — coordinate reference system behavior
+- [Geometry formats](geometry-formats.md) — raw feature geometry handling

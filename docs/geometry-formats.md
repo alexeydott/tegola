@@ -1,3 +1,5 @@
+[← CRS Contract](crs.md) · [Back to README](../README.md) · [Maintenance Status →](maintenance-status.md)
+
 # Geometry formats
 
 All standard providers (`mysql`, `gpkg`, `postgis`, `hana`) decode geometries
@@ -153,7 +155,7 @@ three cooperating stages:
    a line layer rendered before the fill layer, with `"filter": {"$type":
    "Polygon"/"LineString"}` so leaf geometry classes are styled correctly.
 
-## See also
-
+## See Also
 - [provider-contract.md](provider-contract.md) — configuration keys shared by all providers
 - [crs.md](crs.md) — SRID resolution, built-in and synthetic CRS definitions
+- [Configuration](configuration.md) — provider and environment settings

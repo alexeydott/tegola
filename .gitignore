@@ -19,6 +19,22 @@ yarn-debug.log*
 yarn-error.log*
 
 # Editor directories and files
+.agents/
+.ai-factory/
+.claude/
+.codex/
+.github/skills/
+.opencode/
+.qwen/
+.mcp.json
+.ai-factory.json
+.agentready.yml
+opencode.json
+skills-lock.json
+AGENTS.md
+CLAUDE.md
+RULES.md
+
 .idea
 .vscode
 *.suo
@@ -29,6 +45,8 @@ yarn-error.log*
 cmd/tegola_lambda/tegola_lambda
 
 # local build/test artifacts
+releases
+testdata/natural_earth
 tegola.exe
 tmp_probe/
 tt*.pbf
