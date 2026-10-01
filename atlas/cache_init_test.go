@@ -19,37 +19,27 @@ func TestCheckCacheTypes(t *testing.T) {
 	}
 }
 
-// TestRootReadmeListsRegisteredCaches keeps the root README cache backend
-// list in sync with the cache registry.
+// TestRootReadmeListsRegisteredCaches checks that the landing page reaches the
+// canonical cache configuration guide and every registered backend guide.
 func TestRootReadmeListsRegisteredCaches(t *testing.T) {
-	// registry name -> README link path
-	readmeLinks := map[string]string{
-		"azblob":     "(cache/azblob)",
-		"file":       "(cache/file)",
-		"gcs":        "(cache/gcs)",
-		"memory":     "(cache/memory)",
-		"multilevel": "(cache/multilevel)",
-		"redis":      "(cache/redis)",
-		"s3":         "(cache/s3)",
-	}
-
 	readme, err := os.ReadFile("../README.md")
 	if err != nil {
-		t.Skipf("root README not readable from this working dir: %v", err)
+		t.Fatalf("read root README: %v", err)
 	}
-	content := string(readme)
-
+	if !strings.Contains(string(readme), "(docs/configuration.md)") {
+		t.Fatal("root README does not link to docs/configuration.md")
+	}
+	guide, err := os.ReadFile("../docs/configuration.md")
+	if err != nil {
+		t.Fatalf("read cache configuration guide: %v", err)
+	}
 	for _, name := range cache.Registered() {
-		link, ok := readmeLinks[name]
-		if !ok {
-			// backend without a README link mapping; check bare mention
-			if !strings.Contains(content, name) {
-				t.Errorf("registered cache backend %q is not mentioned in root README.md", name)
-			}
-			continue
+		path := "../cache/" + name + "/README.md"
+		if !strings.Contains(string(guide), "("+path+")") {
+			t.Errorf("registered cache backend %q has no guide link in docs/configuration.md", name)
 		}
-		if !strings.Contains(content, link) {
-			t.Errorf("registered cache backend %q has no [%s](cache/%s) link in root README.md", name, name, name)
+		if _, err := os.ReadFile(path); err != nil {
+			t.Errorf("registered cache backend %q guide is not readable: %v", name, err)
 		}
 	}
 }

@@ -20,7 +20,7 @@ import (
 func TestProviderContractMatrixSync(t *testing.T) {
 	readme, err := os.ReadFile("../docs/provider-contract.md")
 	if err != nil {
-		t.Skipf("docs/provider-contract.md not readable from this working dir: %v", err)
+		t.Fatalf("docs/provider-contract.md not readable from this working dir: %v", err)
 	}
 	content := string(readme)
 
@@ -29,11 +29,21 @@ func TestProviderContractMatrixSync(t *testing.T) {
 		t.Fatal("no standard providers registered")
 	}
 	sort.Strings(stdDrivers)
-	for _, name := range stdDrivers {
-		// the matrix header row enumerates the standard providers
-		if !strings.Contains(content, "| mysql | gpkg | postgis | hana |") {
-			t.Errorf("docs/provider-contract.md provider support matrix header does not list provider %q; update the matrix table when the registry changes", name)
+	header := ""
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "| Capability |") {
+			header = line
 			break
+		}
+	}
+	for _, name := range stdDrivers {
+		// Diagnostic and fixture providers have no production support column.
+		switch name {
+		case "debug", "test", "collection", "emptycollection":
+			continue
+		}
+		if !strings.Contains(header, "| "+name+" |") {
+			t.Errorf("docs/provider-contract.md matrix header does not list registered provider %q", name)
 		}
 	}
 
@@ -55,17 +65,10 @@ func TestProviderContractMatrixSync(t *testing.T) {
 	}
 }
 
-// TestRootReadmeListsProviders keeps the root README feature list in sync with
-// the provider registry.
+// TestRootReadmeListsProviders checks that the landing page reaches the
+// provider index and each registered production provider has a readable guide.
 func TestRootReadmeListsProviders(t *testing.T) {
-	readme, err := os.ReadFile("../README.md")
-	if err != nil {
-		t.Skipf("root README not readable from this working dir: %v", err)
-	}
-	content := string(readme)
-
-	// test-only providers registered by test helpers; not documented data
-	// providers
+	content := reachableDocumentation(t, "README.md")
 	excluded := map[string]bool{
 		"debug":           true,
 		"test":            true,
@@ -73,20 +76,22 @@ func TestRootReadmeListsProviders(t *testing.T) {
 		"collection":      true,
 		"emptycollection": true,
 	}
-	for _, name := range provider.Drivers(provider.TypeStd) {
-		if excluded[name] {
-			continue
-		}
-		if !strings.Contains(content, name) {
-			t.Errorf("registered standard provider %q is not mentioned in root README.md", name)
-		}
-	}
-	for _, name := range provider.Drivers(provider.TypeMvt) {
-		if excluded[name] {
-			continue
-		}
-		if !strings.Contains(content, name) {
-			t.Errorf("registered MVT provider %q is not mentioned in root README.md", name)
+	for _, drivers := range [][]string{provider.Drivers(provider.TypeStd), provider.Drivers(provider.TypeMvt)} {
+		for _, name := range drivers {
+			if excluded[name] {
+				continue
+			}
+			base := strings.TrimPrefix(name, "mvt_")
+			path := "../provider/" + base + "/README.md"
+			if !strings.Contains(content, "("+path+")") {
+				t.Errorf("registered provider %q has no guide link in docs/README.md", name)
+			}
+			if strings.HasPrefix(name, "mvt_") && !strings.Contains(content, "`"+name+"`") {
+				t.Errorf("registered MVT provider %q is not named in docs/README.md", name)
+			}
+			if _, err := os.ReadFile(path); err != nil {
+				t.Errorf("registered provider %q guide is not readable: %v", name, err)
+			}
 		}
 	}
 }
@@ -95,14 +100,10 @@ func TestRootReadmeListsProviders(t *testing.T) {
 // with the registry, the registration files and the docs. Every standard
 // driver is registered from atlas/provider_<name>.go behind a !no<X>Provider
 // build constraint so it can be excluded from the binary at build time (e.g.
-// `go build -tags 'noMysqlProvider'`); the flag must be listed in the root
-// README build flags section and reported by internal/build (tegola version).
+// `go build -tags 'noMysqlProvider'`); the flag must be listed in the
+// development guide and reported by internal/build (tegola version).
 func TestProviderBuildFlagsSync(t *testing.T) {
-	readme, err := os.ReadFile("../README.md")
-	if err != nil {
-		t.Skipf("root README not readable from this working dir: %v", err)
-	}
-	content := string(readme)
+	content := reachableDocumentation(t, "development.md")
 
 	// test-only providers are registered from test helpers, not from atlas/
 	// registration files, so they have no opt-out flag
@@ -124,19 +125,28 @@ func TestProviderBuildFlagsSync(t *testing.T) {
 		reg, err := os.ReadFile("../atlas/provider_" + name + ".go")
 		if err != nil {
 			t.Errorf("standard provider %q has no atlas/provider_%s.go registration file: %v", name, name, err)
-		} else if !strings.Contains(string(reg), "!"+flag) {
+		} else if !strings.Contains(strings.ReplaceAll(string(reg), "\r\n", "\n"), "//go:build !"+flag+"\n") {
 			t.Errorf("atlas/provider_%s.go is not guarded by the %s build constraint", name, flag)
 		}
 
-		// the flag must be documented in the README build flags section
+		// the flag must be documented in the development guide build flags section
 		if !strings.Contains(content, "`"+flag+"`") {
-			t.Errorf("root README.md does not document the %s build flag", flag)
+			t.Errorf("docs/development.md does not document the %s build flag", flag)
 		}
 
 		// internal/build must be able to report the flag in `tegola version`
 		tagfile := "../internal/build/no_" + name + "_provider.generated.go"
-		if _, err := os.ReadFile(tagfile); err != nil {
+		reporter, err := os.ReadFile(tagfile)
+		if err != nil {
 			t.Errorf("internal/build tag reporter for %s is missing (%s); run go generate ./internal/build/", flag, tagfile)
+			continue
+		}
+		tagSource := strings.ReplaceAll(string(reporter), "\r\n", "\n")
+		if !strings.Contains(tagSource, "//go:build "+flag+"\n") {
+			t.Errorf("internal/build tag reporter for %s lacks its build constraint", flag)
+		}
+		if !strings.Contains(tagSource, "Tags = append(Tags, \""+flag+"\")") {
+			t.Errorf("internal/build tag reporter does not report %s", flag)
 		}
 	}
 }
@@ -147,7 +157,7 @@ func TestProviderBuildFlagsSync(t *testing.T) {
 func TestRootReadmeListsMOSConfigKeys(t *testing.T) {
 	readme, err := os.ReadFile("../docs/provider-contract.md")
 	if err != nil {
-		t.Skipf("docs/provider-contract.md not readable from this working dir: %v", err)
+		t.Fatalf("docs/provider-contract.md not readable from this working dir: %v", err)
 	}
 	content := string(readme)
 	for _, key := range []string{"`srid`", "`crs_defn`", "`geometry_format`", "`mos_precision`", "`mos_units`", "`geometry_type`", "`fields`"} {
@@ -224,6 +234,10 @@ func TestProviderDocsAvoidStaleContractClaims(t *testing.T) {
 		"../provider/postgis/README.md",
 		"../provider/hana/README.md",
 		"../README.md",
+		"../docs/README.md",
+		"../docs/configuration.md",
+		"../docs/development.md",
+		"../UPSTREAM.md",
 		"../CHANGELOG.md",
 	}
 
@@ -265,7 +279,7 @@ func TestProviderDocsAvoidStaleContractClaims(t *testing.T) {
 	for _, path := range docPaths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			t.Skipf("%s not readable from this working dir: %v", path, err)
+			t.Fatalf("%s not readable from this working dir: %v", path, err)
 		}
 		raws[path] = strings.ReplaceAll(string(raw), "\r\n", "\n")
 		contents[path] = normalize(raws[path])
@@ -319,13 +333,22 @@ func TestProviderDocsAvoidStaleContractClaims(t *testing.T) {
 	must(crs, "Web Mercator")
 
 	readme := "../README.md"
-	must(readme, "v0.21.0-fork.1")
-	must(readme, "fork of go-spatial/tegola, based on upstream master (post-v0.21.0), see CHANGELOG")
-	// The bare upstream version must not be presented as the fork version.
-	// Compare per full line so "Version: v0.21.0-fork.1" does not trip the check.
-	for _, line := range strings.Split(contents[readme], "\n") {
-		if strings.TrimSpace(strings.TrimSuffix(line, "\r")) == "Version: v0.21.0" {
-			t.Error("README.md claims bare upstream version v0.21.0; the fork version is v0.21.0-fork.1")
+	must(readme, "Tegola is a fork of")
+	must(readme, "[go-spatial/tegola](https://github.com/go-spatial/tegola)")
+	must(readme, "based on upstream master after v0.21.0")
+	must(readme, "[CHANGELOG.md](CHANGELOG.md)")
+	must(readme, "[UPSTREAM.md](UPSTREAM.md)")
+	reachableDocumentation(t, "development.md")
+	must("../docs/development.md", "v0.21.0-fork.1")
+	must("../UPSTREAM.md", "post-v0.21.0")
+	must("../UPSTREAM.md", "v0.21.0-fork.N")
+	// The relocated version documentation must not present the upstream
+	// version as the fork version. Inspect lines before whitespace normalization.
+	for _, path := range []string{readme, "../docs/development.md", "../UPSTREAM.md", "../CHANGELOG.md"} {
+		for _, line := range strings.Split(raws[path], "\n") {
+			if strings.ToLower(strings.TrimSpace(line)) == "version: v0.21.0" {
+				t.Errorf("%s claims bare upstream version v0.21.0; the fork version is v0.21.0-fork.1", path)
+			}
 		}
 	}
 
@@ -336,4 +359,23 @@ func TestProviderDocsAvoidStaleContractClaims(t *testing.T) {
 	mysqlReadme := "../provider/mysql/README.md"
 	must(mysqlReadme, "SQL-sample storage detection")
 	must(mysqlReadme, "`mos_precision` and `mos_units` are optional")
+}
+
+// reachableDocumentation keeps the canonical guide reachable from the landing
+// page; reading a disconnected file must not satisfy the documentation contract.
+func reachableDocumentation(t *testing.T, name string) string {
+	t.Helper()
+	readme, err := os.ReadFile("../README.md")
+	if err != nil {
+		t.Fatalf("read root README: %v", err)
+	}
+	path := "docs/" + name
+	if !strings.Contains(string(readme), "("+path+")") {
+		t.Fatalf("root README does not link to %s", path)
+	}
+	content, err := os.ReadFile("../" + path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(content)
 }

@@ -5,12 +5,10 @@ package gpkg
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/geom/encoding/wkb"
@@ -175,17 +173,15 @@ func rawBoundsSQL(l *Layer, extent *geom.Extent) string {
 type Provider struct {
 	// path to the geopackage file
 	Filepath string
-	// layers maps layer names to their definitions. Layers are stored as
-	// pointers so runtime discoveries (MOS system-info application) are
-	// visible to concurrent tile requests; the map itself is populated
-	// only by NewTileProvider and is read-only afterwards.
+	// layers maps names to layer definitions finalized by NewTileProvider,
+	// including MOS system-info and CRS metadata. The map and its layer
+	// definitions are read-only after registration.
 	layers map[string]*Layer
 	// reference to the database connection
 	db *sql.DB
 	// default SRID for the provider
 	srid uint64
-	// mu guards the runtime mutable layer state (system-info application)
-	// and the warn-once bookkeeping below; tile requests run concurrently.
+	// mu guards warn-once bookkeeping below; tile requests run concurrently.
 	mu sync.Mutex
 	// warned tracks warn-once keys (unexpected column types, late
 	// system-info rows) so a warning is emitted once instead of per row.
@@ -361,143 +357,22 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 			return err
 		}
 
-		feature := provider.Feature{
-			Tags: map[string]interface{}{},
-		}
-		skipRow := false
-
-		for i := range cols {
-			if vals[i] == nil {
-				// P6-17: column-name lookups are case-insensitive because
-				// SQLite column names can differ in case from the
-				// configured names.
-				if strings.EqualFold(cols[i], pLayer.geomFieldname) {
-					skipRow = true
-					continue
-				}
-				if strings.EqualFold(cols[i], pLayer.idFieldname) {
-					// P6-11: a NULL feature id would silently become ID 0 and
-					// collapse distinct features into one in the MVT.
-					// provider.Feature.ID is a plain uint64, so a feature
-					// without an id cannot be represented; skip the row and
-					// warn instead (documented choice).
-					p.warnOnce("null-feature-id:"+pLayer.name,
-						"gpkg layer '%v': NULL feature id in column %q; skipping row",
-						pLayer.name, pLayer.idFieldname)
-					skipRow = true
-				}
-				continue
-			}
-
-			switch {
-			case strings.EqualFold(cols[i], pLayer.idFieldname):
-				feature.ID, err = provider.ConvertFeatureID(vals[i])
-				if err != nil {
-					return err
-				}
-
-			case strings.EqualFold(cols[i], pLayer.geomFieldname):
-				// The MOS layer self-description blob (MapplGIS LayerInfo)
-				// is metadata, never a feature. System-info parameters are
-				// finalized at registration (canonical one-time detection,
-				// see gpkg_register.go detectMapplGIS); applying them
-				// mid-stream would decode earlier rows with different
-				// precision/units and invalidate the already-built SQL
-				// bounds filter, so late blobs are skipped (R6).
-				if pLayer.geometryFormat == codec.FormatMOS && codec.IsSystemInfoValue(vals[i]) {
-					p.warnOnce("late-system-info:"+pLayer.name,
-						"layer '%v': MOS system-info row encountered after the query was built; skipping",
-						pLayer.name)
-					skipRow = true
-					continue
-				}
-
-				_, geo, err := decodeGeometryValue(vals[i], pLayer.geometryFormat, pLayer.mosConfig)
-				if err != nil {
-					if pLayer.mapplSource == codec.MapplGISSQLSample {
-						log.Warnf("layer %v: skipping undecodable auto-detected MOS geometry: %v", pLayer.name, err)
-						skipRow = true
-						break
-					}
-					log.Errorf("error decoding geometry: %v", err)
-					return err
-				}
-				if geo == nil {
-					// A declared-but-empty geometry (GeoPackage
-					// empty-geometry header flag, audit N15) cannot be
-					// encoded into a tile: skip the feature exactly like
-					// a NULL geometry column above.
-					skipRow = true
-					continue
-				}
-
-				// The layer SRID is resolved at registration time from the
-				// CRS contract (explicit config > gpkg_contents.srs_id >
-				// provider default, with MOS system-info projection as a
-				// last step), so the per-row WKB header is not consulted
-				// here.
-				feature.SRID = pLayer.srid
-				if feature.SRID == 0 {
-					feature.SRID = DefaultSRID
-				}
-
-				// mixed-content policy for explicit geometry_type: permit
-				// the feature but warn once per layer.
-				if pLayer.geomTypeExplicit {
-					codec.WarnOnceGeometryTypeMismatch(pLayer.Name(), pLayer.geomType, geo)
-				}
-				feature.Geometry = geo
-			default:
-				// Bounds fields backing the SQL bounds filter (detected
-				// raw bounds columns for tablename layers, resolved
-				// bbox_*_fieldname for custom SQL) are operational
-				// columns, not user attributes: never leak them into
-				// feature tags.
-				if pLayer.bboxFields.IsBBoxField(cols[i]) {
-					continue
-				}
-				// Legacy fixed zoom-filter columns keep their exclusion.
-				// Bounds columns are excluded solely through
-				// bboxFields.IsBBoxField above (the resolved
-				// bbox_*_fieldname contract): a column merely NAMED
-				// minx/miny/maxx/maxy that is not a bounds field is an
-				// ordinary user tag (audit 7.2.5).
-				switch strings.ToLower(cols[i]) {
-				case "min_zoom", "max_zoom":
-					// Skip these columns used for zoom filtering
-					continue
-				}
-				// Grab any non-nil, non-id, non-bounding box, & non-geometry column as a tag
-				switch v := vals[i].(type) {
-				case []uint8:
-					// P6-18: BLOB tag values are arbitrary binary and
-					// string(v) would emit invalid UTF-8 strings in the
-					// MVT. Encode them as standard base64 (lossless and
-					// cheap) so tags remain valid strings (documented
-					// choice over dropping the tag).
-					feature.Tags[cols[i]] = base64.StdEncoding.EncodeToString(v)
-				case string:
-					feature.Tags[cols[i]] = v
-				case int64:
-					feature.Tags[cols[i]] = v
-				case float64:
-					feature.Tags[cols[i]] = v
-				case bool:
-					feature.Tags[cols[i]] = v
-				case time.Time:
-					feature.Tags[cols[i]] = v.Format(time.RFC3339)
-				default:
-					// Emit a warning once per column: the same unexpected
-					// type recurs for every row of the stream.
-					p.warnOnce("unexpected-column:"+cols[i],
-						"unexpected type for sqlite column data: %v: %T", cols[i], v)
-				}
-			}
+		decoded, err := p.decodeRow(
+			ctx,
+			pLayer,
+			cols,
+			vals,
+			rowDecodePolicy{tolerateAutoDetectedMOS: true},
+		)
+		if err != nil {
+			return err
 		}
 
-		if skipRow || feature.Geometry == nil {
+		if !decoded.Representable || decoded.HadAbsentGeometry || decoded.Feature.Geometry == nil {
 			continue
 		}
+
+		feature := decoded.Feature
 
 		// Exact in-memory filter. Mandatory for wkb/wkt/mos formats whose
 		// queries cannot use the RTree join and for planScan native layers

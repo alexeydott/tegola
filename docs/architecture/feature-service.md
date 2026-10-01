@@ -65,3 +65,11 @@ Independent review returned provider-domain (M1) PASS and HTTP-domain (M4) PASS 
 ## Architecture review acceptance
 
 Provider review checks optional capability detection, current Params compatibility, cancellation/immutability, shared decoder ownership, paging/count semantics and no fake tile. HTTP review checks publication/service boundary, URI prefix integration, representations, CRS/count/error mapping and shared Lambda handler. Changes to this accepted boundary require an ADR before dependent code.
+
+## Shared decoder ownership
+
+The optional contract is declared in [provider/query.go](../../provider/query.go); it is not an implemented HTTP Feature API. [GPKG row decoding](../../provider/gpkg/row_decode.go) now constructs features for both tile and future raw-query callers. Scanning, SQL, exact tile filtering and callback delivery stay outside that helper. Its strict default returns malformed-geometry errors; the tile caller explicitly selects its existing auto-MOS tolerance and sticky null/empty exclusion.
+
+PostGIS reuses decipherFields and decodeGeometryValue; HANA reuses readRowValues and decodeGeometryValue; shared geometrycodec owns format decoding and geometric predicates. MySQL's deferred CRS/retry flow remains unchanged: its local construction seam is finalized with the FeatureQuerier implementation. No new query path may duplicate those decoders.
+
+Raw null/normalized-empty geometry follows [ADR-0002](decisions/ADR-0002-absent-feature-geometry.md), including bbox matching. The [contract harness](../../provider/internal/querytest/querytest.go) supplies explicit fixture expectations; its reference adapter demonstrates harness behavior, without proving real provider or database parity.

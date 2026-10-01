@@ -1,6 +1,18 @@
 [← API Reference](api.md) · [Back to README](../README.md) · [Development and Builds →](development.md)
 # Configuration
 
+## Cache backend guides
+
+| Registry name | Backend guide |
+|---|---|
+| `azblob` | [Azure Blob](../cache/azblob/README.md) |
+| `file` | [File](../cache/file/README.md) |
+| `gcs` | [Google Cloud Storage](../cache/gcs/README.md) |
+| `memory` | [Memory](../cache/memory/README.md) |
+| `multilevel` | [Multilevel](../cache/multilevel/README.md) |
+| `redis` | [Redis](../cache/redis/README.md) |
+| `s3` | [S3](../cache/s3/README.md) |
+
 The tile cache is independent of the data provider, so the same cache
 configuration works for PostGIS, GeoPackage, MySQL, and other providers. For a
 process-local in-memory cache:
