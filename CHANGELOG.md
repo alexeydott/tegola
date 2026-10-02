@@ -4,6 +4,8 @@ Fork-specific changes on top of upstream master (post-v0.21.0, 2024-12-19). Fork
 
 Features
 
+* Add opt-in OGC API Features publication through the existing router and standard providers, with JSON/HTML, bbox/datetime, link-driven paging, Queryables, the documented CQL2 text subset and supported public CRS. Runtime capability declarations and scoped conformance evidence do not imply certification. See [Feature API release notes](docs/release/feature-api.md).
+* Provide a Jivan replacement migration guide, compatibility dispositions and source provenance. The optional Lambda adapter shares the HTTP router across buffered REST v1, HTTP v2, Function URL v2 and ALB multi-value events. Public release and deployed AWS acceptance remain separate actions.
 * Align tile HTTP cache headers for HEAD and GET requests; clean `curl -I` probes now report the same freshness policy as browser tile downloads.
 * Add opt-in `webserver.tile_http_max_age` for successful anonymous query-free tile responses, consistently across HIT/MISS/shared rendering. Preserve encoding variation and maintenance `no-store`; exclude errors and parameterized requests. Default zero preserves previous behavior.
 * Unified CRS contract for all standard providers (`mysql`, `gpkg`, `postgis`, `hana`): `srid` and `crs_defn` (full PROJ.4 definition) at provider and layer level, explicit configuration wins over source auto-detection. Tile bounds (`!BBOX!`) are reprojected into the layer CRS so filter, data and MVT encoding always agree on one CRS.

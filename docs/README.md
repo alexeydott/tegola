@@ -30,6 +30,10 @@ following architecture and migration pages preserve the historical source baseli
 * [Feature-service source baseline](architecture/feature-service.md) - existing contracts and integration points.
 * [OGC API Features editions](architecture/ogc-api-features.md) - selected normative sources and verification boundary.
 * [Jivan route inventory](migration/jivan-feature-matrix.md) - registered resources and internal/deployment behavior.
+* [Jivan migration guide](migration/jivan-to-tegola.md) - publication configuration, client changes, verification and rollback.
+* [Jivan compatibility matrix](migration/jivan-compatibility-matrix.md) - all 15 migration categories and explicit differences.
+* [Jivan provenance](migration/jivan-provenance.md) - source influence, reuse inventory and license boundaries.
+* [Feature API release candidate](release/feature-api.md) - capability scope, verification, cutover and rollback.
 
 ## Feature-service contribution process
 
@@ -61,6 +65,7 @@ cmd/tegola → config + provider/cache registration → atlas → server
 | `config/` | Loads and validates TOML configuration consumed by the command setup. |
 | `atlas/` | Holds configured maps, provider layers, cache and observer integrations; it connects request handling to registered runtime components. |
 | `server/` | HTTP router, endpoint handlers, middleware, tile cache behavior, and embedded viewer routes. Start at [`server/server.go`](../server/server.go). |
+| `server/lambda/` | Optional buffered Lambda event adapter over the assembled HTTP router. Start at [`handler.go`](../server/lambda/handler.go); supported event modes and transport limits are defined in [ADR-0014](architecture/decisions/ADR-0014-lambda-router-adapter.md). Local invocation is separate from deployed AWS verification. |
 | `provider/` | Provider interfaces and standard SQL/spatial backends such as `postgis/`, `gpkg/`, `mysql/`, and `hana/`. Standard providers return features for Tegola to process. |
 | `mvtprovider/` | Database-side MVT provider implementations. They return encoded tiles and bypass standard feature geometry processing. |
 | `cache/` | Cache interfaces, tile keys, and backend implementations such as `memory/`, `file/`, `redis/`, and `multilevel/`. Backend-specific setup notes are under `cache/<backend>/README.md`. |

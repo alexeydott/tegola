@@ -7,8 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/akrylysov/algnhsa"
-	"github.com/alexeydott/geom/encoding/mvt"
+	awslambda "github.com/aws/aws-lambda-go/lambda"
 
 	"github.com/alexeydott/tegola/atlas"
 	"github.com/alexeydott/tegola/cmd/internal/register"
@@ -17,6 +16,7 @@ import (
 	"github.com/alexeydott/tegola/internal/build"
 	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/server"
+	lambdaserver "github.com/alexeydott/tegola/server/lambda"
 )
 
 // mux is a reference to the http muxer. it's stored as a package
@@ -36,7 +36,7 @@ func init() {
 	var err error
 
 	// override the URLRoot func with a lambda specific one
-	server.URLRoot = URLRoot
+	server.URLRoot = lambdaserver.URLRoot
 
 	confLocation := DefaultConfLocation
 
@@ -148,40 +148,13 @@ func init() {
 
 func main() {
 	build.Commands = []string{"lambda"}
-	// the second argument here tells algnhsa to watch for the MVT MimeType Content-Type headers
-	// if it detects this in the response the payload will be base64 encoded. Lambda needs to be configured
-	// to handle binary responses so it can convert the base64 encoded payload back into binary prior
-	// to sending to the client
-	algnhsa.ListenAndServe(mux, &algnhsa.Options{
-		BinaryContentTypes: []string{mvt.MimeType},
-		UseProxyPath:       true,
+	handler, err := lambdaserver.New(mux, lambdaserver.Options{
+		PublicURL:    server.HostName,
+		UseProxyPath: true,
 	})
-}
-
-// URLRoot overrides the default server.URLRoot function in order to include the "stage" part of the root
-// that is part of lambda's URL scheme
-func URLRoot(r *http.Request) *url.URL {
-	u := url.URL{
-		Scheme: scheme(r),
-		Host:   r.Header.Get("Host"),
+	if err != nil {
+		log.Error(err)
+		os.Exit(1)
 	}
-
-	// read the request context to pull out the lambda "stage" so it can be prepended to the URL Path
-	if ctx, ok := algnhsa.APIGatewayV1RequestFromContext(r.Context()); ok {
-		u.Path = ctx.RequestContext.Stage
-	}
-
-	return &u
-}
-
-// various checks to determine if the request is http or https. the scheme is needed for the TileJSON URLs
-// r.URL.Scheme can be empty if a relative request is issued from the client. (i.e. GET /foo.html)
-func scheme(r *http.Request) string {
-	if r.Header.Get("X-Forwarded-Proto") != "" {
-		return r.Header.Get("X-Forwarded-Proto")
-	} else if r.TLS != nil {
-		return "https"
-	}
-
-	return "http"
+	awslambda.StartHandler(handler)
 }

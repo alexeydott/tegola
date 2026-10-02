@@ -1,0 +1,69 @@
+[Documentation index](../README.md) · [Migration guide](../migration/jivan-to-tegola.md)
+
+# Feature API release candidate
+
+Tegola replaces Jivan's feature-serving role through its existing server and
+provider packages. Use the [compatibility matrix](../migration/jivan-compatibility-matrix.md)
+for each legacy endpoint, parameter and deployment disposition. This statement
+does not imply identical historical behavior or an OGC certification.
+
+## Included capabilities
+
+Opt-in publication exposes landing, API definition, conformance, collections,
+collection metadata, items and individual items. The implemented profile includes
+JSON and HTML, HEAD, link-driven paging, bbox and datetime, Queryables with the
+documented CQL2 text subset, and supported public CRS transformations. See the
+[API reference](../api.md), [configuration](../configuration.md),
+[filtering contract](../filtering.md) and [CRS contract](../crs.md).
+
+GeoPackage, PostGIS, MySQL/MariaDB and HANA publication requires each provider's
+documented source identity, metadata and query guarantees. Explicit publication
+and admitted capabilities determine the exposed API; configuring a provider alone
+does not publish every layer. Existing tile endpoints remain available.
+
+The optional Lambda binary uses the same assembled HTTP router. Its transport
+contract covers buffered REST v1, HTTP v2, Function URL v2 and ALB with multi-value
+headers enabled. Origin selection, stage mapping and transport limits are defined
+in [ADR-0014](../architecture/decisions/ADR-0014-lambda-router-adapter.md).
+Local invocation parity does not establish a deployed AWS integration.
+
+## Candidate verification
+
+Build from the reviewed revision using the [development instructions](../development.md).
+Retain the revision, compiler version, binary hash and configuration hash with
+the operator's acceptance record. Run the deterministic migration fixture and
+checks described in the [migration guide](../migration/jivan-to-tegola.md), then
+repeat representative requests with your own publication configuration.
+
+The [conformance workflow](../testing/ogc-conformance.md) distinguishes official
+suite results, supplemental checks and tool limitations. The
+[performance guide](../testing/feature-performance-observability.md) describes
+measured dataset-specific budgets; page limits do not guarantee cheap candidate
+scans. Review nullable attributes, geometry dimensions, filters, actual next links,
+public origins, HEAD, error responses and retained tile clients before cutover.
+
+This document accompanies a reviewed source candidate. It does not create a
+published version, pushed tag or deployment. Public distribution requires its own
+release decision and exact revision binding.
+
+## Cutover and rollback
+
+1. Preserve the previous working binary, configuration and proxy routing, with
+   their hashes. Back up data through the normal database process.
+2. Start the candidate separately against read-only publication sources. Verify
+   its process path, configuration, revision and direct responses.
+3. Migrate clients according to the matrix, including datetime, CQL2 and paging
+   differences. Switch proxy routing only after operator acceptance.
+4. If acceptance fails, restore the previous routing, binary and configuration;
+   verify direct legacy requests and tiles again. Keep the failed candidate's
+   evidence for diagnosis. Publication requires no destructive source migration.
+
+Jivan is an independently managed upstream project. This migration changes
+Tegola documentation and operator deployments; it makes no claim that upstream
+Jivan has been modified or archived.
+
+## See also
+
+- [Migration guide](../migration/jivan-to-tegola.md)
+- [Compatibility matrix](../migration/jivan-compatibility-matrix.md)
+- [License provenance](../migration/jivan-provenance.md)
