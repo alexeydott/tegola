@@ -226,7 +226,7 @@ func mosBoundsSQL(layer *Layer, bboxExtent *geom.Extent) (string, error) {
 		bboxExtent,
 		codec.BoundsMOSRaw,
 		layer.mosConfig,
-		quoteIdentifier,
+		codec.BoundsQuote(layer.bboxTable, quoteIdentifier),
 	)
 }
 

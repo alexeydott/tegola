@@ -2,8 +2,9 @@
 
 # Current maintenance status
 
-This is the current disposition of documented Tegola work, checked against
-`master` after `d417e73b` on 2026-09-28. The original numbered register and
+This page records the disposition of documented Tegola work. The baseline
+was checked against `master` after `d417e73b` on 2026-09-28; later follow-ups
+carry their own verification dates in the table below. The original numbered register and
 closure evidence remain in [UPSTREAM.md](../UPSTREAM.md). The
 [2026-09-25 audit](audit/tegola_review_part12.md) is historical evidence, not
 an active list of unresolved defects.
@@ -30,12 +31,14 @@ continue to match their published module versions.
 
 | Area | Current disposition and evidence |
 | --- | --- |
+| Tile latency diagnostics (2026-10-02 source evidence) | Standard tile feature layers log completion timing; MySQL separates initial query, streaming/decode and callback phases with global pool-wait deltas. The source change records saturated-pool deadline/recovery and panic/error-preservation tests, including race checks. Shared render deadline remains 30 seconds. Its live full-config validation was blocked at startup by a table-lock wait on the deployed MySQL; this is not a verified reproduction of the earlier tile timeout or an OGC verification result. |
 | Numbered fork debt | 2.1, 2.2, 2.4, 2.5, 2.6, part12 0.6/0.6b, 3.6, A15 and part13 P6.5 are closed; see the UPSTREAM closure log. |
 | Published dependencies (A15) | `alexeydott/geom v0.1.1` and `alexeydott/proj v0.3.1`; Tegola imports the fork modules without replacements. Published Tegola `d417e73b` passed an external-consumer check in a fresh module cache and an offline vendor build/test. |
 | Geographic datum conversion | `longlat` uses the existing three-/seven-parameter datum transformations; independent PROJ references cover both directions and synthetic `crs_defn` registration. |
 | Geographic scale | All four SQL providers share source-ellipsoid local parallel scale at the transformed tile center; SQL pixel dimensions use source units. |
 | Complex polygon simplification | Ring and component relationships are validated before accepting candidates; unsafe or inconclusive candidates preserve the original geometry. |
 | MOS startup sampling | Explicit MOS checks column metadata without format sampling; an explicit geometry type also skips class decoding. Automatic inference stops at three valid MOS geometries within 16 rows; a completed short result needs one valid geometry. Invalid auto-detected MOS rows are skipped while valid features remain renderable. Provider fixtures and a real SQLite startup regression cover the behavior. |
+| Legacy MySQL startup and joined MOS bounds (2026-10-02 source evidence) | Direct zero-row metadata and proven simple geometry-only MySQL samples avoid the derived-table path reproduced on MySQL 5.5.29; complex samples retain a potentially materialized fallback. Registration samples are streamed with a fixed 64 MiB geometry-cell cap. Optional `bbox_table` qualifies joined MOS bounds in all four SQL providers. The source change records codec/provider tests with CGO on/off and live MySQL 16-layer registration plus uncached layer/full-map tiles. These historical tile checks do not establish integrated-candidate OGC acceptance or live HANA/PostgreSQL coverage. |
 | SQL probes and token parsing | Providers use explicit dialects; PostgreSQL hash operators and arrays are executable SQL. Probe, missing-layer and geometry-column regressions have tests. |
 | Seed/serve interoperability | Layer endpoints reuse seeded map MVT without provider rendering; file roots are resolved and logged. Cold-memory file-cache, TTL and precedence regressions pass; real RU-CHE seed/map/layer HTTP HIT verified. |
 | Cache and tile operations | Unique file-cache temp names, safe purge races, authenticated/rate-limited maintenance, queued regeneration status, bounds filtering and MVT-only cache writes are implemented. |

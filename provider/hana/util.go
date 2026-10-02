@@ -771,7 +771,8 @@ func replaceTokens(dbVersion uint, sql string, l *Layer, geomFieldType geom.Geom
 			return "", fmt.Errorf("error converting tile extent: %w", cerr)
 		}
 		predicate, perr := codec.BuildBoundsPredicate(
-			l.bboxFields, sourceExtent, codec.BoundsMOSRaw, l.mosConfig, quoteIdentifier,
+			l.bboxFields, sourceExtent, codec.BoundsMOSRaw, l.mosConfig,
+			codec.BoundsQuote(l.bboxTable, quoteIdentifier),
 		)
 		if perr != nil {
 			return "", fmt.Errorf("layer (%v): %w", l.name, perr)

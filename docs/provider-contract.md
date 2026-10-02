@@ -40,7 +40,8 @@ raw geometry format / MOS parts of this contract.
 | `srid` / `crs_defn` | int / string | Layer CRS override; see [crs.md](crs.md). |
 | `geometry_format` | string | Layer-level geometry format override. |
 | `mos_precision` / `mos_units` | int / string | Layer-level MOS overrides (only with `mos`). |
-| `bbox_*_fieldname` | string | Layer-level bounds column overrides (`bbox_minx_fieldname`, `bbox_maxx_fieldname`, `bbox_miny_fieldname`, `bbox_maxy_fieldname`). Values must be simple identifiers: trimmed, qualified names like `t.MINX` rejected, duplicates rejected case-insensitively. Resolution is per field: layer > provider > defaults (`MINX`/`MAXX`/`MINY`/`MAXY`); for joins use a CTE or derived table with unambiguous bounds column names. Resolved columns are excluded from feature tags. Only used by bounds-backed MOS SQL (see [geometry-formats.md](geometry-formats.md)). |
+| `bbox_*_fieldname` | string | Layer-level bounds column overrides (`bbox_minx_fieldname`, `bbox_maxx_fieldname`, `bbox_miny_fieldname`, `bbox_maxy_fieldname`). Values must be simple identifiers: trimmed, qualified names like `t.MINX` rejected, duplicates rejected case-insensitively. Resolution is per field: layer > provider > defaults (`MINX`/`MAXX`/`MINY`/`MAXY`); for joins set `bbox_table` or use a CTE/derived table with unambiguous bounds column names. Resolved columns are excluded from feature tags. Only used by bounds-backed MOS SQL (see [geometry-formats.md](geometry-formats.md)). |
+| `bbox_table` | string | Optional MOS custom-SQL layer qualifier for `!BBOX!` bounds fields, e.g. `roads` (table alias) or `gis.roads_axis`. One or two unquoted simple identifiers; components are quoted separately by the provider. Result column names and tag exclusion remain unchanged. |
 | `fields` | []string | Additional fields to include for generated table SQL. Semantics of an absent or empty `fields` differ per provider and cannot be mixed freely (see matrix below). |
 
 ## CRS
@@ -260,6 +261,12 @@ properties; absent or empty configuration selects all eligible properties.
 Request field selection only narrows that frozen public set. A constrained
 `feature_sql` projection defines public aliases independently of tile `fields`;
 custom tile SQL alone does not establish a raw feature source.
+
+Direct startup metadata probes and `bbox_table` qualification improve legacy
+tile SQL registration and predicates. They do not admit JOINs into `feature_sql`
+or weaken raw source identity, protected-snapshot, temporal, dimensional or CRS
+proofs. Automatically detected MOS tile rows can use the documented tolerant
+skip policy; published raw features retain strict source-data error handling.
 
 Identity, geometry and configured private bounds/metadata are suppressed by
 physical column lineage, including renamed projections. Physical `min_zoom` and

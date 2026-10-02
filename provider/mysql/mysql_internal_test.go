@@ -1743,3 +1743,34 @@ func TestMapplGISFormatAuthority(t *testing.T) {
 		}
 	}
 }
+
+// The geometry is not necessarily the first column of a custom SELECT.
+func TestGeomTypeFromQueryUsesNamedColumn(t *testing.T) {
+	for _, columns := range [][]string{{"id", "LINE", "label"}, {"id", "line", "label"}} {
+		db := fixture.OpenSQLRows(t, fixture.SQLRows{
+			Columns: columns,
+			Rows: [][]driver.Value{
+				{int64(1), nil, "null geometry"},
+				{int64(2), "invalid", "bad geometry"},
+				{int64(3), "POINT(1 2)", "valid geometry"},
+			},
+		})
+		layer := &Layer{geomFieldname: "LINE", geometryFormat: GeometryFormatWKT}
+		geo, _, err := geomTypeFromQuery(db, "SELECT id, LINE, label FROM t LIMIT 16", layer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		point, ok := geo.(geom.Point)
+		if !ok || point != (geom.Point{1, 2}) {
+			t.Fatalf("geometry = %#v, expected POINT(1 2)", geo)
+		}
+	}
+}
+
+func TestGeomTypeFromQueryRejectsMissingGeometry(t *testing.T) {
+	db := fixture.OpenSQLRows(t, fixture.SQLRows{Columns: []string{"id", "label"}})
+	_, _, err := geomTypeFromQuery(db, "SELECT id, label FROM t LIMIT 16", &Layer{geomFieldname: "LINE"})
+	if err == nil || !strings.Contains(err.Error(), "geometry column") {
+		t.Fatalf("expected missing geometry column error, got %v", err)
+	}
+}

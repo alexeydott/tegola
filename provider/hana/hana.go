@@ -812,13 +812,16 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			}
 
 			l.sql = sql
+			l.bboxTable, err = codec.ResolveBBoxTable(layer, lName)
+			if err != nil {
+				return nil, err
+			}
 
 			// Shared probe preparation: the probe always executes the SQL
 			// without a spatial filter (!BBOX!/!BOX! -> 1=1) and with
 			// permissive position/zoom placeholders, applied in the ONE
 			// documented order of codec.PrepareProbeSQL (7.2.2).
 			inspectionSQL := codec.HANA.PrepareProbeSQL(l.sql, geomfld, idfld, geomType)
-			probeSQL := codec.WrapProbeSQLTopStyle(inspectionSQL)
 
 			// Storage-format probe + structural contract (A01/A02/A08):
 			// it runs for explicit MOS and for inference (""), INCLUDING
@@ -827,7 +830,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			// validated at registration and never skipped (the >=3-sample-
 			// row evidence bar is inference-only).
 			if l.geometryFormat != codec.FormatWKB && l.geometryFormat != codec.FormatWKT {
-				columns, contract, perr := p.probeMOSCustomSQLContract(&l, probeSQL)
+				columns, contract, perr := p.probeMOSCustomSQLContract(&l, inspectionSQL)
 				strict := l.geometryFormat == codec.FormatMOS
 				switch {
 				case perr != nil && strict:
@@ -1198,21 +1201,23 @@ func blobBytes(v interface{}) ([]byte, bool) {
 	return nil, false
 }
 
-// probeMOSCustomSQLContract samples the layer's custom SQL and runs the
+// probeMOSCustomSQLContract takes prepared, unwrapped SQL and runs the
 // common InspectSQLGeometryContract probe over REAL scanned row values:
 // bounds columns presence plus at least MinValidMOSRows decodable MOS
 // geometries with coordinates. The probe SQL is prepared by the shared
-// codec.PrepareProbeSQL/WrapProbeSQLTopStyle helpers: the statement always
+// codec.PrepareProbeSQL helper: the statement always
 // executes without a spatial filter and the sample reads at most
 // codec.InspectionSampleLimit rows. SystemInfo rows are skipped, never
 // applied: SQL-sample detection carries no projection contract. The actual
 // result-column names are returned so the caller can persist them (A09).
 func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string, codec.SQLGeometryContract, error) {
-	if l.geometryFormat == codec.FormatMOS {
-		probeSQL = codec.MetadataProbeSQL(probeSQL)
-	}
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
+	}
+	if l.geometryFormat == codec.FormatMOS {
+		probeSQL = codec.HANA.MetadataProbeSQL(probeSQL)
+	} else {
+		probeSQL = codec.WrapProbeSQLTopStyle(probeSQL)
 	}
 	// catch-all: drop any remaining code-context !TOKEN! the shared
 	// preparation could not neutralize so a leftover placeholder cannot

@@ -1049,21 +1049,23 @@ func (p Provider) setLayerGeomType(l *Layer, geomType string) error {
 	return nil
 }
 
-// probeMOSCustomSQLContract samples the layer's custom SQL and runs the
+// probeMOSCustomSQLContract takes prepared, unwrapped SQL and runs the
 // common InspectSQLGeometryContract probe over REAL scanned row values:
 // bounds columns presence plus at least MinValidMOSRows decodable MOS
 // geometries with coordinates. The probe SQL is prepared by the shared
-// shared probe helpers: raw bounds predicates are neutralized, native
+// probe helpers: raw bounds predicates are neutralized, native
 // spatial operands use a source-CRS world envelope, and the sample reads at most
 // codec.InspectionSampleLimit rows. SystemInfo rows are skipped, never
 // applied: SQL-sample detection carries no projection contract. The actual
 // result-column names are returned so the caller can persist them (A09).
 func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string, codec.SQLGeometryContract, error) {
-	if l.geometryFormat == codec.FormatMOS {
-		probeSQL = codec.MetadataProbeSQL(probeSQL)
-	}
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
+	}
+	if l.geometryFormat == codec.FormatMOS {
+		probeSQL = codec.PostgreSQL.MetadataProbeSQL(probeSQL)
+	} else {
+		probeSQL = codec.WrapProbeSQL(probeSQL)
 	}
 	// catch-all: drop any remaining code-context !TOKEN! the shared
 	// preparation could not neutralize so a leftover placeholder cannot
@@ -1719,15 +1721,14 @@ func CreateProvider(
 				if err != nil {
 					return nil, err
 				}
-				probeSQL := codec.WrapProbeSQL(inspectionSQL)
-				columns, contract, perr := p.probeMOSCustomSQLContract(&l, probeSQL)
+				columns, contract, perr := p.probeMOSCustomSQLContract(&l, inspectionSQL)
 				// Empty geometry_format also permits positive MOS detection.
 				// Such SQL uses a boolean bounds token, not a native geometry
 				// operand. Retry the raw contract only after the typed probe
 				// fails; format selection still requires decoded MOS evidence.
 				if perr != nil && l.geometryFormat == "" {
-					rawSQL := codec.WrapProbeSQL(codec.PostgreSQL.PrepareProbeSQL(sql, geomfld, idfld, geomType))
-					if rawSQL != probeSQL {
+					rawSQL := codec.PostgreSQL.PrepareProbeSQL(sql, geomfld, idfld, geomType)
+					if rawSQL != inspectionSQL {
 						columns, contract, perr = p.probeMOSCustomSQLContract(&l, rawSQL)
 					}
 				}
@@ -1796,6 +1797,10 @@ func CreateProvider(
 			}
 
 			l.sql = sql
+			l.bboxTable, err = codec.ResolveBBoxTable(layer, lName)
+			if err != nil {
+				return nil, err
+			}
 		} else {
 			// Tablename and Fields will be used to build the query.
 			// We need to do some work. We need to check to see Fields contains the geom and gid fields

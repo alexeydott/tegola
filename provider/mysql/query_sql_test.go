@@ -21,7 +21,7 @@ func TestFeatureSQLDirectLineageAndBoundWhere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	layer := Layer{name: "items", idFieldname: "publicid", geomFieldname: "shape", srid: 4326,
+	layer := Layer{name: "items", bboxTable: "unrelated_tile_source", idFieldname: "publicid", geomFieldname: "shape", srid: 4326,
 		geometryFormat: GeometryFormatWKT, bboxFields: [4]string{"name", "MINX", "MINY", "MAXY"}}
 	f, err := p.registerFeatureSelection(layer, dict.Dict{"temporal_start_field": "begin", "temporal_end_field": "finish", "temporal_storage": "unix_nanoseconds"}, plan)
 	if err != nil {
@@ -37,6 +37,9 @@ func TestFeatureSQLDirectLineageAndBoundWhere(t *testing.T) {
 		t.Fatalf("bound predicate: %s %#v", f.filter, f.filterArgs)
 	}
 	columns, selected := f.queryColumns(f.properties)
+	if strings.Contains(strings.Join(selected, ","), layer.bboxTable) || strings.Contains(f.filter, layer.bboxTable) {
+		t.Fatal("tile bounds qualifier leaked into feature SQL lineage")
+	}
 	if columns[0] != "publicid" || !strings.Contains(strings.Join(selected, ","), "l.`id` AS `publicid`") {
 		t.Fatalf("projection SQL: %v %v", columns, selected)
 	}

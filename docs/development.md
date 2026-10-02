@@ -35,6 +35,47 @@ The following environment variables can be used for debugging:
 $ TEGOLA_SQL_DEBUG=LAYER_SQL tegola serve --config=/path/to/conf.toml
 ```
 
+## Tile latency diagnostics
+
+Standard feature-provider rendering emits `tile layer timing` records with map,
+layer, provider layer, Z/X/Y, `elapsed_ms`, `features_received`, and `outcome`.
+Time includes fetching and per-feature projection/encoding, but excludes final
+tile protobuf serialization and compression. This applies across MySQL, PostGIS,
+HANA and GeoPackage feature providers; native MVT providers bypass this path.
+
+These records describe tile rendering, not raw Feature API requests. The
+dedicated [feature metrics](testing/feature-performance-observability.md) keep
+their separate fixed-label request/provider-query contract.
+
+MySQL also emits `mysql tile query complete` once per query attempt:
+
+| Field | Meaning |
+| --- | --- |
+| `query_ms` | Pool acquisition plus driver query execution until rows are returned |
+| `rows_decode_ms` | Streaming rows, scanning and geometry decoding; includes further network reads |
+| `callback_ms` | Processing buffered features through the tile encoder |
+| `total_ms`, `attempt` | Whole attempt duration and one-based retry number |
+| `failure_phase`, `outcome` | Failing phase and `ok`, `deadline`, `canceled`, or `error` |
+| `rows`, `features` | Rows read and decoded features; features can exceed completed callbacks on failure |
+| `pool_open`, `pool_in_use`, `pool_idle`, `pool_max_open` | Pool snapshot at completion |
+| `pool_wait_count_delta_global`, `pool_wait_ms_delta_global` | Changes in cumulative pool counters across the attempt |
+
+Pool deltas include **all overlapping queries on the same pool**, not just this
+request. They indicate contention but cannot isolate an individual query's wait.
+Compare records by layer and Z/X/Y; concurrent attempts may cover the same waits.
+
+Errors, deadlines and successful operations lasting at least one second appear
+at WARN. Fast success and ordinary cancellation appear at DEBUG (`--log-level DEBUG`).
+The new records omit SQL, values, credentials and raw error text. Existing DEBUG
+and SQL-debug output can include SQL, so keep complete debug logs private.
+Cache HITs do not render layers and produce no new rendering records.
+
+The shared cache-MISS render deadline remains 30 seconds. Startup inspection
+timeouts and connection-establishment timeouts are separate. Diagnose a long
+`query_ms` alongside pool waits, a long `rows_decode_ms`, or a long `callback_ms`
+before changing limits. A completion record becomes available when the provider
+returns; a driver that ignores cancellation may delay that record.
+
 ## Client-side debugging
 
 A debug layer can show tile outlines and Z/X/Y values. Add `debug=true` to the tile URL template to include it:

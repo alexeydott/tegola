@@ -448,3 +448,53 @@ The filter is applied inside the protected read snapshot before geometry/time
 matching, counts and pagination, AND-combined with a configured `feature_sql`
 selection. These capabilities do not themselves declare an OGC conformance
 class.
+
+## Troubleshooting MOS custom SQL
+
+### Registration times out despite a larger connection timeout
+
+`timeout = "90s"` limits connection establishment. It does not extend the
+30-second registration probe budget. For explicit MOS, Tegola checks result
+columns without decoding sample geometries. It then samples geometry classes
+unless `geometry_type` is configured or inspection is deferred.
+
+Older MySQL versions can materialize a derived table even when its outer query
+has `WHERE 1=0` or `LIMIT 0`. Metadata inspection first checks the full result
+projection with zero rows; supported SELECT forms use a direct `LIMIT 0`.
+Format/class sampling then transfers only the configured geometry column.
+A direct sample rewrite requires simple identifier projections with optional
+`AS` aliases and a unique geometry output. Expressions, stars, DISTINCT/ALL,
+grouping, ordering, unions, windows, locking, executable comments and ambiguous
+projections use a conservative geometry-only derived query. That fallback may
+still materialize. Direct sampling retains smaller existing limits and offsets
+and caps the row window at 16; no rewrite guarantees the probe deadline.
+
+Registration geometry samples are checked against a 64 MiB cap before decoding.
+Custom-SQL format/class queries retrieve at most the cap plus one byte to detect
+oversize values; ordinary table sample cells are checked after retrieval. Streamed inspection
+retains its first usable geometry rather than buffering all sample blobs.
+This fixed registration-only limit is not a runtime feature/tile size limit.
+See [startup metadata queries](../../docs/geometry-formats.md#startup-metadata-queries).
+
+### Bounds column is ambiguous in a JOIN
+
+If both joined tables expose `MINX`, `MAXX`, `MINY` or `MAXY`, MySQL can return
+`Error 1052 (23000): Column 'MAXX' in where clause is ambiguous` when `!BBOX!`
+is expanded. Set `bbox_table` on that custom-SQL layer to its source alias or
+schema-qualified table. Keep `bbox_*_fieldname` as simple result-column names.
+The full [joined MOS example](../../docs/geometry-formats.md#joined-mos-layer-example)
+shows this separation. Merely qualifying the columns in the SELECT list does
+not qualify the generated WHERE predicate.
+
+These JOIN and token options apply to tile SQL. They do not broaden the
+single-table `feature_sql` grammar or bypass raw feature identity, snapshot,
+temporal, dimensional or CRS validation. Successful MOS registration or tile
+delivery is not evidence of Feature API publication or OGC conformance.
+
+### Verify actual tile queries after startup
+
+A successful registration or `/capabilities` response does not execute the
+per-tile spatial predicate. Start a separate test instance with `--no-cache`
+and request both an affected layer tile and the corresponding full-map tile.
+Use `:8083` or `127.0.0.1:18083` for the bind address; see
+[HTTP bind address](../../docs/configuration.md#http-bind-address).

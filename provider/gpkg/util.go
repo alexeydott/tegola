@@ -212,7 +212,10 @@ func buildBBoxPredicate(layer *Layer, bboxExtent *geom.Extent) (string, error) {
 		fields = codec.DefaultBBoxFields()
 	}
 	if layer.tablename == "" && layer.geometryFormat == codec.FormatMOS {
-		return codec.BuildBoundsPredicate(fields, bboxExtent, codec.BoundsMOSRaw, layer.mosConfig, sqliteQuoteIdent)
+		return codec.BuildBoundsPredicate(
+			fields, bboxExtent, codec.BoundsMOSRaw, layer.mosConfig,
+			codec.BoundsQuote(layer.bboxTable, sqliteQuoteIdent),
+		)
 	}
 	return codec.BuildBoundsPredicate(fields, bboxExtent, codec.BoundsSourceCRS, layer.mosConfig, sqliteQuoteIdent)
 }

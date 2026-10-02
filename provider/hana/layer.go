@@ -45,6 +45,8 @@ type Layer struct {
 	// bboxFields holds the resolved bounds field names (layer > provider >
 	// defaults) backing the bounds-backed custom-SQL !BBOX! predicate for
 	// raw (MOS) layers, and excluded from feature tags.
+	// bboxTable qualifies custom tile SQL bounds, never feature identity.
+	bboxTable    string
 	bboxFields   codec.BBoxFields
 	featureTable string
 	featureSRID  uint64
