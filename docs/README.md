@@ -7,6 +7,7 @@ Tegola documentation covers HTTP behavior, configuration, provider contracts, ge
 ## Guides
 
 * [API reference](api.md) — HTTP endpoints and tile operations.
+* [Queryables and filtering](filtering.md) — public scalar catalogs and the initial CQL2 text profile.
 * [Configuration](configuration.md) — TOML, providers, caches, and environment variables.
 * [Development and builds](development.md) — debugging, build flags, and source builds.
 * [Provider contract](provider-contract.md) — settings and runtime behavior shared by standard providers.

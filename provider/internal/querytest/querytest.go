@@ -50,6 +50,8 @@ type Row struct {
 // InvalidTemporalMapping must be rejected at registration with a typed invalid-query
 // error through Instance.SetupError, or by the query where registration cannot inspect it.
 type Fixture struct {
+	// FilterFields declares the literal public filter schema only for filter suites.
+	FilterFields           []provider.FeatureQueryable
 	NativeProfileCase      NativeProfileCase
 	Rows                   []Row
 	InvalidTemporalMapping bool
@@ -65,6 +67,8 @@ type Fixture struct {
 
 // Instance owns one fresh backend fixture. Cleanup is optional and registered by Run.
 type Instance struct {
+	// QueryableLayer must be the actual registration-frozen provider layer.
+	QueryableLayer                  provider.FeatureQueryableLayerInfo
 	NativeProfileOutcome            *NativeProfileEvidence
 	nativeRingOrientationEquivalent bool
 	// SetupError exposes constructor rejection without a fake querier.
@@ -522,6 +526,10 @@ func checkResponse(result provider.FeatureQueryResult, got []provider.Feature, c
 }
 
 func cloneQuery(q provider.FeatureQuery) provider.FeatureQuery {
+	if q.Filter != nil {
+		copy := q.Filter.Clone()
+		q.Filter = &copy
+	}
 	if q.Bounds != nil {
 		q.Bounds = append([]geom.Extent{}, q.Bounds...)
 	}
@@ -650,6 +658,11 @@ func observeQuery(ctx context.Context, q provider.FeatureQuerier, layer string, 
 }
 
 func cloneFixture(f Fixture) Fixture {
+	if f.FilterFields != nil {
+		fields := make([]provider.FeatureQueryable, len(f.FilterFields))
+		copy(fields, f.FilterFields)
+		f.FilterFields = fields
+	}
 	if f.PublicFields != nil {
 		fields := make([]string, len(f.PublicFields))
 		copy(fields, f.PublicFields)

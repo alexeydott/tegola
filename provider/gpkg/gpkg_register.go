@@ -65,7 +65,7 @@ type featureTableDetails struct {
 //	tables in the gpkg at 'gpkgPath'.
 func AutoConfig(gpkgPath string) (map[string]interface{}, error) {
 	// Get all feature tables
-	db, err := sql.Open("sqlite3", sqliteReadOnlyDSN(gpkgPath))
+	db, err := sql.Open(featureSQLiteDriver, sqliteReadOnlyDSN(gpkgPath))
 	if err != nil {
 		return nil, err
 	}
@@ -676,7 +676,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		return nil, ErrInvalidFilePath{filepath}
 	}
 
-	db, err := sql.Open("sqlite3", sqliteReadOnlyDSN(filepath))
+	db, err := sql.Open(featureSQLiteDriver, sqliteReadOnlyDSN(filepath))
 	if err != nil {
 		return nil, err
 	}

@@ -426,3 +426,25 @@ select a storage format or disable automatic format detection.
 For automatically detected MOS, undecodable feature rows are skipped with a
 warning at tile rendering, consistently with the probe. A bad row does not
 hide other valid features. Explicit-format error policies are unchanged.
+
+### Optional scalar filtering
+
+Admitted ordinary and `feature_sql` profiles expose only published direct scalar
+columns with catalog-proven semantics: integer widths (including full unsigned
+64-bit), exact DECIMAL precision/scale, BIT(1) booleans, and utf8mb4 VARCHAR/TEXT
+families. FLOAT/DOUBLE, CHAR, other character sets and date/time declarations
+are not advertised initially. Public aliases resolve back to their frozen
+physical columns; identity, geometry and private source metadata are excluded.
+Optional catalog failure preserves the admitted Core and legacy tile source.
+
+All six comparisons and NULL tests use SQL three-valued logic. Numeric literals
+remain exact; directed lattice rounding avoids floating conversion and DECIMAL
+rounding. UTF-8 string comparisons use binary source bytes and a bound ASCII hex
+parameter through UNHEX, preserving NUL, case, supplementary characters and
+trailing spaces independently of connection collation. Raw feature BIT(1)
+properties are strict boolean values; tile decoding is unchanged.
+
+The filter is applied inside the protected read snapshot before geometry/time
+matching, counts and pagination, AND-combined with a configured `feature_sql`
+selection. These capabilities do not themselves declare an OGC conformance
+class.

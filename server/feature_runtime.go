@@ -86,6 +86,7 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 		{path: "/conformance", handler: http.HandlerFunc(bound.serveConformance)},
 		{path: "/collections", handler: http.HandlerFunc(bound.serveCollections)},
 		{path: "/collections/:collection", handler: http.HandlerFunc(bound.serveCollection)},
+		{path: "/collections/:collection/queryables", handler: http.HandlerFunc(bound.serveQueryables)},
 		{path: "/collections/:collection/items", handler: http.HandlerFunc(bound.serveItems)},
 		{path: "/collections/:collection/items/:feature", handler: http.HandlerFunc(bound.serveItem)},
 		{path: "/*feature_path", handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +98,8 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 		mediaType := "application/json"
 		if route.path == "/api" {
 			mediaType = "application/vnd.oai.openapi+json;version=3.0"
+		} else if strings.HasSuffix(route.path, "/queryables") {
+			mediaType = "application/schema+json"
 		} else if strings.Contains(route.path, "/items") {
 			mediaType = "application/geo+json"
 		}

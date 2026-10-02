@@ -131,6 +131,7 @@ and HEAD; HEAD returns the same status and headers without a response body.
 | `/conformance` | Advertised conformance classes | `application/json` |
 | `/collections` | Explicitly published collection catalog | `application/json` |
 | `/collections/{collectionId}` | Collection metadata | `application/json` |
+| `/collections/{collectionId}/queryables` | Public scalar Queryables schema | `application/schema+json` |
 | `/collections/{collectionId}/items` | GeoJSON FeatureCollection | `application/geo+json` |
 | `/collections/{collectionId}/items/{featureId}` | One GeoJSON Feature | `application/geo+json` |
 
@@ -149,7 +150,7 @@ redirects carry `Cache-Control: no-store`.
 ### Item query parameters and paging
 
 Only the following parameters are accepted on the items resource. Unknown or
-repeated parameters return 400. Spatial and temporal constraints combine by AND.
+repeated parameters return 400. Spatial, temporal and property constraints combine by AND.
 
 | Parameter | Behavior |
 | --- | --- |
@@ -157,12 +158,14 @@ repeated parameters return 400. Spatial and temporal constraints combine by AND.
 | `offset` | Nonnegative decimal offset in stable feature-ID order; defaults to 0. This is a Tegola paging extension. |
 | `bbox` | Four CRS84 or six CRS84h coordinates, described below. |
 | `datetime` | RFC3339 instant or inclusive interval, described below. |
+| `filter` | Bounded CQL2 text expression over the collection's public queryables. |
+| `filter-lang` | `cql2-text`; requires a nonblank filter. This language is the default when a filter is supplied. |
 
 Exact filtering and deduplication precede offset and limit. Responses include
 `numberReturned` and paging links (`self`, `next` when more matches
 exist, and `prev` when offset is nonzero). `numberMatched` is present only when
 the provider knows an exact total; its absence does not mean zero. Follow the
-returned links, which retain bbox and datetime constraints. Paging is evaluated
+returned links, which retain bbox, datetime and filter constraints. Paging is evaluated
 against each request's source snapshot; it does not freeze data across requests.
 
 ```text
@@ -237,6 +240,30 @@ Selected public properties with SQL NULL values are returned as JSON `null`.
 Private and unselected properties are absent. Zero, false and the empty string
 retain their values. Property selection narrows the published property set and
 does not remove feature identity or geometry.
+
+### Queryables and scalar filters
+
+Collections with an available catalog link to their Queryables resource. The Draft 2020-12 schema
+has a canonical query-free `$id` and `additionalProperties:false`. It describes
+eligible public scalar properties; identity, geometry and internal source
+metadata are not automatically queryable. A valid catalog can be empty.
+The text transport catalog omits aliases that cannot be expressed as CQL2
+identifiers, without removing those properties from ordinary feature responses.
+
+The initial CQL2 text profile supports TRUE/FALSE, AND/OR/NOT, six scalar
+comparisons and IS NULL/IS NOT NULL. Comparisons use a public property on the
+left and a compatible scalar literal on the right. Numeric literals remain
+exact, string comparisons preserve Unicode order and trailing spaces, and
+source NULL follows three-valued logic. Filtering precedes paging and exact
+counts within the provider's protected source snapshot.
+
+Unknown/private properties and invalid or incompatible expressions return 400.
+Missing optional Queryables capability returns 501 for Queryables/filtering
+operations and preserves ordinary Core requests. CQL2 JSON, advanced operators
+and `filter-crs` are unsupported. Native date/time or floating-point properties
+require separate admission; parsing their literal types does not establish a
+backend capability. See [Queryables and filtering](filtering.md) for syntax,
+limits, physical eligibility and examples.
 
 ### Errors and conformance status
 

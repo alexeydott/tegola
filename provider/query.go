@@ -66,7 +66,10 @@ type FeatureQuery struct {
 	// SRID alone does not establish provider support for that CRS or transforms.
 	BoundsSRID uint64
 	Temporal   *TemporalConstraint
-	IDs        []uint64
+	// Filter is combined with the other query dimensions by AND. A nil filter
+	// imposes no restriction; nonnil filters require explicit backend support.
+	Filter *FilterExpression
+	IDs    []uint64
 	// Limit must be positive; callers supply defaults and publication limits.
 	Limit uint
 	// Offset skips distinct matches in stable ascending feature-ID order.
@@ -126,6 +129,11 @@ func (q FeatureQuery) Validate() error {
 	}
 	if q.Temporal != nil {
 		if err := q.Temporal.Validate(); err != nil {
+			return err
+		}
+	}
+	if q.Filter != nil {
+		if err := q.Filter.Validate(); err != nil {
 			return err
 		}
 	}

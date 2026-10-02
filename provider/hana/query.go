@@ -55,6 +55,10 @@ func (p *Provider) queryFeaturesGuarded(ctx context.Context, name string, query 
 		return result, featureUnsupported("request exceeds bounded predicate profile")
 	}
 	s := l.feature
+	filterSQL, filterArgs, err := compileFeatureFilter(s, query.Filter)
+	if err != nil {
+		return result, err
+	}
 	fields := map[string]bool{}
 	for _, projection := range s.Projections {
 		if !s.Private[projection.Physical] && (s.Public == nil || s.Public[projection.Output]) {
@@ -89,6 +93,10 @@ func (p *Provider) queryFeaturesGuarded(ctx context.Context, name string, query 
 	args := append([]any(nil), s.BaseArgs...)
 	if s.BasePredicate != "" {
 		predicates = append(predicates, "("+s.BasePredicate+")")
+	}
+	if filterSQL != "" {
+		predicates = append(predicates, filterSQL)
+		args = append(args, filterArgs...)
 	}
 	if len(query.IDs) != 0 {
 		var placeholders []string
@@ -162,6 +170,15 @@ func (p *Provider) queryFeaturesGuarded(ctx context.Context, name string, query 
 	}
 	if !s.Catalog.equal(catalog) {
 		return result, featureContextSourceError(ctx, featureInvalid("source", "catalog changed since registration"))
+	}
+	if query.Filter != nil {
+		var version string
+		if err := tx.QueryRowContext(ctx, "SELECT VERSION FROM SYS.M_DATABASE").Scan(&version); err != nil {
+			return result, featureContextSourceError(ctx, err)
+		}
+		if version != s.FilterVersion {
+			return result, featureContextSourceError(ctx, featureInvalid("source", "filter server profile changed"))
+		}
 	}
 	var cursor int64
 	started := false
@@ -289,7 +306,8 @@ func readFeatureChunk(ctx context.Context, tx *sql.Tx, statement string, args []
 		return nil, featureInvalid("source", "result metadata changed")
 	}
 	for i, column := range columns {
-		if labels[i] != column.Name || types[i].DatabaseTypeName() != column.Type {
+		precision, scale, known := types[i].DecimalSize()
+		if labels[i] != column.Name || !featureResultWireCompatible(column, types[i].DatabaseTypeName(), precision, scale, known) {
 			return nil, featureInvalid("source", "result lineage or type changed")
 		}
 	}
@@ -316,4 +334,28 @@ func readFeatureChunk(ctx context.Context, tx *sql.Tx, statement string, args []
 		chunk = append(chunk, row)
 	}
 	return chunk, rows.Err()
+}
+
+// go-hdb exposes fixed-decimal protocol names rather than the catalog DECIMAL
+// name. The locked physical catalog and result precision/scale must still agree.
+func featureResultWireCompatible(column featureColumn, wire string, precision, scale int64, known bool) bool {
+	if column.Type != "DECIMAL" {
+		return wire == column.Type
+	}
+	if column.Length < 1 || column.Length > 38 || column.Scale < 0 || column.Scale > column.Length || !known || precision != column.Length || scale != column.Scale {
+		return false
+	}
+	switch wire {
+	case "FIXED8":
+		return precision <= 18
+	case "FIXED12":
+		return precision <= 28
+	case "FIXED16":
+		return true
+	case "DECIMAL":
+		// The generic protocol decimal has a 34-digit coefficient.
+		return precision <= 34
+	default:
+		return false
+	}
 }

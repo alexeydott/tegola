@@ -35,6 +35,8 @@ type featureMock struct {
 	rollbackError  error
 	dataCloseError error
 	badDataType    bool
+	filterVersion  string
+	filterColumns  []featureColumn
 }
 type featureMockConnector struct{ state *featureMock }
 
@@ -104,6 +106,9 @@ func (c *featureMockConn) QueryContext(ctx context.Context, q string, args []dri
 	var labels, types []string
 	var rows [][]driver.Value
 	switch {
+	case strings.Contains(q, "SELECT VERSION FROM SYS.M_DATABASE"):
+		labels = []string{"VERSION"}
+		rows = [][]driver.Value{{s.filterVersion}}
 	case strings.Contains(q, "SELECT CURRENT_CONNECTION"):
 		labels = []string{"CURRENT_CONNECTION"}
 		rows = [][]driver.Value{{int64(1)}}
@@ -119,7 +124,11 @@ func (c *featureMockConn) QueryContext(ctx context.Context, q string, args []dri
 		}
 	case strings.Contains(q, "FROM SYS.TABLE_COLUMNS"):
 		labels = []string{"COLUMN_NAME", "COLUMN_ID", "DATA_TYPE_NAME", "LENGTH", "SCALE", "IS_NULLABLE", "COLLATION", "GENERATED_ALWAYS_AS", "GENERATION_TYPE", "IS_HIDDEN", "IS_MASKED"}
-		for _, column := range featureTestLayer().feature.Catalog.Columns {
+		columns := s.filterColumns
+		if columns == nil {
+			columns = featureTestLayer().feature.Catalog.Columns
+		}
+		for _, column := range columns {
 			rows = append(rows, []driver.Value{column.Name, column.ID, column.Type, column.Length, column.Scale, "FALSE", nil, nil, nil, "FALSE", "FALSE"})
 		}
 	case strings.Contains(q, "FROM SYS.INDEXES"):

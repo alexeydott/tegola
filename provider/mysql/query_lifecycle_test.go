@@ -97,13 +97,13 @@ func (c *featureTestConn) QueryContext(ctx context.Context, query string, args [
 		result.columns = []string{"id"}
 		result.data = [][]driver.Value{{s.physicalID}}
 	case strings.Contains(query, "FROM INFORMATION_SCHEMA.COLUMNS"):
-		result.columns = []string{"name", "type", "column_type", "nullable", "extra", "collation", "srid"}
+		result.columns = []string{"name", "type", "column_type", "nullable", "extra", "collation", "charset", "srid"}
 		for _, column := range f.schema.columns {
 			var srid driver.Value
 			if column.srid.Valid {
 				srid = column.srid.Int64
 			}
-			result.data = append(result.data, []driver.Value{column.name, column.dataType, column.columnType, column.nullable, column.extra, column.collation, srid})
+			result.data = append(result.data, []driver.Value{column.name, column.dataType, column.columnType, column.nullable, column.extra, column.collation, column.characterSet, srid})
 		}
 	case strings.Contains(query, "FROM INFORMATION_SCHEMA.STATISTICS"):
 		result.columns = []string{"name", "sequence", "non_unique", "column", "prefix"}

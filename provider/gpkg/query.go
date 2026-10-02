@@ -47,6 +47,10 @@ func (p *Provider) QueryFeatures(
 	if err != nil {
 		return result, err
 	}
+	filterSQL, filterArgs, err := layer.prepareFeatureFilter(query.Filter)
+	if err != nil {
+		return result, err
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -66,6 +70,10 @@ func (p *Provider) QueryFeatures(
 	if err != nil {
 		return result, err
 	}
+	if filterSQL != "" {
+		where = "(" + where + ") AND (" + filterSQL + ")"
+		args = append(args, filterArgs...)
+	}
 	if impossible {
 		zero := uint64(0)
 		result.NumberMatched = &zero
@@ -75,6 +83,10 @@ func (p *Provider) QueryFeatures(
 	selected := make([]string, len(columns))
 	for i, column := range columns {
 		selected[i] = "l." + quoteIdent(column)
+		if query.Filter != nil && layer.filterProfile.columns[column].kind == provider.QueryableBoolean {
+			// Arithmetic projection removes SQLite's declared BOOLEAN coercion.
+			selected[i] = "(" + selected[i] + "+0) AS " + quoteIdent(column)
+		}
 	}
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -88,6 +100,11 @@ func (p *Provider) QueryFeatures(
 			err = fmt.Errorf("gpkg feature snapshot close: %w", rollbackErr)
 		}
 	}()
+	if query.Filter != nil {
+		if err := layer.filterProfile.verify(ctx, tx, layer.tablename); err != nil {
+			return result, featureSourceError(err)
+		}
+	}
 	var cursor int64
 	started := false
 	var matched uint64
@@ -104,6 +121,18 @@ func (p *Provider) QueryFeatures(
 		statement := "SELECT " + strings.Join(selected, ",") + " FROM " + quoteIdent(layer.tablename) + " l WHERE " + predicate +
 			" ORDER BY l." + quoteIdent(layer.idFieldname) + " LIMIT 256"
 		read, stopped, scanErr := scanFeatureCandidates(ctx, tx, statement, chunkArgs, len(columns), func(values []any) (bool, error) {
+			if query.Filter != nil {
+				for i, column := range columns {
+					if layer.filterProfile.columns[column].kind != provider.QueryableBoolean || values[i] == nil {
+						continue
+					}
+					value, ok := values[i].(int64)
+					if !ok || (value != 0 && value != 1) {
+						return false, featureSourceError(invalidQuery("source", "invalid boolean scalar"))
+					}
+					values[i] = value == 1
+				}
+			}
 			// Identity is the first column. NULL retains the legacy skip
 			// policy; other invalid SQLite identities must fail closed.
 			if values[0] != nil {

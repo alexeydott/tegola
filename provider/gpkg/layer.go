@@ -73,6 +73,21 @@ type Layer struct {
 	nativeZ, nativeM  int
 	heightProjection  *crsconfig.HeightProjection
 	dimensionalSample bool
+	filterProfile     *featureFilterProfile
+	filterError       error
+}
+
+type featureFilterColumn struct {
+	name, declaration        string
+	notNull, primary, hidden int
+	kind                     provider.QueryableType
+}
+
+type featureFilterProfile struct {
+	catalog             provider.FeatureQueryables
+	columns             map[string]featureFilterColumn
+	schemaSQL, encoding string
+	schemaColumns       []featureFilterColumn
 }
 
 // TemporalMapping returns immutable registration-time temporal metadata.

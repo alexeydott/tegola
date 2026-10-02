@@ -17,7 +17,11 @@ type featureCollectionDescription struct {
 }
 
 func (api *FeatureAPI) describeCollection(r *http.Request, metadata features.CollectionMetadata) featureCollectionDescription {
-	return featureCollectionDescription{ID: metadata.ID, Title: metadata.Title, Description: metadata.Description, ItemType: "feature", Links: []featureLink{api.link(r, "/collections/"+metadata.ID, "self", "application/json"), api.link(r, "/collections/"+metadata.ID+"/items", "items", "application/geo+json")}}
+	description := featureCollectionDescription{ID: metadata.ID, Title: metadata.Title, Description: metadata.Description, ItemType: "feature", Links: []featureLink{api.link(r, "/collections/"+metadata.ID, "self", "application/json"), api.link(r, "/collections/"+metadata.ID+"/items", "items", "application/geo+json")}}
+	if _, err := api.service.Queryables(metadata.ID); err == nil {
+		description.Links = append(description.Links, api.link(r, "/collections/"+metadata.ID+"/queryables", "http://www.opengis.net/def/rel/ogc/1.0/queryables", "application/schema+json"))
+	}
+	return description
 }
 
 func (api *FeatureAPI) serveCollections(w http.ResponseWriter, r *http.Request) {

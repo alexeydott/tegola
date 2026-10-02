@@ -31,6 +31,7 @@ func TestFeatureLiveCommonContract(t *testing.T) {
 			querytest.RunDimensionalProfiles(t, factory, options)
 			querytest.RunExactTemporalProfiles(t, factory, options)
 			querytest.RunNullableProfiles(t, factory, options)
+			querytest.RunFilterProfiles(t, factory, options)
 		})
 	}
 }
@@ -62,6 +63,13 @@ func featureLiveContractInstance(t *testing.T, flavor string, fixture querytest.
 			columns += ", MINX DOUBLE, MAXX DOUBLE, MINY DOUBLE, MAXY DOUBLE"
 		}
 	}
+	if len(fixture.FilterFields) != 0 {
+		if custom {
+			columns += ", source_n BIGINT, source_s TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin, source_b BIT(1)"
+		} else {
+			columns += ", n BIGINT, s TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin, b BIT(1)"
+		}
+	}
 	table := featureLiveTable(t, db, columns)
 	layer := map[string]any{"name": "items", "tablename": table, "id_fieldname": "id", "geometry_fieldname": "geom",
 		"geometry_format": format, "geometry_type": "point", "srid": 4326, "fields": []string{"name", "value"},
@@ -74,12 +82,7 @@ func featureLiveContractInstance(t *testing.T, flavor string, fixture querytest.
 		layer["fields"] = fields
 	}
 	if custom {
-		projection := []string{"s.source_id AS id", "s.source_geom AS geom"}
-		for _, field := range []struct{ source, output string }{{"source_name", "name"}, {"source_value", "value"}, {"source_start", "start_time"}, {"source_end", "end_time"}} {
-			if fixture.PublicFields == nil || slices.Contains(fixture.PublicFields, field.output) {
-				projection = append(projection, "s."+field.source+" AS "+field.output)
-			}
-		}
+		projection := featureLiveContractProjection(fixture.PublicFields, len(fixture.FilterFields) != 0)
 		layer["feature_sql"] = "SELECT " + strings.Join(projection, ",") + " FROM " + featureQuoteIdentifier(table) + " s WHERE s.selection_flag=1"
 		// Legacy tile registration targets the physical table independently.
 		// Raw custom output names are configured via a separate trusted tile
@@ -203,11 +206,39 @@ func featureLiveContractInstance(t *testing.T, flavor string, fixture querytest.
 		if custom {
 			insertColumns = "source_id,source_geom,source_name,source_value,source_start,source_end,selection_flag"
 		}
-		if _, err := db.Exec("INSERT INTO "+featureQuoteIdentifier(table)+" ("+insertColumns+") VALUES (?,?,?,?,?,?,?)", id, geometry, row.Feature.Tags["name"], row.Feature.Tags["value"], start, end, selectionFlag); err != nil {
+		values := []any{id, geometry, row.Feature.Tags["name"], row.Feature.Tags["value"], start, end, selectionFlag}
+		placeholders := "?,?,?,?,?,?,?"
+		if len(fixture.FilterFields) != 0 {
+			if custom {
+				insertColumns += ",source_n,source_s,source_b"
+			} else {
+				insertColumns += ",n,s,b"
+			}
+			values = append(values, row.Feature.Tags["n"], row.Feature.Tags["s"], row.Feature.Tags["b"])
+			placeholders += ",?,?,?"
+		}
+		if _, err := db.Exec("INSERT INTO "+featureQuoteIdentifier(table)+" ("+insertColumns+") VALUES ("+placeholders+")", values...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return querytest.Instance{Querier: p, Layer: "items", CountMode: querytest.OptionalCount}
+	return querytest.Instance{Querier: p, Layer: "items", CountMode: querytest.OptionalCount, QueryableLayer: p.layers["items"]}
+}
+
+func featureLiveContractProjection(publicFields []string, filtered bool) []string {
+	projection := []string{"s.source_id AS id", "s.source_geom AS geom"}
+	for _, field := range []struct{ source, output string }{{"source_name", "name"}, {"source_value", "value"}} {
+		if publicFields == nil || slices.Contains(publicFields, field.output) {
+			projection = append(projection, "s."+field.source+" AS "+field.output)
+		}
+	}
+	// Temporal mapping requires these direct outputs even in an empty fixture
+	// whose declared public property union has no rows/keys. No oracle rows or
+	// property maps are altered; nonempty custom fixtures declare both aliases.
+	projection = append(projection, "s.source_start AS start_time", "s.source_end AS end_time")
+	if filtered {
+		projection = append(projection, "s.source_n AS n", "s.source_s AS s", "s.source_b AS b")
+	}
+	return projection
 }
 
 func featureLiveNativeStorageEvidence(t *testing.T, db *sql.DB, flavor string, id uint64) querytest.Instance {

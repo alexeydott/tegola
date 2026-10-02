@@ -2,7 +2,7 @@
 
 # Feature service: source baseline
 
-Status: baseline prepared on 2026-10-01. Task 2 architecture accepted after independent provider and HTTP-domain PASS; no Feature API is implemented or advertised by this document.
+Status: historical source baseline prepared on 2026-10-01, followed by current integration contracts below. Task 2 architecture was independently accepted. The implemented application profile is documented in the [API reference](../api.md); this architecture page declares no OGC conformance.
 
 Execution source is Tegola `c65beeb8519f425ff8365c76e54e93baf8e17b07`. This local documentation revision has the same executable source as published `70c53413b06bab23318bac1722852df1fec335e7`. The historical planning revision `18126bb6ca0737b3644f06359ad7703b57bde125` is separated by 134 commits and is comparison evidence only.
 
@@ -22,7 +22,7 @@ Execution source is Tegola `c65beeb8519f425ff8365c76e54e93baf8e17b07`. This loca
 | [UPSTREAM.md](../../UPSTREAM.md) | local exact-SHA verification policy |
 | [go.mod](../../go.mod) | published module namespaces and versions |
 
-Tiler.TileFeatures currently accepts context, layer, Tile, provider.Params and a callback. Registration composes TilerUnion values. No current FeatureQuerier API is assumed. Standard providers are GPKG, MySQL/MariaDB, PostGIS and HANA; mvt_postgis/mvt_hana bypass raw-feature construction and remain outside initial scope.
+At the frozen source baseline, Tiler.TileFeatures accepted context, layer, Tile, provider.Params and a callback, and registration composed TilerUnion values; FeatureQuerier was not yet implemented. Standard providers are GPKG, MySQL/MariaDB, PostGIS and HANA; mvt_postgis/mvt_hana bypass raw-feature construction and remain outside initial scope.
 
 ## Baseline changes to preserve
 
@@ -68,9 +68,18 @@ Provider review checks optional capability detection, current Params compatibili
 
 ## Shared decoder ownership
 
-The optional contract is declared in [provider/query.go](../../provider/query.go); it is not an implemented HTTP Feature API. [GPKG row decoding](../../provider/gpkg/row_decode.go) now constructs features for both tile and future raw-query callers. Scanning, SQL, exact tile filtering and callback delivery stay outside that helper. Its strict default returns malformed-geometry errors; the tile caller explicitly selects its existing auto-MOS tolerance and sticky null/empty exclusion.
+The optional raw-query contract is declared in [provider/query.go](../../provider/query.go) and consumed by the implemented FeatureService and HTTP API. [GPKG row decoding](../../provider/gpkg/row_decode.go) constructs features for both tile and raw-query callers. Scanning, SQL, exact tile filtering and callback delivery stay outside that helper. Its strict default returns malformed-geometry errors; the tile caller explicitly selects its existing auto-MOS tolerance and sticky null/empty exclusion.
 
-PostGIS reuses decipherFields and decodeGeometryValue; HANA reuses readRowValues and decodeGeometryValue; shared geometrycodec owns format decoding and geometric predicates. MySQL's deferred CRS/retry flow remains unchanged: its local construction seam is finalized with the FeatureQuerier implementation. No new query path may duplicate those decoders.
+PostGIS raw queries use `consumeFeatureChunk` and
+`featureProfile.decodeFeatureGeometry`; tile decoding retains `decipherFields`
+and `decodeGeometryValue`. MySQL raw queries use `featureProfile.decodeFeature`,
+while tile queries retain their legacy `decodeGeometry` flow. HANA raw queries
+use `featureScanRow` and `decodeFeature`; native geometry is exported as WKB
+before strict decoding. Its tile path retains `readRowValues` and
+`decodeGeometryValue`. The shared geometry codec owns strict dimensional raw
+format decoding, exact predicates and pure transforms. Raw-query policy and
+legacy tile interpretation remain distinct; provider-specific scanning and
+native envelopes stay with their providers.
 
 Raw null/normalized-empty geometry follows [ADR-0002](decisions/ADR-0002-absent-feature-geometry.md), including bbox matching. The [contract harness](../../provider/internal/querytest/querytest.go) supplies explicit fixture expectations; its reference adapter demonstrates harness behavior, without proving real provider or database parity.
 ## Temporal metadata and collection construction
@@ -78,3 +87,18 @@ Raw null/normalized-empty geometry follows [ADR-0002](decisions/ADR-0002-absent-
 [ADR-0003](decisions/ADR-0003-temporal-metadata-and-resolved-collections.md) defines immutable source temporal mappings and resolved collection inputs. Feature publication requires explicit provider eligibility and temporal metadata. Original query bounds remain with the provider for exact matching before pagination; FeatureService transforms response geometry to CRS84.
 
 The first GPKG feature profile admits table-backed layers with unique integer IDs. Custom SQL remains available to tiles and is unsupported for feature queries in this profile. Cross-CRS selection may need a bounded-memory source scan when a conservative indexed envelope cannot be established. These are capability and performance limits to report during acceptance, rather than completed runtime claims.
+
+## Typed filtering integration
+
+[ADR-0009](decisions/ADR-0009-typed-feature-filtering.md) defines the additive
+Queryables and neutral filter boundary. `provider/query_filter.go` owns detached
+catalogs, validated expressions and exact scalar literals. `ogc/cql2` parses
+the selected text grammar; providers resolve properties against their own frozen
+public-to-physical mappings and compile bound predicates within the protected
+source snapshot. Optional catalog failure must preserve unfiltered Core and tile
+capabilities. Public epoch aliases remain integers; unsupported native profiles
+are omitted, rather than guessed from rows.
+
+The [filtering guide](../filtering.md) describes the application profile, request
+limits and three-valued comparison semantics. Implemented application behavior
+does not establish an official conformance declaration.

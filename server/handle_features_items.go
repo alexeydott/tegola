@@ -14,6 +14,7 @@ import (
 
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/ogc/cql2"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/alexeydott/tegola/provider"
 	"github.com/dimfeld/httptreemux"
@@ -127,7 +128,7 @@ func (api *FeatureAPI) parseItemsQuery(raw string) (provider.FeatureQuery, url.V
 	}
 	for key, values := range parameters {
 		switch key {
-		case "limit", "offset", "bbox", "datetime":
+		case "limit", "offset", "bbox", "datetime", "filter", "filter-lang":
 		default:
 			return provider.FeatureQuery{}, nil, fmt.Errorf("unknown query parameter")
 		}
@@ -161,6 +162,21 @@ func (api *FeatureAPI) parseItemsQuery(raw string) (provider.FeatureQuery, url.V
 		if err != nil {
 			return provider.FeatureQuery{}, nil, err
 		}
+	}
+	if language, present := parameters["filter-lang"]; present {
+		if _, filtered := parameters["filter"]; !filtered || language[0] != "cql2-text" {
+			return provider.FeatureQuery{}, nil, fmt.Errorf("invalid filter language")
+		}
+	}
+	if value, present := parameters["filter"]; present {
+		if strings.TrimSpace(value[0]) == "" {
+			return provider.FeatureQuery{}, nil, fmt.Errorf("blank filter")
+		}
+		filter, err := cql2.Parse(value[0])
+		if err != nil {
+			return provider.FeatureQuery{}, nil, err
+		}
+		query.Filter = &filter
 	}
 	if err := query.Validate(); err != nil {
 		return provider.FeatureQuery{}, nil, err

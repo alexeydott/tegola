@@ -28,6 +28,10 @@ type featureSource struct {
 	Public            map[string]bool
 	BasePredicate     string
 	BaseArgs          []any
+	Queryables        provider.FeatureQueryables
+	FilterColumns     map[string]featureColumn
+	FilterVersion     string
+	FilterError       error
 }
 
 func featureInvalid(field, reason string) error {
@@ -219,6 +223,7 @@ func (p *Provider) registerFeatureSource(l *Layer, conf dict.Dicter, providerTyp
 		}
 		s.Height = projection
 	}
+	registerFeatureQueryables(ctx, p.pool.pool, s)
 	return nil
 }
 

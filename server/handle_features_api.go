@@ -16,6 +16,7 @@ func (api *FeatureAPI) serveAPI(w http.ResponseWriter, r *http.Request) {
 		{path: "/conformance", summary: "Implemented conformance classes"},
 		{path: "/collections", summary: "Published collections"},
 		{path: "/collections/{collection}", summary: "Collection metadata"},
+		{path: "/collections/{collection}/queryables", summary: "Queryable property schema"},
 		{path: "/collections/{collection}/items", summary: "Features in a collection"},
 		{path: "/collections/{collection}/items/{feature}", summary: "One feature"},
 	} {
@@ -34,6 +35,8 @@ func (api *FeatureAPI) serveAPI(w http.ResponseWriter, r *http.Request) {
 				map[string]any{"name": "offset", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 0}, "description": "Tegola paging offset in stable feature-ID order"},
 				map[string]any{"name": "bbox", "in": "query", "style": "form", "explode": false, "schema": map[string]any{"oneOf": []any{map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "minItems": 4, "maxItems": 4}, map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "minItems": 6, "maxItems": 6}}}, "description": "Four CRS84 or six CRS84h coordinates; only lengths four and six are accepted"},
 				map[string]any{"name": "datetime", "in": "query", "schema": map[string]any{"type": "string"}, "description": "RFC3339 instant or interval with at most one open endpoint"},
+				map[string]any{"name": "filter", "in": "query", "schema": map[string]any{"type": "string"}, "description": "CQL2 text expression over the collection Queryables catalog; combines with bbox and datetime"},
+				map[string]any{"name": "filter-lang", "in": "query", "schema": map[string]any{"type": "string", "enum": []string{"cql2-text"}}, "description": "Requires filter; omitted language defaults to cql2-text. filter-crs and other encodings are unsupported"},
 			)
 			operation["parameters"] = parameters
 		}
@@ -47,7 +50,11 @@ func (api *FeatureAPI) serveAPI(w http.ResponseWriter, r *http.Request) {
 		operation["responses"].(map[string]any)["406"] = map[string]any{"description": "Requested representation is unavailable"}
 		if !strings.Contains(route.path, "/items") {
 			mediaType := "application/json"
-			if route.path == "/api" {
+			if strings.HasSuffix(route.path, "/queryables") {
+				mediaType = "application/schema+json"
+				operation["responses"].(map[string]any)["501"] = map[string]any{"description": "Queryable capability is unavailable"}
+				operation["responses"].(map[string]any)["500"] = map[string]any{"description": "Resource failed"}
+			} else if route.path == "/api" {
 				mediaType = "application/vnd.oai.openapi+json;version=3.0"
 			}
 			operation["responses"].(map[string]any)["200"] = map[string]any{"description": "Successful response", "content": map[string]any{mediaType: map[string]any{"schema": map[string]any{"type": "object"}}}}

@@ -17,6 +17,7 @@ import (
 
 type featureColumn struct {
 	name, dataType, columnType, nullable, extra, collation string
+	characterSet                                           string
 	srid                                                   sql.NullInt64
 }
 
@@ -56,6 +57,9 @@ type featureProfile struct {
 	mos                 codec.MOSConfig
 	filter              string
 	filterArgs          []any
+	queryableCatalog    provider.FeatureQueryables
+	queryableColumns    map[string]featureFilterColumn
+	queryableError      error
 }
 
 func featureInvalid(field, reason string) error {
@@ -108,6 +112,9 @@ func (p *Provider) registerFeatureLayers(confs []dict.Dicter) error {
 		var invalid provider.InvalidFeatureQueryError
 		if errors.As(err, &invalid) {
 			return err
+		}
+		if err == nil {
+			profile.initializeFilterCatalog()
 		}
 		layer.feature, layer.featureError = profile, err
 		p.layers[name] = layer
@@ -241,7 +248,7 @@ func inspectFeatureSchema(ctx context.Context, db featureCatalogQuerier, databas
 	if err != nil {
 		return result, errors.Join(featureUnsupported("stable physical table identity catalog"), err)
 	}
-	columnSQL := "SELECT COLUMN_NAME,DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,EXTRA,COALESCE(COLLATION_NAME,'')"
+	columnSQL := "SELECT COLUMN_NAME,DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,EXTRA,COALESCE(COLLATION_NAME,''),COALESCE(CHARACTER_SET_NAME,'')"
 	if mysql8 {
 		columnSQL += ",SRS_ID"
 	}
@@ -251,7 +258,10 @@ func inspectFeatureSchema(ctx context.Context, db featureCatalogQuerier, databas
 		[]any{database, table}, func(rows *sql.Rows) error {
 			for rows.Next() {
 				var column featureColumn
-				targets := []any{&column.name, &column.dataType, &column.columnType, &column.nullable, &column.extra, &column.collation}
+				targets := []any{
+					&column.name, &column.dataType, &column.columnType, &column.nullable,
+					&column.extra, &column.collation, &column.characterSet,
+				}
 				if mysql8 {
 					targets = append(targets, &column.srid)
 				}

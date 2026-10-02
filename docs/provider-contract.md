@@ -289,8 +289,22 @@ defines constrained selection;
 defines HANA's read-write repeatable-read transaction and source lock. Existing
 tile behavior in the sections above retains its separate contract.
 
+### Optional scalar filtering contract
+
+Optional `FeatureQueryableLayerInfo` metadata supplies a detached, bounded
+catalog of proven public scalar fields. `FeatureQuery.Filter` carries a
+validated neutral expression, never SQL. Providers resolve every expression
+against their own catalog and private physical mappings before compiling bound
+predicates. Invalid properties or literal types are typed client errors;
+missing optional metadata is an unsupported capability and must preserve
+ordinary Core and tile queries. Filtering combines with trusted source selection
+and existing query constraints before counts and paging. See
+[ADR-0009](architecture/decisions/ADR-0009-typed-feature-filtering.md) for the
+exact scalar, integrity and resource boundaries.
+
 ## See Also
 
+- [Queryables and filtering](filtering.md) — typed property catalogs, comparison semantics and limits
 - [Configuration](configuration.md) — cache, provider, and TOML examples
 - [CRS contract](crs.md) — coordinate reference system behavior
 - [Geometry formats](geometry-formats.md) — raw feature geometry handling

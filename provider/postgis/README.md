@@ -3,6 +3,38 @@
 For raw OGC feature source admission, constrained `feature_sql`, and snapshot
 behavior, see [PostGIS feature queries](features.md).
 
+## Typed raw feature filtering
+
+The admitted raw feature Queryables catalog exposes eligible public PostgreSQL
+`smallint`, `integer`, `bigint`, native `boolean`, `text` and `varchar` columns.
+Names are frozen public projection aliases; identity, geometry and private
+physical fields are excluded. Selected public epoch columns remain integers.
+Catalog metadata comes from registration proofs, never sampled results.
+
+All admitted fields support six comparisons and NULL tests. Integer comparisons
+widen stored values and exact decimal/exponent literals to PostgreSQL numeric,
+so fractional and out-of-range bounds retain mathematical meaning. SQL NULL
+remains UNKNOWN under comparisons and NOT. Boolean ordering is false before
+true. Text/varchar comparisons use UTF-8 bytes with Unicode scalar ordinal order,
+significant case, accents and trailing spaces, independently of source collation.
+A NUL character in a request literal is bound as bytes; it is not inserted into
+PostgreSQL text storage.
+
+Padded `char`, floating-point, numeric-storage, binary/JSON and native DATE/TIMESTAMP
+columns are omitted from Queryables until their comparison profiles are separately
+proved. Some remain supported output properties; output support alone does not
+establish filtering eligibility. An unavailable optional catalog leaves ordinary
+feature publication usable.
+
+Filters are compiled from the neutral typed expression into bound parameters and
+qualified catalog operators inside the existing protected snapshot, before
+logical paging. Configured `feature_sql` selection remains a separate conjunct.
+There is no collection-wide Go filtering fallback, and numeric widening or text
+conversion does not promise scalar-index use. Actual ordinary/custom filter
+checks were independently reviewed on PostgreSQL 16.2 / PostGIS 3.4.1; these
+results do not declare OGC conformance. See the [filtering profile](../../docs/filtering.md)
+for the HTTP application contract.
+
 The PostGIS provider manages querying for tile requests against a Postgres
 database with the [PostGIS](http://postgis.net/) extension installed.
 The connection between tegola and Postgis is configured in a `tegola.toml` file.

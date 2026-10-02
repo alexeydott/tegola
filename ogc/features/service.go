@@ -40,6 +40,18 @@ func (s *Service) QueryCollection(
 	if err := query.Validate(); err != nil {
 		return provider.FeatureQueryResult{}, err
 	}
+	if query.Filter != nil {
+		catalog, err := s.Queryables(collectionID)
+		if err != nil {
+			return provider.FeatureQueryResult{}, err
+		}
+		resolved, err := provider.ResolveFeatureFilter(*query.Filter, catalog)
+		if err != nil {
+			return provider.FeatureQueryResult{}, err
+		}
+		filter := resolved.Expression()
+		query.Filter = &filter
+	}
 	if len(query.Bounds3D) != 0 && query.BoundsVerticalCRS != provider.CRS84h {
 		return provider.FeatureQueryResult{}, fmt.Errorf("features: unsupported query height reference: %w", provider.ErrUnsupported)
 	}

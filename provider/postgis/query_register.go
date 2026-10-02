@@ -32,6 +32,9 @@ type featureProjection struct {
 }
 
 type featureProfile struct {
+	queryables      provider.FeatureQueryables
+	queryablesErr   error
+	filterColumns   map[string]featureColumn
 	projections     []featureProjection
 	publicFields    []string
 	identifierLimit int
@@ -362,7 +365,9 @@ func (p *Provider) registerFeatureProfile(conf dict.Dicter, l *Layer, table stri
 	}
 	if _, err := profile.featureFields(nil); err != nil {
 		profile.err = err
+		return nil
 	}
+	profile.freezeOptionalQueryables()
 	return nil
 }
 

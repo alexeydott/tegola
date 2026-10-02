@@ -202,7 +202,7 @@ func TestFeatureDiscoveryProxyLinksAndCatalog(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &definition); err != nil {
 		t.Fatal(err)
 	}
-	if definition.OpenAPI != "3.0.3" || len(definition.Paths) != 7 || definition.Servers[0].URL != "https://public.example/proxy/features" {
+	if definition.OpenAPI != "3.0.3" || len(definition.Paths) != 8 || definition.Servers[0].URL != "https://public.example/proxy/features" {
 		t.Fatal(definition)
 	}
 	if _, exists := definition.Paths["/collections/{collection}/items"]; !exists {

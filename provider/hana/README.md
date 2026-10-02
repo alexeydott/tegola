@@ -204,3 +204,35 @@ are not treated as HANA quoting.
 For MOS startup metadata checks, automatic sample limits and the distinction
 between format and geometry-class inference, see the
 [shared sampling contract](../../docs/provider-contract.md#mos-registration-sampling).
+
+## Feature filtering and queryables
+
+The optional typed filter capability publishes directly selected public
+`TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT`, `DECIMAL(p,s)` with `p <= 38`, native
+`BOOLEAN`, and `NVARCHAR` columns. The initial admitted server revision is
+`2.00.088.00.1760424921`. Other revisions and unproved column profiles retain
+their existing Core capability without advertising filtering. Floating-point,
+date/time, `CHAR`/`VARCHAR`, binary and LOB columns are omitted from queryables.
+Temporal Unix epoch columns remain integer queryables when publicly selected.
+
+All six scalar comparisons and `IS NULL` use physical column lineage from the
+frozen catalog. NULL remains UNKNOWN under comparisons and logical operators.
+Numeric literals are evaluated exactly; fractional and out-of-domain bounds are
+quantized or folded without multiplying source values or changing NULL behavior.
+DECIMAL result descriptors must match the locked catalog precision and scale;
+the driver fixed-decimal wire format must also have sufficient coefficient
+capacity. Generic decimal transport is limited to its 34-digit coefficient.
+
+String comparisons use the column's UTF-8 bytes and a bound binary literal, so
+case, combining sequences, supplementary characters, NUL and trailing spaces
+remain significant. No collation-dependent text comparison or literal text cast
+is used. BOOLEAN ordering is `false < true`. Selected public SQL NULL properties
+remain present with a nil value; private and unselected properties remain absent.
+
+Filters are bound before logical paging and counting within the existing single
+RW/Repeatable Read transaction and exclusive source lock. Catalog revalidation,
+the earliest request/default 30-second deadline, cancellation of the owned
+connection, and unconditional physical connection discard still apply. See the
+[feature query profile](FEATURE-QUERY.md) for source protection and cooperative
+callback limits, and the [provider contract](../../docs/provider-contract.md) for
+the shared typed filter interface.

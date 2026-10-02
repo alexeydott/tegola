@@ -67,6 +67,12 @@ func (p *Provider) QueryFeatures(ctx context.Context, layerName string, q provid
 			}
 		}
 	}
+	// Compile and validate before reserving a connection. Only the local profile
+	// gains the filter; the caller query and immutable registered metadata do not.
+	f, err = f.prepareFeatureFilter(q.Filter)
+	if err != nil {
+		return result, err
+	}
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return result, fmt.Errorf("postgis feature snapshot: %w", err)

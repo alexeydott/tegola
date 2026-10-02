@@ -29,6 +29,12 @@ func TestFeatureQueryNullableContract(t *testing.T) {
 	}, querytest.ProfileOptions{})
 }
 
+func TestFeatureQueryFilterContract(t *testing.T) {
+	// Custom SQL has an explicit Unsupported capability regression elsewhere.
+	// This suite proves the admitted ordinary-table filter path only.
+	querytest.RunFilterWithOptions(t, featureContractInstance, querytest.Options{})
+}
+
 func featureContractInstance(t *testing.T, fixture querytest.Fixture) querytest.Instance {
 	format := "wkb"
 	for _, row := range fixture.Rows {
@@ -39,7 +45,11 @@ func featureContractInstance(t *testing.T, fixture querytest.Fixture) querytest.
 			format = "mos"
 		}
 	}
-	fx := newRawFixture(t, []string{"CREATE TABLE items (id INTEGER UNIQUE, geom BLOB, name TEXT, value INTEGER, start_time INTEGER, end_time INTEGER)"})
+	columns := "id INTEGER UNIQUE, geom BLOB, name TEXT, value INTEGER, start_time INTEGER, end_time INTEGER"
+	if len(fixture.FilterFields) != 0 {
+		columns += ", n INTEGER, s TEXT, b BOOLEAN"
+	}
+	fx := newRawFixture(t, []string{"CREATE TABLE items (" + columns + ")"})
 	if format == "gpkg" {
 		addFeatureMetadata(t, fx.path, "items", "geom", 4326)
 	}
@@ -57,6 +67,21 @@ func featureContractInstance(t *testing.T, fixture querytest.Fixture) querytest.
 	}
 	if fixture.InvalidTemporalMapping {
 		layer["temporal_end_field"] = "missing"
+	}
+	storage := fixture.TemporalStorage
+	if storage == 0 {
+		storage = querytest.UnixNanoseconds
+	}
+	switch storage {
+	case querytest.UnixSeconds:
+		layer["temporal_storage"] = "unix_seconds"
+	case querytest.UnixMilliseconds:
+		layer["temporal_storage"] = "unix_milliseconds"
+	case querytest.UnixMicroseconds:
+		layer["temporal_storage"] = "unix_microseconds"
+	case querytest.UnixNanoseconds:
+	default:
+		t.Fatal("unsupported fixture temporal storage")
 	}
 	tiler, err := gpkg.NewTileProvider(dict.Dict{"filepath": fx.path, "layers": []map[string]interface{}{layer}}, nil)
 	if err != nil {
@@ -93,15 +118,33 @@ func featureContractInstance(t *testing.T, fixture querytest.Fixture) querytest.
 			geometry = mosSystemInfoBlob(2, "", 0, false)
 		}
 		if row.Start != nil {
-			start = row.Start.UnixNano()
+			start, err = querytest.EncodeFixtureTemporal(*row.Start, storage)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 		if row.End != nil {
-			end = row.End.UnixNano()
+			end, err = querytest.EncodeFixtureTemporal(*row.End, storage)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
-		rows = append(rows, []interface{}{id, geometry, row.Feature.Tags["name"], row.Feature.Tags["value"], start, end})
+		values := []interface{}{id, geometry, row.Feature.Tags["name"], row.Feature.Tags["value"], start, end}
+		if len(fixture.FilterFields) != 0 {
+			values = append(values, row.Feature.Tags["n"], row.Feature.Tags["s"], row.Feature.Tags["b"])
+		}
+		rows = append(rows, values)
 	}
-	insertRows(t, fx.path, "items", []string{"id", "geom", "name", "value", "start_time", "end_time"}, rows)
-	return querytest.Instance{Querier: p, Layer: "items", CountMode: querytest.OptionalCount}
+	insertColumns := []string{"id", "geom", "name", "value", "start_time", "end_time"}
+	if len(fixture.FilterFields) != 0 {
+		insertColumns = append(insertColumns, "n", "s", "b")
+	}
+	insertRows(t, fx.path, "items", insertColumns, rows)
+	layers, err := p.Layers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return querytest.Instance{Querier: p, Layer: "items", CountMode: querytest.OptionalCount, QueryableLayer: layers[0].(provider.FeatureQueryableLayerInfo)}
 }
 
 func featureHeader(empty bool, srid uint32) []byte {

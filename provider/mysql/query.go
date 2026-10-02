@@ -47,6 +47,10 @@ func (p *Provider) QueryFeatures(
 		return result, featureUnsupported("query predicate limit")
 	}
 	f := layer.feature
+	f, err = f.prepareFeatureFilter(query.Filter)
+	if err != nil {
+		return result, err
+	}
 	fields, err := f.queryFields(query.Fields)
 	if err != nil {
 		return result, err
@@ -296,6 +300,10 @@ func (f *featureProfile) queryColumns(fields []string) ([]string, []string) {
 	for i, column := range columns {
 		source, _ := f.sourceColumn(column)
 		expression := "l." + featureQuoteIdentifier(source)
+		metadata, _ := f.schema.column(source)
+		if strings.EqualFold(metadata.dataType, "bit") && strings.EqualFold(metadata.columnType, "bit(1)") {
+			expression = "CAST(" + expression + " AS UNSIGNED)"
+		}
 		if column == f.geometry && f.native {
 			option := ""
 			if f.nativeAxisOption {
@@ -380,6 +388,13 @@ func (f *featureProfile) decodeFeature(columns []string, values []any, temporal 
 func featureProperty(column featureColumn, value any) (any, error) {
 	if value == nil {
 		return nil, nil
+	}
+	if strings.EqualFold(column.dataType, "bit") && strings.EqualFold(column.columnType, "bit(1)") {
+		integer, err := provider.ConvertFeatureID(value)
+		if err != nil || integer > 1 {
+			return nil, featureInvalid("property", "invalid boolean source")
+		}
+		return integer == 1, nil
 	}
 	if bytes, ok := value.([]byte); ok {
 		switch strings.ToLower(column.dataType) {

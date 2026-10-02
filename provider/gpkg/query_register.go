@@ -99,6 +99,7 @@ func (p *Provider) registerFeatureQueries(configs []dict.Dicter) error {
 				layer.featureQueryError = fmt.Errorf("gpkg RTree source has no accessible rowid: %w", provider.ErrUnsupported)
 			}
 		}
+		p.initializeFilterCatalog(layer)
 	}
 	return nil
 }

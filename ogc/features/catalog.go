@@ -23,13 +23,15 @@ type CollectionSource struct {
 }
 
 type resolvedCollection struct {
-	metadata         CollectionMetadata
-	layer            string
-	srid             uint64
-	temporal         provider.TemporalMapping
-	spatial          provider.SpatialMetadata
-	heightProjection *crsconfig.HeightProjection
-	querier          provider.FeatureQuerier
+	queryables          provider.FeatureQueryables
+	queryablesAvailable bool
+	metadata            CollectionMetadata
+	layer               string
+	srid                uint64
+	temporal            provider.TemporalMapping
+	spatial             provider.SpatialMetadata
+	heightProjection    *crsconfig.HeightProjection
+	querier             provider.FeatureQuerier
 }
 
 // Service owns immutable collection metadata; provider implementations own their concurrency.
@@ -138,7 +140,11 @@ func NewService(sources []CollectionSource) (*Service, error) {
 				return nil, fmt.Errorf("features: collection %q height-preserving CRS: %w: %w", source.ID, provider.ErrUnsupported, err)
 			}
 		}
-		service.collections[source.ID] = resolvedCollection{metadata: CollectionMetadata{ID: source.ID, Title: source.Title, Description: source.Description}, layer: layer, srid: srid, temporal: mapping, spatial: spatial, heightProjection: heightProjection, querier: source.Querier}
+		queryables, available, err := freezeCollectionQueryables(source.Layer)
+		if err != nil {
+			return nil, fmt.Errorf("features: collection %q queryable metadata: %w", source.ID, err)
+		}
+		service.collections[source.ID] = resolvedCollection{queryables: queryables, queryablesAvailable: available, metadata: CollectionMetadata{ID: source.ID, Title: source.Title, Description: source.Description}, layer: layer, srid: srid, temporal: mapping, spatial: spatial, heightProjection: heightProjection, querier: source.Querier}
 	}
 	return service, nil
 }
