@@ -4,6 +4,7 @@ Fork-specific changes on top of upstream master (post-v0.21.0, 2024-12-19). Fork
 
 Features
 
+* Add per-layer tile timing and MySQL query-phase/pool-contention diagnostics. Slow operations and deadlines are logged at WARN, fast successes at DEBUG; render deadlines and pool ownership remain unchanged. See [latency diagnostics](docs/development.md#tile-latency-diagnostics).
 * Align tile HTTP cache headers for HEAD and GET requests; clean `curl -I` probes now report the same freshness policy as browser tile downloads.
 * Add opt-in `webserver.tile_http_max_age` for successful anonymous query-free tile responses, consistently across HIT/MISS/shared rendering. Preserve encoding variation and maintenance `no-store`; exclude errors and parameterized requests. Default zero preserves previous behavior.
 * Unified CRS contract for all standard providers (`mysql`, `gpkg`, `postgis`, `hana`): `srid` and `crs_defn` (full PROJ.4 definition) at provider and layer level, explicit configuration wins over source auto-detection. Tile bounds (`!BBOX!`) are reprojected into the layer CRS so filter, data and MVT encoding always agree on one CRS.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/alexeydott/tegola/observability"
 
@@ -314,6 +315,12 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 
 			// on completion let the wait group know
 			defer wg.Done()
+			started := time.Now()
+			var renderErr error
+			var featuresReceived uint64
+			defer func() {
+				logLayerTiming(m.Name, l, tile, time.Since(started), featuresReceived, renderErr)
+			}()
 
 			// This goroutine runs outside of the net/http request goroutine, so
 			// net/http's per-connection panic recovery does not apply here: an
@@ -325,6 +332,7 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 			defer func() {
 				if r := recover(); r != nil {
 					layerErrors[i] = fmt.Errorf("panic while fetching layer %v for tile (%v): %v", l.MVTName(), tile, r)
+					renderErr = layerErrors[i]
 					log.Errorf("%v", layerErrors[i])
 				}
 			}()
@@ -334,6 +342,7 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 
 			// fetch layer from data provider
 			err := l.Provider.TileFeatures(ctx, l.ProviderLayerName, ptile, params, func(f *provider.Feature) error {
+				featuresReceived++
 				// skip row if geometry collection empty.
 				g, ok := f.Geometry.(geom.Collection)
 				if ok && len(g.Geometries()) == 0 {
@@ -379,6 +388,7 @@ func (m Map) encodeMVTTile(ctx context.Context, tile slippy.Tile, params provide
 
 				return nil
 			})
+			renderErr = err
 			if err != nil {
 				switch {
 				case errors.Is(err, context.Canceled):

@@ -31,6 +31,7 @@ continue to match their published module versions.
 
 | Area | Current disposition and evidence |
 | --- | --- |
+| Tile latency diagnostics (2026-10-02) | Standard feature layers log completion timing; MySQL separates initial query, streaming/decode and callback phases with global pool-wait deltas. Saturated-pool deadline/recovery and panic/error-preservation tests pass, including race checks. Shared render deadline remains 30 seconds. Live full-config validation was blocked at startup by a table-lock wait on the deployed MySQL; this is not a verified reproduction of the earlier tile timeout. Four pre-existing atlas README-contract tests still fail against the unchanged baseline README. |
 | Numbered fork debt | 2.1, 2.2, 2.4, 2.5, 2.6, part12 0.6/0.6b, 3.6, A15 and part13 P6.5 are closed; see the UPSTREAM closure log. |
 | Published dependencies (A15) | `alexeydott/geom v0.1.1` and `alexeydott/proj v0.3.1`; Tegola imports the fork modules without replacements. Published Tegola `d417e73b` passed an external-consumer check in a fresh module cache and an offline vendor build/test. |
 | Geographic datum conversion | `longlat` uses the existing three-/seven-parameter datum transformations; independent PROJ references cover both directions and synthetic `crs_defn` registration. |

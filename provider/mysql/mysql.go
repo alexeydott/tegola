@@ -275,7 +275,14 @@ func (p *Provider) Layers() ([]provider.LayerInfo, error) {
 func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider.Tile, queryParams provider.Params, fn func(f *provider.Feature) error) error {
 	var err error
 	for attempt := 0; attempt < mysqlQueryMaxAttempts; attempt++ {
-		err = p.tileFeaturesAttempt(ctx, layer, tile, queryParams, fn)
+		err = p.tileFeaturesAttempt(
+			ctx,
+			layer,
+			tile,
+			queryParams,
+			fn,
+			attempt+1,
+		)
 		if err == nil || !isRetryableConnectionError(err) || attempt == mysqlQueryMaxAttempts-1 {
 			return err
 		}
@@ -289,7 +296,23 @@ func (p *Provider) TileFeatures(ctx context.Context, layer string, tile provider
 	return err
 }
 
-func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile provider.Tile, queryParams provider.Params, fn func(f *provider.Feature) error) error {
+func (p *Provider) tileFeaturesAttempt(
+	ctx context.Context,
+	layer string,
+	tile provider.Tile,
+	queryParams provider.Params,
+	fn func(f *provider.Feature) error,
+	attempt int,
+) (resultErr error) {
+	diagnostics := tileQueryDiagnostics{started: time.Now(), phase: "prepare"}
+	diagnostics.phaseStarted = diagnostics.started
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			diagnostics.finish(p.db, layer, tile, attempt, errors.New("tile query panic"))
+			panic(recovered)
+		}
+		diagnostics.finish(p.db, layer, tile, attempt, resultErr)
+	}()
 	log.Debugf("fetching layer %v", layer)
 
 	pLayer, ok := p.layers[layer]
@@ -341,7 +364,11 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 
 	log.Debugf("qtext: %v", qtext)
 
+	diagnostics.before = p.db.Stats()
+	diagnostics.queried = true
+	diagnostics.enter("query")
 	rows, err := p.db.QueryContext(ctx, qtext, args...)
+	diagnostics.query = time.Since(diagnostics.phaseStarted)
 	if err != nil {
 		err = preferContextError(ctx, err)
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
@@ -349,6 +376,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 		}
 		return err
 	}
+	diagnostics.enter("rows_decode")
 	defer func() { _ = rows.Close() }()
 
 	cols, err := rows.Columns()
@@ -534,10 +562,12 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 		}
 
 		features = append(features, feature)
+		diagnostics.features++
 		return nil
 	}
 
 	for rows.Next() {
+		diagnostics.rows++
 		// check if the context cancelled or timed out
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -591,6 +621,7 @@ func (p *Provider) tileFeaturesAttempt(ctx context.Context, layer string, tile p
 	// Do not emit features until the complete result set has been consumed.
 	// If the server drops the connection while rows are being read, the caller
 	// can safely retry the read without duplicating partially emitted features.
+	diagnostics.enter("callback")
 	for i := range features {
 		if err := fn(&features[i]); err != nil {
 			return err
