@@ -232,13 +232,25 @@ func decodeRawGeometryValue(value any, layer *Layer) (geom.Geometry, error) {
 }
 
 type spatialQuery struct {
-	source, target *crsconfig.HeightProjection
+	source, target             *crsconfig.HeightProjection
+	pinnedSource, pinnedTarget *crsconfig.FeatureProjection
 }
 
 func newSpatialQuery(layer *Layer, query provider.FeatureQuery) (spatialQuery, error) {
 	result := spatialQuery{source: layer.heightProjection}
 	if len(query.Bounds3D) != 0 && query.BoundsVerticalCRS != provider.CRS84h {
 		return result, fmt.Errorf("query height reference: %w", provider.ErrUnsupported)
+	}
+	if query.BoundsCRSDefinition != "" {
+		if layer.featureCRSProjection == nil || layer.featureCRSError != nil {
+			return result, fmt.Errorf("source CRS proof unavailable: %w", provider.ErrUnsupported)
+		}
+		target, err := crsconfig.NewFeatureProjection(query.BoundsCRSDefinition)
+		if err != nil {
+			return result, fmt.Errorf("query CRS definition unsupported: %w", provider.ErrUnsupported)
+		}
+		result.pinnedSource, result.pinnedTarget = layer.featureCRSProjection, target
+		return result, nil
 	}
 	if result.source != nil && (len(query.Bounds) != 0 || len(query.Bounds3D) != 0) {
 		target, err := crsconfig.NewHeightProjection(query.BoundsSRID)
@@ -256,8 +268,24 @@ func (s spatialQuery) matches(g geom.Geometry, source uint64, query provider.Fea
 	}
 	transformed := g
 	var err error
-	if source != query.BoundsSRID {
-		if s.source != nil {
+	transform := source != query.BoundsSRID
+	if s.pinnedSource != nil {
+		transform = !s.pinnedSource.Equivalent(s.pinnedTarget)
+	}
+	if transform {
+		if s.pinnedSource != nil {
+			transformed, err = codec.TransformFeatureSpatialGeometry(g, func(p [2]float64) ([2]float64, error) {
+				ll, err := s.pinnedSource.Inverse(p[:])
+				if err != nil {
+					return [2]float64{}, err
+				}
+				xy, err := s.pinnedTarget.Forward(ll)
+				if err != nil {
+					return [2]float64{}, err
+				}
+				return [2]float64{xy[0], xy[1]}, nil
+			})
+		} else if s.source != nil {
 			transformed, err = codec.TransformFeatureSpatialGeometry(g, func(p [2]float64) ([2]float64, error) {
 				ll, err := s.source.Inverse(p[:])
 				if err != nil {

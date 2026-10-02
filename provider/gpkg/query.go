@@ -14,6 +14,7 @@ import (
 	"github.com/alexeydott/proj"
 	"github.com/alexeydott/tegola/basic"
 	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/crsconfig"
 	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
@@ -58,7 +59,7 @@ func (p *Provider) QueryFeatures(
 	if err != nil {
 		return result, err
 	}
-	if (len(query.Bounds) != 0 || len(query.Bounds3D) != 0) && query.BoundsSRID != resolvedLayerSRID(layer) && layer.heightProjection == nil {
+	if query.BoundsCRSDefinition == "" && (len(query.Bounds) != 0 || len(query.Bounds3D) != 0) && query.BoundsSRID != resolvedLayerSRID(layer) && layer.heightProjection == nil {
 		if err := validateQueryCRS(resolvedLayerSRID(layer)); err != nil {
 			return result, err
 		}
@@ -400,7 +401,15 @@ func featureCandidatePredicate(layer *Layer, query provider.FeatureQuery) (strin
 			bounds[i] = geom.Extent{b[0], b[1], b[3], b[4]}
 		}
 	}
-	if len(bounds) != 0 && query.BoundsSRID == resolvedLayerSRID(layer) {
+	identity := query.BoundsSRID == resolvedLayerSRID(layer)
+	if query.BoundsCRSDefinition != "" {
+		target, err := crsconfig.NewFeatureProjection(query.BoundsCRSDefinition)
+		if err != nil {
+			return "", nil, false, fmt.Errorf("query CRS definition unsupported: %w", provider.ErrUnsupported)
+		}
+		identity = layer.featureCRSProjection != nil && layer.featureCRSProjection.Equivalent(target)
+	}
+	if len(bounds) != 0 && identity {
 		spatial, err := spatialCandidatePredicate(layer, bounds, &args)
 		if err != nil {
 			return "", nil, false, err

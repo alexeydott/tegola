@@ -940,6 +940,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				}
 				layer.srid = uint64(lcrs.SRID)
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
+				layer.crsConfigured = providerSRIDExplicit || lcrs.Explicit
 
 				if gerr := sampleRawTableLayer(db, &layer); gerr != nil {
 					return nil, fmt.Errorf("for layer (%v) %v: %v", i, layerName, gerr)
@@ -990,6 +991,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.srid = uint64(lcrs.SRID)
 				layer.bbox = *d.bbox
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
+				layer.crsConfigured = providerSRIDExplicit || lcrs.Explicit
 
 				// bounds field names backing the RTree !BBOX! predicate
 				// (layer > provider > defaults).
@@ -1103,6 +1105,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			}
 			layer.srid = uint64(lcrs.SRID)
 			layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
+			layer.crsConfigured = providerSRIDExplicit || lcrs.Explicit
 
 			// Raw custom-SQL contract: wkb/wkt cannot use the !BBOX! token;
 			// bounds-backed custom SQL (explicit MOS; explicit gpkg; unset
@@ -1273,6 +1276,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				layer.geomType = firstGeom
 				layer.srid = uint64(lcrs.SRID)
 				layer.crsExplicit = providerSRIDExplicit || lcrs.Explicit
+				layer.crsConfigured = providerSRIDExplicit || lcrs.Explicit
 				// keep the configured (or default) id/geometry field names set
 				// at layer creation; only fill in the inferred geometry type.
 			}

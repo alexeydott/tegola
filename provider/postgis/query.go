@@ -56,7 +56,11 @@ func (p *Provider) QueryFeatures(ctx context.Context, layerName string, q provid
 	if len(q.Bounds3D) > 0 && q.BoundsVerticalCRS != provider.CRS84h {
 		return result, featureUnsupported("unsupported query height reference")
 	}
-	if len(q.Bounds)+len(q.Bounds3D) > 0 {
+	f, err = f.prepareFeatureCRS(q)
+	if err != nil {
+		return result, err
+	}
+	if q.BoundsCRSDefinition == "" && len(q.Bounds)+len(q.Bounds3D) > 0 {
 		if f.height != nil {
 			if _, err := crsconfig.NewHeightProjection(q.BoundsSRID); err != nil {
 				return result, featureUnsupported("query height CRS is unsupported")
@@ -199,7 +203,11 @@ func (f *featureProfile) chunkStatement(q provider.FeatureQuery, columns []strin
 			predicate += " AND " + id + " IN (" + strings.Join(parameters, ",") + ")"
 		}
 	}
-	if f.format == "" && q.BoundsSRID == f.srid && len(q.Bounds)+len(q.Bounds3D) > 0 {
+	sameFrame := q.BoundsSRID == f.srid
+	if q.BoundsCRSDefinition != "" {
+		sameFrame = f.projection.Equivalent(f.queryProjection)
+	}
+	if f.format == "" && sameFrame && len(q.Bounds)+len(q.Bounds3D) > 0 {
 		bounds := q.Bounds
 		if len(q.Bounds3D) > 0 {
 			bounds = make([]geom.Extent, len(q.Bounds3D))
@@ -237,6 +245,15 @@ func executeFeatureSnapshot(ctx context.Context, tx featureSnapshot, f *featureP
 	}
 	if actual.oid != f.oid || !reflect.DeepEqual(actual.columns, f.columns) {
 		return result, featureDataError(ctx, fmt.Errorf("source catalog identity changed since registration"))
+	}
+	if f.projection != nil && f.format == "" {
+		tuple, tupleErr := readFeatureSRSTuple(ctx, tx, f)
+		if tupleErr != nil {
+			return result, featureDataError(ctx, tupleErr)
+		}
+		if tuple != f.nativeCRSTuple {
+			return result, featureDataError(ctx, fmt.Errorf("source CRS definition changed since registration"))
+		}
 	}
 	if err := proveFeatureID(ctx, tx, f); err != nil {
 		return result, featureDataError(ctx, err)

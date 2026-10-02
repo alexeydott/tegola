@@ -414,6 +414,32 @@ func BuiltinProj4Def(srid uint64) (string, bool) {
 	return def, ok
 }
 
+// EffectiveProj4Definition snapshots a definition tracked by this package.
+// Explicit registrations take precedence over the shipped definitions. The
+// returned string does not consult or retain the mutable projection engine.
+func EffectiveProj4Definition(srid uint64) (string, bool) {
+	proj4RegisteredMu.Lock()
+	defer proj4RegisteredMu.Unlock()
+	if definition, ok := proj4Registered[srid]; ok {
+		return definition, true
+	}
+	if definition, ok := builtinProj4SRIDs[srid]; ok {
+		return definition, true
+	}
+	switch srid {
+	case 3395:
+		return "+proj=merc +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84", true
+	case 4326:
+		return "+proj=longlat +datum=WGS84", true
+	case 3857:
+		return "+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0", true
+	case 4087:
+		return "+proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84", true
+	default:
+		return "", false
+	}
+}
+
 // RegisterBuiltinProj4SRIDs registers every entry of the built-in table with
 // proj. Providers that support arbitrary SRIDs call this once at startup so
 // common codes (UTM, Gauss-Kruger) work without any config.

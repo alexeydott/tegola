@@ -161,7 +161,8 @@ func (api *FeatureAPI) link(r *http.Request, suffix, relation, mediaType string)
 func (api *FeatureAPI) writeJSON(w http.ResponseWriter, r *http.Request, status int, mediaType string, value any) {
 	raw, err := json.Marshal(value)
 	if err != nil {
-		log.Error("feature response encoding failed", err)
+		w.Header().Del("Content-Crs")
+		log.Error("feature response encoding failed", "error", err)
 		raw = []byte(`{"code":"InternalError","description":"Response encoding failed"}`)
 		status = http.StatusInternalServerError
 		mediaType = "application/json"
@@ -173,7 +174,7 @@ func (api *FeatureAPI) writeJSON(w http.ResponseWriter, r *http.Request, status 
 		return
 	}
 	if _, err := w.Write(raw); err != nil {
-		log.Error("feature response write failed", err)
+		log.Error("feature response write failed", "error", err)
 	}
 }
 

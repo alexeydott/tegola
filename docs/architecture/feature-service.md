@@ -84,7 +84,7 @@ native envelopes stay with their providers.
 Raw null/normalized-empty geometry follows [ADR-0002](decisions/ADR-0002-absent-feature-geometry.md), including bbox matching. The [contract harness](../../provider/internal/querytest/querytest.go) supplies explicit fixture expectations; its reference adapter demonstrates harness behavior, without proving real provider or database parity.
 ## Temporal metadata and collection construction
 
-[ADR-0003](decisions/ADR-0003-temporal-metadata-and-resolved-collections.md) defines immutable source temporal mappings and resolved collection inputs. Feature publication requires explicit provider eligibility and temporal metadata. Original query bounds remain with the provider for exact matching before pagination; FeatureService transforms response geometry to CRS84.
+[ADR-0003](decisions/ADR-0003-temporal-metadata-and-resolved-collections.md) defines immutable source temporal mappings and resolved collection inputs. Feature publication requires explicit provider eligibility and temporal metadata. Original query bounds remain with the provider for exact matching before pagination; FeatureService transforms response geometry to the default CRS84/CRS84h or an explicitly selected admitted output CRS.
 
 The first GPKG feature profile admits table-backed layers with unique integer IDs. Custom SQL remains available to tiles and is unsupported for feature queries in this profile. Cross-CRS selection may need a bounded-memory source scan when a conservative indexed envelope cannot be established. These are capability and performance limits to report during acceptance, rather than completed runtime claims.
 

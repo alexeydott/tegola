@@ -26,6 +26,7 @@ func (p *Provider) registerFeatureQueries(configs []dict.Dicter) error {
 		if err := p.registerSpatial(layer, conf); err != nil {
 			return err
 		}
+		layer.freezeFeatureCRS()
 		mapping := provider.TemporalMapping{}
 		keys := []string{"temporal_field", "temporal_start_field", "temporal_end_field", "temporal_storage"}
 		values := make([]string, len(keys))

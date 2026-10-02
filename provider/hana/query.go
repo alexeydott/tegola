@@ -78,7 +78,7 @@ func (p *Provider) queryFeaturesGuarded(ctx context.Context, name string, query 
 	if err != nil {
 		return result, err
 	}
-	if (len(query.Bounds)+len(query.Bounds3D) != 0) && s.SRID != query.BoundsSRID && s.Height == nil {
+	if query.BoundsCRSDefinition == "" && (len(query.Bounds)+len(query.Bounds3D) != 0) && s.SRID != query.BoundsSRID && s.Height == nil {
 		if err := validateQueryCRS(s.SRID); err != nil {
 			return result, err
 		}

@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/tegola/internal/log"
@@ -65,7 +66,12 @@ type FeatureQuery struct {
 	// BoundsSRID must be positive with either bounds slice and zero without both. A numeric
 	// SRID alone does not establish provider support for that CRS or transforms.
 	BoundsSRID uint64
-	Temporal   *TemporalConstraint
+	// BoundsCRSDefinition pins the complete horizontal query definition for
+	// Part 2 callers. Empty preserves the existing numeric CRS query contract.
+	// A nonempty definition is authoritative even when BoundsSRID equals the
+	// source identifier; providers validate and own its converter before I/O.
+	BoundsCRSDefinition string
+	Temporal            *TemporalConstraint
 	// Filter is combined with the other query dimensions by AND. A nil filter
 	// imposes no restriction; nonnil filters require explicit backend support.
 	Filter *FilterExpression
@@ -93,6 +99,9 @@ func (q FeatureQuery) Validate() error {
 		return InvalidFeatureQueryError{Field: "bounds", Reason: "horizontal and three-dimensional bounds are mutually exclusive"}
 	}
 	hasBounds := len(q.Bounds) != 0 || len(q.Bounds3D) != 0
+	if q.BoundsCRSDefinition != "" && (!hasBounds || strings.TrimSpace(q.BoundsCRSDefinition) == "" || len(q.BoundsCRSDefinition) > MaxFeatureCRSDefinitionBytes || !utf8.ValidString(q.BoundsCRSDefinition) || strings.IndexByte(q.BoundsCRSDefinition, 0) >= 0) {
+		return InvalidFeatureQueryError{Field: "bounds_crs_definition", Reason: "requires bounds and a bounded nonblank definition"}
+	}
 	if !hasBounds && q.BoundsSRID != 0 {
 		return InvalidFeatureQueryError{Field: "bounds_srid", Reason: "requires bounds"}
 	}

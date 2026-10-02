@@ -289,6 +289,20 @@ defines constrained selection;
 defines HANA's read-write repeatable-read transaction and source lock. Existing
 tile behavior in the sections above retains its separate contract.
 
+### Optional referenced CRS contract
+
+`FeatureCRSLayerInfo` supplies a copied effective source definition and spatial
+profile. Providers prove identity at registration; a numeric SRID alone cannot
+authorize a public EPSG identifier. Optional unsupported metadata preserves Core
+and tile queries. Admitted Part 2 query targets carry a bounded
+`FeatureQuery.BoundsCRSDefinition`, independently validated before I/O and used
+to construct an owned converter. Its definition is authoritative over the numeric
+mapping: same-SRID shortcuts and indexed pruning require proven mathematical
+identity of the complete frozen source and target definitions. Exact intersection
+remains in the original query frame
+before paging and counts. See [CRS identifiers](crs.md#feature-api-crs-identifiers)
+and [ADR-0010](architecture/decisions/ADR-0010-public-crs.md).
+
 ### Optional scalar filtering contract
 
 Optional `FeatureQueryableLayerInfo` metadata supplies a detached, bounded

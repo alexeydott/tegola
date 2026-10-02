@@ -164,7 +164,23 @@ func (f *featureProfile) matchesFeatureBounds(g geom.Geometry, q provider.Featur
 		return true, nil
 	}
 	transformed := g
-	if g != nil && f.srid != q.BoundsSRID {
+	if g != nil && f.queryProjection != nil && !f.projection.Equivalent(f.queryProjection) {
+		var err error
+		transformed, err = codec.TransformFeatureSpatialGeometry(g, func(point [2]float64) ([2]float64, error) {
+			ll, err := f.projection.Inverse(point[:])
+			if err != nil {
+				return [2]float64{}, err
+			}
+			xy, err := f.queryProjection.Forward(ll)
+			if err != nil {
+				return [2]float64{}, err
+			}
+			return [2]float64{xy[0], xy[1]}, nil
+		})
+		if err != nil {
+			return false, fmt.Errorf("postgis frozen query-frame transform: %w", err)
+		}
+	} else if g != nil && f.queryProjection == nil && f.srid != q.BoundsSRID {
 		var err error
 		if f.height != nil {
 			target, projectionErr := crsconfig.NewHeightProjection(q.BoundsSRID)

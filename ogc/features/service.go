@@ -17,7 +17,9 @@ import (
 	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
-// QueryCollection emits independently owned CRS84 GeoJSON features. Bounds remain
+type QueryOptions struct{ OutputCRS string }
+
+// QueryCollection emits independently owned GeoJSON features in the default CRS. Bounds remain
 // in the caller's CRS: exact selection and paging belong to the provider.
 func (s *Service) QueryCollection(
 	ctx context.Context,
@@ -25,6 +27,10 @@ func (s *Service) QueryCollection(
 	query provider.FeatureQuery,
 	fn func(Feature) error,
 ) (provider.FeatureQueryResult, error) {
+	return s.QueryCollectionWithOptions(ctx, collectionID, query, QueryOptions{}, fn)
+}
+
+func (s *Service) QueryCollectionWithOptions(ctx context.Context, collectionID string, query provider.FeatureQuery, options QueryOptions, fn func(Feature) error) (provider.FeatureQueryResult, error) {
 	log.Logger().Debug("querying feature collection", "collection", collectionID, "limit", query.Limit)
 	defer log.Logger().Debug("feature collection query finished", "collection", collectionID)
 	if err := ctx.Err(); err != nil {
@@ -33,6 +39,10 @@ func (s *Service) QueryCollection(
 	collection, ok := s.collections[collectionID]
 	if !ok {
 		return provider.FeatureQueryResult{}, CollectionNotFoundError{CollectionID: collectionID}
+	}
+	output, err := collectionOutputCRS(collection, options.OutputCRS)
+	if err != nil {
+		return provider.FeatureQueryResult{}, err
 	}
 	if fn == nil {
 		return provider.FeatureQueryResult{}, fmt.Errorf("features: nil callback")
@@ -55,7 +65,7 @@ func (s *Service) QueryCollection(
 	if len(query.Bounds3D) != 0 && query.BoundsVerticalCRS != provider.CRS84h {
 		return provider.FeatureQueryResult{}, fmt.Errorf("features: unsupported query height reference: %w", provider.ErrUnsupported)
 	}
-	if collection.heightProjection != nil && (len(query.Bounds) != 0 || len(query.Bounds3D) != 0) {
+	if collection.heightProjection != nil && query.BoundsCRSDefinition == "" && (len(query.Bounds) != 0 || len(query.Bounds3D) != 0) {
 		if _, err := crsconfig.NewHeightProjection(query.BoundsSRID); err != nil {
 			return provider.FeatureQueryResult{}, fmt.Errorf("features: unsupported height-preserving query CRS: %w: %w", provider.ErrUnsupported, err)
 		}
@@ -79,7 +89,7 @@ func (s *Service) QueryCollection(
 		if source.SRID != collection.srid {
 			return fail(fmt.Errorf("features: source SRID differs from frozen collection SRID"))
 		}
-		feature, err := encodeFeature(ctx, source, collection)
+		feature, err := encodeFeatureWithCRS(ctx, source, collection, output)
 		if err != nil {
 			return fail(err)
 		}
@@ -113,9 +123,13 @@ func (s *Service) QueryCollection(
 
 // QueryFeature queries one ID without a tile or a collection scan fallback.
 func (s *Service) QueryFeature(ctx context.Context, collectionID string, featureID uint64) (Feature, error) {
+	return s.QueryFeatureWithOptions(ctx, collectionID, featureID, QueryOptions{})
+}
+
+func (s *Service) QueryFeatureWithOptions(ctx context.Context, collectionID string, featureID uint64, options QueryOptions) (Feature, error) {
 	var feature Feature
 	var found bool
-	_, err := s.QueryCollection(ctx, collectionID, provider.FeatureQuery{IDs: []uint64{featureID}, Limit: 1}, func(value Feature) error {
+	_, err := s.QueryCollectionWithOptions(ctx, collectionID, provider.FeatureQuery{IDs: []uint64{featureID}, Limit: 1}, options, func(value Feature) error {
 		if value.ID != featureID {
 			return fmt.Errorf("features: provider returned an unexpected feature ID")
 		}
@@ -137,8 +151,12 @@ func (s *Service) QueryCollectionPage(
 	collectionID string,
 	query provider.FeatureQuery,
 ) (FeatureCollection, error) {
+	return s.QueryCollectionPageWithOptions(ctx, collectionID, query, QueryOptions{})
+}
+
+func (s *Service) QueryCollectionPageWithOptions(ctx context.Context, collectionID string, query provider.FeatureQuery, options QueryOptions) (FeatureCollection, error) {
 	page := FeatureCollection{Type: "FeatureCollection", Features: []Feature{}}
-	result, err := s.QueryCollection(ctx, collectionID, query, func(feature Feature) error {
+	result, err := s.QueryCollectionWithOptions(ctx, collectionID, query, options, func(feature Feature) error {
 		page.Features = append(page.Features, feature)
 		return nil
 	})
@@ -150,15 +168,26 @@ func (s *Service) QueryCollectionPage(
 }
 
 func encodeFeature(ctx context.Context, source *provider.Feature, collection resolvedCollection) (Feature, error) {
+	return encodeFeatureWithCRS(ctx, source, collection, CRS{})
+}
+
+func encodeFeatureWithCRS(ctx context.Context, source *provider.Feature, collection resolvedCollection, output CRS) (Feature, error) {
 	if err := codec.ValidateFeatureSpatialGeometry(source.Geometry); err != nil {
-		return Feature{}, serviceSpatialError(err)
+		return Feature{}, provider.FeatureDataError{Err: serviceSpatialError(err)}
 	}
 	if err := validateGeometryDimension(source.Geometry, collection.spatial.Dimension); err != nil {
-		return Feature{}, err
+		return Feature{}, provider.FeatureDataError{Err: err}
+	}
+	if output.URI() != "" {
+		if _, err := encodeGeometry(source.Geometry); err != nil {
+			return Feature{}, provider.FeatureDataError{Err: err}
+		}
 	}
 	var geometry geom.Geometry
 	var err error
-	if collection.heightProjection == nil {
+	if output.URI() != "" {
+		geometry, err = transformOutputGeometry(ctx, source.Geometry, collection, output)
+	} else if collection.heightProjection == nil {
 		geometry, err = transformGeometry(ctx, source.Geometry, source.SRID)
 	} else {
 		geometry, err = codec.TransformFeatureSpatialGeometry(source.Geometry, func(point [2]float64) ([2]float64, error) {
@@ -176,13 +205,26 @@ func encodeFeature(ctx context.Context, source *provider.Feature, collection res
 		})
 	}
 	if err != nil {
+		if output.URI() != "" {
+			var data provider.FeatureDataError
+			if errors.As(err, &data) {
+				return Feature{}, err
+			}
+			if cancellation := ctx.Err(); cancellation != nil {
+				return Feature{}, cancellation
+			}
+			return Feature{}, provider.InvalidFeatureQueryError{Field: "crs", Reason: "geometry cannot be represented in requested CRS"}
+		}
 		return Feature{}, fmt.Errorf("features: transform geometry: %w", serviceSpatialError(err))
 	}
-	if collection.heightProjection != nil {
+	if collection.spatial.Dimension != provider.DimensionXY {
 		geometry = normalizeDimensionalAbsence(geometry)
 	}
 	encoded, err := encodeGeometry(geometry)
 	if err != nil {
+		if output.URI() != "" {
+			return Feature{}, provider.InvalidFeatureQueryError{Field: "crs", Reason: "geometry cannot be represented in requested CRS"}
+		}
 		return Feature{}, fmt.Errorf("features: encode geometry: %w", serviceSpatialError(err))
 	}
 	// A JSON-domain snapshot preserves numeric precision through UseNumber,
@@ -419,4 +461,31 @@ func normalizeDimensionalAbsence(g geom.Geometry) geom.Geometry {
 		return out
 	}
 	return g
+}
+
+func transformOutputGeometry(ctx context.Context, geometry geom.Geometry, collection resolvedCollection, output CRS) (geom.Geometry, error) {
+	return codec.TransformFeatureSpatialGeometry(geometry, func(point [2]float64) ([2]float64, error) {
+		if err := ctx.Err(); err != nil {
+			return [2]float64{}, err
+		}
+		coordinates := []float64{point[0], point[1]}
+		geographic, err := collection.sourceProjection.Inverse(coordinates)
+		if err != nil {
+			return [2]float64{}, provider.FeatureDataError{Err: err}
+		}
+		if len(geographic) != 2 || !finite(geographic[0]) || !finite(geographic[1]) || geographic[0] < -180 || geographic[0] > 180 || geographic[1] < -90 || geographic[1] > 90 {
+			return [2]float64{}, provider.FeatureDataError{Err: fmt.Errorf("source coordinate outside CRS domain")}
+		}
+		if collection.crs.StorageURI() != output.URI() {
+			coordinates, err = output.ForwardXY(geographic)
+			if err != nil {
+				return [2]float64{}, err
+			}
+		}
+		wire, err := output.FromInternalXY(coordinates)
+		if err != nil {
+			return [2]float64{}, err
+		}
+		return [2]float64{wire[0], wire[1]}, nil
+	})
 }

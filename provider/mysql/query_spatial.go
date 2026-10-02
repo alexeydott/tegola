@@ -254,7 +254,10 @@ func featureGeometryEmpty(g geom.Geometry) bool {
 	return false
 }
 
-type featureSpatialQuery struct{ source, target *crsconfig.HeightProjection }
+type featureSpatialQuery struct {
+	source, target             *crsconfig.HeightProjection
+	pinnedSource, pinnedTarget *crsconfig.FeatureProjection
+}
 
 func newFeatureSpatialQuery(f *featureProfile, query provider.FeatureQuery) (featureSpatialQuery, error) {
 	spatial := featureSpatialQuery{source: f.height}
@@ -262,6 +265,17 @@ func newFeatureSpatialQuery(f *featureProfile, query provider.FeatureQuery) (fea
 		return spatial, featureUnsupported("requested vertical reference")
 	}
 	if len(query.Bounds)+len(query.Bounds3D) == 0 {
+		return spatial, nil
+	}
+	if query.BoundsCRSDefinition != "" {
+		if f.crsProjection == nil {
+			return spatial, featureCRSUnsupported()
+		}
+		target, err := crsconfig.NewFeatureProjection(query.BoundsCRSDefinition)
+		if err != nil {
+			return spatial, featureUnsupported("requested CRS definition")
+		}
+		spatial.pinnedSource, spatial.pinnedTarget = f.crsProjection, target
 		return spatial, nil
 	}
 	if f.height != nil {
@@ -295,12 +309,18 @@ func (s featureSpatialQuery) matches(g geom.Geometry, source uint64, query provi
 		return true, nil
 	}
 	transformed := g
-	if source != query.BoundsSRID {
+	transform := source != query.BoundsSRID
+	if s.pinnedSource != nil {
+		transform = !s.pinnedSource.Equivalent(s.pinnedTarget)
+	}
+	if transform {
 		var err error
 		transformed, err = codec.TransformFeatureSpatialGeometry(g, func(p [2]float64) ([2]float64, error) {
 			ll := []float64{p[0], p[1]}
 			var err error
-			if s.source != nil {
+			if s.pinnedSource != nil {
+				ll, err = s.pinnedSource.Inverse(ll)
+			} else if s.source != nil {
 				ll, err = s.source.Inverse(ll)
 			} else if source != 4326 {
 				ll, err = proj.Inverse(proj.EPSGCode(source), ll)
@@ -309,7 +329,9 @@ func (s featureSpatialQuery) matches(g geom.Geometry, source uint64, query provi
 				return [2]float64{}, err
 			}
 			xy := ll
-			if s.target != nil {
+			if s.pinnedTarget != nil {
+				xy, err = s.pinnedTarget.Forward(ll)
+			} else if s.target != nil {
 				xy, err = s.target.Forward(ll)
 			} else if query.BoundsSRID != 4326 {
 				xy, err = proj.Convert(proj.EPSGCode(query.BoundsSRID), ll)

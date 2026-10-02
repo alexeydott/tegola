@@ -53,6 +53,10 @@ type featureProfile struct {
 	temporal        provider.TemporalMapping
 	temporalScale   int64
 	height          *crsconfig.HeightProjection
+	crs             provider.FeatureCRSDefinition
+	projection      *crsconfig.FeatureProjection
+	queryProjection *crsconfig.FeatureProjection
+	nativeCRSTuple  featureSRSTuple
 	postgisSchema   string
 	err             error
 }
@@ -368,6 +372,7 @@ func (p *Provider) registerFeatureProfile(conf dict.Dicter, l *Layer, table stri
 		return nil
 	}
 	profile.freezeOptionalQueryables()
+	p.freezeFeatureCRS(ctx, profile)
 	return nil
 }
 

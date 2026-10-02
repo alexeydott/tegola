@@ -191,6 +191,77 @@ limits of the fork, not limitations of `crs_defn` or the PROJ library generally.
 | mysql | yes | yes | `MapplGIS LayerInfo projection` applies only when no explicit CRS is configured. |
 | hana | yes | yes | `crs_defn` requires a raw `geometry_format` (`wkb`/`wkt`/`mos`); native `ST_Geometry` columns use a database-side SRS. Not supported for MVT providers. Round-earth SRSs are used through their planar-equivalent SRIDs (`PLANAR_SRID_OFFSET = 1000000000`). |
 
+## Feature API CRS identifiers
+
+The feature API uses exact CRS identifiers from each collection's `crs` list.
+Internal numeric SRIDs, including synthetic IDs, are never public EPSG claims.
+Eligible collections expose a uniform `storageCrs` that belongs to the same list.
+Mixed XY/XYZ storage has no single dimensional storage CRS. Lists are detached,
+deterministic and collection specific; there is no inherited global CRS list.
+
+| Identifier/profile | Wire coordinates |
+| --- | --- |
+| `http://www.opengis.net/def/crs/OGC/1.3/CRS84` | Longitude, latitude in degrees |
+| `http://www.opengis.net/def/crs/EPSG/0/4326` | Latitude, longitude in degrees |
+| `http://www.opengis.net/def/crs/EPSG/0/3857` | Easting, northing in metres |
+| Advertised WGS84 UTM EPSG identifier | Easting, northing in metres |
+| `http://www.opengis.net/def/crs/OGC/0/CRS84h` | Longitude, latitude, WGS84 ellipsoidal height in metres |
+| `http://www.opengis.net/def/crs/EPSG/0/4979` | Latitude, longitude, WGS84 ellipsoidal height in metres |
+| Advertised application UUID identifier | The locally documented axes, units and height reference |
+
+XY collections publish their CRS84 default and proven two-dimensional targets.
+XYZ/mixed collections publish CRS84h and proven height-bearing targets. The
+initial target set contains the applicable geographic default, its EPSG axis
+variant, Web Mercator and the proven source UTM/storage profile. Knowing another
+UTM identifier does not automatically advertise it for every collection.
+Explicit unlisted identifiers return 400. With `bbox-crs` absent, the existing
+four-coordinate CRS84 and six-coordinate CRS84h interpretation remains available
+independently of the explicit output catalog.
+
+Use `crs` for response geometry on items or a single item, and `bbox-crs` for
+the bbox query frame. Successful feature GET/HEAD responses identify their
+output with `Content-Crs: <URI>`, including defaults and empty pages. Bbox axes
+follow the requested CRS. Exact geometry intersection in that frame precedes
+paging and counts; source-envelope pruning is not a replacement for this check.
+Cross-CRS queries may inspect the source through a bounded cursor when safe
+indexed pruning is unavailable.
+
+Application identifiers use the registered `urn:uuid:` namespace with UUIDv8,
+derived from a versioned SHA-256 descriptor of the complete effective horizontal
+definition, datum, wire axes, units, dimension and vertical reference. The full
+digest guards collisions. They contain no process-local SRID. Detached service
+descriptor metadata explains each locally resolved identifier; requests never
+fetch, register or reinterpret a URI. Equivalent definition spellings need not
+have the same application identifier.
+
+Part 2 feature transformations use owned projection instances for admitted canonical
+WGS84 profiles. Numeric EPSG identity alone cannot prove a source definition,
+because the legacy registry permits overrides. Unsupported custom/datum profiles
+retain Core and tile behavior while optional Part 2 metadata and explicit CRS
+requests remain unavailable. Projection-domain failures never return source
+coordinates silently. Heights are neither invented nor discarded: mixed output
+retains XY children with missing height and XYZ children with their actual Z.
+Nonplanar transformed XYZ polygon surfaces remain unsupported.
+
+Native storage also needs an identity proof. GeoPackage native sources with an
+explicit admitted CRS configuration use that frozen coordinate declaration;
+automatic native SRID detection alone does not publish Part 2 metadata. MySQL
+native SRS IDs and axis options do not prove the full SRS definition, so its
+initial native profile retains Core without Part 2 publication. Raw admitted
+sources have a separate explicit coordinate declaration. Provider-specific native
+proofs and unsupported profiles must be evaluated separately; a successful raw
+query does not establish native Part 2 support.
+
+Native PostGIS admission compares the complete authority, WKT and PROJ tuple
+against the pinned PostGIS 3.4.1 definitions for the admitted WGS84 profiles,
+then rechecks the tuple in the query snapshot. Native HANA admission uses its
+existing approved full SRS tuple. A changed or unknown native definition does
+not acquire canonical identity merely because its numeric code is familiar.
+
+See [ADR-0010](architecture/decisions/ADR-0010-public-crs.md) for the
+identifier and immutable transform boundaries, and [API parameters](api.md#referenced-crs-requests)
+for request behavior. Implemented behavior does not establish OGC certification.
+
 ## See Also
 
 - [Provider contract](provider-contract.md) — provider-level and layer-level CRS keys

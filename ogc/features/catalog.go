@@ -2,9 +2,11 @@
 package features
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/alexeydott/proj"
@@ -31,6 +33,9 @@ type resolvedCollection struct {
 	temporal            provider.TemporalMapping
 	spatial             provider.SpatialMetadata
 	heightProjection    *crsconfig.HeightProjection
+	crs                 CollectionCRS
+	crsAvailable        bool
+	sourceProjection    *crsconfig.FeatureProjection
 	querier             provider.FeatureQuerier
 }
 
@@ -127,8 +132,14 @@ func NewService(sources []CollectionSource) (*Service, error) {
 		if err := spatial.Validate(); err != nil {
 			return nil, fmt.Errorf("features: collection %q spatial profile: %w", source.ID, err)
 		}
+		collectionCRS, sourceProjection, crsAvailable, err := freezeCollectionCRS(source.Layer, srid, spatial)
+		if err != nil {
+			return nil, fmt.Errorf("features: collection %q CRS metadata: %w", source.ID, err)
+		}
 		var heightProjection *crsconfig.HeightProjection
-		if spatial.Dimension == provider.DimensionXY {
+		if crsAvailable {
+			// The source converter is owned by the proven immutable descriptor.
+		} else if spatial.Dimension == provider.DimensionXY {
 			if err := validateSRID(srid); err != nil {
 				return nil, fmt.Errorf("features: collection %q CRS: %w", source.ID, err)
 			}
@@ -144,7 +155,7 @@ func NewService(sources []CollectionSource) (*Service, error) {
 		if err != nil {
 			return nil, fmt.Errorf("features: collection %q queryable metadata: %w", source.ID, err)
 		}
-		service.collections[source.ID] = resolvedCollection{queryables: queryables, queryablesAvailable: available, metadata: CollectionMetadata{ID: source.ID, Title: source.Title, Description: source.Description}, layer: layer, srid: srid, temporal: mapping, spatial: spatial, heightProjection: heightProjection, querier: source.Querier}
+		service.collections[source.ID] = resolvedCollection{crs: collectionCRS, crsAvailable: crsAvailable, sourceProjection: sourceProjection, queryables: queryables, queryablesAvailable: available, metadata: CollectionMetadata{ID: source.ID, Title: source.Title, Description: source.Description}, layer: layer, srid: srid, temporal: mapping, spatial: spatial, heightProjection: heightProjection, querier: source.Querier}
 	}
 	return service, nil
 }
@@ -182,4 +193,106 @@ func validateSRID(srid uint64) error {
 		return fmt.Errorf("unsupported inverse CRS %d: %w: %v", srid, provider.ErrUnsupported, err)
 	}
 	return nil
+}
+
+// CollectionCRS returns a detached immutable publication catalog.
+func (s *Service) CollectionCRS(id string) (CollectionCRS, error) {
+	c, ok := s.collections[id]
+	if !ok {
+		return CollectionCRS{}, CollectionNotFoundError{CollectionID: id}
+	}
+	if !c.crsAvailable {
+		return CollectionCRS{}, provider.ErrUnsupported
+	}
+	return c.crs, nil
+}
+
+func freezeCollectionCRS(layer provider.LayerInfo, srid uint64, spatial provider.SpatialMetadata) (CollectionCRS, *crsconfig.FeatureProjection, bool, error) {
+	info, ok := layer.(provider.FeatureCRSLayerInfo)
+	if !ok {
+		return CollectionCRS{}, nil, false, nil
+	}
+	proof, err := info.FeatureCRSDefinition()
+	if errors.Is(err, provider.ErrUnsupported) {
+		return CollectionCRS{}, nil, false, nil
+	}
+	if err != nil {
+		return CollectionCRS{}, nil, false, err
+	}
+	if err := proof.Validate(); err != nil {
+		return CollectionCRS{}, nil, false, err
+	}
+	if proof.HorizontalSRID != srid || proof.Spatial != spatial {
+		return CollectionCRS{}, nil, false, fmt.Errorf("source CRS proof differs from frozen layer metadata")
+	}
+	projection, err := crsconfig.NewFeatureProjection(proof.Definition)
+	if err != nil {
+		return CollectionCRS{}, nil, false, err
+	}
+	dimension := 2
+	if spatial.Dimension != provider.DimensionXY {
+		dimension = 3
+	}
+	var storage CRS
+	if proof.CanonicalAuthority != "" {
+		if proof.CanonicalAuthority != "EPSG" {
+			return CollectionCRS{}, nil, false, fmt.Errorf("unsupported source authority proof")
+		}
+		code, parseErr := strconv.ParseUint(proof.CanonicalCode, 10, 64)
+		if parseErr != nil || strconv.FormatUint(code, 10) != proof.CanonicalCode {
+			return CollectionCRS{}, nil, false, fmt.Errorf("invalid source authority code")
+		}
+		mathematicalCode := code
+		if code == 4979 && dimension == 3 {
+			mathematicalCode = 4326
+		}
+		if projection.CanonicalSRID() != mathematicalCode {
+			return CollectionCRS{}, nil, false, fmt.Errorf("source authority differs from proven mathematics")
+		}
+		if mathematicalCode == 4326 {
+			uri := CRS84
+			if dimension == 3 {
+				uri = CRS84h
+			}
+			storage, err = ResolveCRS(uri)
+		} else if dimension == 2 {
+			storage, err = ResolveCRS("http://www.opengis.net/def/crs/EPSG/0/" + proof.CanonicalCode)
+		} else {
+			storage, err = NewApplicationCRS(proof.Definition, srid, dimension)
+		}
+	} else {
+		storage, err = NewApplicationCRS(proof.Definition, srid, dimension)
+	}
+
+	if err != nil {
+		return CollectionCRS{}, nil, false, err
+	}
+	catalog, err := NewCollectionCRS(storage, spatial)
+	return catalog, projection, err == nil, err
+}
+
+func collectionOutputCRS(collection resolvedCollection, uri string) (CRS, error) {
+	if !collection.crsAvailable {
+		if uri != "" {
+			return CRS{}, provider.InvalidFeatureQueryError{Reason: "CRS publication unavailable"}
+		}
+		return CRS{}, nil
+	}
+	if uri == "" {
+		uri = collection.crs.DefaultURI()
+	}
+	return collection.crs.ValidateOutput(uri)
+}
+
+// DefaultCRSURI identifies the existing Core output convention even when optional
+// source proof is unavailable. It does not advertise Part 2 capability.
+func (s *Service) DefaultCRSURI(id string) (string, error) {
+	c, ok := s.collections[id]
+	if !ok {
+		return "", CollectionNotFoundError{CollectionID: id}
+	}
+	if c.spatial.Dimension == provider.DimensionXY {
+		return "http://www.opengis.net/def/crs/OGC/1.3/CRS84", nil
+	}
+	return provider.CRS84h, nil
 }

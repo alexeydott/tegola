@@ -24,6 +24,8 @@ type featureSource struct {
 	DimensionExplicit bool
 	SRID              uint64
 	Height            *crsconfig.HeightProjection
+	CRS               provider.FeatureCRSDefinition
+	Projection        *crsconfig.FeatureProjection
 	Private           map[string]bool
 	Public            map[string]bool
 	BasePredicate     string
@@ -224,6 +226,7 @@ func (p *Provider) registerFeatureSource(l *Layer, conf dict.Dicter, providerTyp
 		s.Height = projection
 	}
 	registerFeatureQueryables(ctx, p.pool.pool, s)
+	freezeFeatureCRS(s)
 	return nil
 }
 

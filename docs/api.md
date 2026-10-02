@@ -137,8 +137,8 @@ and HEAD; HEAD returns the same status and headers without a response body.
 
 For example, the landing resource is `/features`, and collection items are
 `/features/collections/roads/items`. Feature IDs in URLs are unsigned decimal
-integers; GeoJSON IDs are numeric. Discovery and single-feature resources accept
-no query parameters.
+integers; GeoJSON IDs are numeric. Discovery resources accept no query parameters;
+the single-feature resource accepts only `crs`.
 
 An absent `Accept` header or an acceptable matching wildcard selects the
 canonical representation. A malformed or incompatible `Accept` returns 406
@@ -156,7 +156,9 @@ repeated parameters return 400. Spatial, temporal and property constraints combi
 | --- | --- |
 | `limit` | Positive decimal page size; defaults to 100 and clamps to the configured maximum (default 10000). Zero and nondecimal values are invalid. |
 | `offset` | Nonnegative decimal offset in stable feature-ID order; defaults to 0. This is a Tegola paging extension. |
-| `bbox` | Four CRS84 or six CRS84h coordinates, described below. |
+| `bbox` | Four or six coordinates in `bbox-crs`, or the Core defaults below when `bbox-crs` is absent. |
+| `bbox-crs` | Exact advertised CRS identifier for the bbox; requires `bbox`. |
+| `crs` | Exact advertised CRS identifier for output geometry; defaults to the collection's Core CRS. |
 | `datetime` | RFC3339 instant or inclusive interval, described below. |
 | `filter` | Bounded CQL2 text expression over the collection's public queryables. |
 | `filter-lang` | `cql2-text`; requires a nonblank filter. This language is the default when a filter is supplied. |
@@ -165,7 +167,7 @@ Exact filtering and deduplication precede offset and limit. Responses include
 `numberReturned` and paging links (`self`, `next` when more matches
 exist, and `prev` when offset is nonzero). `numberMatched` is present only when
 the provider knows an exact total; its absence does not mean zero. Follow the
-returned links, which retain bbox, datetime and filter constraints. Paging is evaluated
+returned links, which retain bbox, CRS, datetime and filter constraints. Paging is evaluated
 against each request's source snapshot; it does not freeze data across requests.
 
 ```text
@@ -175,7 +177,7 @@ against each request's source snapshot; it does not freeze data across requests.
 
 ### Spatial bounds and source profiles
 
-Four-coordinate bbox order is `west,south,east,north`, in longitude/latitude
+When `bbox-crs` is absent, four-coordinate bbox order is `west,south,east,north`, in longitude/latitude
 degrees (CRS84). Six-coordinate order is
 `west,south,minHeight,east,north,maxHeight`; heights are WGS84 ellipsoidal metres
 (CRS84h). Coordinates must be finite, longitude must lie within −180..180 and
@@ -206,8 +208,28 @@ XYZ/mixed coordinate conversion admits canonical WGS84 EPSG:4326, EPSG:3857
 and WGS84 UTM zones 32601–32660/32701–32760. Other/custom source definitions and
 other vertical references are unsupported. Projection retains height exactly;
 transformed vertices define straight segments and planar surfaces. If projection
-makes a polygon nonplanar, the query is unsupported. GeoJSON uses
+makes a polygon nonplanar, the query is unsupported. Default GeoJSON uses
 longitude/latitude and preserves the third height ordinate where present.
+An explicit `crs` selects the advertised wire axes and projection.
+
+### Referenced CRS requests
+
+Eligible collections publish a deterministic `crs` list and a uniform
+`storageCrs` when applicable. Use these exact identifiers: EPSG:4326 uses
+latitude/longitude axes, unlike CRS84. Projected coordinates use easting/northing
+metres. Bbox ordinates follow the selected identifier's axes; its dimension
+determines whether four or six numbers are required. Output and bbox CRS are
+independent. Exact intersection is evaluated in the bbox query frame before
+paging and counts; a transformed source envelope is only candidate pruning.
+
+The single-item resource also accepts `crs`; its other query parameters remain
+invalid. Successful feature GET and HEAD responses include `Content-Crs: <URI>`,
+including default and empty-page responses. Unsupported, blank, repeated or
+unlisted identifiers return 400 without remote identifier resolution. Geometry
+transformation failures never fall back to source coordinates. See the
+[CRS contract](crs.md#feature-api-crs-identifiers) for publication and dimensional
+limits. Application CRS identifiers and successful requests do not declare OGC
+certification.
 
 ### Exact datetime constraints
 

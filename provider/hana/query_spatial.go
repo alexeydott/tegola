@@ -90,13 +90,25 @@ func spatialGeometryEmpty(g geom.Geometry) bool {
 }
 
 type spatialQuery struct {
-	source, target *crsconfig.HeightProjection
+	source, target             *crsconfig.HeightProjection
+	frozenSource, frozenTarget *crsconfig.FeatureProjection
 }
 
 func newSpatialQuery(layer *Layer, query provider.FeatureQuery) (spatialQuery, error) {
 	result := spatialQuery{source: layer.feature.Height}
 	if len(query.Bounds3D) != 0 && query.BoundsVerticalCRS != provider.CRS84h {
 		return result, fmt.Errorf("query height reference: %w", provider.ErrUnsupported)
+	}
+	if query.BoundsCRSDefinition != "" {
+		if layer.feature.Projection == nil {
+			return result, featureUnsupported("immutable source CRS proof unavailable")
+		}
+		target, err := crsconfig.NewFeatureProjection(query.BoundsCRSDefinition)
+		if err != nil {
+			return result, featureUnsupported("immutable query CRS profile unsupported")
+		}
+		result.frozenSource, result.frozenTarget = layer.feature.Projection, target
+		return result, nil
 	}
 	if result.source != nil && (len(query.Bounds) != 0 || len(query.Bounds3D) != 0) {
 		target, err := crsconfig.NewHeightProjection(query.BoundsSRID)
@@ -114,7 +126,19 @@ func (s spatialQuery) matches(g geom.Geometry, source uint64, query provider.Fea
 	}
 	transformed := g
 	var err error
-	if source != query.BoundsSRID {
+	if s.frozenTarget != nil && !s.frozenSource.Equivalent(s.frozenTarget) {
+		transformed, err = codec.TransformFeatureSpatialGeometry(g, func(point [2]float64) ([2]float64, error) {
+			ll, err := s.frozenSource.Inverse(point[:])
+			if err != nil {
+				return [2]float64{}, err
+			}
+			xy, err := s.frozenTarget.Forward(ll)
+			if err != nil {
+				return [2]float64{}, err
+			}
+			return [2]float64{xy[0], xy[1]}, nil
+		})
+	} else if s.frozenTarget == nil && source != query.BoundsSRID {
 		if s.source != nil {
 			transformed, err = codec.TransformFeatureSpatialGeometry(g, func(p [2]float64) ([2]float64, error) {
 				ll, err := s.source.Inverse(p[:])
@@ -133,6 +157,9 @@ func (s spatialQuery) matches(g geom.Geometry, source uint64, query provider.Fea
 		if err != nil {
 			return false, wrapSpatialError(err)
 		}
+	}
+	if err != nil {
+		return false, wrapSpatialError(err)
 	}
 	matched := false
 	for _, b := range query.Bounds3D {

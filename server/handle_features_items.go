@@ -27,7 +27,12 @@ func (api *FeatureAPI) serveItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := httptreemux.ContextParams(r.Context())["collection"]
-	page, err := api.service.QueryCollectionPage(r.Context(), id, query)
+	outputURI, err := api.resolveFeatureCRS(id, parameters, &query)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	page, err := api.service.QueryCollectionPageWithOptions(r.Context(), id, query, features.QueryOptions{OutputCRS: parameters.Get("crs")})
 	if err != nil {
 		api.writeQueryError(w, r, err)
 		return
@@ -54,12 +59,21 @@ func (api *FeatureAPI) serveItems(w http.ResponseWriter, r *http.Request) {
 		features.FeatureCollection
 		Links []featureLink `json:"links"`
 	}{FeatureCollection: page, Links: links}
+	w.Header().Set("Content-Crs", "<"+outputURI+">")
 	api.writeJSON(w, r, http.StatusOK, "application/geo+json", response)
 }
 
 func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
-	if !api.discoveryQueryValid(w, r) {
+	queryParameters, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid query parameter")
 		return
+	}
+	for key, values := range queryParameters {
+		if key != "crs" || len(values) != 1 || values[0] == "" {
+			api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid query parameter")
+			return
+		}
 	}
 	parameters := httptreemux.ContextParams(r.Context())
 	id := parameters["collection"]
@@ -73,7 +87,12 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature ID")
 		return
 	}
-	feature, err := api.service.QueryFeature(r.Context(), id, featureID)
+	outputURI, err := api.resolveFeatureCRS(id, queryParameters, nil)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	feature, err := api.service.QueryFeatureWithOptions(r.Context(), id, featureID, features.QueryOptions{OutputCRS: queryParameters.Get("crs")})
 	if err != nil {
 		api.writeQueryError(w, r, err)
 		return
@@ -82,6 +101,10 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 		features.Feature
 		Links []featureLink `json:"links"`
 	}{Feature: feature, Links: []featureLink{api.link(r, "/collections/"+id+"/items/"+strconv.FormatUint(featureID, 10), "self", "application/geo+json"), api.link(r, "/collections/"+id, "collection", "application/json")}}
+	if len(queryParameters) != 0 {
+		response.Links[0].Href += "?" + queryParameters.Encode()
+	}
+	w.Header().Set("Content-Crs", "<"+outputURI+">")
 	api.writeJSON(w, r, http.StatusOK, "application/geo+json", response)
 }
 
@@ -128,12 +151,22 @@ func (api *FeatureAPI) parseItemsQuery(raw string) (provider.FeatureQuery, url.V
 	}
 	for key, values := range parameters {
 		switch key {
-		case "limit", "offset", "bbox", "datetime", "filter", "filter-lang":
+		case "limit", "offset", "bbox", "datetime", "filter", "filter-lang", "crs", "bbox-crs":
 		default:
 			return provider.FeatureQuery{}, nil, fmt.Errorf("unknown query parameter")
 		}
 		if len(values) != 1 {
 			return provider.FeatureQuery{}, nil, fmt.Errorf("repeated query parameter")
+		}
+	}
+	for _, key := range []string{"crs", "bbox-crs"} {
+		if value, present := parameters[key]; present && value[0] == "" {
+			return provider.FeatureQuery{}, nil, fmt.Errorf("blank CRS")
+		}
+	}
+	if _, present := parameters["bbox-crs"]; present {
+		if _, bounded := parameters["bbox"]; !bounded {
+			return provider.FeatureQuery{}, nil, fmt.Errorf("bbox-crs requires bbox")
 		}
 	}
 	query := provider.FeatureQuery{Limit: api.cfg.DefaultLimit}
@@ -152,7 +185,7 @@ func (api *FeatureAPI) parseItemsQuery(raw string) (provider.FeatureQuery, url.V
 			return provider.FeatureQuery{}, nil, fmt.Errorf("invalid offset: %w", err)
 		}
 	}
-	if value, ok := parameters["bbox"]; ok {
+	if value, ok := parameters["bbox"]; ok && parameters.Get("bbox-crs") == "" {
 		if err := parseFeatureBounds(value[0], &query); err != nil {
 			return provider.FeatureQuery{}, nil, err
 		}
@@ -335,4 +368,101 @@ func parseFeatureTimestamp(raw string) (*time.Time, string, bool, error) {
 		return nil, "", false, fmt.Errorf("datetime is not an announced leap second")
 	}
 	return &parsed, tail, leap, nil
+}
+
+func (api *FeatureAPI) resolveFeatureCRS(id string, parameters url.Values, query *provider.FeatureQuery) (string, error) {
+	output, err := api.service.DefaultCRSURI(id)
+	if err != nil {
+		return "", err
+	}
+	explicitOutput := parameters.Get("crs")
+	explicitBounds := parameters.Get("bbox-crs")
+	catalog, catalogErr := api.service.CollectionCRS(id)
+	if explicitOutput != "" || explicitBounds != "" {
+		if catalogErr != nil {
+			return "", provider.InvalidFeatureQueryError{Field: "crs", Reason: "CRS publication unavailable"}
+		}
+	}
+	if explicitOutput != "" {
+		descriptor, err := catalog.ValidateOutput(explicitOutput)
+		if err != nil {
+			return "", err
+		}
+		output = descriptor.URI()
+	}
+	if query != nil && parameters.Get("bbox") != "" && (explicitBounds != "" || catalogErr == nil) {
+		raw := parameters.Get("bbox")
+		count := len(strings.Split(raw, ","))
+		var descriptor features.CRS
+		if explicitBounds != "" {
+			descriptor, err = catalog.ValidateBounds(explicitBounds, count)
+		} else {
+			uri := "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+			if count == 6 {
+				uri = provider.CRS84h
+			}
+			descriptor, err = features.ResolveCRS(uri)
+		}
+		if err != nil {
+			return "", err
+		}
+		if err := parseFeatureBoundsCRS(raw, descriptor, query); err != nil {
+			return "", provider.InvalidFeatureQueryError{Field: "bbox", Reason: "Invalid bounding box"}
+		}
+	}
+	return output, nil
+}
+
+func parseFeatureBoundsCRS(raw string, descriptor features.CRS, query *provider.FeatureQuery) error {
+	parts := strings.Split(raw, ",")
+	if len(parts) != descriptor.Dimension()*2 {
+		return fmt.Errorf("bbox dimension mismatch")
+	}
+	values := make([]float64, len(parts))
+	for i, part := range parts {
+		value, err := strconv.ParseFloat(part, 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("nonfinite bbox")
+		}
+		values[i] = value
+	}
+	dimension := descriptor.Dimension()
+	minimum, err := descriptor.ToInternalPosition(values[:dimension])
+	if err != nil {
+		return err
+	}
+	maximum, err := descriptor.ToInternalPosition(values[dimension:])
+	if err != nil {
+		return err
+	}
+	west, south, east, north := minimum[0], minimum[1], maximum[0], maximum[1]
+	if south > north || (!descriptor.Geographic() && west > east) {
+		return fmt.Errorf("unordered bbox")
+	}
+	if descriptor.Geographic() && (west < -180 || west > 180 || east < -180 || east > 180 || south < -90 || south > 90 || north < -90 || north > 90) {
+		return fmt.Errorf("geographic bbox domain")
+	}
+	query.Bounds, query.Bounds3D = nil, nil
+	query.BoundsSRID = descriptor.InternalSRID()
+	query.BoundsCRSDefinition = descriptor.Definition().Definition
+	query.BoundsVerticalCRS = ""
+	if dimension == 2 {
+		if west <= east {
+			query.Bounds = []geom.Extent{{west, south, east, north}}
+		} else {
+			query.Bounds = []geom.Extent{{west, south, 180, north}, {-180, south, east, north}}
+		}
+	} else {
+		bottom, top := minimum[2], maximum[2]
+		if bottom > top {
+			return fmt.Errorf("unordered height")
+		}
+		query.BoundsVerticalCRS = provider.CRS84h
+		if west <= east {
+			query.Bounds3D = []provider.Extent3D{{west, south, bottom, east, north, top}}
+		} else {
+			query.Bounds3D = []provider.Extent3D{{west, south, bottom, 180, north, top}, {-180, south, bottom, east, north, top}}
+		}
+	}
+	return nil
 }

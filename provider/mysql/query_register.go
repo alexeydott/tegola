@@ -52,6 +52,9 @@ type featureProfile struct {
 	srid                uint64
 	spatial             provider.SpatialMetadata
 	height              *crsconfig.HeightProjection
+	crs                 provider.FeatureCRSDefinition
+	crsProjection       *crsconfig.FeatureProjection
+	crsDeclared         bool
 	temporal            provider.TemporalMapping
 	temporalScale       int64
 	mos                 codec.MOSConfig
@@ -114,6 +117,8 @@ func (p *Provider) registerFeatureLayers(confs []dict.Dicter) error {
 			return err
 		}
 		if err == nil {
+			profile.crsDeclared = layer.crsExplicit
+			profile.freezeFeatureCRS()
 			profile.initializeFilterCatalog()
 		}
 		layer.feature, layer.featureError = profile, err

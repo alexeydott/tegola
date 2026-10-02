@@ -14,10 +14,16 @@ type featureCollectionDescription struct {
 	Description string        `json:"description,omitempty"`
 	ItemType    string        `json:"itemType"`
 	Links       []featureLink `json:"links"`
+	CRS         []string      `json:"crs,omitempty"`
+	StorageCRS  string        `json:"storageCrs,omitempty"`
 }
 
 func (api *FeatureAPI) describeCollection(r *http.Request, metadata features.CollectionMetadata) featureCollectionDescription {
 	description := featureCollectionDescription{ID: metadata.ID, Title: metadata.Title, Description: metadata.Description, ItemType: "feature", Links: []featureLink{api.link(r, "/collections/"+metadata.ID, "self", "application/json"), api.link(r, "/collections/"+metadata.ID+"/items", "items", "application/geo+json")}}
+	if catalog, err := api.service.CollectionCRS(metadata.ID); err == nil {
+		description.CRS = catalog.URIs()
+		description.StorageCRS = catalog.StorageURI()
+	}
 	if _, err := api.service.Queryables(metadata.ID); err == nil {
 		description.Links = append(description.Links, api.link(r, "/collections/"+metadata.ID+"/queryables", "http://www.opengis.net/def/rel/ogc/1.0/queryables", "application/schema+json"))
 	}
