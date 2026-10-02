@@ -9,6 +9,40 @@ This file records upstream provenance, the bugs fixed in the fork that are candi
 upstream PRs, the versioning scheme, the sync methodology, and the technical debt deferred
 to a later wave.
 
+## Current fork release and source integration (2026-10-02)
+
+The annotated source tag **`v0.21.0-fork.2`** binds
+`db4e8ee73a3ddfe3b3c8e054c59e833b697dce85`. It includes the OGC Features
+implementation and the MOS probe/diagnostic integration reviewed in `8bc78cd4`.
+The subsequent `e4c8a1b8` commit updates documentation only; it does not move the
+release tag or change the executable source captured by that tag.
+
+The release adds opt-in feature publication through the existing router,
+`ogc/features`, `ogc/cql2` and optional `provider.FeatureQuerier` contracts.
+Its application profile includes JSON/HTML, bbox/datetime, stable IDs,
+link-driven paging, Queryables, the documented CQL2 text subset and supported
+public CRS transformations. Standard-provider eligibility and source protection
+remain explicit. Native MVT providers are not raw feature sources; MyISAM tile
+sources are not automatically admitted to MySQL feature publication.
+
+MOS startup probes and per-layer/MySQL query timing were adapted into this
+implementation without removing strict feature geometry or source guarantees.
+The source MOS branch was recorded as merged while retaining the reviewed
+integration tree. See [provider contracts](docs/provider-contract.md) and
+[tile latency diagnostics](docs/development.md#tile-latency-diagnostics).
+
+Tegola provides a replacement migration path for Jivan's feature-serving role.
+Jivan remains independently managed: no upstream archival or modification is
+claimed. The optional Lambda adapter shares the assembled HTTP router; local
+invocation parity is separate from deployed AWS acceptance.
+
+The source tag and Windows build do not establish OGC certification, publish
+GitHub Release assets, or extend fixture-specific evidence to another live
+installation. Earlier validation records below retain their dates, revisions
+and scopes. See [Feature API release notes](docs/release/feature-api.md),
+[Jivan migration](docs/migration/jivan-to-tegola.md) and
+[Windows release builds](docs/windows-release.md).
+
 ## Tile HTTP caching (fork extension)
 
 `webserver.tile_http_max_age` now configures browser/shared-cache freshness for
@@ -28,20 +62,23 @@ post-v0.21.0 (2024-12-19) and `N` is a monotonically increasing fork revision. T
 compiled-in fallbacks (`internal/build.Version` and `server.Version`) carry the string
 `v0.21.0-fork.1`; production builds continue to override `build.Version` via
 `-ldflags "-X .../internal/build.Version=..."` at release time (see
-`.github/workflows/on_release_publish.yml`). Only the fallback value and comments
-changed - the ldflags injection is preserved. Nothing here claims "0.17.0 is the upstream
+`.github/workflows/on_release_publish.yml`). The tagged `v0.21.0-fork.2` build injects that exact tag and full Git revision;
+plain builds without injection still report the historical `v0.21.0-fork.1` fallback.
+The ldflags injection remains the release version authority. Nothing here claims "0.17.0 is the upstream
 base"; that older label was inaccurate and has been removed.
 
 ## Upstream bugs fixed in this fork
 
-Both items below are live bugs on upstream `master` today - identical on the `v0.21.0`
-tag and on current `master`. The fork inherited them from `master`; each is fixed here and
+The historical upstream audit identified both items below on its inspected
+`master` snapshot and the `v0.21.0` tag. This record does not revalidate the latest
+upstream head; recheck it before submitting a pull request. The fork inherited
+these defects from `master`; each is fixed here and
 is a candidate for an upstream pull request. A minimal reproducing regression test ships
 in-tree for each.
 
 | Bug (present on upstream master + v0.21.0 tag) | Minimal repro (in-tree test) | Fork status | Upstream status |
 | --- | --- | --- | --- |
-| `cache/gcs.Get()` reports every read failure as a cache miss (`return nil, false, nil`), swallowing backend errors. PR [#938](https://github.com/go-spatial/tegola/pull/938) fixed this (merged 2023-08-03) but the fix **regressed on `master`** - the bug is live on `master` today. | `cache/gcs/gcs_test.go`: transient backend error -> `(nil, false, err)`; missing object -> clean miss. | Fixed in fork. | Candidate for upstream PR (repro test included). Do **not** record this as "released in upstream v0.18/v0.19": the fix was merged, then regressed on `master`. |
+| `cache/gcs.Get()` reports every read failure as a cache miss (`return nil, false, nil`), swallowing backend errors. PR [#938](https://github.com/go-spatial/tegola/pull/938) fixed this (merged 2023-08-03) but the fix **regressed on `master`** - the inspected upstream `master` snapshot still contained the bug. | `cache/gcs/gcs_test.go`: transient backend error -> `(nil, false, err)`; missing object -> clean miss. | Fixed in fork. | Candidate for upstream PR (repro test included). Do **not** record this as "released in upstream v0.18/v0.19": the fix was merged, then regressed on `master`. |
 | `webserver.HostName` with a malformed value is silently ignored because `url.Parse` soft-parses scheme-less inputs such as `cdn.example.com:443` (parsed as scheme=`cdn.example.com`, Host empty). Present on both the `v0.21.0` tag and `master`. | `internal/env/parse_test.go`: scheme-less `cdn.example.com:443` and a garbage value are rejected at startup. | Fixed in fork. | Candidate for upstream PR (repro test included). Submit upstream **only after** the empty-hostname regression (audit N5) is fixed, so the patch preserves the upstream behaviour "empty `webserver.HostName` = derive the host from the request"; N5 is fixed in this fork (wave 4), so the patch is now upstream-ready. |
 
 ## Candidates for upstream PR
