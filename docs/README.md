@@ -4,6 +4,9 @@
 
 Tegola documentation covers HTTP behavior, configuration, provider contracts, geometry, builds, and the current maintenance record. Historical review details remain in the [audit archive](audit/tegola_review_part12.md); see [maintenance status](maintenance-status.md) for current disposition.
 
+Current source tag: **`v0.21.0-fork.2`**. See the
+[Feature API release record](release/feature-api.md) for revision and acceptance scope.
+
 ## Guides
 
 * [API reference](api.md) — HTTP endpoints and tile operations.

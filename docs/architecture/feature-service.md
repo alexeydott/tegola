@@ -4,7 +4,14 @@
 
 Status: historical source baseline prepared on 2026-10-01, followed by current integration contracts below. Task 2 architecture was independently accepted. The implemented application profile is documented in the [API reference](../api.md); this architecture page declares no OGC conformance.
 
-Execution source is Tegola `c65beeb8519f425ff8365c76e54e93baf8e17b07`. This local documentation revision has the same executable source as published `70c53413b06bab23318bac1722852df1fec335e7`. The historical planning revision `18126bb6ca0737b3644f06359ad7703b57bde125` is separated by 134 commits and is comparison evidence only.
+Historical baseline source is Tegola `c65beeb8519f425ff8365c76e54e93baf8e17b07`. This local documentation revision has the same executable source as published `70c53413b06bab23318bac1722852df1fec335e7`. The historical planning revision `18126bb6ca0737b3644f06359ad7703b57bde125` is separated by 134 commits and is comparison evidence only.
+
+Current implemented source is tagged `v0.21.0-fork.2` at `db4e8ee7`.
+`provider.FeatureQuerier`, `ogc/features`, `ogc/cql2`, HTTP publication and
+the optional Lambda adapter are implemented. Baseline statements below describe
+the earlier snapshot; current provider guarantees are in the
+[provider contract](../provider-contract.md) and current release scope is in the
+[release record](../release/feature-api.md).
 
 ## Existing integration points
 

@@ -1,11 +1,20 @@
 [Documentation index](../README.md) · [Migration guide](../migration/jivan-to-tegola.md)
 
-# Feature API release candidate
+# Feature API release
 
 Tegola replaces Jivan's feature-serving role through its existing server and
 provider packages. Use the [compatibility matrix](../migration/jivan-compatibility-matrix.md)
 for each legacy endpoint, parameter and deployment disposition. This statement
 does not imply identical historical behavior or an OGC certification.
+
+## Source release status
+
+The annotated source tag `v0.21.0-fork.2` was pushed on 2026-10-02 and binds
+`db4e8ee73a3ddfe3b3c8e054c59e833b697dce85`. OGC implementation and the
+MOS provider/diagnostic integration are included in this revision. The MOS
+source branch ancestry was recorded while retaining the reviewed integration
+tree from `8bc78cd4`. This is a source tag; no GitHub Release assets or AWS
+deployment are asserted. See [Windows builds](../windows-release.md).
 
 ## Included capabilities
 
@@ -42,9 +51,9 @@ measured dataset-specific budgets; page limits do not guarantee cheap candidate
 scans. Review nullable attributes, geometry dimensions, filters, actual next links,
 public origins, HEAD, error responses and retained tile clients before cutover.
 
-This document accompanies a reviewed source candidate. It does not create a
-published version, pushed tag or deployment. Public distribution requires its own
-release decision and exact revision binding.
+The source tag identifies the included implementation. Acceptance results remain
+bound to their exact revision, fixtures and environment. A tag does not establish
+OGC certification, live-provider acceptance for another installation, or deployment.
 
 ## Cutover and rollback
 

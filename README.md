@@ -3,7 +3,7 @@
 ![On push](https://github.com/alexeydott/tegola/actions/workflows/on_pr_push.yml/badge.svg?branch=master)
 [![license](http://img.shields.io/badge/license-MIT-red.svg?style=flat)](https://github.com/go-spatial/tegola/blob/master/LICENSE.md)
 
-> A Go vector tile server for serving Mapbox Vector Tiles from spatial data.
+> A Go server for Mapbox Vector Tiles and explicitly published OGC API Features collections.
 
 Tegola is a fork of [go-spatial/tegola](https://github.com/go-spatial/tegola), based on upstream master after v0.21.0. Fork changes and remaining limitations are recorded in [CHANGELOG.md](CHANGELOG.md) and [UPSTREAM.md](UPSTREAM.md).
 
@@ -33,6 +33,7 @@ For a source build or Windows release package, see [Development and Builds](docs
 
 - Mapbox Vector Tile v2 output and an embedded viewer with an automatically generated style.
 - PostGIS, GeoPackage, MySQL/MariaDB, and SAP HANA spatial data providers.
+- Opt-in OGC API Features, Queryables, the documented CQL2 text profile, datetime and public CRS.
 - Memory, file, multilevel, GCS, S3, Redis, and Azure Blob cache backends.
 - Geometry processing, CRS reprojection, cache seeding, and cache invalidation.
 - HTTP tile operations, AWS Lambda support, HTTPS, and Prometheus observability.
@@ -53,6 +54,8 @@ See the [API reference](docs/api.md) for endpoints and tile-cache operations.
 |---|---|
 | [Documentation index](docs/README.md) | All project guides and package references |
 | [API reference](docs/api.md) | HTTP endpoints and tile operations |
+| [Feature API release](docs/release/feature-api.md) | Tagged source, capabilities and migration boundaries |
+| [Jivan migration](docs/migration/jivan-to-tegola.md) | Move legacy feature clients to Tegola |
 | [Configuration](docs/configuration.md) | TOML, providers, caches, and environment variables |
 | [Development and builds](docs/development.md) | Debugging, build flags, and source builds |
 | [Provider contract](docs/provider-contract.md) | Shared provider configuration and behavior |

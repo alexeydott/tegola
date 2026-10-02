@@ -9,6 +9,15 @@ closure evidence remain in [UPSTREAM.md](../UPSTREAM.md). The
 [2026-09-25 audit](audit/tegola_review_part12.md) is historical evidence, not
 an active list of unresolved defects.
 
+## Current source release
+
+As of 2026-10-02, `master` includes OGC Features and the adapted MOS probe and
+tile diagnostics work. Source tag `v0.21.0-fork.2` binds
+`db4e8ee73a3ddfe3b3c8e054c59e833b697dce85`; see the
+[release record](release/feature-api.md). Earlier audits below retain their
+original dates and scopes. Source integration and release builds do not extend
+those records into unperformed database or deployed AWS acceptance.
+
 ## Markdown audit scope
 
 The audit enumerated all 199 Git-tracked `.md`/`.markdown` files, ignoring

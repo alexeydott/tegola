@@ -1,5 +1,16 @@
 ## Unreleased
 
+## v0.21.0-fork.2 — 2026-10-02
+
+Source tag: `db4e8ee73a3ddfe3b3c8e054c59e833b697dce85`.
+
+- Include the implemented OGC Features service, Queryables/CQL2, CRS and Jivan migration guides.
+- Integrate MOS metadata probes and per-layer/MySQL latency diagnostics with the OGC provider contracts.
+- Build Windows binaries with CGO/GeoPackage, the embedded viewer and the exact release tag.
+
+The detailed fork changes below retain their original scope. See
+[Feature API release notes](docs/release/feature-api.md) for acceptance boundaries.
+
 Fork-specific changes on top of upstream master (post-v0.21.0, 2024-12-19). Fork releases follow the version scheme `v0.21.0-fork.N`; the first fork release is `v0.21.0-fork.1`.
 
 Features

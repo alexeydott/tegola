@@ -4,6 +4,11 @@
 
 Build from the committed source with Go matching `go.mod`, Node/npm and an
 amd64 C compiler on PATH. CGO must be enabled to include GeoPackage support.
+Current tagged source: `v0.21.0-fork.2` at
+`db4e8ee73a3ddfe3b3c8e054c59e833b697dce85`. Fetch tags and select the intended
+release in an isolated checkout before building. A Git tag is not a GitHub Release
+asset or proof of deployment.
+
 Run these PowerShell commands from the repository root; stop on any failed step.
 
 ```powershell
@@ -23,9 +28,9 @@ $env:CGO_ENABLED = '1'
 $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
 $revision = git rev-parse HEAD
-$shortRevision = git rev-parse --short=8 HEAD
 $branch = git branch --show-current
-$version = "v0.21.0-fork.1+git.$shortRevision"
+$version = git describe --tags --exact-match HEAD
+if ($LASTEXITCODE -ne 0) { throw "Build a release from an exact tagged revision" }
 $flags = "-s -w -X github.com/alexeydott/tegola/internal/build.Version=$version -X github.com/alexeydott/tegola/internal/build.GitRevision=$revision -X github.com/alexeydott/tegola/internal/build.GitBranch=$branch"
 go build -mod=vendor -trimpath -ldflags $flags -o tegola.exe ./cmd/tegola
 if ($LASTEXITCODE -ne 0) { throw 'release build failed' }
