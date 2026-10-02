@@ -89,8 +89,21 @@ overrides provider level, per field):
 
 Each value must be a simple identifier: values are trimmed, qualified names
 such as `t.MINX` are rejected, and two keys may not name the same column
-(duplicates are rejected case-insensitively). For join queries use a CTE or
-derived table that exposes unambiguous bounds column names.
+(duplicates are rejected case-insensitively). For MOS custom SQL with joins,
+set the optional layer `bbox_table` to the source table or its SQL alias:
+
+```toml
+bbox_table = "gis.roads_axis"
+```
+
+This makes `!BBOX!` reference, for example,
+`` `gis`.`roads_axis`.`MAXX` `` on MySQL, avoiding ambiguous bounds
+columns in joined tables. Use the alias if the source table has one. The value
+accepts one or two unquoted simple identifiers (alias/table or schema.table),
+quoted separately for MySQL, PostgreSQL, HANA and GeoPackage. Keep
+`bbox_*_fieldname` and SELECT result names unqualified. Alternatively, use a
+CTE or derived table exposing unambiguous bounds column names; older MySQL
+versions may materialize those derived tables.
 
 Columns resolved this way are excluded from the feature tags: they are
 implementation details of the bounds contract, not feature attributes.
@@ -138,6 +151,53 @@ identical in every SQL provider (`mysql`, `postgis`, `hana`, `gpkg`).
   `mos` must satisfy the `mos` contract above, `wkb`/`wkt` resolutions must
   satisfy the raw contract, and a resolved native geometry column may use
   `!BBOX!`.
+
+### Joined MOS layer example
+
+The following layer belongs inside an existing standard provider configured
+with the correct source CRS and MOS quantization settings:
+
+```toml
+[[providers.layers]]
+name = "roads_axis"
+geometry_format = "mos"
+geometry_fieldname = "LINE"
+id_fieldname = "MUID"
+bbox_table = "axis"
+sql = """
+SELECT axis.MUID, axis.LINE,
+       axis.MINX, axis.MAXX, axis.MINY, axis.MAXY,
+       road.name AS road_name
+FROM roads_axis AS axis
+LEFT JOIN roads AS road ON road.axis_muid = axis.MUID
+WHERE !BBOX!
+"""
+```
+
+Even if `roads` also has bounds columns, the filter references only
+`axis.MAXX`, `axis.MINX`, `axis.MAXY` and `axis.MINY` (with provider-specific
+quoting). The result names remain `MINX`/`MAXX`/`MINY`/`MAXY` and are excluded
+from feature attributes. Without a source alias, `bbox_table = "gis.roads_axis"`
+is also valid. This is a layer-only option for custom MOS SQL; it does not
+change native spatial filters or generated table/RTree queries. It qualifies
+every bounds token in the query, so the chosen alias must be visible at each
+`!BBOX!` or `!BOX!` location.
+
+### Startup metadata queries
+
+Explicit `geometry_format = "mos"` checks result columns without wrapping a
+16-row sample. MySQL applies `LIMIT 0` directly to ordinary SELECT statements,
+including supported existing numeric LIMIT clauses. This avoids derived-table
+materialization on MySQL 5.5 when the query joins expensive views. Complex
+MySQL forms (for example executable comments or CTEs) retain the conservative
+metadata wrapper. MySQL also samples the original SELECT directly when
+inferring a geometry class or automatic format, retaining smaller caller limits
+and capping larger limits at 16. PostgreSQL, GeoPackage and HANA use a single
+metadata wrapper over the prepared SQL. Automatic format detection still samples up to 16 rows.
+
+The MySQL provider's `timeout` controls connection establishment, not the
+30-second registration probe deadline. An explicit `geometry_type` skips
+geometry-class sampling but does not skip this result-column validation.
 
 ## GeometryCollection behaviour
 

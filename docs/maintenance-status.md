@@ -2,8 +2,9 @@
 
 # Current maintenance status
 
-This is the current disposition of documented Tegola work, checked against
-`master` after `d417e73b` on 2026-09-28. The original numbered register and
+This page records the disposition of documented Tegola work. The baseline
+was checked against `master` after `d417e73b` on 2026-09-28; later follow-ups
+carry their own verification dates in the table below. The original numbered register and
 closure evidence remain in [UPSTREAM.md](../UPSTREAM.md). The
 [2026-09-25 audit](audit/tegola_review_part12.md) is historical evidence, not
 an active list of unresolved defects.
@@ -36,6 +37,7 @@ continue to match their published module versions.
 | Geographic scale | All four SQL providers share source-ellipsoid local parallel scale at the transformed tile center; SQL pixel dimensions use source units. |
 | Complex polygon simplification | Ring and component relationships are validated before accepting candidates; unsafe or inconclusive candidates preserve the original geometry. |
 | MOS startup sampling | Explicit MOS checks column metadata without format sampling; an explicit geometry type also skips class decoding. Automatic inference stops at three valid MOS geometries within 16 rows; a completed short result needs one valid geometry. Invalid auto-detected MOS rows are skipped while valid features remain renderable. Provider fixtures and a real SQLite startup regression cover the behavior. |
+| Legacy MySQL startup and joined MOS bounds (2026-10-02) | Direct bounded MySQL SELECTs avoid the derived-table materialization reproduced on MySQL 5.5.29. Optional `bbox_table` qualifies joined MOS bounds in all four SQL providers. Codec/provider tests passed with CGO on/off. Live MySQL validation covered 16-layer registration and uncached layer/full-map tile responses; it does not establish live HANA/PostgreSQL coverage. |
 | SQL probes and token parsing | Providers use explicit dialects; PostgreSQL hash operators and arrays are executable SQL. Probe, missing-layer and geometry-column regressions have tests. |
 | Seed/serve interoperability | Layer endpoints reuse seeded map MVT without provider rendering; file roots are resolved and logged. Cold-memory file-cache, TTL and precedence regressions pass; real RU-CHE seed/map/layer HTTP HIT verified. |
 | Cache and tile operations | Unique file-cache temp names, safe purge races, authenticated/rate-limited maintenance, queued regeneration status, bounds filtering and MVT-only cache writes are implemented. |

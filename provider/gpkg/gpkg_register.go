@@ -1067,6 +1067,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				return nil, fmt.Errorf("for %v layer(%v) %v has an error: %v", i, layerName, ConfigKeySQL, err)
 			}
 			layer.sql = customSQL
+			layer.bboxTable, err = codec.ResolveBBoxTable(layerConf, layerName)
+			if err != nil {
+				return nil, err
+			}
 
 			// Resolve the bounds field names (layer > provider > defaults)
 			// backing the bounds-backed custom-SQL !BBOX! predicate.
@@ -1110,7 +1114,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				probeGeomType = codec.GeomTypeName(layer.geomType)
 			}
 			inspectionSQL := codec.SQLite.PrepareProbeSQL(customSQL, layer.geomFieldname, layer.idFieldname, probeGeomType)
-			probeSQL := codec.WrapProbeSQL(inspectionSQL)
 
 			// Bounds-backed / storage-format probe. Runs for explicit MOS,
 			// explicit gpkg and unset format (native gpkg decode; inference
@@ -1119,7 +1122,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			// contract is always validated at registration and never skipped
 			// (the >=3-sample-row evidence bar is inference-only).
 			if layer.geometryFormat != codec.FormatWKB && layer.geometryFormat != codec.FormatWKT {
-				columns, contract, perr := probeMOSCustomSQLContract(db, &layer, probeSQL)
+				columns, contract, perr := probeMOSCustomSQLContract(db, &layer, inspectionSQL)
 				switch {
 				case perr != nil && boundsBacked:
 					// bounds-backed structural check failures are startup
@@ -1395,8 +1398,7 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 	return firstGeom, firstHeader, sysInfoCRSApplied, nil
 }
 
-// probeMOSCustomSQLContract executes the wrapped probe SQL (built by
-// codec.WrapProbeSQL over codec.PrepareProbeSQL output) and returns the
+// probeMOSCustomSQLContract takes prepared, unwrapped SQL and returns the
 // sample result-column names together with the common
 // InspectSQLGeometryContract probe: bounds columns presence plus at least
 // MinValidMOSRows decodable MOS geometries with coordinates. The probe
@@ -1408,11 +1410,13 @@ func inspectCustomSQLSample(db *sql.DB, layer *Layer, qtext string) (firstGeom g
 // inspects metadata without consuming or decoding rows. SystemInfo rows are skipped, never applied: SQL-sample
 // detection carries no projection contract.
 func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string) ([]string, codec.SQLGeometryContract, error) {
-	if layer.geometryFormat == codec.FormatMOS {
-		probeSQL = codec.MetadataProbeSQL(probeSQL)
-	}
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
+	}
+	if layer.geometryFormat == codec.FormatMOS {
+		probeSQL = codec.SQLite.MetadataProbeSQL(probeSQL)
+	} else {
+		probeSQL = codec.WrapProbeSQL(probeSQL)
 	}
 
 	rows, err := db.Query(probeSQL)

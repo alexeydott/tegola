@@ -166,22 +166,56 @@ func sampleGeometryQuery(qtext string) string {
 // sql.ErrNoRows when the query yields no rows at all, and the decode error
 // only when every sampled row failed to decode.
 func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverFlavor string, mosCfg codec.MOSConfig) (geo geom.Geometry, headerSRID uint64, err error) {
+	return geomTypeFromQuery(db, sampleGeometryQuery(qtext), &Layer{
+		geometryFormat: geometryFormat,
+		serverFlavor:   serverFlavor,
+		mosConfig:      mosCfg,
+	})
+}
+
+// geomTypeFromQuery reads a bounded query and locates the geometry by result
+// column name. Custom SQL keeps its original projection so MySQL need not
+// materialize an unrestricted derived table merely to select one column.
+func geomTypeFromQuery(db *sql.DB, qtext string, layer *Layer) (geom.Geometry, uint64, error) {
 	ctx, cancel := codec.NewInspectionContext()
 	defer cancel()
 
-	rows, err := db.QueryContext(ctx, sampleGeometryQuery(qtext))
+	rows, err := db.QueryContext(ctx, qtext)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer func() { _ = rows.Close() }()
 
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, 0, err
+	}
+	geomIndex := -1
+	if layer.geomFieldname == "" && len(columns) == 1 {
+		geomIndex = 0
+	} else {
+		for i, column := range columns {
+			if strings.EqualFold(column, layer.geomFieldname) {
+				geomIndex = i
+				break
+			}
+		}
+	}
+	if geomIndex < 0 {
+		return nil, 0, fmt.Errorf("geometry column %q missing from sample result", layer.geomFieldname)
+	}
+	row := make([]interface{}, len(columns))
+	dest := make([]interface{}, len(columns))
+	for i := range row {
+		dest[i] = &row[i]
+	}
 	var lastErr error
-	var values []interface{}
+	values := []interface{}{}
 	for rows.Next() {
-		var geomVal interface{}
-		if err := rows.Scan(&geomVal); err != nil {
+		if err := rows.Scan(dest...); err != nil {
 			return nil, 0, err
 		}
+		geomVal := row[geomIndex]
 		if geomVal == nil {
 			continue
 		}
@@ -198,7 +232,7 @@ func geomTypeFromColumn(db *sql.DB, qtext string, geometryFormat string, serverF
 	}
 
 	for _, geomVal := range values {
-		srid, decoded, decodeErr := decodeGeometry(geomVal, geometryFormat, serverFlavor, mosCfg)
+		srid, decoded, decodeErr := decodeGeometry(geomVal, layer.geometryFormat, layer.serverFlavor, layer.mosConfig)
 		if decodeErr != nil {
 			lastErr = decodeErr
 			continue
@@ -666,6 +700,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				return nil, fmt.Errorf("for %v layer(%v) %v has an error: %v", i, layerName, ConfigKeySQL, err)
 			}
 			layer.sql = customSQL
+			layer.bboxTable, err = codec.ResolveBBoxTable(layerConf, layerName)
+			if err != nil {
+				return nil, err
+			}
 
 			// Raw custom-SQL contract: wkb/wkt cannot use the native-spatial
 			// !BBOX! token; reject it up front instead of generating invalid
@@ -690,7 +728,6 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				probeGeomType = codec.GeomTypeName(layer.geomType)
 			}
 			inspectionSQL := codec.MySQL.PrepareProbeSQL(customSQL, layer.geomFieldname, layer.idFieldname, probeGeomType)
-			probeSQL := codec.WrapProbeSQL(inspectionSQL)
 
 			// Bounds-backed storage-format probe. It runs for explicit MOS
 			// and for inference (auto), INCLUDING tile-dependent SQL and
@@ -699,7 +736,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 			// and never skipped (the >=3-sample-row evidence bar is
 			// inference-only).
 			if layerGeometryFormat == codec.FormatMOS || layerGeometryFormat == GeometryFormatAuto || layerGeometryFormat == "" {
-				columns, contract, perr := probeMOSCustomSQLContract(db, &layer, probeSQL, layerGeometryFormat, serverFlavor)
+				columns, contract, perr := probeMOSCustomSQLContract(db, &layer, inspectionSQL, layerGeometryFormat, serverFlavor)
 				strict := layerGeometryFormat == codec.FormatMOS
 				switch {
 				case perr != nil && strict:
@@ -782,13 +819,9 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 				continue
 			}
 
-			// MySQL-derived tables require an alias
-			qtext := fmt.Sprintf("SELECT %v FROM (%v) AS __tegola_inspection LIMIT 1;",
-				quoteIdentifier(geomFieldname), inspectionSQL)
-
-			log.Debugf("qtext: %v", qtext)
-
-			geo, headerSRID, err := geomTypeFromColumn(db, qtext, layerGeometryFormat, serverFlavor, layer.mosConfig)
+			qtext := codec.MySQL.SampleProbeSQL(inspectionSQL)
+			log.Debugf("[FIX] layer %q: sampling geometry from bounded custom SQL", layer.name)
+			geo, headerSRID, err := geomTypeFromQuery(db, qtext, &layer)
 			switch {
 			case err == sql.ErrNoRows:
 				layer.deferredInspection = true
@@ -843,16 +876,16 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	return &p, nil
 }
 
-// probeMOSCustomSQLContract runs the pre-wrapped probe SQL (token-expanded
-// by codec.PrepareProbeSQL — no spatial filter — and wrapped by
-// codec.WrapProbeSQL) and runs the common InspectSQLGeometryContract probe
-// over the real scanned row values: bounds columns presence plus at least
-// MinValidMOSRows decodable MOS geometries with coordinates. It returns the
-// sample column names for diagnostics. SystemInfo rows are skipped, never
-// applied: SQL-sample detection carries no projection contract.
+// probeMOSCustomSQLContract takes prepared, unwrapped SQL with no spatial
+// filter. Explicit MOS checks columns only; inference wraps a bounded sample
+// and passes real scanned values to InspectSQLGeometryContract. SystemInfo
+// rows are skipped: SQL samples never supply a projection contract.
 func probeMOSCustomSQLContract(db *sql.DB, layer *Layer, probeSQL string, geometryFormat string, serverFlavor string) ([]string, codec.SQLGeometryContract, error) {
 	if geometryFormat == codec.FormatMOS {
-		probeSQL = codec.MetadataProbeSQL(probeSQL)
+		probeSQL = codec.MySQL.MetadataProbeSQL(probeSQL)
+		log.Debugf("[FIX] layer %q: checking explicit MOS metadata without a sample query", layer.name)
+	} else {
+		probeSQL = codec.MySQL.SampleProbeSQL(probeSQL)
 	}
 	ctx, cancel := codec.NewInspectionContext()
 	defer cancel()

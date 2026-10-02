@@ -47,6 +47,8 @@ type Layer struct {
 	// defaults) backing the bounds-backed custom-SQL !BBOX! predicate for
 	// raw (MOS) layers, and excluded from feature tags.
 	bboxFields codec.BBoxFields
+	// bboxTable qualifies bounds references in custom SQL, not result column names.
+	bboxTable string
 }
 
 func (l Layer) Name() string {

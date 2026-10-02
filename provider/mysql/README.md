@@ -331,3 +331,38 @@ select a storage format or disable automatic format detection.
 For automatically detected MOS, undecodable feature rows are skipped with a
 warning at tile rendering, consistently with the probe. A bad row does not
 hide other valid features. Explicit-format error policies are unchanged.
+
+## Troubleshooting MOS custom SQL
+
+### Registration times out despite a larger connection timeout
+
+`timeout = "90s"` limits connection establishment. It does not extend the
+30-second registration probe budget. For explicit MOS, Tegola checks result
+columns without decoding sample geometries. It then samples geometry classes
+unless `geometry_type` is configured or inspection is deferred.
+
+Older MySQL versions can materialize a derived table even when its outer query
+has `WHERE 1=0` or `LIMIT 0`. Registration now uses a direct `LIMIT 0` for
+metadata and a direct bounded SELECT for geometry/automatic-format sampling
+when the SQL form can be safely rewritten. Smaller existing limits and offsets
+are retained. Complex forms keep the conservative wrapper; this change does
+not guarantee that every custom query finishes within the probe deadline.
+See [startup metadata queries](../../docs/geometry-formats.md#startup-metadata-queries).
+
+### Bounds column is ambiguous in a JOIN
+
+If both joined tables expose `MINX`, `MAXX`, `MINY` or `MAXY`, MySQL can return
+`Error 1052 (23000): Column 'MAXX' in where clause is ambiguous` when `!BBOX!`
+is expanded. Set `bbox_table` on that custom-SQL layer to its source alias or
+schema-qualified table. Keep `bbox_*_fieldname` as simple result-column names.
+The full [joined MOS example](../../docs/geometry-formats.md#joined-mos-layer-example)
+shows this separation. Merely qualifying the columns in the SELECT list does
+not qualify the generated WHERE predicate.
+
+### Verify actual tile queries after startup
+
+A successful registration or `/capabilities` response does not execute the
+per-tile spatial predicate. Start a separate test instance with `--no-cache`
+and request both an affected layer tile and the corresponding full-map tile.
+Use `:8083` or `127.0.0.1:18083` for the bind address; see
+[HTTP bind address](../../docs/configuration.md#http-bind-address).

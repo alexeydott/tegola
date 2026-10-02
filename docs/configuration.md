@@ -98,6 +98,30 @@ name = "zoning"                           # used in the URL to reference this ma
 - More information on PostgreSQL SSL modes can be found [here](https://www.postgresql.org/docs/current/libpq-ssl.html).
 - More information on the `mvt_postgis` provider can be found [here](../mvtprovider/postgis)
 
+## HTTP bind address
+
+`webserver.port` and the `serve --port` option take an address, not a bare
+port number:
+
+```toml
+[webserver]
+port = ":8083"
+```
+
+```powershell
+.\tegola.exe serve --config .\conf\moek.toml --port :8083
+# Bind only to localhost when testing:
+.\tegola.exe serve --config .\conf\moek.toml --port 127.0.0.1:18083 --no-cache
+```
+
+An explicit `--port` overrides `webserver.port`. `--port 8083` fails with
+`listen tcp: address 8083: missing port in address`, even if the TOML value
+is correct. Omit the flag to use the configured address.
+
+For joined MOS queries and registration timeouts, see
+[bounds-backed MOS SQL](geometry-formats.md#bounds-backed-mos-sql-bbox-over-bounds-columns)
+and [MySQL troubleshooting](../provider/mysql/README.md#troubleshooting-mos-custom-sql).
+
 ## Environment Variables
 
 ### Config TOML

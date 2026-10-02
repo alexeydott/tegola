@@ -51,6 +51,8 @@ type Layer struct {
 	// columns boundFieldnames stays authoritative; bboxFields mirrors it so
 	// tag exclusion and the predicate builder share one contract.
 	bboxFields codec.BBoxFields
+	// bboxTable qualifies bounds references in custom SQL, not result column names.
+	bboxTable string
 	// crsExplicit records whether srid/crs_defn was set explicitly at
 	// provider or layer level, suppressing source-metadata CRS inference.
 	crsExplicit bool

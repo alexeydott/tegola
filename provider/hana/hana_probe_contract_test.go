@@ -83,6 +83,12 @@ func TestProbeMOSCustomSQLContract(t *testing.T) {
 		if format == codec.FormatMOS && (len(*queries) != 1 || !strings.HasSuffix((*queries)[0], "WHERE 1=0")) {
 			t.Fatalf("not a metadata-only query: %v", *queries)
 		}
+		if format == codec.FormatMOS && strings.Contains((*queries)[0], "__tegola_bounds_probe") {
+			t.Fatalf("metadata check must not wrap a sample query: %v", *queries)
+		}
+		if format != codec.FormatMOS && !strings.Contains((*queries)[0], "SELECT TOP 16") {
+			t.Fatalf("format inference must retain its bounded sample: %v", *queries)
+		}
 		return cols, contract, layer
 	}
 

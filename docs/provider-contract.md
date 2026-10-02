@@ -40,7 +40,8 @@ raw geometry format / MOS parts of this contract.
 | `srid` / `crs_defn` | int / string | Layer CRS override; see [crs.md](crs.md). |
 | `geometry_format` | string | Layer-level geometry format override. |
 | `mos_precision` / `mos_units` | int / string | Layer-level MOS overrides (only with `mos`). |
-| `bbox_*_fieldname` | string | Layer-level bounds column overrides (`bbox_minx_fieldname`, `bbox_maxx_fieldname`, `bbox_miny_fieldname`, `bbox_maxy_fieldname`). Values must be simple identifiers: trimmed, qualified names like `t.MINX` rejected, duplicates rejected case-insensitively. Resolution is per field: layer > provider > defaults (`MINX`/`MAXX`/`MINY`/`MAXY`); for joins use a CTE or derived table with unambiguous bounds column names. Resolved columns are excluded from feature tags. Only used by bounds-backed MOS SQL (see [geometry-formats.md](geometry-formats.md)). |
+| `bbox_*_fieldname` | string | Layer-level bounds column overrides (`bbox_minx_fieldname`, `bbox_maxx_fieldname`, `bbox_miny_fieldname`, `bbox_maxy_fieldname`). Values must be simple identifiers: trimmed, qualified names like `t.MINX` rejected, duplicates rejected case-insensitively. Resolution is per field: layer > provider > defaults (`MINX`/`MAXX`/`MINY`/`MAXY`); for joins set `bbox_table` or use a CTE/derived table with unambiguous bounds column names. Resolved columns are excluded from feature tags. Only used by bounds-backed MOS SQL (see [geometry-formats.md](geometry-formats.md)). |
+| `bbox_table` | string | Optional MOS custom-SQL layer qualifier for `!BBOX!` bounds fields, e.g. `roads` (table alias) or `gis.roads_axis`. One or two unquoted simple identifiers; components are quoted separately by the provider. Result column names and tag exclusion remain unchanged. |
 | `fields` | []string | Additional fields to include for generated table SQL. Semantics of an absent or empty `fields` differ per provider and cannot be mixed freely (see matrix below). |
 
 ## CRS

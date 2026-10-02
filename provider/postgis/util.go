@@ -219,7 +219,8 @@ func replaceTokens(sql string, lyr *Layer, tile provider.Tile, withBuffer bool) 
 	// MOS layers never reach the !BBOX! path (raw sqlTmpl has no token).
 	if lyr.geometryFormat == codec.FormatMOS {
 		predicate, perr := codec.BuildBoundsPredicate(
-			lyr.bboxFields, sourceExtent, codec.BoundsMOSRaw, lyr.mosConfig, pgQuoteIdent,
+			lyr.bboxFields, sourceExtent, codec.BoundsMOSRaw, lyr.mosConfig,
+			codec.BoundsQuote(lyr.bboxTable, pgQuoteIdent),
 		)
 		if perr != nil {
 			return "", fmt.Errorf("layer (%v): %w", lyr.name, perr)

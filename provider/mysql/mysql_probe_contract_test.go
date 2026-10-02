@@ -29,8 +29,15 @@ func TestProbeMOSCustomSQLContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("probe: %v", err)
 		}
-		if format == codec.FormatMOS && (len(queries) != 1 || !strings.HasSuffix(queries[0], "WHERE 1=0")) {
-			t.Fatalf("not a metadata-only query: %v", queries)
+		if len(queries) != 1 {
+			t.Fatalf("expected one probe, got %v", queries)
+		}
+		if format == codec.FormatMOS {
+			if strings.Contains(queries[0], "__tegola_") || !strings.HasSuffix(strings.TrimSpace(queries[0]), "LIMIT 0") {
+				t.Fatalf("metadata query must limit the original SELECT without materializing a sample: %v", queries)
+			}
+		} else if !strings.HasSuffix(strings.TrimSpace(queries[0]), "LIMIT 16") {
+			t.Fatalf("format inference must retain its bounded sample: %v", queries)
 		}
 		return cols, contract, layer
 	}
