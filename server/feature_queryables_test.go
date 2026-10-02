@@ -301,7 +301,19 @@ func TestFeatureFilterHTTPBoundedLiteralAndOpenAPI(t *testing.T) {
 	}
 	conformance := httptest.NewRecorder()
 	router.ServeHTTP(conformance, httptest.NewRequest("GET", "/features/conformance", nil))
-	if !strings.Contains(conformance.Body.String(), `"conformsTo":[]`) {
-		t.Fatal("conformance claim changed")
+	var declaration struct {
+		ConformsTo []string `json:"conformsTo"`
+	}
+	if err := json.Unmarshal(conformance.Body.Bytes(), &declaration); err != nil {
+		t.Fatal(err)
+	}
+	wantClasses := []string{features.ConformanceCore, features.ConformanceGeoJSON, features.ConformanceHTML, features.ConformanceOpenAPI}
+	if len(declaration.ConformsTo) != len(wantClasses) {
+		t.Fatal("unreviewed optional conformance class", declaration)
+	}
+	for i, class := range wantClasses {
+		if declaration.ConformsTo[i] != class {
+			t.Fatal("conformance class changed", declaration)
+		}
 	}
 }

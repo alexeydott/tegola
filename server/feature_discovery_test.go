@@ -156,8 +156,8 @@ func TestFeatureDiscoveryResourcesAndHEAD(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &declaration); err != nil {
 		t.Fatal(err)
 	}
-	if declaration.ConformsTo == nil || len(declaration.ConformsTo) != 0 || len(declaration.Links) != 2 {
-		t.Fatal("premature conformance claim", response.Body.String())
+	if !reflect.DeepEqual(declaration.ConformsTo, []string{features.ConformanceCore, features.ConformanceGeoJSON, features.ConformanceHTML, features.ConformanceOpenAPI}) || len(declaration.Links) != 2 {
+		t.Fatal("unexpected admitted conformance classes", response.Body.String())
 	}
 }
 

@@ -25,6 +25,7 @@ type CollectionSource struct {
 }
 
 type resolvedCollection struct {
+	execution           provider.FeatureQueryExecutionMetadata
 	queryables          provider.FeatureQueryables
 	queryablesAvailable bool
 	metadata            CollectionMetadata
@@ -40,7 +41,10 @@ type resolvedCollection struct {
 }
 
 // Service owns immutable collection metadata; provider implementations own their concurrency.
-type Service struct{ collections map[string]resolvedCollection }
+type Service struct {
+	collections   map[string]resolvedCollection
+	queryObserver QueryObserver
+}
 
 // CollectionMetadata contains detached public discovery information.
 type CollectionMetadata struct{ ID, Title, Description string }
@@ -155,7 +159,7 @@ func NewService(sources []CollectionSource) (*Service, error) {
 		if err != nil {
 			return nil, fmt.Errorf("features: collection %q queryable metadata: %w", source.ID, err)
 		}
-		service.collections[source.ID] = resolvedCollection{crs: collectionCRS, crsAvailable: crsAvailable, sourceProjection: sourceProjection, queryables: queryables, queryablesAvailable: available, metadata: CollectionMetadata{ID: source.ID, Title: source.Title, Description: source.Description}, layer: layer, srid: srid, temporal: mapping, spatial: spatial, heightProjection: heightProjection, querier: source.Querier}
+		service.collections[source.ID] = resolvedCollection{execution: executionMetadata(source.Querier), crs: collectionCRS, crsAvailable: crsAvailable, sourceProjection: sourceProjection, queryables: queryables, queryablesAvailable: available, metadata: CollectionMetadata{ID: source.ID, Title: source.Title, Description: source.Description}, layer: layer, srid: srid, temporal: mapping, spatial: spatial, heightProjection: heightProjection, querier: source.Querier}
 	}
 	return service, nil
 }

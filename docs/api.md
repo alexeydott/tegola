@@ -331,10 +331,20 @@ response, not all service or encoder allocations. A raw query above 64 KiB retur
 414; aggregate Accept headers above 16 KiB return 431. Limits are applied before
 provider I/O where possible. See [publication configuration](configuration.md#feature-publication).
 
-`/conformance` currently has an empty `conformsTo` array. Implemented endpoints do
-not constitute an OGC Core conformance declaration or certification. Official
-conformance verification/certification is deferred; consult this page and the
-OpenAPI resource for the implemented application profile.
+`/conformance` returns a sorted `conformsTo` list from the admitted implementation
+registry and immutable publication catalog: Core, GeoJSON, HTML and OpenAPI 3.0.
+Part 2 CRS is included only when every published collection has the accepted CRS
+capability. A nil or empty catalog declares no classes. Part 3/CQL2 global classes
+remain withheld pending an appropriate approved validator; their implemented
+collection-specific endpoints remain described by OpenAPI. See the
+[reproducible conformance runner](testing/ogc-conformance.md) for pinned official
+checks, report provenance and explicitly classified skips. A declaration is not
+an OGC certification or a deployment-specific verification report.
+
+Feature handlers execute behind a bounded response transaction. A recovered
+panic returns fixed generic JSON 500, without partially committed data or panic
+details; HEAD has the same error headers and no body. Ordinary returned context
+cancellation remains 408. The standard `http.ErrAbortHandler` sentinel propagates.
 
 ## See Also
 

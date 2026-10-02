@@ -613,24 +613,27 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, sch
 	if err != nil {
 		return meta, nil, fmt.Errorf("unable to list primary key of table %v.%v: %w", schema, table, err)
 	}
+	var primaryIndkeys []string
 	for pkRows.Next() {
 		var indkey string
 		if serr := pkRows.Scan(&indkey); serr != nil {
 			pkRows.Close()
 			return meta, nil, fmt.Errorf("unable to scan primary key of table %v.%v: %w", schema, table, serr)
 		}
-		names, nerr := indexColumnNames(ctx, pool, schema, table, indkey)
-		if nerr != nil {
-			pkRows.Close()
-			return meta, nil, nerr
-		}
-		meta.PrimaryKeyColumns = append(meta.PrimaryKeyColumns, names...)
+		primaryIndkeys = append(primaryIndkeys, indkey)
 	}
 	if err := pkRows.Err(); err != nil {
 		pkRows.Close()
 		return meta, nil, fmt.Errorf("error iterating primary key of table %v.%v: %w", schema, table, err)
 	}
 	pkRows.Close()
+	for _, indkey := range primaryIndkeys {
+		names, err := indexColumnNames(ctx, pool, schema, table, indkey)
+		if err != nil {
+			return meta, nil, err
+		}
+		meta.PrimaryKeyColumns = append(meta.PrimaryKeyColumns, names...)
+	}
 
 	// Every index with its ordered column list.
 	idxRows, err := pool.Query(ctx, `
@@ -646,30 +649,34 @@ func collectMapplGISMeta(ctx context.Context, pool *connectionPoolCollector, sch
 	}
 	indexes := make(map[string]*mapplgis.IndexMeta)
 	var order []string
+	type indexDescriptor struct{ name, indkey string }
+	var descriptors []indexDescriptor
 	for idxRows.Next() {
 		var idxName, indkey string
 		if serr := idxRows.Scan(&idxName, &indkey); serr != nil {
 			idxRows.Close()
 			return meta, nil, fmt.Errorf("unable to scan indexes of table %v.%v: %w", schema, table, serr)
 		}
-		names, nerr := indexColumnNames(ctx, pool, schema, table, indkey)
-		if nerr != nil {
-			idxRows.Close()
-			return meta, nil, nerr
-		}
-		idx, ok := indexes[idxName]
-		if !ok {
-			idx = &mapplgis.IndexMeta{Name: idxName}
-			indexes[idxName] = idx
-			order = append(order, idxName)
-		}
-		idx.Columns = append(idx.Columns, names...)
+		descriptors = append(descriptors, indexDescriptor{idxName, indkey})
 	}
 	if err := idxRows.Err(); err != nil {
 		idxRows.Close()
 		return meta, nil, fmt.Errorf("error iterating indexes of table %v.%v: %w", schema, table, err)
 	}
 	idxRows.Close()
+	for _, descriptor := range descriptors {
+		names, err := indexColumnNames(ctx, pool, schema, table, descriptor.indkey)
+		if err != nil {
+			return meta, nil, err
+		}
+		idx, ok := indexes[descriptor.name]
+		if !ok {
+			idx = &mapplgis.IndexMeta{Name: descriptor.name}
+			indexes[descriptor.name] = idx
+			order = append(order, descriptor.name)
+		}
+		idx.Columns = append(idx.Columns, names...)
+	}
 	for _, name := range order {
 		meta.Indexes = append(meta.Indexes, *indexes[name])
 	}

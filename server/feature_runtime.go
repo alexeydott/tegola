@@ -26,9 +26,10 @@ type FeatureAPIConfig struct {
 
 // FeatureAPI wraps a resolved service. Build it with NewFeatureAPI before routing.
 type FeatureAPI struct {
-	service   *features.Service
-	cfg       FeatureAPIConfig
-	uriPrefix string
+	requestObserver observability.FeatureRequestObserver
+	service         *features.Service
+	cfg             FeatureAPIConfig
+	uriPrefix       string
 }
 
 // RouterOptions enables explicit feature publication; nil Features preserves legacy behavior.
@@ -113,8 +114,15 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 			mediaType = "application/geo+json"
 		}
 		handler := HeadersHandler(featureNoStoreHandler(bound.protocolHandler(bound.negotiate(route.handler, mediaType))))
-		group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodGet, path, observer, handler))
-		group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodHead, path, observer, handler))
+		if bound.requestObserver != nil {
+			// Dedicated outer metrics use fixed resource enums, including unknown
+			// paths. Do not feed feature wildcards into legacy dynamic path labels.
+			group.UsingContext().Handler(http.MethodGet, path, handler)
+			group.UsingContext().Handler(http.MethodHead, path, handler)
+		} else {
+			group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodGet, path, observer, handler))
+			group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodHead, path, observer, handler))
+		}
 	}
 	oldOptions := router.OptionsHandler
 	router.OptionsHandler = func(w http.ResponseWriter, r *http.Request, params map[string]string) {
@@ -210,10 +218,15 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if owns(r.URL.Path) || owns(httptreemux.Clean(r.URL.Path)) {
 			setHeaders(w)
 			featureProtocolHeaders(w.Header())
-			w = &featureCacheResponseWriter{ResponseWriter: w}
-			if router.featureAPI != nil && !router.featureAPI.requestBudgetValid(w, r) {
+			if router.featureAPI != nil {
+				router.featureAPI.serveObservedFeature(w, r, router.featureBasePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if router.featureAPI.requestBudgetValid(w, r) {
+						router.TreeMux.ServeHTTP(w, r)
+					}
+				}))
 				return
 			}
+			w = &featureCacheResponseWriter{ResponseWriter: w}
 		}
 	}
 	router.TreeMux.ServeHTTP(w, r)

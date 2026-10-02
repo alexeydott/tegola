@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/proj"
@@ -30,7 +31,7 @@ func (s *Service) QueryCollection(
 	return s.QueryCollectionWithOptions(ctx, collectionID, query, QueryOptions{}, fn)
 }
 
-func (s *Service) QueryCollectionWithOptions(ctx context.Context, collectionID string, query provider.FeatureQuery, options QueryOptions, fn func(Feature) error) (provider.FeatureQueryResult, error) {
+func (s *Service) QueryCollectionWithOptions(ctx context.Context, collectionID string, query provider.FeatureQuery, options QueryOptions, fn func(Feature) error) (result provider.FeatureQueryResult, returnedErr error) {
 	log.Logger().Debug("querying feature collection", "collection", collectionID, "limit", query.Limit)
 	defer log.Logger().Debug("feature collection query finished", "collection", collectionID)
 	if err := ctx.Err(); err != nil {
@@ -49,6 +50,10 @@ func (s *Service) QueryCollectionWithOptions(ctx context.Context, collectionID s
 	}
 	if err := query.Validate(); err != nil {
 		return provider.FeatureQueryResult{}, err
+	}
+	var class QueryClass
+	if s.queryObserver != nil {
+		class = queryClass(query, options.OutputCRS != "" && options.OutputCRS != collection.crs.DefaultURI())
 	}
 	// A validated datetime cannot exclude features in a collection whose frozen
 	// metadata declares no temporal geometry. Do not ask its provider to execute
@@ -78,7 +83,26 @@ func (s *Service) QueryCollectionWithOptions(ctx context.Context, collectionID s
 	}
 	var delivered uint64
 	var callbackError error
-	result, err := collection.querier.QueryFeatures(ctx, collection.layer, query, func(source *provider.Feature) error {
+	callerCallbackFailed := false
+	providerReturned := false
+	if s.queryObserver != nil {
+		started := time.Now()
+		defer func() {
+			pushdown := QueryPushdownNone
+			if query.Filter != nil {
+				pushdown = QueryPushdownUnknown
+				if collection.execution.ScalarFilter == provider.FeatureFilterExecutionSQL {
+					pushdown = QueryPushdownSQLFilter
+				}
+			}
+			outcome := QueryOutcomeError
+			if providerReturned {
+				outcome = queryOutcome(returnedErr, callerCallbackFailed)
+			}
+			deliverQueryObservation(s.queryObserver, QueryObservation{Backend: collection.execution.Backend, Pushdown: pushdown, Class: class, Outcome: outcome, Duration: time.Since(started), RowsReturned: delivered})
+		}()
+	}
+	result, err = collection.querier.QueryFeatures(ctx, collection.layer, query, func(source *provider.Feature) error {
 		fail := func(err error) error { callbackError = err; return err }
 		if callbackError != nil {
 			return callbackError
@@ -100,11 +124,13 @@ func (s *Service) QueryCollectionWithOptions(ctx context.Context, collectionID s
 			return fail(err)
 		}
 		if err := fn(feature); err != nil {
+			callerCallbackFailed = true
 			return fail(err)
 		}
 		delivered++
 		return nil
 	})
+	providerReturned = true
 	if callbackError != nil {
 		return result, fmt.Errorf("features: collection %q callback: %w", collectionID, callbackError)
 	}

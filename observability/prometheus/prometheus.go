@@ -44,6 +44,7 @@ func init() {
 }
 
 type observer struct {
+	features *featureMetrics
 	// URLPrefix is the server's prefix
 	URLPrefix string
 
@@ -73,6 +74,7 @@ func New(config dict.Dicter) (observability.Interface, error) {
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 	)
+	obs.features = newFeatureMetrics(obs.registry)
 	obs.httpHandlers = make(map[string]*httpHandler)
 	obs.pushCleanupFuncIdx = -1
 

@@ -113,3 +113,18 @@ in `server/`; embedded HTML templates receive complete response values and
 explicit protocol links. Provider queries and geometry transformations remain
 outside presentation code. Configuration and executable wiring carry the
 publication deadline and encoded-response cap through CLI and Lambda.
+
+## Conformance, reliability and observability
+
+[ADR-0012](decisions/ADR-0012-feature-conformance-and-panic-containment.md)
+defines immutable class admission across all published collections and the
+feature-only response transaction. Generic panic errors discard buffered output;
+tile and viewer routing retain their existing serving paths. The normal CLI and
+committed fixtures drive the [conformance runner](../testing/ogc-conformance.md).
+
+[ADR-0013](decisions/ADR-0013-feature-observability.md) defines optional,
+instance-bound request and provider-query observation with fixed labels. Query
+latency includes the provider/callback pipeline. Provider execution metadata is
+snapshotted once; unavailable metadata remains unknown without disabling Core.
+Performance budgets require measured, independently accepted references and do
+not imply a remote database or production HTTP latency guarantee.

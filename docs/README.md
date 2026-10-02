@@ -15,13 +15,16 @@ Tegola documentation covers HTTP behavior, configuration, provider contracts, ge
 * [Geometry formats](geometry-formats.md) — WKB, WKT, MOS, and collection behavior.
 * [Maintenance status](maintenance-status.md) — current work disposition and verification boundaries.
 * [Windows release builds](windows-release.md) — Windows build and packaging workflow.
+* [OGC conformance testing](testing/ogc-conformance.md) — pinned suite, stable fixtures and report provenance.
+* [Feature performance and observability](testing/feature-performance-observability.md) — dedicated metrics, measured budgets and operational scope.
 
 ## Feature API and Historical Baselines
 
 The implemented application profile is described in the [API reference](api.md)
 and [publication configuration](configuration.md). Backend guides describe the
-admitted tested profiles and their limits; implemented endpoints do not declare
-OGC conformance. The
+admitted tested profiles and their limits. Runtime conformance declarations use
+the admitted registry and all-collection capability intersection; certification
+and deployment verification require separate evidence. The
 following architecture and migration pages preserve the historical source baseline.
 
 * [Feature-service source baseline](architecture/feature-service.md) - existing contracts and integration points.

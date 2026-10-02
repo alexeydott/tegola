@@ -13,6 +13,7 @@ import (
 	"github.com/alexeydott/tegola/internal/build"
 	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/observability"
+	"github.com/alexeydott/tegola/ogc/features"
 )
 
 const (
@@ -89,6 +90,17 @@ func NewRouter(a *atlas.Atlas) *httptreemux.TreeMux {
 func NewRouterWithOptions(a *atlas.Atlas, options RouterOptions) (*Router, error) {
 	if err := validateRouterOptions(options); err != nil {
 		return nil, err
+	}
+	if options.Features != nil {
+		bound := *options.Features
+		observer := a.Observer()
+		if queryObserver, ok := observer.(features.QueryObserver); ok {
+			bound.service = bound.service.WithQueryObserver(queryObserver)
+		}
+		if requestObserver, ok := observer.(observability.FeatureRequestObserver); ok {
+			bound.requestObserver = requestObserver
+		}
+		options.Features = &bound
 	}
 	router := &Router{TreeMux: assembleRouter(a, options)}
 	if options.Features != nil {

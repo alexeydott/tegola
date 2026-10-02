@@ -2,7 +2,7 @@
 
 # OGC API Features: source editions
 
-Status: selected source editions verified on 2026-10-01; implementation and conformance claims remain pending. Tegola source baseline is `c65beeb8519f425ff8365c76e54e93baf8e17b07`.
+Status: selected source editions verified on 2026-10-01. The original source baseline is `c65beeb8519f425ff8365c76e54e93baf8e17b07`; current implementation and declaration policy are documented below. This page is not a certification claim.
 
 ## Normative source set
 
@@ -24,7 +24,23 @@ The [OGC source/components repository](https://github.com/opengeospatial/ogcapi-
 
 ## Existing Tegola transport
 
-[server.NewRouter](../../server/server.go) owns existing MVT/capabilities routing, URI prefix, CORS and observability. [config.Config](../../config/config.go) and [provider.Tiler](../../provider/provider.go) are current integration points. Architecture acceptance will define FeatureService and optional FeatureQuerier boundaries before product code.
+[server.NewRouter](../../server/server.go) owns existing MVT/capabilities routing, URI prefix, CORS and observability. The additive option-aware router installs FeatureAPI over the immutable FeatureService and optional FeatureQuerier contracts. [config.Config](../../config/config.go) and [provider.Tiler](../../provider/provider.go) remain integration points.
+
+## Declaration and verification policy
+
+[ADR-0012](decisions/ADR-0012-feature-conformance-and-panic-containment.md)
+defines an immutable admitted implementation registry and the intersection of
+published collection capabilities. Core, GeoJSON, HTML and OpenAPI 3.0 are base
+classes; Part 2 CRS additionally requires every collection to qualify. Empty
+catalogs declare no classes. Part 3/CQL2 global declarations are withheld until
+an appropriate approved validator is available. Their application endpoints and
+separately identified normative supplements do not manufacture an official
+executable-suite result.
+
+The [conformance guide](../testing/ogc-conformance.md) describes the pinned suite,
+normal CLI fixtures, exact-revision inputs, raw report classification and limits.
+Diagnostic wrappers are separate from final product verification, and skips are
+not passes. Runtime declarations do not establish an OGC certification.
 
 ## See Also
 
