@@ -1,4 +1,8 @@
 # HANA
+
+For raw feature queries, configuration boundaries, transaction locking and
+supported dimensional profiles, see [Feature queries](FEATURE-QUERY.md).
+
 The HANA provider manages querying for tile requests against an [SAP HANA](https://www.sap.com/products/hana.html) database. The connection between tegola and HANA is configured in a `tegola.toml` file. An example minimum connection config:
 
 

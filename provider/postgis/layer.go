@@ -8,6 +8,7 @@ import (
 
 // layer holds information about a query.
 type Layer struct {
+	feature *featureProfile
 	// The Name of the layer
 	name string
 	// The SQL to use when querying PostGIS for this layer

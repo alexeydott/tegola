@@ -7,6 +7,9 @@ import (
 )
 
 type Layer struct {
+	// feature is a registration-finalized raw profile, independent of tile inference.
+	feature       *featureProfile
+	featureError  error
 	name          string
 	tablename     string
 	tagFieldnames []string

@@ -2,7 +2,102 @@
 
 The `mysql` provider serves MVT tiles from spatial tables in MySQL (5.7+/8.0+) and MariaDB (10.2+). It supports both the `tablename` and custom `sql` layer configuration modes, plus the full set of SQL tokens available in the postgis provider.
 
-## Config
+## Raw feature queries
+
+The opt-in feature API uses an independent source profile. A tile `sql` statement
+does not establish a raw feature source. Use an ordinary `tablename`, or supply
+`feature_sql` for a constrained selection over one physical table:
+
+```toml
+feature_sql = "SELECT id, geom, name, start_time, end_time FROM parcels WHERE active = 1"
+temporal_start_field = "start_time"
+temporal_end_field = "end_time"
+temporal_storage = "unix_nanoseconds"
+spatial_dimension = "xy"
+```
+
+`feature_sql` accepts direct column projections, aliases, and a bounded predicate
+grammar. Joins, expressions, functions, macros, parameters, comments, and multiple
+statements are unsupported. Predicate literals are bound values; integer and
+decimal comparisons retain their exact catalog types. Float predicates and text
+collations outside the supported binary UTF-8/ASCII profile are unsupported.
+Malformed configuration fails registration; unsupported source capabilities
+leave the tile layer available and cannot publish a feature collection.
+
+The source must be an InnoDB base table with a proven single-column unique
+integer ID. Unsigned IDs retain all 64 bits; NULL IDs are excluded. Computed or
+generated ID, geometry, and temporal columns are unsupported. Stored
+auto-increment IDs are admitted with the same uniqueness proof. Registration
+freezes columns, indexes, CRS and the engine's physical `TABLE_ID`. Queries check
+the snapshot against that metadata, including table replacement, before delivery.
+The account needs visibility of the relevant InnoDB catalog, including the
+documented `PROCESS` requirement; the provider does not grant privileges or use
+timestamps as a substitute for physical identity. See the
+[MySQL InnoDB catalog](https://dev.mysql.com/doc/mysql-infoschema-excerpt/8.0/en/information-schema-innodb-tables-table.html)
+and [MariaDB InnoDB catalog](https://mariadb.com/docs/server/reference/system-tables/information-schema/information-schema-tables/information-schema-innodb-tables/information-schema-innodb_sys_tables-table).
+
+Each request uses one read-only repeatable-read transaction and bounded ID
+chunks. Strict decoding and exact spatial/temporal predicates precede offset,
+limit and matched counts. Candidate scanning can cover the entire selected
+source; this initial adapter does not claim spatial index acceleration. A
+partially consumed result can report an unknown matched total. Callback errors
+and cancellation stop delivery without retries.
+
+Ordinary `fields` defines the public property subset; omitted or empty `fields`
+selects eligible columns. Custom SQL projections define public property labels.
+ID, geometry, configured bounds, and physical `min_zoom`/`max_zoom` columns remain
+private through aliases. Temporal columns are read privately when an ordinary
+field subset excludes them; explicitly projected custom temporal columns are
+public. Decimal properties remain exact JSON numbers, binary properties use
+base64, and unsupported or nonfinite property values fail strict decoding.
+
+Explicit raw WKB/WKT supports `xy`, `xyz`, and `mixed_xy_xyz` source profiles.
+XYZ/mixed requires `vertical_crs = "CRS84h"`, WGS84 ellipsoidal heights in metres,
+and a supported horizontal conversion preserving that height reference. MOS is
+XY. Native MySQL/MariaDB geometry is admitted only with the checked server/schema
+XY profile and immutable source CRS; each native row's SRID is checked. The
+initial native MariaDB profile admits exact version 10.7.4 and the 10.11/11.4
+branches. The immutable 10.7.4
+[storage definitions](https://raw.githubusercontent.com/MariaDB/server/mariadb-10.7.4/sql/spatial.h),
+[geometry implementation](https://raw.githubusercontent.com/MariaDB/server/mariadb-10.7.4/sql/spatial.cc), and
+[WKB/SRID functions](https://raw.githubusercontent.com/MariaDB/server/mariadb-10.7.4/sql/item_geofunc.cc)
+establish XY native storage, WKB export preserving coordinate order, and SRID
+label extraction. This admission does not imply a native XYZ or height conversion
+profile. The published
+[10.11](https://github.com/MariaDB/server/blob/10.11/sql/spatial.h) and
+[11.4](https://github.com/MariaDB/server/blob/11.4/sql/spatial.h) storage definitions
+describe two-coordinate native points. Other MariaDB versions remain unsupported
+for native feature queries pending separate evidence. Native
+exports use WKB, with explicit longitude/latitude axis order when MySQL requires
+it. NULL and decoded empty geometry become absent geometry; malformed geometry
+fails the request. Native storage rejection of corrupt input is separate from
+raw decoder/query evidence.
+
+Temporal fields use signed integral Unix seconds, milliseconds, microseconds or
+nanoseconds. Instant mappings use `temporal_field`; interval mappings require
+both start and end fields. NULL interval endpoints are open; reversed intervals
+fail decoding. Exact request fractions and supported leap-second constraints are
+handled before paging, without rounding stored values into a different interval.
+
+### Feature test evidence
+
+Package tests include driver-level lifecycle and schema guards. These do not
+establish live database parity. Real fixtures are opt-in:
+
+```powershell
+$env:RUN_MYSQL_TESTS = 'yes'
+$env:MYSQL_FEATURE_TEST_DSN = '<explicit TCP DSN>'
+# Or RUN_MARIADB_TESTS=yes and MARIADB_FEATURE_TEST_DSN.
+go test -mod=vendor -count=1 -run TestFeatureLive ./provider/mysql
+```
+
+Fixtures create and remove isolated tables and require catalog visibility. When
+a gate is disabled, the live suite reports a skip. When enabled, unavailable
+servers, incorrect flavor, missing permissions or unexpected native error codes
+fail the fixture. Official feature conformance and live backend parity require
+their separate acceptance evidence.
+
+## Tile configuration
 
 The provider keeps at most `max_connections` open connections, reuses the same
 number of idle connections, and retires idle connections after five minutes or

@@ -31,30 +31,51 @@ const (
 // requires corrupt explicitly selected WKB/native storage and a decode failure.
 // MissingID and Metadata rows must not become invented features.
 type Row struct {
-	Feature           provider.Feature
-	Start, End        *time.Time
-	EmptyGeometry     bool
+	Feature       provider.Feature
+	Start, End    *time.Time
+	EmptyGeometry bool
+	// RawEmptyGeometry is literal raw source wire to encode, independently of
+	// Feature.Geometry's expected nil after whole-geometry empty normalization.
+	RawEmptyGeometry geom.Geometry
+	// RawTemporal is literal source ticks and requires declared TemporalStorage.
+	RawTemporal       *RawTemporalIntegers
 	MalformedGeometry string
 	MissingID         bool
 	Metadata          bool
+	// ExcludedBySelection marks a stored row outside the declared custom domain.
+	ExcludedBySelection bool
 }
 
 // Fixture describes isolated storage and temporal mapping for one contract case.
 // InvalidTemporalMapping must be rejected at registration with a typed invalid-query
 // error through Instance.SetupError, or by the query where registration cannot inspect it.
 type Fixture struct {
+	NativeProfileCase      NativeProfileCase
 	Rows                   []Row
 	InvalidTemporalMapping bool
+	Profile                FixtureProfile
+	// Spatial is explicit for dimensional fixtures; zero preserves old XY setup.
+	Spatial provider.SpatialMetadata
+	// TemporalStorage is explicit for exact-time suites; zero preserves legacy setup.
+	TemporalStorage TemporalPropertyStorage
+	// PublicFields is the fixture-wide selected public property output set.
+	// Non-nil empty explicitly selects none; nil is legacy unspecified metadata.
+	PublicFields []string
 }
 
 // Instance owns one fresh backend fixture. Cleanup is optional and registered by Run.
 type Instance struct {
+	NativeProfileOutcome            *NativeProfileEvidence
+	nativeRingOrientationEquivalent bool
 	// SetupError exposes constructor rejection without a fake querier.
 	SetupError error
 	Querier    provider.FeatureQuerier
 	Layer      string
 	Cleanup    func()
 	CountMode  CountMode
+	// StorageRejectedNativeCorruption describes an actual native storage attempt
+	// checked by the backend adapter. It never replaces the raw query oracle.
+	StorageRejectedNativeCorruption *NativeStorageEvidence
 }
 
 // Factory materializes an isolated fixture with explicit IDs, CRS84 coordinates,
@@ -64,12 +85,35 @@ type Factory func(t *testing.T, fixture Fixture) Instance
 
 // Run runs the required feature contract cases against a real or declared reference adapter.
 func Run(t *testing.T, factory Factory) {
+	RunWithOptions(t, factory, Options{})
+}
+
+// RunWithOptions declares fixture property expectations independently of the
+// provider under test. Run's ordinary private temporal-read oracle is unchanged.
+func RunWithOptions(t *testing.T, factory Factory, options Options) {
+	runProfile(t, factory, options, OrdinaryTable)
+}
+
+func runProfile(t *testing.T, factory Factory, options Options, fixtureProfile FixtureProfile) {
 	t.Helper()
-	for _, c := range contractCases() {
+	factory = withNativeRingOrientation(withPublicFieldDeclaration(factory), options.NativeRingOrientationEquivalent)
+	profile, err := copyTemporalPropertyProfile(options.PublicTemporalProperties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range profileCases(fixtureProfile) {
 		t.Run(c.name, func(t *testing.T) {
+			if profile != nil {
+				fixture, err := withPublicTemporalProperties(c.fixture, *profile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.fixture = fixture
+			}
 			instance := factory(t, cloneFixture(c.fixture))
-			if instance.Cleanup != nil {
-				t.Cleanup(instance.Cleanup)
+			registerInstanceCleanup(t, instance)
+			if runNativeStorageOutcome(t, instance, c) {
+				return
 			}
 			if setupIssues, handled := checkSetup(instance, c); handled {
 				for _, issue := range setupIssues {
@@ -86,9 +130,22 @@ func Run(t *testing.T, factory Factory) {
 		})
 	}
 	t.Run("concurrent isolated results", func(t *testing.T) {
-		instance := factory(t, canonicalFixture())
-		if instance.Cleanup != nil {
-			t.Cleanup(instance.Cleanup)
+		fixture := canonicalFixture()
+		fixture.Profile = fixtureProfile
+		if fixtureProfile == CustomSelection {
+			fixture = customDomainFixture()
+		}
+		if profile != nil {
+			profiled, err := withPublicTemporalProperties(fixture, *profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture = profiled
+		}
+		instance := factory(t, cloneFixture(fixture))
+		registerInstanceCleanup(t, instance)
+		if runNativeStorageOutcome(t, instance, caseSpec{fixture: fixture}) {
+			return
 		}
 		if instance.SetupError != nil {
 			t.Fatalf("concurrent fixture setup: %v", instance.SetupError)
@@ -96,14 +153,24 @@ func Run(t *testing.T, factory Factory) {
 		if instance.Querier == nil {
 			t.Fatal("factory returned nil querier")
 		}
-		for _, issue := range checkConcurrent(instance) {
+		for _, issue := range checkConcurrentWithFixture(instance, fixture) {
 			t.Error(issue)
 		}
 
 	})
 }
 
+func registerInstanceCleanup(t *testing.T, instance Instance) {
+	t.Helper()
+	if instance.Cleanup != nil {
+		t.Cleanup(instance.Cleanup)
+	}
+}
+
 func checkSetup(instance Instance, c caseSpec) ([]string, bool) {
+	if instance.NativeProfileOutcome != nil || c.fixture.NativeProfileCase != 0 {
+		return []string{"unsolicited native profile outcome outside dedicated runner"}, true
+	}
 	if instance.SetupError != nil {
 		if c.invalidMapping {
 			var invalid provider.InvalidFeatureQueryError
@@ -121,13 +188,21 @@ func checkSetup(instance Instance, c caseSpec) ([]string, bool) {
 }
 
 func checkConcurrent(instance Instance) []string {
+	return checkConcurrentWithFixture(instance, canonicalFixture())
+}
+
+func checkConcurrentWithFixture(instance Instance, fixture Fixture) []string {
 	var wg sync.WaitGroup
 	batches := make(chan []string, 8)
 	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c := caseSpec{name: "concurrent", fixture: canonicalFixture(), query: provider.FeatureQuery{Limit: 2, IDs: []uint64{30, 10, 20}}, ids: []uint64{10, 20}, matched: 3, more: true}
+			ids := []uint64{30, 10, 20}
+			if fixture.Profile == CustomSelection {
+				ids = append(ids, 90)
+			}
+			c := caseSpec{name: "concurrent", fixture: fixture, query: provider.FeatureQuery{Limit: 2, IDs: ids}, ids: []uint64{10, 20}, matched: 3, more: true}
 			batches <- checkCase(instance, c)
 		}()
 	}
@@ -141,22 +216,25 @@ func checkConcurrent(instance Instance) []string {
 }
 
 type caseSpec struct {
-	name             string
-	fixture          Fixture
-	query            provider.FeatureQuery
-	ids              []uint64
-	matched          uint64
-	more             bool
-	preCancel        bool
-	deadline         bool
-	cancelAfterFirst bool
-	callbackFailure  bool
-	nilCallback      bool
-	missingLayer     bool
-	malformed        bool
-	invalidMapping   bool
-	mutateDelivery   bool
-	serialCallbacks  bool
+	nativeRingOrientationEquivalent bool
+	name                            string
+	fixture                         Fixture
+	query                           provider.FeatureQuery
+	ids                             []uint64
+	matched                         uint64
+	more                            bool
+	preCancel                       bool
+	deadline                        bool
+	cancelAfterFirst                bool
+	callbackFailure                 bool
+	nilCallback                     bool
+	missingLayer                    bool
+	malformed                       bool
+	sourceData                      bool
+	invalidQuery                    bool
+	invalidMapping                  bool
+	mutateDelivery                  bool
+	serialCallbacks                 bool
 }
 
 func canonicalFixture() Fixture {
@@ -250,6 +328,7 @@ func contractCases() []caseSpec {
 }
 
 func checkCase(instance Instance, c caseSpec) []string {
+	c.nativeRingOrientationEquivalent = instance.nativeRingOrientationEquivalent
 	issues := []string{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -337,7 +416,7 @@ func checkCase(instance Instance, c caseSpec) []string {
 		if !errors.As(err, &missing) || len(got) != 0 {
 			issues = append(issues, "missing layer must fail before callbacks with typed error")
 		}
-	case c.nilCallback || c.invalidMapping:
+	case c.nilCallback || c.invalidMapping || c.invalidQuery:
 		var invalid provider.InvalidFeatureQueryError
 		if !errors.As(err, &invalid) || len(got) != 0 {
 			issues = append(issues, "invalid callback or mapping must fail before callbacks with typed error")
@@ -345,6 +424,12 @@ func checkCase(instance Instance, c caseSpec) []string {
 	case c.malformed:
 		if err == nil || len(got) != 0 {
 			issues = append(issues, "malformed geometry accepted or emitted")
+		}
+		if c.sourceData {
+			var data provider.FeatureDataError
+			if !errors.As(err, &data) {
+				issues = append(issues, "invalid source geometry must have data error classification")
+			}
 		}
 	default:
 		if err != nil {
@@ -421,8 +506,13 @@ func checkResponse(result provider.FeatureQueryResult, got []provider.Feature, c
 				}
 			}
 			actual := cloneFeature(gotFeature)
-			actual.Geometry = normalizeRingClosure(actual.Geometry)
-			expected.Geometry = normalizeRingClosure(expected.Geometry)
+			if c.nativeRingOrientationEquivalent {
+				actual.Geometry = normalizeNativeRingOrientation(actual.Geometry)
+				expected.Geometry = normalizeNativeRingOrientation(expected.Geometry)
+			} else {
+				actual.Geometry = normalizeRingClosure(actual.Geometry)
+				expected.Geometry = normalizeRingClosure(expected.Geometry)
+			}
 			if !reflect.DeepEqual(actual, expected) {
 				issues = append(issues, fmt.Sprintf("feature %d values/geometry/CRS/properties changed", gotFeature.ID))
 			}
@@ -434,6 +524,9 @@ func checkResponse(result provider.FeatureQueryResult, got []provider.Feature, c
 func cloneQuery(q provider.FeatureQuery) provider.FeatureQuery {
 	if q.Bounds != nil {
 		q.Bounds = append([]geom.Extent{}, q.Bounds...)
+	}
+	if q.Bounds3D != nil {
+		q.Bounds3D = append([]provider.Extent3D{}, q.Bounds3D...)
 	}
 	if q.IDs != nil {
 		q.IDs = append([]uint64{}, q.IDs...)
@@ -489,6 +582,9 @@ func cloneGeometry(g geom.Geometry) geom.Geometry {
 		}
 		return out
 	default:
+		if copy, ok := cloneDimensionalGeometry(g); ok {
+			return copy
+		}
 		return g
 	}
 }
@@ -506,6 +602,8 @@ func mutateGeometry(g geom.Geometry) {
 		if len(value) > 0 && len(value[0]) > 0 {
 			value[0][0][0] = 999
 		}
+	default:
+		mutateDimensionalGeometry(g)
 	}
 }
 
@@ -552,9 +650,27 @@ func observeQuery(ctx context.Context, q provider.FeatureQuerier, layer string, 
 }
 
 func cloneFixture(f Fixture) Fixture {
+	if f.PublicFields != nil {
+		fields := make([]string, len(f.PublicFields))
+		copy(fields, f.PublicFields)
+		f.PublicFields = fields
+	}
 	rows := make([]Row, len(f.Rows))
 	for i, row := range f.Rows {
 		row.Feature = cloneFeature(row.Feature)
+		row.RawEmptyGeometry = cloneGeometry(row.RawEmptyGeometry)
+		if row.RawTemporal != nil {
+			copy := *row.RawTemporal
+			if copy.Start != nil {
+				value := *copy.Start
+				copy.Start = &value
+			}
+			if copy.End != nil {
+				value := *copy.End
+				copy.End = &value
+			}
+			row.RawTemporal = &copy
+		}
 		row.Start = cloneTime(row.Start)
 		row.End = cloneTime(row.End)
 		rows[i] = row
@@ -574,6 +690,12 @@ func normalizeRingClosure(g geom.Geometry) geom.Geometry {
 			value[i] = normalizeRingClosure(child)
 		}
 	case geom.Polygon:
+		for i, ring := range value {
+			if len(ring) > 1 && ring[0] == ring[len(ring)-1] {
+				value[i] = ring[:len(ring)-1]
+			}
+		}
+	case geom.PolygonZ:
 		for i, ring := range value {
 			if len(ring) > 1 && ring[0] == ring[len(ring)-1] {
 				value[i] = ring[:len(ring)-1]

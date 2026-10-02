@@ -43,3 +43,9 @@ func (m SpatialMetadata) Validate() error {
 type SpatialLayerInfo interface {
 	SpatialMetadata() (SpatialMetadata, error)
 }
+
+// FeatureSourceLayerInfo separates immutable raw feature coordinates from the
+// legacy tile presentation SRID. Zero is unknown and must not fall back to tiles.
+type FeatureSourceLayerInfo interface {
+	FeatureSourceSRID() uint64
+}

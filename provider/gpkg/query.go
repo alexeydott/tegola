@@ -147,6 +147,13 @@ func (p *Provider) QueryFeatures(
 					delete(feature.Tags, key)
 				}
 			}
+			// Restore only actual selected SQL NULLs after strict decoding.
+			// The shared tile decoder deliberately omits nullable tags.
+			for i, column := range columns {
+				if values[i] == nil && containsFold(fields, column) {
+					feature.Tags[column] = nil
+				}
+			}
 			if callbackErr := fn(&feature); callbackErr != nil {
 				return false, fmt.Errorf("gpkg feature callback: %w", callbackErr)
 			}

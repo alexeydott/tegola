@@ -31,8 +31,30 @@ Existing map, capabilities, metrics and embedded viewer namespaces are reserved.
 Only explicitly mapped standard-provider layers are exposed. Missing sources,
 MVT-only providers and unsupported query metadata fail startup. Disabled
 publication still validates configuration syntax but does not resolve sources
-or register feature routes. The initial GeoPackage query profile supports
-eligible table-backed layers; custom SQL remains available for tile use.
+or register feature routes. GeoPackage supports eligible table-backed layers.
+MySQL/MariaDB and PostGIS also provide constrained feature selections; consult
+their backend eligibility rules before mapping a collection. HANA admits the
+tested source profiles under its transaction-owned source-lock protocol, which
+blocks source writers and DDL for the query duration. Unsupported native storage
+and CRS profiles remain explicit capability boundaries.
+
+Layer-level `feature_sql` selects a raw feature domain independently of tile
+`sql`. It accepts one physical table, direct column projections with optional
+aliases and parameterized scalar filters. Identity, geometry and mapped temporal
+columns must be projected. Joins, computed projections, wildcards, ordering,
+paging and tile macros are unsupported. Malformed selections fail registration.
+For custom tile SQL, omitting `feature_sql` leaves raw publication unsupported.
+See [safe feature SQL](architecture/decisions/ADR-0007-safe-provider-feature-sql.md),
+[MySQL/MariaDB](../provider/mysql/README.md) and
+[PostGIS](../provider/postgis/features.md), and
+[HANA](../provider/hana/FEATURE-QUERY.md) for exact profiles. HANA source protection
+is specified in [ADR-0008](architecture/decisions/ADR-0008-hana-feature-source-lock.md).
+
+Actual MySQL/MariaDB, PostGIS and HANA admitted ordinary/custom, dimensional,
+exact temporal and nullable-property profiles have passed independent source
+and runtime review. Native storage rejection or normalization is recorded
+separately from successful feature queries. These results do not establish an
+OGC conformance declaration.
 
 Published reads follow the server's existing read-access policy. Protect them
 through the deployment's access controls when required. Feature responses use

@@ -17,73 +17,91 @@ import (
 )
 
 func TestFeatureQueryContract(t *testing.T) {
-	querytest.Run(t, func(t *testing.T, fixture querytest.Fixture) querytest.Instance {
-		format := "wkb"
-		for _, row := range fixture.Rows {
-			if row.EmptyGeometry || row.MalformedGeometry == "native" {
-				format = "gpkg"
-			}
-			if row.Metadata {
-				format = "mos"
-			}
+	querytest.Run(t, featureContractInstance)
+}
+
+func TestFeatureQueryNullableContract(t *testing.T) {
+	querytest.RunNullableProfiles(t, func(t *testing.T, fixture querytest.Fixture) querytest.Instance {
+		if fixture.Profile == querytest.CustomSelection {
+			t.Skip("GeoPackage custom feature_sql admission is not implemented")
 		}
-		fx := newRawFixture(t, []string{"CREATE TABLE items (id INTEGER UNIQUE, geom BLOB, name TEXT, value INTEGER, start_time INTEGER, end_time INTEGER)"})
-		if format == "gpkg" {
-			addFeatureMetadata(t, fx.path, "items", "geom", 4326)
+		return featureContractInstance(t, fixture)
+	}, querytest.ProfileOptions{})
+}
+
+func featureContractInstance(t *testing.T, fixture querytest.Fixture) querytest.Instance {
+	format := "wkb"
+	for _, row := range fixture.Rows {
+		if row.EmptyGeometry || row.MalformedGeometry == "native" {
+			format = "gpkg"
 		}
-		layer := map[string]interface{}{
-			"name": "items", "tablename": "items", "id_fieldname": "id", "geometry_fieldname": "geom",
-			"geometry_format": format, "geometry_type": "point", "srid": 4326, "fields": []string{"name", "value"},
-			"temporal_start_field": "start_time", "temporal_end_field": "end_time", "temporal_storage": "unix_nanoseconds",
+		if row.Metadata {
+			format = "mos"
 		}
-		if fixture.InvalidTemporalMapping {
-			layer["temporal_end_field"] = "missing"
+	}
+	fx := newRawFixture(t, []string{"CREATE TABLE items (id INTEGER UNIQUE, geom BLOB, name TEXT, value INTEGER, start_time INTEGER, end_time INTEGER)"})
+	if format == "gpkg" {
+		addFeatureMetadata(t, fx.path, "items", "geom", 4326)
+	}
+	layer := map[string]interface{}{
+		"name": "items", "tablename": "items", "id_fieldname": "id", "geometry_fieldname": "geom",
+		"geometry_format": format, "geometry_type": "point", "srid": 4326, "fields": []string{"name", "value"},
+		"temporal_start_field": "start_time", "temporal_end_field": "end_time", "temporal_storage": "unix_nanoseconds",
+	}
+	if fixture.PublicFields != nil {
+		fields := append([]string(nil), fixture.PublicFields...)
+		if len(fields) == 0 {
+			fields = []string{"id"}
 		}
-		tiler, err := gpkg.NewTileProvider(dict.Dict{"filepath": fx.path, "layers": []map[string]interface{}{layer}}, nil)
-		if err != nil {
-			return querytest.Instance{SetupError: err}
+		layer["fields"] = fields
+	}
+	if fixture.InvalidTemporalMapping {
+		layer["temporal_end_field"] = "missing"
+	}
+	tiler, err := gpkg.NewTileProvider(dict.Dict{"filepath": fx.path, "layers": []map[string]interface{}{layer}}, nil)
+	if err != nil {
+		return querytest.Instance{SetupError: err}
+	}
+	p := tiler.(*gpkg.Provider)
+	t.Cleanup(func() {
+		if err := p.Close(); err != nil {
+			t.Error(err)
 		}
-		p := tiler.(*gpkg.Provider)
-		t.Cleanup(func() {
-			if err := p.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		var rows [][]interface{}
-		for _, row := range fixture.Rows {
-			var id, geometry, start, end any
-			if !row.MissingID {
-				id = int64(row.Feature.ID)
-			}
-			if row.Feature.Geometry != nil {
-				geometry = wkbGeomBytes(t, row.Feature.Geometry)
-				if format == "gpkg" {
-					geometry = append(featureHeader(false, 4326), geometry.([]byte)...)
-				}
-			}
-			if row.EmptyGeometry {
-				body := binary.LittleEndian.AppendUint32([]byte{1}, 1)
-				body = binary.LittleEndian.AppendUint64(body, math.Float64bits(math.NaN()))
-				body = binary.LittleEndian.AppendUint64(body, math.Float64bits(math.NaN()))
-				geometry = append(featureHeader(true, 4326), body...)
-			}
-			if row.MalformedGeometry != "" {
-				geometry = []byte{0xff}
-			}
-			if row.Metadata {
-				geometry = mosSystemInfoBlob(2, "", 0, false)
-			}
-			if row.Start != nil {
-				start = row.Start.UnixNano()
-			}
-			if row.End != nil {
-				end = row.End.UnixNano()
-			}
-			rows = append(rows, []interface{}{id, geometry, row.Feature.Tags["name"], row.Feature.Tags["value"], start, end})
-		}
-		insertRows(t, fx.path, "items", []string{"id", "geom", "name", "value", "start_time", "end_time"}, rows)
-		return querytest.Instance{Querier: p, Layer: "items", CountMode: querytest.OptionalCount}
 	})
+	var rows [][]interface{}
+	for _, row := range fixture.Rows {
+		var id, geometry, start, end any
+		if !row.MissingID {
+			id = int64(row.Feature.ID)
+		}
+		if row.Feature.Geometry != nil {
+			geometry = wkbGeomBytes(t, row.Feature.Geometry)
+			if format == "gpkg" {
+				geometry = append(featureHeader(false, 4326), geometry.([]byte)...)
+			}
+		}
+		if row.EmptyGeometry {
+			body := binary.LittleEndian.AppendUint32([]byte{1}, 1)
+			body = binary.LittleEndian.AppendUint64(body, math.Float64bits(math.NaN()))
+			body = binary.LittleEndian.AppendUint64(body, math.Float64bits(math.NaN()))
+			geometry = append(featureHeader(true, 4326), body...)
+		}
+		if row.MalformedGeometry != "" {
+			geometry = []byte{0xff}
+		}
+		if row.Metadata {
+			geometry = mosSystemInfoBlob(2, "", 0, false)
+		}
+		if row.Start != nil {
+			start = row.Start.UnixNano()
+		}
+		if row.End != nil {
+			end = row.End.UnixNano()
+		}
+		rows = append(rows, []interface{}{id, geometry, row.Feature.Tags["name"], row.Feature.Tags["value"], start, end})
+	}
+	insertRows(t, fx.path, "items", []string{"id", "geom", "name", "value", "start_time", "end_time"}, rows)
+	return querytest.Instance{Querier: p, Layer: "items", CountMode: querytest.OptionalCount}
 }
 
 func featureHeader(empty bool, srid uint32) []byte {

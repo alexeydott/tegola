@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alexeydott/tegola/provider"
+	"github.com/alexeydott/tegola/provider/internal/featuresemantics"
 )
 
 // epochBound preserves precision beyond UnixNano's representable date range.
@@ -19,23 +20,7 @@ func epochBound(t time.Time, scale int64, ceil bool) *big.Int {
 // query fractions. An inserted leap second has no integer POSIX instant: its
 // lower bound is the next ordinary second, and its upper bound the prior tick.
 func exactEpochBound(t time.Time, scale int64, ceil bool, fraction string, leap bool) *big.Int {
-	if leap {
-		next := new(big.Int).Add(big.NewInt(t.Unix()), big.NewInt(1))
-		value := next.Mul(next, big.NewInt(scale))
-		if !ceil {
-			value.Sub(value, big.NewInt(1))
-		}
-		return value
-	}
-	value := new(big.Int).Mul(big.NewInt(t.Unix()), big.NewInt(scale))
-	numerator := new(big.Int).Mul(big.NewInt(int64(t.Nanosecond())), big.NewInt(scale))
-	quotient, remainder := new(big.Int), new(big.Int)
-	quotient.QuoRem(numerator, big.NewInt(1000000000), remainder)
-	value.Add(value, quotient)
-	if ceil && (remainder.Sign() != 0 || strings.Trim(fraction, "0") != "") {
-		value.Add(value, big.NewInt(1))
-	}
-	return value
+	return featuresemantics.EpochBound(t, scale, ceil, fraction, leap)
 }
 
 func integerBoundSQL(field, operator string, bound *big.Int, args *[]any) string {

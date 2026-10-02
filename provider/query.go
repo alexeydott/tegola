@@ -50,6 +50,8 @@ func (t TemporalConstraint) Validate() error {
 // Empty Bounds and Bounds3D impose no spatial restriction; empty IDs or Fields
 // impose no identity or property restriction.
 // Fields restrict properties only; feature identity and geometry remain present.
+// Selected public SQL NULL properties remain present with nil values. Private
+// and unselected properties are absent.
 // Providers must neither mutate inputs nor retain them after QueryFeatures returns.
 type FeatureQuery struct {
 	// Bounds are closed horizontal extents [minX, minY, maxX, maxY] in one CRS.

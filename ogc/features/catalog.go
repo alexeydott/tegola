@@ -108,7 +108,12 @@ func NewService(sources []CollectionSource) (*Service, error) {
 		if err := mapping.Validate(); err != nil {
 			return nil, fmt.Errorf("features: collection %q temporal mapping: %w", source.ID, err)
 		}
-		srid := source.Layer.SRID()
+		var srid uint64
+		if featureSource, ok := source.Layer.(provider.FeatureSourceLayerInfo); ok {
+			srid = featureSource.FeatureSourceSRID()
+		} else {
+			srid = source.Layer.SRID()
+		}
 		spatialInfo, ok := source.Layer.(provider.SpatialLayerInfo)
 		if !ok {
 			return nil, fmt.Errorf("features: collection %q has unknown spatial metadata: %w", source.ID, provider.ErrUnsupported)

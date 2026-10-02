@@ -60,6 +60,10 @@ func (c connectionPoolCollector) QueryContext(ctx context.Context, query string)
 	return c.pool.QueryContext(ctx, query)
 }
 
+func (c connectionPoolCollector) queryContextWithArgs(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return c.pool.QueryContext(ctx, query, args...)
+}
+
 func (c connectionPoolCollector) QueryContextWithBBox(ctx context.Context, query string, extent *geom.Extent, srid uint64, hasTileBounds bool) (*sql.Rows, error) {
 	// A synthetic SRID (crs_defn) exists only on the client side: the SQL
 	// was generated with a 1=1 placeholder instead of spatial predicates,
@@ -392,7 +396,7 @@ func OpenDB(uri string) (*sql.DB, error) {
 	sv := driver.SessionVariables{"APPLICATION": "Tegola"}
 	connector.SetSessionVariables(sv)
 
-	db := sql.OpenDB(connector)
+	db := sql.OpenDB(featureCancellableConnector(connector))
 	db.SetMaxOpenConns(max_conn)
 	db.SetConnMaxIdleTime(max_conn_idle_time)
 	db.SetConnMaxLifetime(max_conn_life_time)
@@ -683,6 +687,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 		// served via the MOS path with the self-described projection.
 		// Custom SQL is never auto-detected.
 		if tblPresent {
+			l.featureTable = tblName
 			isMappl, derr := detectMapplGIS(context.Background(), p.pool, &l, tblName)
 			if derr != nil {
 				return nil, fmt.Errorf("for layer (%v) %v: %v", i, lName, derr)
@@ -736,6 +741,7 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			}
 		}
 
+		l.featureSRID = uint64(lsrid)
 		switch {
 		case isSyntheticCRS(uint64(lsrid)):
 			// A synthetic SRID registered from crs_defn exists only on the
@@ -942,6 +948,9 @@ func CreateProvider(config dict.Dicter, maps []provider.Map, providerType string
 			log.Debugf("SQL for Layer(%v):\n%v\n", lName, l.sql)
 		}
 
+		if err := p.registerFeatureSource(&l, layer, providerType); err != nil {
+			return nil, err
+		}
 		lyrs[lName] = l
 	}
 	p.layers = lyrs
@@ -1348,7 +1357,12 @@ func (p Provider) TileFeatures(ctx context.Context, layer string, tile provider.
 		return fmt.Errorf("error getting tile extent for layer (%v): %w", layer, err)
 	}
 	srid := plyr.SRID()
-	rows, err := p.pool.QueryContextWithBBox(ctx, sqlQuery, extent, srid, false)
+	var rows *sql.Rows
+	if codec.IsRawFormat(plyr.geometryFormat) {
+		rows, err = p.pool.queryContextWithArgs(ctx, sqlQuery, args...)
+	} else {
+		rows, err = p.pool.QueryContextWithBBox(ctx, sqlQuery, extent, srid, false)
+	}
 
 	if err := ctxErr(ctx, err); err != nil {
 		return fmt.Errorf("error running layer (%v) SQL (%v): %w", layer, sqlQuery, err)

@@ -220,13 +220,23 @@ timezone normalization. The production date table contains the 27 announced
 insertions through 2016-12-31; future unannounced leap seconds are rejected and
 the table requires an explicit update when new insertions are announced.
 
-GeoPackage temporal mappings support integer POSIX seconds, milliseconds,
+Admitted GeoPackage, MySQL/MariaDB, PostGIS and HANA temporal mappings support integer
+POSIX seconds, milliseconds,
 microseconds or nanoseconds. An instant finer than a source tick matches only
 an exactly representable stored instant. POSIX storage has no timestamp inside
 an inserted leap second, so such an instant selects no populated instant value;
 intervals spanning it can still overlap. Absent temporal geometry matches valid
 temporal constraints. A NULL interval endpoint is open; two NULL endpoints are
 absent. Invalid stored types or reversed source intervals fail the request.
+Native SQL date/time types are not implicitly
+interpreted as integer POSIX time. See the backend guides below for eligibility.
+
+### Feature properties
+
+Selected public properties with SQL NULL values are returned as JSON `null`.
+Private and unselected properties are absent. Zero, false and the empty string
+retain their values. Property selection narrows the published property set and
+does not remove feature identity or geometry.
 
 ### Errors and conformance status
 

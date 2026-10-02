@@ -1,5 +1,8 @@
 # PostGIS
 
+For raw OGC feature source admission, constrained `feature_sql`, and snapshot
+behavior, see [PostGIS feature queries](features.md).
+
 The PostGIS provider manages querying for tile requests against a Postgres
 database with the [PostGIS](http://postgis.net/) extension installed.
 The connection between tegola and Postgis is configured in a `tegola.toml` file.

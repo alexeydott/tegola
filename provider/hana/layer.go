@@ -3,6 +3,7 @@ package hana
 import (
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/tegola/mos"
+	"github.com/alexeydott/tegola/provider"
 	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
@@ -44,7 +45,33 @@ type Layer struct {
 	// bboxFields holds the resolved bounds field names (layer > provider >
 	// defaults) backing the bounds-backed custom-SQL !BBOX! predicate for
 	// raw (MOS) layers, and excluded from feature tags.
-	bboxFields codec.BBoxFields
+	bboxFields   codec.BBoxFields
+	featureTable string
+	featureSRID  uint64
+	feature      *featureSource
+	featureError error
+}
+
+func (l Layer) FeatureQuerySupported() error {
+	if l.feature == nil {
+		return featureUnsupported("metadata is unavailable")
+	}
+	if l.featureError != nil {
+		return l.featureError
+	}
+	return nil
+}
+func (l Layer) TemporalMapping() (provider.TemporalMapping, error) {
+	if err := l.FeatureQuerySupported(); err != nil {
+		return provider.TemporalMapping{}, err
+	}
+	return l.feature.Temporal, nil
+}
+func (l Layer) SpatialMetadata() (provider.SpatialMetadata, error) {
+	if err := l.FeatureQuerySupported(); err != nil {
+		return provider.SpatialMetadata{}, err
+	}
+	return l.feature.Spatial, nil
 }
 
 func (l Layer) Name() string {
@@ -57,6 +84,15 @@ func (l Layer) GeomType() geom.Geometry {
 
 func (l Layer) SRID() uint64 {
 	return l.srid
+}
+
+// FeatureSourceSRID retains the physical source CRS independently of the
+// planar-equivalent label used by the tile query.
+func (l Layer) FeatureSourceSRID() uint64 {
+	if l.feature == nil {
+		return 0
+	}
+	return l.feature.SRID
 }
 
 func (l Layer) GeomFieldName() string {

@@ -15,9 +15,13 @@ Tegola documentation covers HTTP behavior, configuration, provider contracts, ge
 * [Maintenance status](maintenance-status.md) — current work disposition and verification boundaries.
 * [Windows release builds](windows-release.md) — Windows build and packaging workflow.
 
-## Feature API Baselines
+## Feature API and Historical Baselines
 
-These sources prepare OGC API Features work; they do not advertise an implemented Feature API.
+The implemented application profile is described in the [API reference](api.md)
+and [publication configuration](configuration.md). Backend guides describe the
+admitted tested profiles and their limits; implemented endpoints do not declare
+OGC conformance. The
+following architecture and migration pages preserve the historical source baseline.
 
 * [Feature-service source baseline](architecture/feature-service.md) - existing contracts and integration points.
 * [OGC API Features editions](architecture/ogc-api-features.md) - selected normative sources and verification boundary.

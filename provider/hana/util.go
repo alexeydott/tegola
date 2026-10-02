@@ -402,7 +402,7 @@ func getLayerRows(ctx context.Context, pool *connectionPoolCollector, sql string
 }
 
 func getLayerFields(pool *connectionPoolCollector, l *Layer, sql string) ([]FieldDescription, error) {
-	withBBox := strings.Contains(sql, bboxToken)
+	withBBox := strings.Contains(sql, bboxToken) && !codec.IsRawFormat(l.geometryFormat)
 
 	//	if a subquery is set in the 'sql' config the subquery is set to the layer's
 	//	'tablename' param. because of this case normal SQL token replacement needs to be
@@ -437,7 +437,7 @@ func getLayerFields(pool *connectionPoolCollector, l *Layer, sql string) ([]Fiel
 		return nil, err
 	}
 
-	return getFieldDescriptions(l.Name(), l.GeomFieldName(), l.IDFieldName(), columns, true)
+	return getFieldDescriptions(l.Name(), l.GeomFieldName(), l.IDFieldName(), columns, l.geometryFormat == "")
 }
 
 func getFieldNames(fields []FieldDescription) []string {

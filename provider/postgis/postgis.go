@@ -1793,7 +1793,7 @@ func CreateProvider(
 			// Tablename and Fields will be used to build the query.
 			// We need to do some work. We need to check to see Fields contains the geom and gid fields
 			// and if not add them to the list. If Fields list is empty/nil we will use '*' for the field list.
-			l.sql, err = genSQL(&l, p.pool, tblName, fields, true, providerType)
+			l.sql, err = genSQL(&l, p.pool, tblName, append([]string(nil), fields...), true, providerType)
 			if err != nil {
 				return nil, fmt.Errorf("could not generate sql, for layer(%v): %w", lName, err)
 			}
@@ -1823,6 +1823,9 @@ func CreateProvider(
 			}
 		}
 
+		if err := p.registerFeatureProfile(layer, &l, tblName, tblPresent && !sqlPresent, isMVT(providerType)); err != nil {
+			return nil, fmt.Errorf("layer %s feature metadata: %w", lName, err)
+		}
 		lyrs[lName] = l
 	}
 	p.layers = lyrs

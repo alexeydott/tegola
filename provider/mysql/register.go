@@ -275,8 +275,6 @@ func checkTableSRIDs(db *sql.DB, tablename, geomFieldname, layerName string) err
 
 func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, error) {
 
-	log.Debugf("config: %v", config)
-
 	host, err := config.String(ConfigKeyHost, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mysql provider requires %v", ConfigKeyHost)
@@ -826,6 +824,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 		}
 
 		p.layers[layer.name] = layer
+	}
+
+	if err := p.registerFeatureLayers(layers); err != nil {
+		return nil, err
 	}
 
 	// audit P6-19: raw geometry formats without a bounds-backed filter are

@@ -208,7 +208,7 @@ same uniform window of up to `codec.InspectionSampleLimit` (16) rows to
 infer the layer geometry type from the first decodable geometry — but this
 sampling is type inference only and never applies system info.
 
-## Provider support matrix
+## Tile provider support matrix
 
 | Capability | mysql | gpkg | postgis | hana |
 |---|---|---|---|---|
@@ -251,6 +251,43 @@ select a storage format or disable automatic format detection.
 For automatically detected MOS, undecodable feature rows are skipped with a
 warning at tile rendering, consistently with the probe. A bad row does not
 hide other valid features. Explicit-format error policies are unchanged.
+
+## Raw feature query contract
+
+Raw feature publication uses a separate immutable source profile and does not
+reuse tile SQL or tile field defaults. Ordinary table `fields` selects public
+properties; absent or empty configuration selects all eligible properties.
+Request field selection only narrows that frozen public set. A constrained
+`feature_sql` projection defines public aliases independently of tile `fields`;
+custom tile SQL alone does not establish a raw feature source.
+
+Identity, geometry and configured private bounds/metadata are suppressed by
+physical column lineage, including renamed projections. Physical `min_zoom` and
+`max_zoom` are always private under ASCII case folding. Required temporal columns
+are read privately when omitted from the public subset; explicitly selected
+temporal properties remain public.
+
+Selected SQL NULL properties remain present with nil values and serialize as JSON
+null. Private and unselected properties are absent. Zero, false and empty strings
+retain their values. This rule does not change tile property decoding.
+
+Exact spatial and temporal matching precedes logical paging. Source corruption
+fails the query; unsupported requested capabilities remain distinct. Actual
+MySQL/MariaDB, PostGIS and HANA admitted profile checks have passed independent
+source and runtime review. HANA uses a transaction-owned source lock that blocks
+writers and DDL for the query duration. Native storage rejection or normalization
+is distinct from successful feature-query evidence; unsupported storage and CRS
+profiles remain explicit. None of these results declares OGC conformance.
+
+Consult [GeoPackage](../provider/gpkg/README.md),
+[MySQL/MariaDB](../provider/mysql/README.md),
+[PostGIS](../provider/postgis/features.md), and
+[HANA](../provider/hana/FEATURE-QUERY.md) for exact storage, CRS, snapshot and
+resource limits. [ADR-0007](architecture/decisions/ADR-0007-safe-provider-feature-sql.md)
+defines constrained selection;
+[ADR-0008](architecture/decisions/ADR-0008-hana-feature-source-lock.md)
+defines HANA's read-write repeatable-read transaction and source lock. Existing
+tile behavior in the sections above retains its separate contract.
 
 ## See Also
 
