@@ -38,7 +38,7 @@ func TestFeatureNegotiationBeforeQuery(t *testing.T) {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(method, "/features/collections/alpha/items", nil)
 		request.Header.Add("Accept", "*/*;q=1")
-		request.Header.Add("Accept", "application/geo+json;q=0")
+		request.Header.Add("Accept", "application/geo+json;q=0, text/html;q=0")
 		// The discovery querier errors if called, so a 406 also proves early rejection.
 		api.negotiate(http.HandlerFunc(api.serveItems), "application/geo+json").ServeHTTP(response, request)
 		if response.Code != 406 {

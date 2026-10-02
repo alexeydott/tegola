@@ -93,6 +93,7 @@ func NewRouterWithOptions(a *atlas.Atlas, options RouterOptions) (*Router, error
 	router := &Router{TreeMux: assembleRouter(a, options)}
 	if options.Features != nil {
 		router.featureBasePath = strings.TrimSuffix(URIPrefix, "/") + options.Features.cfg.BasePath
+		router.featureAPI = options.Features
 	}
 	return router, nil
 }

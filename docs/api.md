@@ -137,19 +137,39 @@ and HEAD; HEAD returns the same status and headers without a response body.
 
 For example, the landing resource is `/features`, and collection items are
 `/features/collections/roads/items`. Feature IDs in URLs are unsigned decimal
-integers; GeoJSON IDs are numeric. Discovery resources accept no query parameters;
-the single-feature resource accepts only `crs`.
+integers; GeoJSON IDs are numeric. All resources accept the representation selector
+`f=html|json`. Discovery resources accept no other query parameters; the
+single-feature resource additionally accepts `crs`.
 
-An absent `Accept` header or an acceptable matching wildcard selects the
-canonical representation. A malformed or incompatible `Accept` returns 406
-before querying the provider. An explicit matching `q=0` excludes that
-representation even if a broader wildcard permits it. Feature payloads do not
-have an `application/json` alias. Feature responses, errors and feature-route
-redirects carry `Cache-Control: no-store`.
+An absent `Accept` header selects canonical JSON. Successful resources also offer
+`text/html; charset=utf-8`, including the API definition and Queryables. Accept
+negotiation honours quality and specificity; an exact tie selects canonical JSON.
+When `f` is absent, a malformed or incompatible `Accept` returns 406 before provider I/O. An explicit
+matching `q=0` excludes that representation even if a broader wildcard permits it.
+Feature payloads do not have an `application/json` alias.
+
+`f=html` selects HTML and `f=json` selects the resource's canonical JSON media
+type, overriding Accept. Empty, unknown or repeated `f` values return 400.
+HTML displays the complete response data and protocol links using embedded,
+escaped templates, without external scripts or CDN assets. Self, alternate and
+paging links preserve the representation, validated query parameters and mounted
+prefix. For example:
+
+```text
+/features?f=html
+/features/api?f=html
+/features/collections/roads/items?limit=25&f=html
+```
+
+The generated `/api` definition describes enabled collection capabilities,
+actual page defaults and limits, response schemas and media types. Optional
+Queryables, filtering and CRS parameters are described for collections that
+support them; unavailable profiles retain their documented error behavior.
+Core datetime is described for every collection.
 
 ### Item query parameters and paging
 
-Only the following parameters are accepted on the items resource. Unknown or
+In addition to `f`, the following parameters are accepted on the items resource. Unknown or
 repeated parameters return 400. Spatial, temporal and property constraints combine by AND.
 
 | Parameter | Behavior |
@@ -240,6 +260,9 @@ nine digits: comparisons preserve the remaining decimal precision rather than
 rounding the request to nanoseconds. Encode a positive timezone offset's `+`
 as `%2B` in a query URL.
 
+Collections without temporal geometry accept a valid datetime constraint and
+match every feature. Invalid datetime syntax still returns 400 before provider I/O.
+
 Second 60 is accepted only for a known positive leap insertion, checked after
 timezone normalization. The production date table contains the 27 announced
 insertions through 2016-12-31; future unannounced leap seconds are rejected and
@@ -290,11 +313,25 @@ limits, physical eligibility and examples.
 ### Errors and conformance status
 
 Invalid request parameters return 400, missing collections/features 404,
-unacceptable representations 406, cancellation/deadlines 408, and unsupported
+unsupported methods 405, unacceptable representations 406, cancellation/deadlines 408, and unsupported
 requested operations 501. Source-row corruption and other internal failures
 return generic 500 responses without exposing source details.
 
-`/conformance` currently returns `{"conformsTo":[]}`. Implemented endpoints do
+Feature responses, errors, OPTIONS and redirects use `Cache-Control: no-store`
+and `Vary: Accept`, without ETag or Last-Modified validators. Conditional requests
+do not produce 304. Responses use identity encoding; configured Content-Encoding
+is removed because feature compression is not implemented. GET and HEAD select the same representation and headers;
+HEAD emits no body. OPTIONS advertises GET, HEAD and OPTIONS. Feature CORS exposes
+Content-Crs while retaining configured origin and credential policy.
+
+Feature publication defaults to a 30-second cooperative deadline and a 16 MiB
+encoded response cap. Exceeding the cap returns generic 500 `ResponseTooLarge`
+before a partial response is sent, including for HEAD. These limits bound the
+response, not all service or encoder allocations. A raw query above 64 KiB returns
+414; aggregate Accept headers above 16 KiB return 431. Limits are applied before
+provider I/O where possible. See [publication configuration](configuration.md#feature-publication).
+
+`/conformance` currently has an empty `conformsTo` array. Implemented endpoints do
 not constitute an OGC Core conformance declaration or certification. Official
 conformance verification/certification is deferred; consult this page and the
 OpenAPI resource for the implemented application profile.

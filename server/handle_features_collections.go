@@ -19,13 +19,15 @@ type featureCollectionDescription struct {
 }
 
 func (api *FeatureAPI) describeCollection(r *http.Request, metadata features.CollectionMetadata) featureCollectionDescription {
-	description := featureCollectionDescription{ID: metadata.ID, Title: metadata.Title, Description: metadata.Description, ItemType: "feature", Links: []featureLink{api.link(r, "/collections/"+metadata.ID, "self", "application/json"), api.link(r, "/collections/"+metadata.ID+"/items", "items", "application/geo+json")}}
+	links := api.representationLinks(r, "/collections/"+metadata.ID, "application/json", nil)
+	links = append(links, api.formatLink(r, "/collections/"+metadata.ID+"/items", "items", "application/geo+json", nil, featureSelectedFormat(r)))
+	description := featureCollectionDescription{ID: metadata.ID, Title: metadata.Title, Description: metadata.Description, ItemType: "feature", Links: links}
 	if catalog, err := api.service.CollectionCRS(metadata.ID); err == nil {
 		description.CRS = catalog.URIs()
 		description.StorageCRS = catalog.StorageURI()
 	}
 	if _, err := api.service.Queryables(metadata.ID); err == nil {
-		description.Links = append(description.Links, api.link(r, "/collections/"+metadata.ID+"/queryables", "http://www.opengis.net/def/rel/ogc/1.0/queryables", "application/schema+json"))
+		description.Links = append(description.Links, api.formatLink(r, "/collections/"+metadata.ID+"/queryables", "http://www.opengis.net/def/rel/ogc/1.0/queryables", "application/schema+json", nil, featureSelectedFormat(r)))
 	}
 	return description
 }
@@ -39,11 +41,16 @@ func (api *FeatureAPI) serveCollections(w http.ResponseWriter, r *http.Request) 
 	for _, collection := range metadata {
 		collections = append(collections, api.describeCollection(r, collection))
 	}
+	links := api.representationLinks(r, "/collections", "application/json", nil)
 	response := struct {
 		Collections []featureCollectionDescription `json:"collections"`
 		Links       []featureLink                  `json:"links"`
-	}{Collections: collections, Links: []featureLink{api.link(r, "/collections", "self", "application/json")}}
-	api.writeJSON(w, r, http.StatusOK, "application/json", response)
+	}{Collections: collections, Links: links}
+	anchors := append([]featureLink(nil), links...)
+	for _, collection := range collections {
+		anchors = append(anchors, collection.Links...)
+	}
+	api.writeRepresentation(w, r, http.StatusOK, "application/json", response, anchors)
 }
 
 func (api *FeatureAPI) serveCollection(w http.ResponseWriter, r *http.Request) {
@@ -61,5 +68,6 @@ func (api *FeatureAPI) serveCollection(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusInternalServerError, "InternalError", "Collection lookup failed")
 		return
 	}
-	api.writeJSON(w, r, http.StatusOK, "application/json", api.describeCollection(r, metadata))
+	description := api.describeCollection(r, metadata)
+	api.writeRepresentation(w, r, http.StatusOK, "application/json", description, description.Links)
 }

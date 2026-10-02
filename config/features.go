@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/alexeydott/tegola/internal/env"
 	"github.com/alexeydott/tegola/provider"
@@ -10,13 +12,15 @@ import (
 
 // FeaturesConfig explicitly publishes raw provider layers; the default is disabled.
 type FeaturesConfig struct {
-	Enabled      bool                      `toml:"enabled"`
-	BasePath     env.String                `toml:"basepath"`
-	DefaultLimit *env.Int                  `toml:"default_limit"`
-	MaxLimit     *env.Int                  `toml:"max_limit"`
-	Title        env.String                `toml:"title"`
-	Description  env.String                `toml:"description"`
-	Collections  []FeatureCollectionConfig `toml:"collections"`
+	MaxResponseBytes *env.Int                  `toml:"max_response_bytes"`
+	QueryTimeoutMS   *env.Int                  `toml:"query_timeout_ms"`
+	Enabled          bool                      `toml:"enabled"`
+	BasePath         env.String                `toml:"basepath"`
+	DefaultLimit     *env.Int                  `toml:"default_limit"`
+	MaxLimit         *env.Int                  `toml:"max_limit"`
+	Title            env.String                `toml:"title"`
+	Description      env.String                `toml:"description"`
+	Collections      []FeatureCollectionConfig `toml:"collections"`
 }
 
 type FeatureCollectionConfig struct {
@@ -38,6 +42,14 @@ func (f FeaturesConfig) Resolved() FeaturesConfig {
 	if f.MaxLimit != nil {
 		maxLimit = *f.MaxLimit
 	}
+	responseBytes, timeoutMS := env.Int(16<<20), env.Int(30000)
+	if f.MaxResponseBytes != nil {
+		responseBytes = *f.MaxResponseBytes
+	}
+	if f.QueryTimeoutMS != nil {
+		timeoutMS = *f.QueryTimeoutMS
+	}
+	f.MaxResponseBytes, f.QueryTimeoutMS = &responseBytes, &timeoutMS
 	f.DefaultLimit, f.MaxLimit = &defaultLimit, &maxLimit
 	f.Collections = append([]FeatureCollectionConfig(nil), f.Collections...)
 	return f
@@ -45,6 +57,12 @@ func (f FeaturesConfig) Resolved() FeaturesConfig {
 
 func (f FeaturesConfig) Validate() error {
 	f = f.Resolved()
+	if *f.MaxResponseBytes < 1024 {
+		return fmt.Errorf("features: max_response_bytes must be at least 1024")
+	}
+	if *f.QueryTimeoutMS <= 0 || int64(*f.QueryTimeoutMS) > math.MaxInt64/int64(time.Millisecond) {
+		return fmt.Errorf("features: query_timeout_ms is outside supported positive duration")
+	}
 	if err := ValidateFeatureBasePath(string(f.BasePath)); err != nil {
 		return err
 	}

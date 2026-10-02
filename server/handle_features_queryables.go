@@ -26,11 +26,12 @@ func (api *FeatureAPI) serveQueryables(w http.ResponseWriter, r *http.Request) {
 	for _, field := range catalog.Fields() {
 		properties[field.Name] = featureQueryableSchema(field)
 	}
-	document := map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": api.link(r, "/collections/"+id+"/queryables", "", "application/schema+json").Href, "type": "object", "additionalProperties": false, "properties": properties}
+	links := api.representationLinks(r, "/collections/"+id+"/queryables", "application/schema+json", nil)
+	document := map[string]any{"links": links, "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": api.link(r, "/collections/"+id+"/queryables", "", "application/schema+json").Href, "type": "object", "additionalProperties": false, "properties": properties}
 	if metadata.Title != "" {
 		document["title"] = metadata.Title
 	}
-	api.writeJSON(w, r, http.StatusOK, "application/schema+json", document)
+	api.writeRepresentation(w, r, http.StatusOK, "application/schema+json", document, links)
 }
 
 func featureQueryableSchema(field provider.FeatureQueryable) map[string]any {

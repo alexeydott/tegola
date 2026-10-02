@@ -98,12 +98,15 @@ func TestServiceForwardsQueryUnchanged(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	query := provider.FeatureQuery{Limit: 3, Offset: 2, IDs: []uint64{7}, Fields: []string{"name"}, Bounds: []geom.Extent{{10, 20, 30, 40}}, BoundsSRID: 4326, Temporal: &provider.TemporalConstraint{Start: &start}}
 	original := query
-	s := newTestService(t, 3857, testQuerier(func(_ context.Context, layer string, received provider.FeatureQuery, _ func(*provider.Feature) error) (provider.FeatureQueryResult, error) {
+	s, err := NewService([]CollectionSource{{ID: "public", Layer: &testLayer{name: "source", srid: 3857, mapping: provider.TemporalMapping{InstantField: "time"}}, Querier: testQuerier(func(_ context.Context, layer string, received provider.FeatureQuery, _ func(*provider.Feature) error) (provider.FeatureQueryResult, error) {
 		if layer != "source" || !reflect.DeepEqual(received, query) {
 			t.Fatalf("query changed: %+v", received)
 		}
 		return provider.FeatureQueryResult{}, nil
-	}))
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.QueryCollectionPage(context.Background(), "public", query); err != nil {
 		t.Fatal(err)
 	}

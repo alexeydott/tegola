@@ -149,7 +149,14 @@ func TestFeatureDiscoveryResourcesAndHEAD(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/features/conformance", nil))
-	if response.Body.String() != `{"conformsTo":[]}` {
+	var declaration struct {
+		ConformsTo []string      `json:"conformsTo"`
+		Links      []featureLink `json:"links"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &declaration); err != nil {
+		t.Fatal(err)
+	}
+	if declaration.ConformsTo == nil || len(declaration.ConformsTo) != 0 || len(declaration.Links) != 2 {
 		t.Fatal("premature conformance claim", response.Body.String())
 	}
 }
@@ -172,12 +179,12 @@ func TestFeatureDiscoveryProxyLinksAndCatalog(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &landing); err != nil {
 		t.Fatal(err)
 	}
-	wanted := map[string]string{"self": "", "service-desc": "/api", "conformance": "/conformance", "data": "/collections"}
+	wanted := map[string]string{"self": "", "alternate": "", "service-doc": "/api", "service-desc": "/api", "conformance": "/conformance", "data": "/collections"}
 	if len(landing.Links) != len(wanted) {
 		t.Fatal(landing)
 	}
 	for _, link := range landing.Links {
-		if link.Href != "https://public.example/proxy/features"+wanted[link.Rel] {
+		if link.Href != "https://public.example/proxy/features"+wanted[link.Rel]+"?f="+map[bool]string{true: "html", false: "json"}[link.Rel == "alternate" || link.Rel == "service-doc"] {
 			t.Fatal(link)
 		}
 	}
@@ -202,10 +209,10 @@ func TestFeatureDiscoveryProxyLinksAndCatalog(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &definition); err != nil {
 		t.Fatal(err)
 	}
-	if definition.OpenAPI != "3.0.3" || len(definition.Paths) != 8 || definition.Servers[0].URL != "https://public.example/proxy/features" {
+	if definition.OpenAPI != "3.0.3" || len(definition.Paths) != 10 || definition.Servers[0].URL != "https://public.example/proxy/features" {
 		t.Fatal(definition)
 	}
-	if _, exists := definition.Paths["/collections/{collection}/items"]; !exists {
+	if _, exists := definition.Paths["/collections/alpha/items"]; !exists {
 		t.Fatal("installed items endpoint absent")
 	}
 	for _, operations := range definition.Paths {
@@ -278,7 +285,7 @@ func TestFeatureDiscoveryStaticURIPrefixValidation(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &landing); err != nil {
 			t.Fatal(err)
 		}
-		if landing.Links[0].Href != "http://example.com"+path {
+		if landing.Links[0].Href != "http://example.com"+path+"?f=json" {
 			t.Fatalf("prefix duplicated or normalized: %s", landing.Links[0].Href)
 		}
 	}
@@ -344,7 +351,7 @@ func TestFeatureDiscoveryURLRootStagePath(t *testing.T) {
 			t.Fatal(err)
 		}
 		expected := "https://gateway.example/" + strings.Trim(stage, "/") + "/proxy/features"
-		if landing.Links[0].Href != expected {
+		if landing.Links[0].Href != expected+"?f=json" {
 			t.Fatalf("stage omitted/duplicated: %s want %s", landing.Links[0].Href, expected)
 		}
 		if !reflect.DeepEqual(*root, before) {

@@ -12,6 +12,8 @@ enabled = true
 basepath = "/features"
 default_limit = 100
 max_limit = 10000
+max_response_bytes = 16777216
+query_timeout_ms = 30000
 title = "Feature data"
 
 [[features.collections]]
@@ -27,6 +29,15 @@ use exactly one dot between provider and layer names. Public IDs and base-path
 segments use ASCII letters, digits, `-`, `.`, `_` and `~`; empty, `.` and `..`
 segments are invalid. Base paths start with `/` and have no trailing slash.
 Existing map, capabilities, metrics and embedded viewer namespaces are reserved.
+
+`max_response_bytes` defaults to 16 MiB and must be at least 1024 bytes.
+`query_timeout_ms` defaults to 30000 milliseconds and must be a positive,
+representable Go duration. Both apply to feature publication through CLI and
+Lambda. A deadline relies on provider cancellation support. The response cap
+measures the selected JSON or HTML representation before headers are committed;
+it also applies to HEAD and does not guarantee a bound on all intermediate
+allocations. Oversized responses return a generic error. See the
+[HTTP policy](api.md#errors-and-conformance-status).
 
 Only explicitly mapped standard-provider layers are exposed. Missing sources,
 MVT-only providers and unsupported query metadata fail startup. Disabled

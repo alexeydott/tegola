@@ -146,17 +146,26 @@ func TestFeatureItemsPagingLinks(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.NumberReturned != 1 || len(body.Links) != 3 || backend.query.Limit != 10 || backend.query.Offset != 3 || len(backend.query.Bounds) != 2 {
+	if body.NumberReturned != 1 || len(body.Links) != 5 || backend.query.Limit != 10 || backend.query.Offset != 3 || len(backend.query.Bounds) != 2 {
 		t.Fatalf("body=%#v query=%#v", body, backend.query)
 	}
-	for i, offset := range []string{"3", "4", "0"} {
-		parsed, err := url.Parse(body.Links[i].Href)
+	for relation, offset := range map[string]string{"self": "3", "next": "4", "prev": "0"} {
+		var href string
+		for _, link := range body.Links {
+			if link.Rel == relation && link.Type == "application/geo+json" {
+				href = link.Href
+			}
+		}
+		if href == "" {
+			t.Fatalf("missing %s link", relation)
+		}
+		parsed, err := url.Parse(href)
 		if err != nil {
 			t.Fatal(err)
 		}
 		values := parsed.Query()
-		if values.Get("offset") != offset || values.Get("limit") != "10" || values.Get("bbox") != "170,-10,-170,10" || values.Get("datetime") != "2020-01-01T00:00:00+02:00" {
-			t.Fatalf("lost query semantics: %s", body.Links[i].Href)
+		if values.Get("f") != "json" || values.Get("offset") != offset || values.Get("limit") != "10" || values.Get("bbox") != "170,-10,-170,10" || values.Get("datetime") != "2020-01-01T00:00:00+02:00" {
+			t.Fatalf("lost query semantics: %s", href)
 		}
 	}
 	if strings.Contains(response.Body.String(), "HasMore") || strings.Contains(response.Body.String(), "hasMore") {

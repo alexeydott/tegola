@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/akrylysov/algnhsa"
 	"github.com/alexeydott/geom/encoding/mvt"
@@ -123,7 +124,15 @@ func init() {
 	options := server.RouterOptions{}
 	if service != nil {
 		settings := conf.Features.Resolved()
-		options.Features, err = server.NewFeatureAPI(service, server.FeatureAPIConfig{BasePath: string(settings.BasePath), DefaultLimit: uint(*settings.DefaultLimit), MaxLimit: uint(*settings.MaxLimit), Title: string(settings.Title), Description: string(settings.Description)})
+		options.Features, err = server.NewFeatureAPI(service, server.FeatureAPIConfig{
+			BasePath:         string(settings.BasePath),
+			DefaultLimit:     uint(*settings.DefaultLimit),
+			MaxLimit:         uint(*settings.MaxLimit),
+			MaxResponseBytes: int64(*settings.MaxResponseBytes),
+			QueryTimeout:     time.Duration(*settings.QueryTimeoutMS) * time.Millisecond,
+			Title:            string(settings.Title),
+			Description:      string(settings.Description),
+		})
 		if err != nil {
 			log.Error(err)
 			os.Exit(1)

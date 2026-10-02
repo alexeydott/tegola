@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/alexeydott/tegola/atlas"
 	"github.com/alexeydott/tegola/cmd/internal/register"
@@ -107,7 +108,15 @@ func initConfigRuntime(configFile string, cacheRequired bool, logLevel string) (
 	}
 	if service != nil {
 		settings := conf.Features.Resolved()
-		api, err = server.NewFeatureAPI(service, server.FeatureAPIConfig{BasePath: string(settings.BasePath), DefaultLimit: uint(*settings.DefaultLimit), MaxLimit: uint(*settings.MaxLimit), Title: string(settings.Title), Description: string(settings.Description)})
+		api, err = server.NewFeatureAPI(service, server.FeatureAPIConfig{
+			BasePath:         string(settings.BasePath),
+			DefaultLimit:     uint(*settings.DefaultLimit),
+			MaxLimit:         uint(*settings.MaxLimit),
+			MaxResponseBytes: int64(*settings.MaxResponseBytes),
+			QueryTimeout:     time.Duration(*settings.QueryTimeoutMS) * time.Millisecond,
+			Title:            string(settings.Title),
+			Description:      string(settings.Description),
+		})
 		if err != nil {
 			return nil, fmt.Errorf("could not construct feature runtime: %w", err)
 		}

@@ -44,7 +44,7 @@ func (api *FeatureAPI) serveItems(w http.ResponseWriter, r *http.Request) {
 	parameters.Set("limit", strconv.FormatUint(uint64(query.Limit), 10))
 	parameters.Set("offset", strconv.FormatUint(query.Offset, 10))
 	suffix := "/collections/" + id + "/items"
-	links := []featureLink{api.pageLink(r, suffix, "self", parameters, query.Offset)}
+	links := api.representationLinks(r, suffix, "application/geo+json", parameters)
 	if page.HasMore {
 		links = append(links, api.pageLink(r, suffix, "next", parameters, query.Offset+page.NumberReturned))
 	}
@@ -55,12 +55,15 @@ func (api *FeatureAPI) serveItems(w http.ResponseWriter, r *http.Request) {
 		}
 		links = append(links, api.pageLink(r, suffix, "prev", parameters, previous))
 	}
+	for _, feature := range page.Features {
+		links = append(links, api.formatLink(r, suffix+"/"+strconv.FormatUint(feature.ID, 10), "item", "application/geo+json", itemRepresentationParameters(parameters), featureSelectedFormat(r)))
+	}
 	response := struct {
 		features.FeatureCollection
 		Links []featureLink `json:"links"`
 	}{FeatureCollection: page, Links: links}
 	w.Header().Set("Content-Crs", "<"+outputURI+">")
-	api.writeJSON(w, r, http.StatusOK, "application/geo+json", response)
+	api.writeRepresentation(w, r, http.StatusOK, "application/geo+json", response, links)
 }
 
 func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
@@ -97,28 +100,23 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 		api.writeQueryError(w, r, err)
 		return
 	}
+	links := api.representationLinks(r, "/collections/"+id+"/items/"+strconv.FormatUint(featureID, 10), "application/geo+json", queryParameters)
+	links = append(links, api.formatLink(r, "/collections/"+id, "collection", "application/json", nil, featureSelectedFormat(r)))
 	response := struct {
 		features.Feature
 		Links []featureLink `json:"links"`
-	}{Feature: feature, Links: []featureLink{api.link(r, "/collections/"+id+"/items/"+strconv.FormatUint(featureID, 10), "self", "application/geo+json"), api.link(r, "/collections/"+id, "collection", "application/json")}}
-	if len(queryParameters) != 0 {
-		response.Links[0].Href += "?" + queryParameters.Encode()
-	}
+	}{Feature: feature, Links: links}
 	w.Header().Set("Content-Crs", "<"+outputURI+">")
-	api.writeJSON(w, r, http.StatusOK, "application/geo+json", response)
+	api.writeRepresentation(w, r, http.StatusOK, "application/geo+json", response, links)
 }
 
 func (api *FeatureAPI) pageLink(r *http.Request, suffix, relation string, parameters url.Values, offset uint64) featureLink {
-	link := api.link(r, suffix, relation, "application/geo+json")
-	// Inputs have been parsed and validated; URL encoding preserves datetime/bbox
-	// values and prevents arbitrary query text from becoming link syntax.
 	values := make(url.Values, len(parameters))
 	for key, value := range parameters {
-		values[key] = append([]string{}, value...)
+		values[key] = append([]string(nil), value...)
 	}
 	values.Set("offset", strconv.FormatUint(offset, 10))
-	link.Href += "?" + values.Encode()
-	return link
+	return api.formatLink(r, suffix, relation, "application/geo+json", values, featureSelectedFormat(r))
 }
 
 func (api *FeatureAPI) writeQueryError(w http.ResponseWriter, r *http.Request, err error) {
@@ -465,4 +463,14 @@ func parseFeatureBoundsCRS(raw string, descriptor features.CRS, query *provider.
 		}
 	}
 	return nil
+}
+
+// A feature link preserves output CRS, while collection-only selection and paging
+// parameters do not become unsupported parameters on an individual feature.
+func itemRepresentationParameters(parameters url.Values) url.Values {
+	values := url.Values{}
+	if crs := parameters.Get("crs"); crs != "" {
+		values.Set("crs", crs)
+	}
+	return values
 }

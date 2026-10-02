@@ -7,7 +7,9 @@ func (api *FeatureAPI) serveConformance(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Discovery alone proves no complete OGC conformance class.
-	api.writeJSON(w, r, http.StatusOK, "application/json", struct {
-		ConformsTo []string `json:"conformsTo"`
-	}{ConformsTo: []string{}})
+	links := api.representationLinks(r, "/conformance", "application/json", nil)
+	api.writeRepresentation(w, r, http.StatusOK, "application/json", struct {
+		ConformsTo []string      `json:"conformsTo"`
+		Links      []featureLink `json:"links"`
+	}{ConformsTo: []string{}, Links: links}, links)
 }

@@ -1,15 +1,13 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexeydott/tegola/config"
-	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/observability"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/dimfeld/httptreemux"
@@ -17,11 +15,13 @@ import (
 
 // FeatureAPIConfig supplies immutable HTTP publication settings.
 type FeatureAPIConfig struct {
-	BasePath     string
-	DefaultLimit uint
-	MaxLimit     uint
-	Title        string
-	Description  string
+	MaxResponseBytes int64
+	QueryTimeout     time.Duration
+	BasePath         string
+	DefaultLimit     uint
+	MaxLimit         uint
+	Title            string
+	Description      string
 }
 
 // FeatureAPI wraps a resolved service. Build it with NewFeatureAPI before routing.
@@ -36,6 +36,15 @@ type RouterOptions struct{ Features *FeatureAPI }
 
 // NewFeatureAPI validates settings and public IDs independently of TOML callers.
 func NewFeatureAPI(service *features.Service, cfg FeatureAPIConfig) (*FeatureAPI, error) {
+	if cfg.MaxResponseBytes == 0 {
+		cfg.MaxResponseBytes = 16 << 20
+	}
+	if cfg.QueryTimeout == 0 {
+		cfg.QueryTimeout = 30 * time.Second
+	}
+	if cfg.MaxResponseBytes < 1024 || cfg.QueryTimeout <= 0 {
+		return nil, fmt.Errorf("features: invalid protocol limits")
+	}
 	if service == nil {
 		return nil, fmt.Errorf("features: nil publication service")
 	}
@@ -103,7 +112,7 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 		} else if strings.Contains(route.path, "/items") {
 			mediaType = "application/geo+json"
 		}
-		handler := HeadersHandler(featureNoStoreHandler(bound.negotiate(route.handler, mediaType)))
+		handler := HeadersHandler(featureNoStoreHandler(bound.protocolHandler(bound.negotiate(route.handler, mediaType))))
 		group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodGet, path, observer, handler))
 		group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodHead, path, observer, handler))
 	}
@@ -111,7 +120,8 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 	router.OptionsHandler = func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		oldOptions(w, r, params)
 		if bound.ownsPath(r.URL.Path) {
-			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+			featureProtocolHeaders(w.Header())
 		}
 	}
 	oldMethod := router.MethodNotAllowedHandler
@@ -121,17 +131,15 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 			return
 		}
 		setHeaders(w)
-		w.Header().Set("Cache-Control", "no-store")
-		for method := range methods {
-			w.Header().Add("Allow", method)
-		}
+		featureProtocolHeaders(w.Header())
+		w.Header().Set("Allow", "GET, HEAD, OPTIONS")
 		bound.writeError(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "Method not supported")
 	}
 }
 
 func featureNoStoreHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
+		featureProtocolHeaders(w.Header())
 		next.ServeHTTP(w, r)
 	})
 }
@@ -156,33 +164,6 @@ func (api *FeatureAPI) link(r *http.Request, suffix, relation, mediaType string)
 	}
 	target := url.URL{Scheme: root.Scheme, Host: root.Host, Path: rootPath + api.uriPrefix + api.cfg.BasePath + suffix}
 	return featureLink{Href: target.String(), Rel: relation, Type: mediaType}
-}
-
-func (api *FeatureAPI) writeJSON(w http.ResponseWriter, r *http.Request, status int, mediaType string, value any) {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		w.Header().Del("Content-Crs")
-		log.Error("feature response encoding failed", "error", err)
-		raw = []byte(`{"code":"InternalError","description":"Response encoding failed"}`)
-		status = http.StatusInternalServerError
-		mediaType = "application/json"
-	}
-	w.Header().Set("Content-Type", mediaType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
-	w.WriteHeader(status)
-	if r.Method == http.MethodHead {
-		return
-	}
-	if _, err := w.Write(raw); err != nil {
-		log.Error("feature response write failed", "error", err)
-	}
-}
-
-func (api *FeatureAPI) writeError(w http.ResponseWriter, r *http.Request, status int, code, description string) {
-	api.writeJSON(w, r, status, "application/json", struct {
-		Code        string `json:"code"`
-		Description string `json:"description"`
-	}{Code: code, Description: description})
 }
 
 func (api *FeatureAPI) discoveryQueryValid(w http.ResponseWriter, r *http.Request) bool {
@@ -216,6 +197,7 @@ func validateFeatureURIPrefix(prefix string) error {
 type Router struct {
 	*httptreemux.TreeMux
 	featureBasePath string
+	featureAPI      *FeatureAPI
 }
 
 // ServeHTTP applies feature cache policy to original or canonical feature paths.
@@ -226,8 +208,12 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return path == router.featureBasePath || strings.HasPrefix(path, router.featureBasePath+"/")
 		}
 		if owns(r.URL.Path) || owns(httptreemux.Clean(r.URL.Path)) {
-			w.Header().Set("Cache-Control", "no-store")
+			setHeaders(w)
+			featureProtocolHeaders(w.Header())
 			w = &featureCacheResponseWriter{ResponseWriter: w}
+			if router.featureAPI != nil && !router.featureAPI.requestBudgetValid(w, r) {
+				return
+			}
 		}
 	}
 	router.TreeMux.ServeHTTP(w, r)
@@ -237,10 +223,10 @@ type featureCacheResponseWriter struct{ http.ResponseWriter }
 
 func (w *featureCacheResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *featureCacheResponseWriter) WriteHeader(status int) {
-	w.Header().Set("Cache-Control", "no-store")
+	featureProtocolHeaders(w.Header())
 	w.ResponseWriter.WriteHeader(status)
 }
 func (w *featureCacheResponseWriter) Write(data []byte) (int, error) {
-	w.Header().Set("Cache-Control", "no-store")
+	featureProtocolHeaders(w.Header())
 	return w.ResponseWriter.Write(data)
 }

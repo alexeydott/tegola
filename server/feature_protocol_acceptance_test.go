@@ -26,6 +26,12 @@ func (protocolLayer) GeomType() geom.Geometry { return geom.Point{} }
 func (protocolLayer) TemporalMapping() (provider.TemporalMapping, error) {
 	return provider.TemporalMapping{}, nil
 }
+
+type protocolTemporalLayer struct{ protocolLayer }
+
+func (protocolTemporalLayer) TemporalMapping() (provider.TemporalMapping, error) {
+	return provider.TemporalMapping{InstantField: "at"}, nil
+}
 func (protocolLayer) FeatureQuerySupported() error { return nil }
 func (protocolLayer) SpatialMetadata() (provider.SpatialMetadata, error) {
 	return provider.SpatialMetadata{Dimension: provider.DimensionXY}, nil
@@ -146,11 +152,11 @@ func TestFeatureProtocolAcceptanceNegotiation(t *testing.T) {
 		{"/features/collections/public/items", nil, 200, "application/geo+json"},
 		{"/features/collections/public/items", []string{"application/geo+json"}, 200, "application/geo+json"},
 		{"/features/collections/public/items", []string{"*/*"}, 200, "application/geo+json"},
-		{"/features/collections/public/items", []string{"text/html"}, 406, "application/json"},
+		{"/features/collections/public/items", []string{"application/xml"}, 406, "application/json"},
 		{"/features/collections/public/items", []string{"application/json"}, 406, "application/json"},
 		{"/features/collections/public/items", []string{",, application/geo+json,,"}, 200, "application/geo+json"},
 		{"/features/collections/public/items", []string{"application/geo+json;q=1;note=\"a,b\""}, 200, "application/geo+json"},
-		{"/features/collections/public/items", []string{"application/geo+json;q=0, */*;q=1"}, 406, "application/json"},
+		{"/features/collections/public/items", []string{"application/geo+json;q=0, text/html;q=0, */*;q=1"}, 406, "application/json"},
 		{"/features/collections/public/items", []string{"text/html", "application/geo+json"}, 200, "application/geo+json"},
 		{"/features/collections", []string{"application/json"}, 200, "application/json"},
 		{"/features/collections", []string{"application/json;q=0, application/*;q=1"}, 406, "application/json"},
@@ -162,8 +168,8 @@ func TestFeatureProtocolAcceptanceNegotiation(t *testing.T) {
 			t.Errorf("%s Accept%v: %d %v %s", tc.path, tc.accept, r.status, r.header, r.body)
 		}
 	}
-	get := protocolRequest(t, srv, "GET", "/features/collections/public/items", "text/html")
-	head := protocolRequest(t, srv, "HEAD", "/features/collections/public/items", "text/html")
+	get := protocolRequest(t, srv, "GET", "/features/collections/public/items", "application/xml")
+	head := protocolRequest(t, srv, "HEAD", "/features/collections/public/items", "application/xml")
 	if head.status != 406 || len(head.body) != 0 || head.header.Get("Content-Length") != get.header.Get("Content-Length") {
 		t.Fatal("HEAD 406 parity", head)
 	}
@@ -182,7 +188,7 @@ func protocolIDs(t *testing.T, r protocolResponse) []uint64 {
 }
 func TestFeatureProtocolAcceptancePagingAndHEAD(t *testing.T) {
 	q := &protocolQuerier{}
-	srv := protocolServer(t, q, protocolLayer{}, "/stage")
+	srv := protocolServer(t, q, protocolTemporalLayer{}, "/stage")
 	path := "/stage/features/collections/public/items?limit=1&datetime=2020-01-01T00%3A00%3A00Z&bbox=10,20,20,40"
 	get := protocolRequest(t, srv, http.MethodGet, path)
 	if get.status != 200 || !reflect.DeepEqual(protocolIDs(t, get), []uint64{10}) {
@@ -206,6 +212,12 @@ func TestFeatureProtocolAcceptancePagingAndHEAD(t *testing.T) {
 		}
 		if !strings.HasPrefix(u.Path, "/stage/features/") {
 			t.Fatal("stage lost", link)
+		}
+		if link.Rel == "item" {
+			if len(u.Query()) != 1 || u.Query().Get("f") != "json" {
+				t.Fatal("item link invalid constraints", link)
+			}
+			continue
 		}
 		if u.Query().Get("datetime") != "2020-01-01T00:00:00Z" || u.Query().Get("bbox") != "10,20,20,40" {
 			t.Fatal("filters lost", link)

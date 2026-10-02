@@ -17,8 +17,13 @@ import (
 
 type transportQueryableLayer struct {
 	discoveryLayer
-	fields []provider.FeatureQueryable
-	err    error
+	mapping provider.TemporalMapping
+	fields  []provider.FeatureQueryable
+	err     error
+}
+
+func (l *transportQueryableLayer) TemporalMapping() (provider.TemporalMapping, error) {
+	return l.mapping, nil
 }
 
 func (l *transportQueryableLayer) FeatureQueryables() (provider.FeatureQueryables, error) {
@@ -48,7 +53,7 @@ func transportFilterRouter(t *testing.T) (*Router, *transportFilterQuerier) {
 	t.Helper()
 	backend := &transportFilterQuerier{}
 	sources := []features.CollectionSource{
-		{ID: "available", Title: "Available", Layer: &transportQueryableLayer{fields: []provider.FeatureQueryable{{Name: "s", Type: provider.QueryableString, Nullable: true}, {Name: "n", Type: provider.QueryableInteger}, {Name: "b", Type: provider.QueryableBoolean, Nullable: true}, {Name: "date", Type: provider.QueryableDate}, {Name: "stamp", Type: provider.QueryableTimestamp}, {Name: "bad name", Type: provider.QueryableString}}}, Querier: backend},
+		{ID: "available", Title: "Available", Layer: &transportQueryableLayer{mapping: provider.TemporalMapping{InstantField: "time"}, fields: []provider.FeatureQueryable{{Name: "s", Type: provider.QueryableString, Nullable: true}, {Name: "n", Type: provider.QueryableInteger}, {Name: "b", Type: provider.QueryableBoolean, Nullable: true}, {Name: "date", Type: provider.QueryableDate}, {Name: "stamp", Type: provider.QueryableTimestamp}, {Name: "bad name", Type: provider.QueryableString}}}, Querier: backend},
 		{ID: "empty", Layer: &transportQueryableLayer{}, Querier: backend},
 		{ID: "missingcap", Layer: discoveryLayer{}, Querier: backend},
 		{ID: "unsupported", Layer: &transportQueryableLayer{err: provider.ErrUnsupported}, Querier: backend},
@@ -121,7 +126,7 @@ func TestFeatureQueryablesNegotiationErrorsAndLinks(t *testing.T) {
 	}{
 		{"/features/collections/available/queryables", "GET", "application/schema+json", 200},
 		{"/features/collections/available/queryables", "GET", "application/json", 406},
-		{"/features/collections/available/queryables", "HEAD", "application/schema+json;q=0,*/*;q=1", 406},
+		{"/features/collections/available/queryables", "HEAD", "application/schema+json;q=0,text/html;q=0,*/*;q=1", 406},
 		{"/features/collections/available/queryables", "GET", "application/*", 200},
 		{"/features/collections/available/queryables?filter=TRUE", "GET", "", 400},
 		{"/features/collections/missingcap/queryables", "GET", "", 501},
@@ -156,7 +161,7 @@ func TestFeatureQueryablesNegotiationErrorsAndLinks(t *testing.T) {
 		for _, link := range doc.Links {
 			if link.Rel == "http://www.opengis.net/def/rel/ogc/1.0/queryables" {
 				found = true
-				if link.Type != "application/schema+json" || !strings.HasSuffix(link.Href, "/queryables") {
+				if link.Type != "application/schema+json" || !strings.HasSuffix(link.Href, "/queryables?f=json") {
 					t.Fatal(link)
 				}
 			}
@@ -216,7 +221,7 @@ func TestFeatureFilterHTTPPreservesQueryAndPaging(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Links) != 3 {
+	if len(doc.Links) != 5 {
 		t.Fatal(doc.Links)
 	}
 	for _, link := range doc.Links {
@@ -225,6 +230,12 @@ func TestFeatureFilterHTTPPreservesQueryAndPaging(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := target.Query()
+		if link.Rel == "item" {
+			if len(q) != 1 || q.Get("f") != "json" {
+				t.Fatal("collection-only constraints leaked into item link", link)
+			}
+			continue
+		}
 		if q.Get("filter") != filter || q.Get("filter-lang") != "cql2-text" || q.Get("bbox") != values.Get("bbox") || q.Get("datetime") != datetime {
 			t.Fatal("paging constraints changed", link)
 		}
@@ -265,15 +276,22 @@ func TestFeatureFilterHTTPBoundedLiteralAndOpenAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := doc["paths"].(map[string]any)
-	schema := paths["/collections/{collection}/queryables"].(map[string]any)
+	schema := paths["/collections/available/queryables"].(map[string]any)
 	for _, method := range []string{"get", "head"} {
 		op := schema[method].(map[string]any)
-		content := op["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)
+		response := op["responses"].(map[string]any)["200"].(map[string]any)
+		if method == "head" {
+			if response["content"] != nil {
+				t.Fatal("HEAD schema declares body")
+			}
+			continue
+		}
+		content := response["content"].(map[string]any)
 		if content["application/schema+json"] == nil {
 			t.Fatal("schema media missing")
 		}
 	}
-	items := paths["/collections/{collection}/items"].(map[string]any)["get"].(map[string]any)
+	items := paths["/collections/available/items"].(map[string]any)["get"].(map[string]any)
 	found := map[string]bool{}
 	for _, parameter := range items["parameters"].([]any) {
 		found[parameter.(map[string]any)["name"].(string)] = true

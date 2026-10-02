@@ -50,6 +50,12 @@ func (s *Service) QueryCollectionWithOptions(ctx context.Context, collectionID s
 	if err := query.Validate(); err != nil {
 		return provider.FeatureQueryResult{}, err
 	}
+	// A validated datetime cannot exclude features in a collection whose frozen
+	// metadata declares no temporal geometry. Do not ask its provider to execute
+	// an unsupported predicate; other predicates and paging still apply.
+	if query.Temporal != nil && collection.temporal == (provider.TemporalMapping{}) {
+		query.Temporal = nil
+	}
 	if query.Filter != nil {
 		catalog, err := s.Queryables(collectionID)
 		if err != nil {

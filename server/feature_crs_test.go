@@ -75,6 +75,12 @@ func TestFeatureCRSAxesHeadersAndOriginalBounds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if link.Rel == "item" {
+				if parsed.Query().Get("crs") != uri || parsed.Query().Get("bbox-crs") != "" {
+					t.Fatal("item CRS changed")
+				}
+				continue
+			}
 			if parsed.Query().Get("crs") != uri || parsed.Query().Get("bbox-crs") != uri {
 				t.Fatal("paging lost CRS")
 			}
@@ -159,7 +165,7 @@ func TestFeatureCRSOpenAPICoreParameterDefinitions(t *testing.T) {
 	}
 	for _, method := range []string{"get", "head"} {
 		byName := map[string]map[string]any{}
-		for _, parameter := range document.Paths["/collections/{collection}/items"][method].Parameters {
+		for _, parameter := range document.Paths["/collections/public/items"][method].Parameters {
 			byName[parameter["name"].(string)] = parameter
 		}
 		for _, name := range []string{"limit", "bbox", "datetime"} {

@@ -102,3 +102,14 @@ are omitted, rather than guessed from rows.
 The [filtering guide](../filtering.md) describes the application profile, request
 limits and three-valued comparison semantics. Implemented application behavior
 does not establish an official conformance declaration.
+
+## Representations and protocol boundary
+
+[ADR-0011](decisions/ADR-0011-feature-representations-and-protocol.md) defines
+capability-driven OpenAPI, JSON/HTML representations and feature-only HTTP limits.
+The API generator reads immutable service metadata without provider I/O.
+HTTP representation selection, format links, CORS and response commitment stay
+in `server/`; embedded HTML templates receive complete response values and
+explicit protocol links. Provider queries and geometry transformations remain
+outside presentation code. Configuration and executable wiring carry the
+publication deadline and encoded-response cap through CLI and Lambda.

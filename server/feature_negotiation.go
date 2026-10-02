@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"mime"
 	"net/http"
 	"regexp"
@@ -12,43 +13,59 @@ var featureQualitySyntax = regexp.MustCompile(`^(0(\.[0-9]{0,3})?|1(\.0{0,3})?)$
 
 func (api *FeatureAPI) negotiate(next http.Handler, mediaType string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !featureAccepts(r.Header.Values("Accept"), mediaType) {
-			api.writeError(w, r, http.StatusNotAcceptable, "NotAcceptable", "Requested representation is unavailable")
-			return
+		format := featureSelectedFormat(r)
+		if format == "" {
+			jq, js, jok := featureAcceptScore(r.Header.Values("Accept"), mediaType)
+			hq, hs, hok := featureAcceptScore(r.Header.Values("Accept"), "text/html; charset=utf-8")
+			if !jok && !hok {
+				api.writeError(w, r, 406, "NotAcceptable", "Requested representation is unavailable")
+				return
+			}
+			format = "json"
+			if hok && (!jok || hq > jq || (hq == jq && hs > js)) {
+				format = "html"
+			}
+			state, _ := r.Context().Value(featureRequestKey{}).(featureRequestState)
+			state.format = format
+			r = r.WithContext(context.WithValue(r.Context(), featureRequestKey{}, state))
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
 func featureAccepts(headers []string, representation string) bool {
+	_, _, ok := featureAcceptScore(headers, representation)
+	return ok
+}
+func featureAcceptScore(headers []string, representation string) (float64, int, bool) {
 	if len(headers) == 0 {
-		return true
+		return 1, 0, true
 	}
 	ranges, ok := splitFeatureMediaRanges(strings.Join(headers, ","))
 	if !ok {
-		return false
+		return 0, -1, false
 	}
 	actual, actualParameters, err := mime.ParseMediaType(representation)
 	if err != nil {
-		return false
+		return 0, -1, false
 	}
 	best, quality := -1, 0.0
 	for _, raw := range ranges {
 		media, parameters, err := mime.ParseMediaType(strings.TrimSpace(raw))
 		if err != nil {
-			return false
+			return 0, -1, false
 		}
 		parts := strings.Split(media, "/")
 		if len(parts) != 2 || (parts[0] == "*" && parts[1] != "*") {
-			return false
+			return 0, -1, false
 		}
 		if strings.Contains(parts[0], "*") && parts[0] != "*" || strings.Contains(parts[1], "*") && parts[1] != "*" {
-			return false
+			return 0, -1, false
 		}
 		q := 1.0
 		rawParts, ok := splitFeatureDelimited(raw, ';')
 		if !ok {
-			return false
+			return 0, -1, false
 		}
 		weightIndex := -1
 		for i, part := range rawParts[1:] {
@@ -59,19 +76,19 @@ func featureAccepts(headers []string, representation string) bool {
 			// Validate the raw token: MIME normalization unquotes values and
 			// can collapse repeated identical parameters.
 			if weightIndex >= 0 || !present || !featureQualitySyntax.MatchString(strings.TrimSpace(value)) {
-				return false
+				return 0, -1, false
 			}
 			weightIndex = i + 1
 			q, err = strconv.ParseFloat(strings.TrimSpace(value), 64)
 			if err != nil {
-				return false
+				return 0, -1, false
 			}
 		}
 		if weightIndex >= 0 {
 			// Parameters after q are Accept extensions, not representation constraints.
 			_, parameters, err = mime.ParseMediaType(strings.Join(rawParts[:weightIndex], ";"))
 			if err != nil {
-				return false
+				return 0, -1, false
 			}
 		}
 		specificity := -1
@@ -88,7 +105,7 @@ func featureAccepts(headers []string, representation string) bool {
 		}
 		matches := true
 		for key, value := range parameters {
-			if actualParameters[key] != value {
+			if actualParameters[key] != value && !(key == "charset" && strings.EqualFold(actualParameters[key], value)) {
 				matches = false
 				break
 			}
@@ -103,7 +120,7 @@ func featureAccepts(headers []string, representation string) bool {
 			quality = q
 		}
 	}
-	return best >= 0 && quality > 0
+	return quality, best, best >= 0 && quality > 0
 }
 
 // Commas inside quoted parameter values are part of a media range.
