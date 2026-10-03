@@ -110,11 +110,11 @@ func TestClampForwardDomain(t *testing.T) {
 		wantLat   float64
 		wantClamp bool
 	}{
-		{"north pole", 3857, []float64{10, 90}, 85.05112878, true},
-		{"south pole", 3857, []float64{-30, -90}, -85.05112878, true},
-		{"beyond pole", 3857, []float64{0, 90.5}, 85.05112878, true},
+		{"north pole", 3857, []float64{10, 90}, mercatorLatitudeLimit, true},
+		{"south pole", 3857, []float64{-30, -90}, -mercatorLatitudeLimit, true},
+		{"beyond pole", 3857, []float64{0, 90.5}, mercatorLatitudeLimit, true},
 		{"inside domain", 3857, []float64{10, 45}, 0, false},
-		{"near pole outside conventional edge", 3857, []float64{10, 89.9}, 85.05112878, true},
+		{"near pole outside edge", 3857, []float64{10, 89.9}, mercatorLatitudeLimit, true},
 		{"nan latitude", 3857, []float64{0, math.NaN()}, 0, false},
 		{"geographic never clamps", 4326, []float64{0, 90}, 0, false},
 		{"utm never clamps", 32633, []float64{0, 90}, 0, false},
@@ -132,14 +132,19 @@ func TestClampForwardDomain(t *testing.T) {
 			if clamped[0] != test.ll[0] || clamped[1] != test.wantLat {
 				t.Fatalf("clamped=%v", clamped)
 			}
-			// The clamped vertex must forward without error.
+			// The clamped vertex must forward without error and land inside
+			// the canonical Web Mercator world extent.
 			def, _ := CanonicalFeatureDefinition(test.srid)
 			p, err := NewFeatureProjection(def)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := p.Forward(clamped); err != nil {
+			xy, err := p.Forward(clamped)
+			if err != nil {
 				t.Fatalf("clamped vertex still fails: %v", err)
+			}
+			if math.Abs(xy[1]) > mercatorWorldExtent {
+				t.Fatalf("clamped image %v outside canonical extent ±%v", xy[1], mercatorWorldExtent)
 			}
 		})
 	}

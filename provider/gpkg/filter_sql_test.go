@@ -139,6 +139,71 @@ INSERT INTO items VALUES(10,'POINT (0 0)','alpha','A1',1,0.5,1.25,'n1'),(20,'POI
 	}
 }
 
+func TestFeatureFilterNumberExactBounds(t *testing.T) {
+	// score holds REAL values; n is NUMERIC holding integers (typeof integer
+	// at rest) so the review's integer-backed example exercises the number
+	// path. id 3 is the NULL control: NULL never matches any comparison.
+	p, _ := filterTestProvider(t, `CREATE TABLE items(id INTEGER PRIMARY KEY,geom TEXT,score REAL,n NUMERIC);
+INSERT INTO items VALUES(1,'POINT (0 0)',0.1,9007199254740992),(2,'POINT (0 0)',0.3,0),(3,'POINT (0 0)',NULL,NULL);`, nil)
+	for _, test := range []struct {
+		name   string
+		column string
+		text   string
+		op     provider.FilterCompareOperator
+		ids    []uint64
+	}{
+		// 9007199254740993 is not representable as float64: the nearest
+		// double equals the stored 9007199254740992, so a nearest-float
+		// binding would wrongly report equality.
+		{"int_equal_not_representable", "n", "9007199254740993", provider.FilterEqual, []uint64{}},
+		{"int_not_equal_not_representable", "n", "9007199254740993", provider.FilterNotEqual, []uint64{1, 2}},
+		{"int_less_not_representable", "n", "9007199254740993", provider.FilterLess, []uint64{1, 2}},
+		{"int_less_equal_not_representable", "n", "9007199254740993", provider.FilterLessEqual, []uint64{1, 2}},
+		{"int_greater_not_representable", "n", "9007199254740993", provider.FilterGreater, []uint64{}},
+		{"int_greater_equal_not_representable", "n", "9007199254740993", provider.FilterGreaterEqual, []uint64{}},
+		{"int_equal_representable", "n", "9007199254740992", provider.FilterEqual, []uint64{1}},
+		// 1e-4096 underflows to zero as float64; it must not match a stored zero.
+		{"underflow_equal", "n", "1e-4096", provider.FilterEqual, []uint64{}},
+		{"underflow_not_equal", "n", "1e-4096", provider.FilterNotEqual, []uint64{1, 2}},
+		{"underflow_less", "n", "1e-4096", provider.FilterLess, []uint64{2}},
+		{"underflow_less_equal", "n", "1e-4096", provider.FilterLessEqual, []uint64{2}},
+		{"underflow_greater", "n", "1e-4096", provider.FilterGreater, []uint64{1}},
+		{"underflow_greater_equal", "n", "1e-4096", provider.FilterGreaterEqual, []uint64{1}},
+		// Overflow folds to constants: every finite value is below 1e4096
+		// and above -1e4096.
+		{"overflow_less", "n", "1e4096", provider.FilterLess, []uint64{1, 2}},
+		{"overflow_less_equal", "n", "1e4096", provider.FilterLessEqual, []uint64{1, 2}},
+		{"overflow_greater", "n", "1e4096", provider.FilterGreater, []uint64{}},
+		{"overflow_greater_equal", "n", "1e4096", provider.FilterGreaterEqual, []uint64{}},
+		{"overflow_equal", "n", "1e4096", provider.FilterEqual, []uint64{}},
+		{"overflow_not_equal", "n", "1e4096", provider.FilterNotEqual, []uint64{1, 2}},
+		{"neg_overflow_greater", "n", "-1e4096", provider.FilterGreater, []uint64{1, 2}},
+		{"neg_overflow_greater_equal", "n", "-1e4096", provider.FilterGreaterEqual, []uint64{1, 2}},
+		{"neg_overflow_less", "n", "-1e4096", provider.FilterLess, []uint64{}},
+		{"neg_overflow_less_equal", "n", "-1e4096", provider.FilterLessEqual, []uint64{}},
+		{"neg_overflow_equal", "n", "-1e4096", provider.FilterEqual, []uint64{}},
+		{"neg_overflow_not_equal", "n", "-1e4096", provider.FilterNotEqual, []uint64{1, 2}},
+		// Directed bounds: 0.1 is not representable and its nearest double
+		// is above the exact literal, so score > 0.1 must see the stored
+		// 0.1 while score <= 0.1 must not. 0.3's nearest double is below
+		// the literal, mirroring the other direction.
+		{"real_equal_exact_only", "score", "0.1", provider.FilterEqual, []uint64{}},
+		{"real_not_equal_exact_only", "score", "0.1", provider.FilterNotEqual, []uint64{1, 2}},
+		{"real_greater_directed", "score", "0.1", provider.FilterGreater, []uint64{1, 2}},
+		{"real_less_equal_directed", "score", "0.1", provider.FilterLessEqual, []uint64{}},
+		{"real_less_directed", "score", "0.3", provider.FilterLess, []uint64{1, 2}},
+		{"real_greater_equal_directed", "score", "0.3", provider.FilterGreaterEqual, []uint64{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := provider.FeatureQuery{Limit: 10, Filter: filterTestExpression(t, filterTestCompare(t, test.column, test.text, provider.FilterNumber, test.op))}
+			ids, result := queryIDs(t, p, query)
+			if !reflect.DeepEqual(ids, test.ids) || result.NumberMatched == nil || *result.NumberMatched != uint64(len(test.ids)) {
+				t.Fatalf("IDs %v want %v result%+v", ids, test.ids, result)
+			}
+		})
+	}
+}
+
 func TestFeatureFilterInvalidDomainCannotBeMasked(t *testing.T) {
 	for _, test := range []struct{ name, column, value string }{
 		{"integer", "n", "'bad'"}, {"bool_two", "b", "2"}, {"bool_text", "b", "'bad'"},

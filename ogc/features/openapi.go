@@ -159,11 +159,11 @@ func openAPIPath(id, summary, media, schema string, parameters []any, spatial bo
 		}
 		responses["301"] = redirect
 		for status, description := range map[string]string{
-			"400": "Invalid, repeated, blank or unknown query parameter",
+			"400": "Invalid, repeated, blank or unknown query parameter; or the response exceeds the publication limit (reduce limit)",
 			"404": "Resource not found", "405": "Method not supported; Allow: GET, HEAD, OPTIONS",
 			"406": "Requested representation is unavailable", "408": "Request cancelled or deadline exceeded",
 			"414": "Raw query exceeds 65536 bytes", "431": "Aggregate Accept headers exceed 16384 bytes",
-			"500": "Resource failed, including source integrity, encoding or ResponseTooLarge",
+			"500": "Resource failed, including source integrity or encoding",
 			"501": "Query operation is unsupported",
 		} {
 			response := map[string]any{"description": description, "headers": openAPIHeaders(false)}

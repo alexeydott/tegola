@@ -361,16 +361,23 @@ func compileFilterInteger(source string, operator provider.FilterCompareOperator
 }
 
 // compileFilterNumber compiles a comparison against a REAL-affinity column.
-// SQLite stores REAL values as float64; the CQL2 numeric literal is converted
-// exactly the same way. Literals outside the float64 range fold to constants:
-// nothing is finite-equal to an infinity, and every finite value is on one
-// side of it. NULL never matches, mirroring the integer path.
+// SQLite stores REAL values as float64, so the comparison must be exact in
+// float64 terms. The CQL2 numeric literal is an exact rational, and binding
+// its nearest float64 would change semantics whenever the literal is not
+// representable: 9007199254740993 would match a stored 9007199254740992,
+// and 1e-4096 would underflow to zero and match a stored zero. Instead the
+// literal is replaced by directed float64 bounds: < and > bind the bound on
+// the literal's side, <= and >= bind the bound on the value's side, = folds
+// to false and <> to true when the literal is not representable. A validated
+// CQL2 numeric literal is a finite rational, so NaN can never arise here.
+// Literals beyond the float64 range fold to constants: every finite stored
+// value is below a +infinite literal and above a -infinite one. NULL never
+// matches, mirroring the integer path.
 func compileFilterNumber(source string, operator provider.FilterCompareOperator, literal provider.FilterLiteral, args *[]any) (string, error) {
 	rational, ok := literal.Number()
 	if !ok {
 		return "", invalidQuery("filter", "invalid numeric literal")
 	}
-	value, _ := new(big.Float).SetPrec(256).SetRat(rational).Float64()
 	fold := func(value bool) string {
 		constant := "0"
 		if value {
@@ -378,38 +385,68 @@ func compileFilterNumber(source string, operator provider.FilterCompareOperator,
 		}
 		return "CASE WHEN " + source + " IS NULL THEN NULL ELSE " + constant + " END"
 	}
-	if math.IsInf(value, 1) {
+	maxFloat := new(big.Rat).SetFloat64(math.MaxFloat64)
+	switch {
+	case rational.Cmp(maxFloat) > 0:
+		// The literal exceeds every finite float64.
 		switch operator {
-		case provider.FilterEqual, provider.FilterLess, provider.FilterLessEqual, provider.FilterGreater:
+		case provider.FilterEqual, provider.FilterGreater, provider.FilterGreaterEqual:
 			return fold(false), nil
-		case provider.FilterNotEqual, provider.FilterGreaterEqual:
+		case provider.FilterNotEqual, provider.FilterLess, provider.FilterLessEqual:
 			return fold(true), nil
 		}
 		return "", invalidQuery("filter", "invalid comparison")
-	}
-	if math.IsInf(value, -1) {
+	case rational.Cmp(new(big.Rat).Neg(maxFloat)) < 0:
+		// Symmetric: the literal is below every finite float64.
 		switch operator {
-		case provider.FilterEqual, provider.FilterGreater, provider.FilterGreaterEqual, provider.FilterLess:
+		case provider.FilterEqual, provider.FilterLess, provider.FilterLessEqual:
 			return fold(false), nil
-		case provider.FilterNotEqual, provider.FilterLessEqual:
+		case provider.FilterNotEqual, provider.FilterGreater, provider.FilterGreaterEqual:
 			return fold(true), nil
 		}
 		return "", invalidQuery("filter", "invalid comparison")
 	}
-	if math.IsNaN(value) {
-		// NaN is unordered: only <> can match, and only for non-null values.
-		if operator == provider.FilterNotEqual {
-			return fold(true), nil
-		}
-		if operator == provider.FilterEqual {
+	nearest, _ := new(big.Float).SetPrec(256).SetRat(rational).Float64()
+	exact := new(big.Rat).SetFloat64(nearest)
+	// cmp reports where the nearest float64 sits relative to the exact
+	// literal: 0 means the literal is representable, -1 that the nearest
+	// rounded down, +1 that it rounded up.
+	cmp := exact.Cmp(rational)
+	// lo is the greatest float64 <= literal, hi the smallest float64 >= it.
+	lo, hi := nearest, nearest
+	if cmp > 0 {
+		lo = math.Nextafter(nearest, math.Inf(-1))
+	} else if cmp < 0 {
+		hi = math.Nextafter(nearest, math.Inf(1))
+	}
+	switch operator {
+	case provider.FilterEqual:
+		if cmp != 0 {
 			return fold(false), nil
 		}
+	case provider.FilterNotEqual:
+		if cmp != 0 {
+			return fold(true), nil
+		}
+	case provider.FilterLess:
+		*args = append(*args, hi)
+		return source + " < ?", nil
+	case provider.FilterLessEqual:
+		*args = append(*args, lo)
+		return source + " <= ?", nil
+	case provider.FilterGreater:
+		*args = append(*args, lo)
+		return source + " > ?", nil
+	case provider.FilterGreaterEqual:
+		*args = append(*args, hi)
+		return source + " >= ?", nil
+	default:
 		return "", invalidQuery("filter", "invalid comparison")
 	}
+	*args = append(*args, nearest)
 	direction, err := featureFilterOperator(operator)
 	if err != nil {
 		return "", err
 	}
-	*args = append(*args, value)
 	return source + " " + direction + " ?", nil
 }

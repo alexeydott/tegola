@@ -2,6 +2,7 @@ package crsconfig
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -127,20 +128,30 @@ func (p *FeatureProjection) CanonicalDefinition() string {
 	return definition
 }
 
+// mercatorWorldExtent is the canonical Web Mercator world edge: R*π for the
+// WGS84 semi-major axis R = 6378137 m. Full-world EPSG:3857 bbox tests use it.
+const mercatorWorldExtent = 20037508.342789244
+
+// mercatorLatitudeLimit is the WGS84 latitude whose Web Mercator image is the
+// canonical world edge: atan(sinh(π)) in degrees. The conventional rounded
+// 85.05112878° projects to ≈20037508.34304, marginally outside the canonical
+// extent, so a polar clamp must use the exact latitude to keep the clamped
+// vertex inside full-world EPSG:3857 bbox tests.
+var mercatorLatitudeLimit = 180 / math.Pi * math.Atan(math.Sinh(math.Pi))
+
 // ClampForwardDomain clamps a WGS84 lon/lat pair into the finite forward domain
 // of an admitted projection SRID, reporting whether a clamp was applied. Only
 // Web Mercator (3857) needs it: the poles are valid WGS84 source data but have
 // no finite Mercator image, and the vendored forward fails there. The clamp
-// pins latitude to the conventional ±85.05112878° world edge used by
-// interactive maps, keeping every image inside ±20037508.34 m. Callers invoke
-// it only as a fallback after a forward failure, so legitimate transforms are
-// never altered. Non-finite latitudes, pairs of the wrong shape, and every
-// other admitted profile (which forwards all finite lon/lat) never clamp.
+// pins latitude to the exact world edge above, keeping every image inside the
+// canonical ±20037508.342789244 m extent. Callers invoke it only as a fallback
+// after a forward failure, so legitimate transforms are never altered.
+// Non-finite latitudes, pairs of the wrong shape, and every other admitted
+// profile (which forwards all finite lon/lat) never clamp.
 func ClampForwardDomain(srid uint64, ll []float64) ([]float64, bool) {
 	if srid != 3857 || len(ll) != 2 {
 		return nil, false
 	}
-	const mercatorLatitudeLimit = 85.05112878
 	switch lat := ll[1]; {
 	case lat > mercatorLatitudeLimit:
 		return []float64{ll[0], mercatorLatitudeLimit}, true

@@ -170,11 +170,13 @@ Core datetime is described for every collection.
 ### Item query parameters and paging
 
 In addition to `f`, the following parameters are accepted on the items resource. Unknown or
-repeated parameters return 400. Spatial, temporal and property constraints combine by AND.
+repeated parameters return 400. This strictness is deliberate: clients must send
+only documented parameters; anything else is rejected rather than silently ignored.
+Spatial, temporal and property constraints combine by AND.
 
 | Parameter | Behavior |
 | --- | --- |
-| `limit` | Positive decimal page size; defaults to 100 and clamps to the configured maximum (default 10000). Zero and nondecimal values are invalid. |
+| `limit` | Positive decimal page size; defaults to 100. Values above the configured maximum (default 10000) are rejected with 400. Zero and nondecimal values are invalid. |
 | `offset` | Nonnegative decimal offset in stable feature-ID order; defaults to 0. This is a Tegola paging extension. |
 | `bbox` | Four or six coordinates in `bbox-crs`, or the Core defaults below when `bbox-crs` is absent. |
 | `bbox-crs` | Exact advertised CRS identifier for the bbox; requires `bbox`. |
@@ -325,8 +327,11 @@ HEAD emits no body. OPTIONS advertises GET, HEAD and OPTIONS. Feature CORS expos
 Content-Crs while retaining configured origin and credential policy.
 
 Feature publication defaults to a 30-second cooperative deadline and a 16 MiB
-encoded response cap. Exceeding the cap returns generic 500 `ResponseTooLarge`
-before a partial response is sent, including for HEAD. These limits bound the
+encoded response cap. Exceeding the cap returns 400 `ResponseTooLarge`
+(`{"code":"ResponseTooLarge","description":"Response exceeds publication limit"}`)
+before a partial response is sent, including for HEAD: the request asked for
+more than the publication can encode, so narrow it (smaller `limit`, tighter
+`bbox`, or a more selective `filter`) and retry. These limits bound the
 response, not all service or encoder allocations. A raw query above 64 KiB returns
 414; aggregate Accept headers above 16 KiB return 431. Limits are applied before
 provider I/O where possible. See [publication configuration](configuration.md#feature-publication).
