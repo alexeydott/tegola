@@ -105,14 +105,20 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 	response := api.itemResponse(r, id, featureID, feature)
 	w.Header().Set("Content-Crs", "<"+outputURI+">")
 	// Strong ETag bound to the exact served bytes (including links), for
-	// use with If-Match on Part 4 mutations.
+	// use with If-Match on Part 4 mutations. Set after
+	// featureProtocolHeaders, which clears validators.
 	raw, media, err := api.renderRepresentation(r, http.StatusOK, "application/geo+json", response, links)
 	if err != nil {
-		api.writeQueryError(w, r, err)
+		if errors.Is(err, errFeatureResponseTooLarge) {
+			api.writeError(w, r, http.StatusBadRequest, "ResponseTooLarge", "Response exceeds publication limit")
+		} else {
+			api.writeQueryError(w, r, err)
+		}
 		return
 	}
-	w.Header().Set("ETag", strongETag(raw))
 	featureProtocolHeaders(w.Header())
+	w.Header().Set("ETag", strongETag(raw))
+	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
 	w.Header().Set("Content-Type", media)
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	w.WriteHeader(http.StatusOK)

@@ -85,6 +85,7 @@ func (tx *featureResponseTransaction) fail(status int, code, description string)
 	tx.status = status
 	tx.committed = tx.header.Clone()
 	tx.committed.Del("Content-Crs")
+	tx.committed.Del("ETag")
 	tx.committed.Del("Location")
 	for _, declaration := range tx.committed.Values("Trailer") {
 		for _, name := range strings.Split(declaration, ",") {
@@ -106,7 +107,14 @@ func (tx *featureResponseTransaction) commit(w http.ResponseWriter, r *http.Requ
 	if tx.status == 0 {
 		tx.WriteHeader(http.StatusOK)
 	}
+	// Preserve an explicitly-set ETag across featureProtocolHeaders,
+	// which clears validators (handlers set it after the middleware).
+	etag := tx.committed.Get("ETag")
 	featureProtocolHeaders(tx.committed)
+	if etag != "" {
+		tx.committed.Set("ETag", etag)
+		mergeFeatureHeader(tx.committed, "Access-Control-Expose-Headers", "ETag")
+	}
 	if r.Method != http.MethodHead || tx.committed.Get("Content-Length") == "" {
 		tx.committed.Set("Content-Length", strconv.Itoa(tx.body.Len()))
 	}
