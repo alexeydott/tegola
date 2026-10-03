@@ -127,6 +127,29 @@ func (p *FeatureProjection) CanonicalDefinition() string {
 	return definition
 }
 
+// ClampForwardDomain clamps a WGS84 lon/lat pair into the finite forward domain
+// of an admitted projection SRID, reporting whether a clamp was applied. Only
+// Web Mercator (3857) needs it: the poles are valid WGS84 source data but have
+// no finite Mercator image, and the vendored forward fails there. The clamp
+// pins latitude to the conventional ±85.05112878° world edge used by
+// interactive maps, keeping every image inside ±20037508.34 m. Callers invoke
+// it only as a fallback after a forward failure, so legitimate transforms are
+// never altered. Non-finite latitudes, pairs of the wrong shape, and every
+// other admitted profile (which forwards all finite lon/lat) never clamp.
+func ClampForwardDomain(srid uint64, ll []float64) ([]float64, bool) {
+	if srid != 3857 || len(ll) != 2 {
+		return nil, false
+	}
+	const mercatorLatitudeLimit = 85.05112878
+	switch lat := ll[1]; {
+	case lat > mercatorLatitudeLimit:
+		return []float64{ll[0], mercatorLatitudeLimit}, true
+	case lat < -mercatorLatitudeLimit:
+		return []float64{ll[0], -mercatorLatitudeLimit}, true
+	}
+	return nil, false
+}
+
 func (p *FeatureProjection) Forward(xy []float64) ([]float64, error) {
 	if p == nil || p.projection == nil {
 		return nil, fmt.Errorf("feature projection unavailable")

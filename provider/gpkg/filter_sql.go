@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"reflect"
 	"strings"
@@ -95,12 +96,16 @@ func (profile *featureFilterProfile) freeze(layer *Layer) error {
 		if c.hidden != 0 || !containsExact(public, c.name) {
 			continue
 		}
-		switch strings.ToUpper(strings.TrimSpace(c.declaration)) {
-		case "INTEGER", "INT", "BIGINT", "SMALLINT", "TINYINT":
+		// SQLite declarations may carry parameters ("TEXT(15)") or aliases
+		// ("DOUBLE PRECISION"); only the normalized base name is admitted.
+		switch normalizeFilterColumnType(c.declaration) {
+		case "INTEGER", "INT", "BIGINT", "SMALLINT", "MEDIUMINT", "TINYINT", "INT2", "INT8":
 			c.kind = provider.QueryableInteger
+		case "REAL", "DOUBLE", "DOUBLE PRECISION", "FLOAT", "NUMERIC", "DECIMAL":
+			c.kind = provider.QueryableNumber
 		case "BOOLEAN", "BOOL":
 			c.kind = provider.QueryableBoolean
-		case "TEXT":
+		case "TEXT", "CHAR", "CHARACTER", "VARCHAR", "NCHAR", "NATIVE CHARACTER", "NVARCHAR", "CLOB":
 			c.kind = provider.QueryableString
 		default:
 			continue
@@ -114,6 +119,18 @@ func (profile *featureFilterProfile) freeze(layer *Layer) error {
 	}
 	profile.catalog, profile.columns = catalog, columns
 	return nil
+}
+
+// normalizeFilterColumnType reduces a SQLite column type declaration to its
+// base name: parameters ("TEXT(15)"), letter case and surrounding space are
+// removed. Only exact base names are admitted by the caller; anything else
+// stays unqueryable.
+func normalizeFilterColumnType(declaration string) string {
+	t := strings.ToUpper(strings.TrimSpace(declaration))
+	if i := strings.IndexByte(t, '('); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	return t
 }
 
 func containsExact(values []string, value string) bool {
@@ -164,6 +181,9 @@ func (profile *featureFilterProfile) verify(ctx context.Context, tx *sql.Tx, tab
 		source := "l." + quoteIdent(c.name)
 		domain := "typeof(" + source + ")='integer'"
 		switch c.kind {
+		case provider.QueryableNumber:
+			// REAL-affinity columns may store whole numbers as integers.
+			domain = "typeof(" + source + ") IN ('integer','real')"
 		case provider.QueryableBoolean:
 			domain += " AND " + source + " IN (0,1)"
 		case provider.QueryableString:
@@ -241,6 +261,8 @@ func (profile *featureFilterProfile) compile(node provider.FilterNode, args *[]a
 			return source + " " + operator + " ?", nil
 		case provider.QueryableInteger:
 			return compileFilterInteger(source, node.Operator, node.Literal, args)
+		case provider.QueryableNumber:
+			return compileFilterNumber(source, node.Operator, node.Literal, args)
 		default:
 			return "", filterUnsupported()
 		}
@@ -335,5 +357,59 @@ func compileFilterInteger(source string, operator provider.FilterCompareOperator
 		}
 	}
 	*args = append(*args, bound.Int64())
+	return source + " " + direction + " ?", nil
+}
+
+// compileFilterNumber compiles a comparison against a REAL-affinity column.
+// SQLite stores REAL values as float64; the CQL2 numeric literal is converted
+// exactly the same way. Literals outside the float64 range fold to constants:
+// nothing is finite-equal to an infinity, and every finite value is on one
+// side of it. NULL never matches, mirroring the integer path.
+func compileFilterNumber(source string, operator provider.FilterCompareOperator, literal provider.FilterLiteral, args *[]any) (string, error) {
+	rational, ok := literal.Number()
+	if !ok {
+		return "", invalidQuery("filter", "invalid numeric literal")
+	}
+	value, _ := new(big.Float).SetPrec(256).SetRat(rational).Float64()
+	fold := func(value bool) string {
+		constant := "0"
+		if value {
+			constant = "1"
+		}
+		return "CASE WHEN " + source + " IS NULL THEN NULL ELSE " + constant + " END"
+	}
+	if math.IsInf(value, 1) {
+		switch operator {
+		case provider.FilterEqual, provider.FilterLess, provider.FilterLessEqual, provider.FilterGreater:
+			return fold(false), nil
+		case provider.FilterNotEqual, provider.FilterGreaterEqual:
+			return fold(true), nil
+		}
+		return "", invalidQuery("filter", "invalid comparison")
+	}
+	if math.IsInf(value, -1) {
+		switch operator {
+		case provider.FilterEqual, provider.FilterGreater, provider.FilterGreaterEqual, provider.FilterLess:
+			return fold(false), nil
+		case provider.FilterNotEqual, provider.FilterLessEqual:
+			return fold(true), nil
+		}
+		return "", invalidQuery("filter", "invalid comparison")
+	}
+	if math.IsNaN(value) {
+		// NaN is unordered: only <> can match, and only for non-null values.
+		if operator == provider.FilterNotEqual {
+			return fold(true), nil
+		}
+		if operator == provider.FilterEqual {
+			return fold(false), nil
+		}
+		return "", invalidQuery("filter", "invalid comparison")
+	}
+	direction, err := featureFilterOperator(operator)
+	if err != nil {
+		return "", err
+	}
+	*args = append(*args, value)
 	return source + " " + direction + " ?", nil
 }

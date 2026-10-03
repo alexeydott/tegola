@@ -101,3 +101,46 @@ func TestFeatureProjectionRejectsUnprovedParametersAndInvalidCoordinates(t *test
 		t.Fatal("missing converter accepted")
 	}
 }
+
+func TestClampForwardDomain(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		srid      uint64
+		ll        []float64
+		wantLat   float64
+		wantClamp bool
+	}{
+		{"north pole", 3857, []float64{10, 90}, 85.05112878, true},
+		{"south pole", 3857, []float64{-30, -90}, -85.05112878, true},
+		{"beyond pole", 3857, []float64{0, 90.5}, 85.05112878, true},
+		{"inside domain", 3857, []float64{10, 45}, 0, false},
+		{"near pole outside conventional edge", 3857, []float64{10, 89.9}, 85.05112878, true},
+		{"nan latitude", 3857, []float64{0, math.NaN()}, 0, false},
+		{"geographic never clamps", 4326, []float64{0, 90}, 0, false},
+		{"utm never clamps", 32633, []float64{0, 90}, 0, false},
+		{"unknown srid", 9999, []float64{0, 90}, 0, false},
+		{"bad pair", 3857, []float64{0}, 0, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clamped, ok := ClampForwardDomain(test.srid, test.ll)
+			if ok != test.wantClamp {
+				t.Fatalf("clamp=%v want %v", ok, test.wantClamp)
+			}
+			if !ok {
+				return
+			}
+			if clamped[0] != test.ll[0] || clamped[1] != test.wantLat {
+				t.Fatalf("clamped=%v", clamped)
+			}
+			// The clamped vertex must forward without error.
+			def, _ := CanonicalFeatureDefinition(test.srid)
+			p, err := NewFeatureProjection(def)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Forward(clamped); err != nil {
+				t.Fatalf("clamped vertex still fails: %v", err)
+			}
+		})
+	}
+}
