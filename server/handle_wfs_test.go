@@ -264,3 +264,94 @@ func wfsWKBPoint(t *testing.T, x, y float64) []byte {
 	}
 	return b
 }
+
+func TestWFSGetFeatureHits(t *testing.T) {
+	_, router := wfsHandler(t, wfsService(t))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetFeature&version=2.0.0&typeNames=wfs_sites&resultType=hits", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "numberMatched") {
+		t.Fatalf("hits response missing numberMatched: %s", body[:200])
+	}
+	// Hits must not contain feature members.
+	if strings.Contains(body, "wfs:member") {
+		t.Fatal("hits response contains feature members")
+	}
+}
+
+func TestWFSGetFeatureProjection(t *testing.T) {
+	service := wfsService(t)
+	_, router := wfsHandler(t, service)
+	// Seed.
+	mp, _, _ := service.MutationProviderFor("wfs_sites")
+	tx, _ := mp.BeginFeatureTx(context.Background(), provider.TxOptions{})
+	_, _ = tx.Apply(context.Background(), provider.Mutation{
+		Op:          provider.MutationInsert,
+		Collection:  "wfs_sites",
+		Properties:  map[string]provider.MutationValue{"name": wfsStrVal("proj"), "seats": wfsIntVal(5)},
+		GeometryWKB: wfsWKBPoint(t, 1, 2),
+	})
+	_, _ = tx.Commit(context.Background())
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetFeature&version=2.0.0&typeNames=wfs_sites&propertyName=name", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "proj") {
+		t.Fatal("projected property missing")
+	}
+	if strings.Contains(body, ">5<") || strings.Contains(body, "seats") {
+		t.Fatal("non-projected property leaked into response")
+	}
+}
+
+func TestWFSGetFeatureSortBy(t *testing.T) {
+	service := wfsService(t)
+	_, router := wfsHandler(t, service)
+	mp, _, _ := service.MutationProviderFor("wfs_sites")
+	tx, _ := mp.BeginFeatureTx(context.Background(), provider.TxOptions{})
+	for i, name := range []string{"charlie", "alpha", "bravo"} {
+		_, _ = tx.Apply(context.Background(), provider.Mutation{
+			Op:          provider.MutationInsert,
+			Collection:  "wfs_sites",
+			Properties:  map[string]provider.MutationValue{"name": wfsStrVal(name), "seats": wfsIntVal(int64(i))},
+			GeometryWKB: wfsWKBPoint(t, float64(i), float64(i)),
+		})
+	}
+	_, _ = tx.Commit(context.Background())
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetFeature&version=2.0.0&typeNames=wfs_sites&sortBy=name", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	ia := strings.Index(body, "alpha")
+	ib := strings.Index(body, "bravo")
+	ic := strings.Index(body, "charlie")
+	if ia < 0 || ib < 0 || ic < 0 || !(ia < ib && ib < ic) {
+		t.Fatalf("sortBy=name order wrong: %d %d %d", ia, ib, ic)
+	}
+
+	// DESC.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetFeature&version=2.0.0&typeNames=wfs_sites&sortBy=name+DESC", nil))
+	if rec.Code != 200 {
+		t.Fatalf("DESC status = %d", rec.Code)
+	}
+	body = rec.Body.String()
+	ia = strings.Index(body, "alpha")
+	ic = strings.Index(body, "charlie")
+	if !(ic < ia) {
+		t.Fatal("sortBy=name DESC order wrong")
+	}
+}
+
+func wfsIntVal(n int64) provider.MutationValue {
+	return provider.MutationValue{Kind: provider.MutationValueInteger, Integer: n}
+}

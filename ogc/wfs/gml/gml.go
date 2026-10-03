@@ -158,6 +158,9 @@ type Feature struct {
 	Geometry     geom.Geometry
 	// Properties maps property names to values.
 	Properties map[string]string
+	// SortKeys carries per-criterion sort values for post-query sorting;
+	// not serialized, cleared before encoding.
+	SortKeys []string
 }
 
 // EncodeFeature writes one GML feature member.

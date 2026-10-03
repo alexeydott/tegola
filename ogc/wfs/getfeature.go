@@ -3,6 +3,7 @@ package wfs
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,14 +16,27 @@ import (
 
 // GetFeatureRequest is the parsed GetFeature input (KVP subset).
 type GetFeatureRequest struct {
-	Version    Version
-	TypeName   string
+	Version     Version
+	TypeName    string
 	MaxFeatures uint
 	// BBox is an optional spatial filter in lon,lat order (CRS84).
-	BBox      *[4]float64
+	BBox *[4]float64
 	FeatureIDs []uint64
 	// OutputFormat: only "application/gml+xml" variants are supported.
 	OutputFormat string
+	// ResultType is "results" (default) or "hits" (count only).
+	ResultType string
+	// PropertyNames restricts returned properties (projection). Empty
+	// means all properties.
+	PropertyNames []string
+	// SortBy is a list of "property [ASC|DESC]" sort criteria.
+	SortBy []SortCriterion
+}
+
+// SortCriterion is one sortBy term.
+type SortCriterion struct {
+	Property   string
+	Descending bool
 }
 
 // ParseGetFeatureKVP parses the KVP subset for GetFeature.
@@ -80,6 +94,53 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 			req.FeatureIDs = append(req.FeatureIDs, id)
 		}
 	}
+	if rt := strings.ToLower(q["resulttype"]); rt != "" {
+		if rt != "results" && rt != "hits" {
+			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "resultType", Text: fmt.Sprintf("unsupported resultType %q", q["resulttype"])}}
+		}
+		req.ResultType = rt
+	} else {
+		req.ResultType = "results"
+	}
+	if pn := q["propertyname"]; pn != "" {
+		for _, p := range strings.Split(pn, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			// Strip namespace prefix if present.
+			if i := strings.Index(p, ":"); i >= 0 {
+				p = p[i+1:]
+			}
+			req.PropertyNames = append(req.PropertyNames, p)
+		}
+	}
+	if sb := q["sortby"]; sb != "" {
+		for _, term := range strings.Split(sb, ",") {
+			term = strings.TrimSpace(term)
+			if term == "" {
+				continue
+			}
+			crit := SortCriterion{}
+			parts := strings.Fields(term)
+			prop := parts[0]
+			if i := strings.Index(prop, ":"); i >= 0 {
+				prop = prop[i+1:]
+			}
+			crit.Property = prop
+			if len(parts) > 1 {
+				switch strings.ToUpper(parts[1]) {
+				case "DESC", "D":
+					crit.Descending = true
+				case "ASC", "A":
+					// default
+				default:
+					return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "sortBy", Text: fmt.Sprintf("invalid sort direction %q", parts[1])}}
+				}
+			}
+			req.SortBy = append(req.SortBy, crit)
+		}
+	}
 	return req, nil
 }
 
@@ -112,9 +173,34 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		gv = gml.V321
 	}
 	enc := &gml.Encoder{Version: gv, SRID: 4326}
-	// Query via the service and encode each feature as GML.
-	count := 0
-	_, err = service.QueryCollection(ctx, req.TypeName, fq, func(f features.Feature) error {
+	// Validate property names and sort criteria against the schema.
+	if len(req.PropertyNames) > 0 {
+		for _, pn := range req.PropertyNames {
+			if _, ok := schema.Property(pn); !ok && pn != schema.Geometry.Name {
+				return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "propertyName", Text: fmt.Sprintf("unknown property %q", pn)}}
+			}
+		}
+	}
+	for _, sc := range req.SortBy {
+		if _, ok := schema.Property(sc.Property); !ok {
+			return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "sortBy", Text: fmt.Sprintf("unknown sort property %q", sc.Property)}}
+		}
+	}
+	// resultType=hits: count only, no feature encoding.
+	if req.ResultType == "hits" {
+		count := 0
+		_, err = service.QueryCollection(ctx, req.TypeName, fq, func(f features.Feature) error {
+			count++
+			return nil
+		})
+		if err != nil {
+			return "", []Exception{{Code: ExceptionNoApplicableCode, Text: fmt.Sprintf("query failed: %v", err)}}
+		}
+		return featureCollectionEnvelope(req.Version, "", count), nil
+	}
+	// Buffer for sorting; streams directly when no sortBy.
+	var buffered []gml.Feature
+	encodeOne := func(f features.Feature) error {
 		fid, err := feature.EncodeWFSFID(req.TypeName, f.ID)
 		if err != nil {
 			return err
@@ -125,7 +211,6 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 			GeometryName: "geometry",
 			Properties:   map[string]string{},
 		}
-		// Geometry: parse the GeoJSON geometry from the service feature.
 		if len(f.Geometry) > 0 && string(f.Geometry) != "null" {
 			g, err := parseServiceGeometry(f.Geometry)
 			if err != nil {
@@ -133,20 +218,70 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 			}
 			gf.Geometry = g
 		}
-		for k, v := range f.Properties {
+		// Projection: only requested properties.
+		props := f.Properties
+		if len(req.PropertyNames) > 0 {
+			props = map[string]interface{}{}
+			for _, pn := range req.PropertyNames {
+				if v, ok := f.Properties[pn]; ok {
+					props[pn] = v
+				}
+			}
+		}
+		for k, v := range props {
 			gf.Properties[k] = fmt.Sprintf("%v", v)
 		}
-		if err := enc.EncodeFeature(gf); err != nil {
-			return err
+		// Keep sort keys alongside for post-query sorting.
+		if len(req.SortBy) > 0 {
+			gf.SortKeys = make([]string, len(req.SortBy))
+			for i, sc := range req.SortBy {
+				if v, ok := f.Properties[sc.Property]; ok {
+					gf.SortKeys[i] = fmt.Sprintf("%v", v)
+				}
+			}
+			buffered = append(buffered, gf)
+		} else {
+			if err := enc.EncodeFeature(gf); err != nil {
+				return err
+			}
 		}
-		count++
 		return nil
+	}
+	count := 0
+	_, err = service.QueryCollection(ctx, req.TypeName, fq, func(f features.Feature) error {
+		count++
+		return encodeOne(f)
 	})
 	if err != nil {
 		return "", []Exception{{Code: ExceptionNoApplicableCode, Text: fmt.Sprintf("query failed: %v", err)}}
 	}
-	_ = schema
+	if len(req.SortBy) > 0 {
+		sortFeatures(buffered, req.SortBy)
+		for _, gf := range buffered {
+			gf.SortKeys = nil
+			if err := enc.EncodeFeature(gf); err != nil {
+				return "", []Exception{{Code: ExceptionNoApplicableCode, Text: fmt.Sprintf("encode failed: %v", err)}}
+			}
+		}
+	}
 	return featureCollectionEnvelope(req.Version, enc.String(), count), nil
+}
+
+// sortFeatures orders buffered GML features by the sort criteria.
+func sortFeatures(fs []gml.Feature, criteria []SortCriterion) {
+	sort.SliceStable(fs, func(i, j int) bool {
+		for k, sc := range criteria {
+			a, b := fs[i].SortKeys[k], fs[j].SortKeys[k]
+			if a == b {
+				continue
+			}
+			if sc.Descending {
+				return a > b
+			}
+			return a < b
+		}
+		return false
+	})
 }
 
 func featureCollectionEnvelope(v Version, members string, count int) string {
