@@ -21,6 +21,16 @@ type WFSHandler struct {
 	Service     *features.Service
 	Config      config.WFSConfig
 	WriteConfig config.FeaturesWriteConfig
+	// Authenticator resolves the Transaction principal. Nil means
+	// anonymous-only; see FeatureAPIConfig.Authenticator.
+	Authenticator Authenticator
+}
+
+func (h *WFSHandler) principal(r *http.Request) feature.Principal {
+	if h.Authenticator != nil {
+		return h.Authenticator.Principal(r)
+	}
+	return feature.Principal{Anonymous: true}
 }
 
 func (h *WFSHandler) coordinator() *feature.MutationCoordinator {
@@ -194,7 +204,7 @@ func (h *WFSHandler) serveTransaction(w http.ResponseWriter, r *http.Request, v 
 	}
 	results, err := wfs.ExecuteTransaction(r.Context(), h.coordinator(), func(c string) (*feature.SchemaDescriptor, error) {
 		return h.Service.SchemaDescriptorFor(r.Context(), c)
-	}, v, actions)
+	}, v, actions, h.principal(r))
 	if err != nil {
 		h.writeTransactionError(w, r, v, err)
 		return

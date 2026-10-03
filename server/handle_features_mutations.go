@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -122,6 +123,7 @@ func (api *FeatureAPI) registerMutations(group *httptreemux.Group) {
 	group.UsingContext().Handler(http.MethodPut, base+"/collections/:collection/items/:feature", mk(api.serveReplaceItem))
 	group.UsingContext().Handler(http.MethodPatch, base+"/collections/:collection/items/:feature", mk(api.servePatchItem))
 	group.UsingContext().Handler(http.MethodDelete, base+"/collections/:collection/items/:feature", mk(api.serveDeleteItem))
+	group.UsingContext().Handler(http.MethodGet, base+"/collections/:collection/schema", mk(api.serveCollectionSchema))
 	// Per-resource OPTIONS advertises the real Allow set.
 	group.UsingContext().Handler(http.MethodOptions, base+"/collections/:collection/items", mk(api.serveItemsOptions))
 	group.UsingContext().Handler(http.MethodOptions, base+"/collections/:collection/items/:feature", mk(api.serveItemOptions))
@@ -216,25 +218,20 @@ func etagMatches(header, current string) bool {
 	return false
 }
 
-// currentETag reads the feature and computes its strong ETag.
+// currentETag reads the feature and computes its strong ETag exactly as
+// serveItem would serve it in JSON (same response shape with links), so
+// If-Match compares against the validator the client actually received.
 func (api *FeatureAPI) currentETag(r *http.Request, collection string, featureID uint64) (string, error) {
 	f, err := api.service.QueryFeature(r.Context(), collection, featureID)
 	if err != nil {
 		return "", err
 	}
-	return featureETag(f), nil
-}
-
-// featureETag computes the strong ETag of a service feature. The tag is
-// bound to the exact served representation (id + raw geometry JSON +
-// properties).
-func featureETag(f features.Feature) string {
-	props := make(map[string]interface{}, len(f.Properties))
-	for k, v := range f.Properties {
-		props[k] = v
+	response := api.itemResponse(r, collection, featureID, f)
+	raw, err := json.Marshal(response)
+	if err != nil {
+		return "", err
 	}
-	canonical := canonicalFeatureBytes(f.ID, f.Geometry, props)
-	return strongETag(canonical)
+	return strongETag(raw), nil
 }
 
 // serveCreateItem implements POST /collections/{id}/items (Part 4 Create).
@@ -268,7 +265,7 @@ func (api *FeatureAPI) serveCreateItem(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature")
 		return
 	}
-	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), feature.Principal{Anonymous: true}, m)
+	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), m)
 	if err != nil {
 		api.writeMutationError(w, r, err)
 		return
@@ -286,7 +283,7 @@ func (api *FeatureAPI) serveCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	loc := api.itemLocation(r, collection, outcome.FeatureID)
 	w.Header().Set("Location", loc)
-	api.writeMutationRepresentation(w, r, http.StatusCreated, featureETag(created), created)
+	api.writeMutationRepresentation(w, r, http.StatusCreated, api.itemResponse(r, collection, outcome.FeatureID, created))
 }
 
 // serveReplaceItem implements PUT /collections/{id}/items/{fid}.
@@ -329,7 +326,7 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature")
 		return
 	}
-	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), feature.Principal{Anonymous: true}, m)
+	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), m)
 	if err != nil {
 		api.writeMutationError(w, r, err)
 		return
@@ -343,7 +340,7 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		api.writeQueryError(w, r, err)
 		return
 	}
-	api.writeMutationRepresentation(w, r, http.StatusOK, featureETag(updated), updated)
+	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated))
 }
 
 // servePatchItem implements PATCH with application/merge-patch+json.
@@ -393,7 +390,7 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid patch")
 		return
 	}
-	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), feature.Principal{Anonymous: true}, m)
+	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), m)
 	if err != nil {
 		api.writeMutationError(w, r, err)
 		return
@@ -407,7 +404,7 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		api.writeQueryError(w, r, err)
 		return
 	}
-	api.writeMutationRepresentation(w, r, http.StatusOK, featureETag(updated), updated)
+	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated))
 }
 
 // serveDeleteItem implements DELETE /collections/{id}/items/{fid}.
@@ -426,7 +423,7 @@ func (api *FeatureAPI) serveDeleteItem(w http.ResponseWriter, r *http.Request) {
 		api.writePreconditionError(w, r, err)
 		return
 	}
-	_, receipt, err := api.mutationCoordinator().Execute(r.Context(), feature.Principal{Anonymous: true}, provider.Mutation{
+	_, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), provider.Mutation{
 		Op:         provider.MutationDelete,
 		Collection: collection,
 		FeatureID:  featureID,
@@ -442,9 +439,22 @@ func (api *FeatureAPI) serveDeleteItem(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// writeMutationRepresentation writes a mutation response, preserving the
-// ETag that featureProtocolHeaders would delete for read responses.
-func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *http.Request, status int, etag string, value any) {
+// itemResponse builds the single-item response shape (Feature + links)
+// used by GET item and by mutation responses, so ETags are comparable
+// across all of them.
+func (api *FeatureAPI) itemResponse(r *http.Request, collection string, featureID uint64, f features.Feature) any {
+	queryParameters, _ := url.ParseQuery(r.URL.RawQuery)
+	links := api.representationLinks(r, "/collections/"+collection+"/items/"+strconv.FormatUint(featureID, 10), "application/geo+json", queryParameters)
+	links = append(links, api.formatLink(r, "/collections/"+collection, "collection", "application/json", nil, featureSelectedFormat(r)))
+	return struct {
+		features.Feature
+		Links []featureLink `json:"links"`
+	}{Feature: f, Links: links}
+}
+
+// writeMutationRepresentation writes a mutation response. The ETag is
+// always the strong validator of the exact response bytes.
+func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *http.Request, status int, value any) {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		api.writeError(w, r, http.StatusInternalServerError, "InternalError", "Response encoding failed")
@@ -455,10 +465,8 @@ func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *htt
 		return
 	}
 	featureProtocolHeaders(w.Header())
-	if etag != "" {
-		w.Header().Set("ETag", etag)
-		mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
-	}
+	w.Header().Set("ETag", strongETag(raw))
+	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Location")
 	w.Header().Set("Content-Type", mediaGeoJSON)
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
@@ -528,4 +536,71 @@ func (api *FeatureAPI) writePreconditionError(w http.ResponseWriter, r *http.Req
 		return
 	}
 	api.writeQueryError(w, r, err)
+}
+
+// serveCollectionSchema implements GET /collections/{id}/schema (Part 4):
+// JSON Schema for feature creation/replacement on this collection.
+func (api *FeatureAPI) serveCollectionSchema(w http.ResponseWriter, r *http.Request) {
+	collection := httptreemux.ContextParams(r.Context())["collection"]
+	if !api.cfg.Write.Enabled || !api.cfg.Write.AllowsOperation(collection, "create") {
+		api.writeError(w, r, http.StatusNotFound, "NotFound", "Schema not available for this collection")
+		return
+	}
+	sd, err := api.service.SchemaDescriptorFor(r.Context(), collection)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	schema := map[string]any{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"title":   collection + " feature",
+		"type":    "object",
+	}
+	props := map[string]any{}
+	required := []string{}
+	for _, p := range sd.Properties {
+		if p.ReadOnly {
+			continue
+		}
+		prop := map[string]any{}
+		switch p.Type {
+		case feature.TypeInteger:
+			prop["type"] = "integer"
+		case feature.TypeDecimal:
+			prop["type"] = "number"
+		case feature.TypeString:
+			prop["type"] = "string"
+			if p.MaxLength > 0 {
+				prop["maxLength"] = p.MaxLength
+			}
+		case feature.TypeBoolean:
+			prop["type"] = "boolean"
+		case feature.TypeDateTime:
+			prop["type"] = "string"
+			prop["format"] = "date-time"
+		}
+		if len(p.AllowedValues) > 0 {
+			prop["enum"] = p.AllowedValues
+		}
+		props[p.Name] = prop
+		if p.Required {
+			required = append(required, p.Name)
+		}
+	}
+	// Geometry: GeoJSON geometry object or null.
+	props["geometry"] = map[string]any{
+		"oneOf": []any{
+			map[string]any{"type": "object"},
+			map[string]any{"type": "null"},
+		},
+	}
+	schema["properties"] = map[string]any{
+		"type":       map[string]any{"const": "Feature"},
+		"geometry":   props["geometry"],
+		"properties": map[string]any{"type": "object", "properties": props},
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	api.writeJSON(w, r, http.StatusOK, "application/schema+json", schema)
 }

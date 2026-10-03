@@ -102,15 +102,25 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 	}
 	links := api.representationLinks(r, "/collections/"+id+"/items/"+strconv.FormatUint(featureID, 10), "application/geo+json", queryParameters)
 	links = append(links, api.formatLink(r, "/collections/"+id, "collection", "application/json", nil, featureSelectedFormat(r)))
-	response := struct {
-		features.Feature
-		Links []featureLink `json:"links"`
-	}{Feature: feature, Links: links}
+	response := api.itemResponse(r, id, featureID, feature)
 	w.Header().Set("Content-Crs", "<"+outputURI+">")
-	// Strong ETag bound to the exact served representation, for use
-	// with If-Match on Part 4 mutations.
-	w.Header().Set("ETag", featureETag(feature))
-	api.writeRepresentation(w, r, http.StatusOK, "application/geo+json", response, links)
+	// Strong ETag bound to the exact served bytes (including links), for
+	// use with If-Match on Part 4 mutations.
+	raw, media, err := api.renderRepresentation(r, http.StatusOK, "application/geo+json", response, links)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	w.Header().Set("ETag", strongETag(raw))
+	featureProtocolHeaders(w.Header())
+	w.Header().Set("Content-Type", media)
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		if _, err := w.Write(raw); err != nil {
+			log.Error("feature response write failed", "error", err)
+		}
+	}
 }
 
 func (api *FeatureAPI) pageLink(r *http.Request, suffix, relation string, parameters url.Values, offset uint64) featureLink {

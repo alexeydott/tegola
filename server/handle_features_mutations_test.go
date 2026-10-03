@@ -262,3 +262,145 @@ func TestPart4WriteDisabled(t *testing.T) {
 	}
 }
 
+
+func TestPart4DuplicateKeysRejected(t *testing.T) {
+	service, _ := part4Service(t)
+	router := part4Router(t, part4API(t, service))
+	ct := map[string]string{"Content-Type": "application/geo+json"}
+
+	// Duplicate top-level key.
+	rec := doRequest(t, router, http.MethodPost, "/features/collections/sites/items",
+		`{"type":"Feature","type":"Feature","geometry":{"type":"Point","coordinates":[10,20]},"properties":{"name":"dup"}}`, ct)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate top-level key status = %d, want 400", rec.Code)
+	}
+
+	// Duplicate nested key in properties.
+	rec = doRequest(t, router, http.MethodPost, "/features/collections/sites/items",
+		`{"type":"Feature","geometry":{"type":"Point","coordinates":[10,20]},"properties":{"name":"a","name":"b"}}`, ct)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate nested key status = %d, want 400", rec.Code)
+	}
+
+	// Duplicate key in geometry object.
+	rec = doRequest(t, router, http.MethodPost, "/features/collections/sites/items",
+		`{"type":"Feature","geometry":{"type":"Point","type":"Point","coordinates":[10,20]},"properties":{}}`, ct)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate geometry key status = %d, want 400", rec.Code)
+	}
+}
+
+func TestPart4ETagRoundTrip(t *testing.T) {
+	service, _ := part4Service(t)
+	router := part4Router(t, part4API(t, service))
+	ct := map[string]string{"Content-Type": "application/geo+json"}
+
+	// Create.
+	rec := doRequest(t, router, http.MethodPost, "/features/collections/sites/items",
+		`{"type":"Feature","geometry":{"type":"Point","coordinates":[10,20]},"properties":{"name":"etag"}}`, ct)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST status = %d", rec.Code)
+	}
+	var created map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id := int(created["id"].(float64))
+	getPath := "/features/collections/sites/items/" + strconv.Itoa(id)
+
+	// GET ETag must be accepted by PUT If-Match (same validator).
+	rec = doRequest(t, router, http.MethodGet, getPath, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d", rec.Code)
+	}
+	getETag := rec.Header().Get("ETag")
+	rec = doRequest(t, router, http.MethodPut, getPath,
+		`{"type":"Feature","geometry":{"type":"Point","coordinates":[11,21]},"properties":{"name":"etag2"}}`,
+		map[string]string{"Content-Type": "application/geo+json", "If-Match": getETag})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT with GET ETag status = %d, want 200 (validator mismatch)", rec.Code)
+	}
+	putETag := rec.Header().Get("ETag")
+
+	// PUT response ETag must be accepted by PATCH If-Match.
+	rec = doRequest(t, router, http.MethodPatch, getPath, `{"properties":{"name":"etag3"}}`,
+		map[string]string{"Content-Type": "application/merge-patch+json", "If-Match": putETag})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH with PUT ETag status = %d, want 200 (validator mismatch)", rec.Code)
+	}
+
+	// ETag must be the strong validator of the exact GET bytes.
+	rec = doRequest(t, router, http.MethodGet, getPath, "", nil)
+	body := rec.Body.Bytes()
+	if got, want := rec.Header().Get("ETag"), strongETag(body); got != want {
+		t.Fatalf("GET ETag = %s, want strong validator of exact bytes %s", got, want)
+	}
+}
+
+func TestPart4SchemaEndpoint(t *testing.T) {
+	service, _ := part4Service(t)
+	router := part4Router(t, part4API(t, service))
+
+	rec := doRequest(t, router, http.MethodGet, "/features/collections/sites/schema", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET schema status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/schema+json" {
+		t.Fatalf("schema Content-Type = %q", ct)
+	}
+	var schema map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema missing properties")
+	}
+	if _, ok := props["properties"]; !ok {
+		t.Fatal("schema missing properties.properties")
+	}
+}
+
+func TestPart4OpenAPIWriteOps(t *testing.T) {
+	service, _ := part4Service(t)
+	api := part4API(t, service)
+	router := part4Router(t, api)
+
+	rec := doRequest(t, router, http.MethodGet, "/features/api", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET api status = %d", rec.Code)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	paths, ok := doc["paths"].(map[string]interface{})
+	if !ok {
+		t.Fatal("no paths in OpenAPI")
+	}
+	// POST on /collections/sites/items
+	itemsPath, ok := paths["/collections/sites/items"].(map[string]interface{})
+	if !ok {
+		t.Fatal("no /collections/sites/items path")
+	}
+	if _, ok := itemsPath["post"]; !ok {
+		t.Fatal("POST not documented for writable collection")
+	}
+	if _, ok := itemsPath["get"]; !ok {
+		t.Fatal("GET lost after write-ops merge")
+	}
+	// PUT/PATCH/DELETE on item path
+	itemPath, ok := paths["/collections/sites/items/{feature}"].(map[string]interface{})
+	if !ok {
+		t.Fatal("no item path")
+	}
+	for _, m := range []string{"put", "patch", "delete", "get"} {
+		if _, ok := itemPath[m]; !ok {
+			t.Fatalf("%s not documented on item path", m)
+		}
+	}
+	// /schema path
+	if _, ok := paths["/collections/sites/schema"]; !ok {
+		t.Fatal("no /schema path in OpenAPI")
+	}
+}

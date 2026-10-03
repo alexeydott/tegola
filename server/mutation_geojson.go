@@ -28,6 +28,9 @@ type geoJSONFeature struct {
 // Duplicate keys are rejected (no silent split-brain); numbers keep
 // their literal text via json.Decoder.UseNumber.
 func parseGeoJSONFeature(body []byte) (*geoJSONFeature, error) {
+	if err := rejectDuplicateKeys(body); err != nil {
+		return nil, err
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var raw map[string]interface{}
@@ -361,4 +364,63 @@ func geometryEqual(current json.RawMessage, wkbBytes []byte) bool {
 		return false
 	}
 	return bytes.Equal(cur, wkbBytes)
+}
+
+// rejectDuplicateKeys walks the JSON document token by token and rejects
+// any object that repeats a key. encoding/json silently keeps the last
+// value; for mutation input that split-brain is a correctness hazard.
+func rejectDuplicateKeys(body []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// One frame per open container: keys seen (nil for arrays) and whether
+	// the next string token is a key (objects only).
+	type frame struct {
+		keys      map[string]struct{}
+		expectKey bool
+	}
+	var stack []frame
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return fmt.Errorf("invalid JSON: %w", err)
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			switch v {
+			case '{':
+				stack = append(stack, frame{keys: map[string]struct{}{}, expectKey: true})
+			case '[':
+				stack = append(stack, frame{})
+			case '}', ']':
+				stack = stack[:len(stack)-1]
+				// A container just ended as a value; in a parent object
+				// the next string is a key again.
+				if n := len(stack); n > 0 && stack[n-1].keys != nil {
+					stack[n-1].expectKey = true
+				}
+			}
+		case string:
+			if n := len(stack); n > 0 && stack[n-1].keys != nil {
+				if stack[n-1].expectKey {
+					if _, dup := stack[n-1].keys[v]; dup {
+						return fmt.Errorf("duplicate key %q", v)
+					}
+					stack[n-1].keys[v] = struct{}{}
+					stack[n-1].expectKey = false
+				} else {
+					// String value ended; next string in this object is a key.
+					stack[n-1].expectKey = true
+				}
+			}
+		default:
+			// Scalar value ended; in a parent object the next string is
+			// a key again.
+			if n := len(stack); n > 0 && stack[n-1].keys != nil {
+				stack[n-1].expectKey = true
+			}
+		}
+	}
+	return nil
 }

@@ -16,6 +16,14 @@ type OpenAPIOptions struct {
 	HTML                                   bool
 	MaxResponseBytes                       int64
 	QueryTimeout                           time.Duration
+	Write                                  OpenAPIWriteConfig
+}
+
+// OpenAPIWriteConfig describes enabled mutation operations per collection
+// for the OpenAPI document. Operations use Part 4 vocabulary.
+type OpenAPIWriteConfig struct {
+	Enabled     bool
+	Collections map[string][]string // collection ID -> operations
 }
 
 // OpenAPI builds a detached OpenAPI 3.0.3 document from frozen service metadata.
@@ -85,6 +93,10 @@ func (s *Service) OpenAPI(options OpenAPIOptions) (map[string]any, error) {
 		itemParameters := []any{map[string]any{"name": "feature", "in": "path", "required": true, "description": "Decimal uint64 feature ID, maximum 18446744073709551615.", "schema": map[string]any{"type": "string", "pattern": "^[0-9]+$"}}}
 		itemParameters = append(itemParameters, output...)
 		add(base+"/items/{feature}", "Item_"+id, "One feature", "application/geo+json", "Feature", itemParameters, true, itemUnsupported)
+		// Part 4 (Features: Create-Replace-Update-Delete) write operations.
+		if ops := options.Write.Collections[metadata.ID]; options.Write.Enabled && len(ops) > 0 {
+			addWritePaths(paths, base, id, ops)
+		}
 	}
 	return map[string]any{
 		"openapi": "3.0.3",
@@ -233,4 +245,100 @@ func openAPISchemas() map[string]any {
 	schemas["Feature"] = object([]string{"type", "id", "geometry", "properties"}, map[string]any{"type": map[string]any{"type": "string", "enum": []string{"Feature"}}, "id": uint64Schema(), "geometry": openAPIRef("NullableGeometry"), "properties": map[string]any{"type": "object", "additionalProperties": true}, "links": links()})
 	schemas["FeatureCollection"] = object([]string{"type", "features", "numberReturned", "links"}, map[string]any{"type": map[string]any{"type": "string", "enum": []string{"FeatureCollection"}}, "features": array(openAPIRef("Feature")), "numberReturned": uint64Schema(), "numberMatched": uint64Schema(), "links": links()})
 	return schemas
+}
+
+// addWritePaths adds OGC API Features Part 4 mutation operations for one
+// collection to the OpenAPI paths map.
+func addWritePaths(paths map[string]any, base, id string, ops []string) {
+	has := func(op string) bool {
+		for _, o := range ops {
+			if o == op {
+				return true
+			}
+		}
+		return false
+	}
+	featureIDParam := map[string]any{"name": "feature", "in": "path", "required": true,
+		"description": "Decimal uint64 feature ID.", "schema": map[string]any{"type": "string", "pattern": "^[0-9]+$"}}
+	geoJSONBody := func(desc string) map[string]any {
+		return map[string]any{"description": desc, "required": true,
+			"content": map[string]any{"application/geo+json": map[string]any{"schema": openAPIRef("Feature")}}}
+	}
+	ifMatch := map[string]any{"name": "If-Match", "in": "header", "required": false,
+		"description": "Strong ETag precondition. Stale validators are rejected with 412.",
+		"schema": map[string]any{"type": "string"}}
+	// Build per-method entries explicitly to keep operation shapes clear.
+	if has("create") {
+		existing, _ := paths[base+"/items"].(map[string]any)
+		if existing == nil {
+			existing = map[string]any{}
+		}
+		existing["post"] = map[string]any{
+			"operationId": "Create_" + id, "summary": "Create a feature",
+			"requestBody": geoJSONBody("GeoJSON Feature to create"),
+			"responses": map[string]any{
+				"201": map[string]any{"description": "Created feature", "content": map[string]any{"application/geo+json": map[string]any{"schema": openAPIRef("Feature")}}},
+				"400": map[string]any{"description": "Invalid input"},
+			},
+		}
+		paths[base+"/items"] = existing
+	}
+	itemOps := map[string]any{}
+	if has("replace") {
+		itemOps["put"] = map[string]any{
+			"operationId": "Replace_" + id, "summary": "Replace a feature",
+			"parameters":  []any{featureIDParam, ifMatch},
+			"requestBody": geoJSONBody("Replacement GeoJSON Feature"),
+			"responses": map[string]any{
+				"200": map[string]any{"description": "Replaced feature", "content": map[string]any{"application/geo+json": map[string]any{"schema": openAPIRef("Feature")}}},
+				"400": map[string]any{"description": "Invalid input"},
+				"412": map[string]any{"description": "Precondition failed"},
+			},
+		}
+	}
+	if has("update") {
+		itemOps["patch"] = map[string]any{
+			"operationId": "Update_" + id, "summary": "Partially update a feature (merge-patch)",
+			"parameters":  []any{featureIDParam, ifMatch},
+			"requestBody": map[string]any{"description": "Merge-patch document", "required": true,
+				"content": map[string]any{"application/merge-patch+json": map[string]any{"schema": map[string]any{"type": "object"}}}},
+			"responses": map[string]any{
+				"200": map[string]any{"description": "Updated feature", "content": map[string]any{"application/geo+json": map[string]any{"schema": openAPIRef("Feature")}}},
+				"400": map[string]any{"description": "Invalid input"},
+				"412": map[string]any{"description": "Precondition failed"},
+			},
+		}
+	}
+	if has("delete") {
+		itemOps["delete"] = map[string]any{
+			"operationId": "Delete_" + id, "summary": "Delete a feature",
+			"parameters":  []any{featureIDParam, ifMatch},
+			"responses": map[string]any{
+				"204": map[string]any{"description": "Deleted"},
+				"400": map[string]any{"description": "Invalid input"},
+				"412": map[string]any{"description": "Precondition failed"},
+			},
+		}
+	}
+	if len(itemOps) > 0 {
+		// Merge with the existing GET item path entry.
+		existing, _ := paths[base+"/items/{feature}"].(map[string]any)
+		if existing == nil {
+			existing = map[string]any{}
+		}
+		for k, v := range itemOps {
+			existing[k] = v
+		}
+		paths[base+"/items/{feature}"] = existing
+	}
+	if has("create") {
+		paths[base+"/schema"] = map[string]any{
+			"get": map[string]any{
+				"operationId": "Schema_" + id, "summary": "JSON Schema for feature creation",
+				"responses": map[string]any{
+					"200": map[string]any{"description": "JSON Schema", "content": map[string]any{"application/schema+json": map[string]any{"schema": map[string]any{"type": "object"}}}},
+				},
+			},
+		}
+	}
 }

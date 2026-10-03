@@ -157,7 +157,7 @@ func literalToMutationValue(t feature.LogicalType, literal string) (provider.Mut
 
 // ExecuteTransaction runs parsed actions through the coordinator in
 // document order, in one native transaction.
-func ExecuteTransaction(ctx context.Context, coord *feature.MutationCoordinator, schemas func(string) (*feature.SchemaDescriptor, error), v Version, actions []TransactionAction) ([]TransactionResult, error) {
+func ExecuteTransaction(ctx context.Context, coord *feature.MutationCoordinator, schemas func(string) (*feature.SchemaDescriptor, error), v Version, actions []TransactionAction, principal feature.Principal) ([]TransactionResult, error) {
 	var mutations []provider.Mutation
 	var owners []TransactionAction // parallel to mutations for result mapping
 	for _, act := range actions {
@@ -174,7 +174,7 @@ func ExecuteTransaction(ctx context.Context, coord *feature.MutationCoordinator,
 			owners = append(owners, act)
 		}
 	}
-	outcomes, receipt, err := coord.ExecuteAll(ctx, feature.Principal{Anonymous: true}, mutations)
+	outcomes, receipt, err := coord.ExecuteAll(ctx, principal, mutations)
 	if err != nil {
 		return nil, err
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/tegola/observability"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/dimfeld/httptreemux"
@@ -24,6 +25,29 @@ type FeatureAPIConfig struct {
 	Description      string
 	// Write gates Part 4 mutations. Zero value disables all writes.
 	Write config.FeaturesWriteConfig
+	// Authenticator resolves the request principal for mutation policy
+	// checks. Nil means anonymous-only: every mutation runs as
+	// feature.Principal{Anonymous: true}. Deployments that expose writes
+	// beyond a trusted network MUST plug in an authenticator; the
+	// reference policy grants collection operations to any principal
+	// the config allows.
+	Authenticator Authenticator
+}
+
+// Authenticator resolves the mutation principal for a request.
+// Implementations must be safe for concurrent use.
+type Authenticator interface {
+	// Principal returns the actor for policy checks. Returning an
+	// anonymous principal is allowed; the policy decides what it may do.
+	Principal(r *http.Request) feature.Principal
+}
+
+// principal resolves the mutation principal for a request.
+func (api *FeatureAPI) principal(r *http.Request) feature.Principal {
+	if api.cfg.Authenticator != nil {
+		return api.cfg.Authenticator.Principal(r)
+	}
+	return feature.Principal{Anonymous: true}
 }
 
 // FeatureAPI wraps a resolved service. Build it with NewFeatureAPI before routing.
