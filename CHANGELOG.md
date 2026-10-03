@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Accept MySQL identifier aliases with or without `AS` in direct startup geometry samples, avoiding unnecessary derived-table materialization. Preserve the three-valid-MOS early stop and the 16-row inspection window.
+
 ## v0.21.0-fork.2 — 2026-10-02
 
 Source tag: `db4e8ee73a3ddfe3b3c8e054c59e833b697dce85`.

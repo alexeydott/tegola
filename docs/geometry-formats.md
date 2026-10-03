@@ -198,7 +198,8 @@ PostgreSQL, GeoPackage and HANA use a metadata wrapper over the prepared SQL.
 
 MySQL format/class inference fetches only the configured geometry column.
 A direct rewrite is admitted only when every SELECT expression is a simple
-identifier path (optionally `AS`-aliased), with one unambiguous geometry output.
+identifier path (with an optional alias, with or without `AS`), with one
+unambiguous geometry output.
 Expressions, `*`, DISTINCT/ALL, grouping, ordering, unions, windows, locking and
 executable comments use a conservative geometry-only derived projection.
 The direct path preserves FROM/JOIN/WHERE, smaller numeric limits and offsets,
@@ -212,7 +213,10 @@ oversized cell fails inspection before decoding, rather than publishing a
 truncated geometry. Samples are decoded as rows arrive, retaining the first
 usable geometry instead of buffering sixteen geometry blobs. This limit has no
 configuration knob and does not change runtime tile or Feature API limits.
-Automatic format detection still searches at most 16 rows.
+Automatic MOS format detection stops after three successfully decoded, nonempty
+MOS geometries; the 16-row window allows NULL, malformed, empty and SystemInfo
+values to be skipped. Explicit MOS format skips format sampling. Geometry-class
+inference is a separate probe and retains only its first usable geometry.
 
 The MySQL provider's `timeout` controls connection establishment, not the
 30-second registration probe deadline. An explicit `geometry_type` skips
