@@ -92,6 +92,7 @@ type Config struct {
 	LocationName string
 	Webserver    Webserver      `toml:"webserver"`
 	Features     FeaturesConfig `toml:"features"`
+	WFS          WFSConfig      `toml:"wfs"`
 	Cache        env.Dict       `toml:"cache"`
 	Observer     env.Dict       `toml:"observer"`
 	// Map of providers.
