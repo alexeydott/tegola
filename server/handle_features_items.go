@@ -239,7 +239,7 @@ func parsePageLimit(raw string, maximum uint) (uint, error) {
 	if len(value) > len(bound) || (len(value) == len(bound) && value > bound) {
 		// No silent clamp: an over-maximum limit is a client error, and
 		// clamping it could still blow the response budget with a 500.
-		return 0, fmt.Errorf("limit exceeds maximum")
+		return 0, fmt.Errorf("limit %s exceeds maximum %d", raw, maximum)
 	}
 	parsed, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {

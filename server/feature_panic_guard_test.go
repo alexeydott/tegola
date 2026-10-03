@@ -85,7 +85,7 @@ func TestFeaturePanicTransactionNormalHeadersAndOverflow(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	api.serveFeatureBuffered(response, httptest.NewRequest("GET", "/features", nil), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(strings.Repeat("x", 1025))) }))
-	if response.Code != 500 || !strings.Contains(response.Body.String(), "ResponseTooLarge") || strings.Contains(response.Body.String(), "xxx") {
+	if response.Code != 400 || !strings.Contains(response.Body.String(), "ResponseTooLarge") || strings.Contains(response.Body.String(), "xxx") {
 		t.Fatal("capture overflow leaked output")
 	}
 }

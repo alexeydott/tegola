@@ -275,7 +275,7 @@ func (s spatialQuery) matches(g geom.Geometry, source uint64, query provider.Fea
 	if transform {
 		// A single vertex outside the target's finite forward domain (the
 		// poles in Web Mercator) must not fail the whole bbox predicate.
-		// Retry it clamped to the conventional domain edge; only this
+		// Retry it clamped to the exact canonical-extent latitude; only this
 		// predicate copy is clamped, never the delivered geometry.
 		forwardWithDomainClamp := func(forward func([]float64) ([]float64, error), srid uint64, ll []float64) ([]float64, error) {
 			xy, err := forward(ll)

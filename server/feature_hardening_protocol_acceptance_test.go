@@ -117,7 +117,8 @@ func TestFeatureHardeningProtocolAcceptanceEncodedSize(t *testing.T) {
 				head := phase09Request(t, srv, "HEAD", path, nil)
 				want := 200
 				if delta < 0 {
-					want = 500
+					// Over-budget responses are client-actionable: 400, not 500.
+					want = 400
 				}
 				if get.status != want || head.status != want || head.header.Get("Content-Length") != get.header.Get("Content-Length") || len(head.body) != 0 {
 					t.Fatal("encoding cap/HEAD decision differs")

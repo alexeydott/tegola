@@ -68,19 +68,21 @@ func (api *FeatureAPI) serveFeatureBuffered(w http.ResponseWriter, r *http.Reque
 		panicked = false
 	}()
 	if panicked {
-		tx.fail("InternalError", "Request did not complete")
+		tx.fail(http.StatusInternalServerError, "InternalError", "Request did not complete")
 	} else if tx.overflow {
-		tx.fail("ResponseTooLarge", "Response exceeds publication limit")
+		// An over-budget response is client-actionable (narrow the query),
+		// not a server malfunction: 400, not 500.
+		tx.fail(http.StatusBadRequest, "ResponseTooLarge", "Response exceeds publication limit")
 	}
 	if err := tx.commit(w, r); err != nil {
 		log.Error("feature response write failed")
 	}
 }
 
-func (tx *featureResponseTransaction) fail(code, description string) {
+func (tx *featureResponseTransaction) fail(status int, code, description string) {
 	tx.body.Reset()
 	tx.body.WriteString(`{"code":"` + code + `","description":"` + description + `"}`)
-	tx.status = http.StatusInternalServerError
+	tx.status = status
 	tx.committed = tx.header.Clone()
 	tx.committed.Del("Content-Crs")
 	tx.committed.Del("Location")
