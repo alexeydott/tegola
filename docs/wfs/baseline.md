@@ -7,8 +7,15 @@ Toolchain: go1.26.7 linux/amd64, CGO_ENABLED=1 (mattn/go-sqlite3)
 
 ## Build
 
-`go build ./...` passes at the base commit (with GOCACHE relocated off the
-512M /tmp tmpfs; see environment note below).
+Full `go build ./...` at the base commit was NOT honestly verified: the
+first full attempt hit `no space left on device` on the 512M /tmp tmpfs
+and the shell pipeline masked the non-zero status. What IS verified (from
+the W05–W09 commit onward, each run on 2026-10-04):
+- `go build ./feature/... ./config/...` — clean (W05–W09).
+- `go build ./...` — clean (full-tree build after the Part 4 work,
+  dabee1f; and again after the WFS work, e49185f).
+The base-commit claim below is corrected; do not cite the base build as
+"passing" without evidence.
 
 ## Existing behavior preserved (pre-change)
 

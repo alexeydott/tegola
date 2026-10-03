@@ -54,13 +54,14 @@ func valueToSQL(mv provider.MutationValue, colType string) (interface{}, error) 
 // geometry type, transforms CRS when needed, and encodes to the layer's
 // storage format (gpkg binary / wkb / wkt). Attribute-only updates never
 // call this, so stored geometry bytes are preserved then.
-func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) ([]byte, string, error) {
+func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) ([]byte, string, [4]float64, error) {
+	var noBounds [4]float64
 	g, err := wkb.DecodeBytes(wkbBytes)
 	if err != nil {
-		return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid WKB geometry: %v", err)}
+		return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid WKB geometry: %v", err)}
 	}
 	if err := checkGeometryType(g, mp.geomType); err != nil {
-		return nil, "", err
+		return nil, "", noBounds, err
 	}
 	srid := inputSRID
 	if srid == 0 {
@@ -69,27 +70,31 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 	if srid != mp.geomSRID {
 		g, err = transformGeometry(g, srid, mp.geomSRID)
 		if err != nil {
-			return nil, "", err
+			return nil, "", noBounds, err
 		}
+	}
+	bounds, err := geometryBounds(g)
+	if err != nil {
+		return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("geometry bounds: %v", err)}
 	}
 	rawWKB, err := wkb.EncodeBytes(g)
 	if err != nil {
-		return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKB encode: %v", err)}
+		return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKB encode: %v", err)}
 	}
 	switch mp.geomFormat {
 	case "gpkg", "":
 		envelope := geometryEnvelope(g)
-		return encodeGPKGGeometry(rawWKB, int32(mp.geomSRID), envelope), "", nil
+		return encodeGPKGGeometry(rawWKB, int32(mp.geomSRID), envelope), "", bounds, nil
 	case "wkb":
-		return rawWKB, "", nil
+		return rawWKB, "", bounds, nil
 	case "wkt":
 		var sb strings.Builder
 		if err := wkt.Encode(&sb, g); err != nil {
-			return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
+			return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
 		}
-		return nil, sb.String(), nil
+		return nil, sb.String(), bounds, nil
 	default:
-		return nil, "", &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "geometry format " + mp.geomFormat}
+		return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "geometry format " + mp.geomFormat}
 	}
 }
 
@@ -202,11 +207,13 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 		placeholders = append(placeholders, "?")
 		args = append(args, v)
 	}
+	var geomBounds *[4]float64
 	if m.GeometryWKB != nil {
-		enc, encStr, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
+		enc, encStr, bounds, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
+		geomBounds = &bounds
 		cols = append(cols, quoteIdent(mp.geomColumn))
 		placeholders = append(placeholders, "?")
 		if encStr != "" {
@@ -227,6 +234,7 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 	if err != nil || id <= 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "insert did not return a row id"}
 	}
+	t.recordMod(mp, uint64(id), geomBounds, true)
 	return provider.MutationOutcome{FeatureID: uint64(id), Affected: 1}, nil
 }
 
@@ -264,15 +272,19 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		set = append(set, quoteIdent(col)+" = ?")
 		args = append(args, nil)
 	}
+	var geomBounds *[4]float64
+	geomTouched := false
 	if m.GeometryWKB != nil || m.GeometryAbsent {
+		geomTouched = true
 		set = append(set, quoteIdent(mp.geomColumn)+" = ?")
 		if m.GeometryAbsent {
 			args = append(args, nil)
 		} else {
-			enc, encStr, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
+			enc, encStr, bounds, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
 			if err != nil {
 				return provider.MutationOutcome{}, err
 			}
+			geomBounds = &bounds
 			if encStr != "" {
 				args = append(args, encStr)
 			} else {
@@ -293,6 +305,7 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	if n != 1 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "replace affected unexpected row count"}
 	}
+	t.recordMod(mp, m.FeatureID, geomBounds, geomTouched)
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
@@ -321,17 +334,21 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 		set = append(set, quoteIdent(col)+" = ?")
 		args = append(args, v)
 	}
+	var geomBounds *[4]float64
+	geomTouched := false
 	// Attribute-only update never touches the geometry column: stored
-	// bytes are preserved bit-identically.
+	// bytes are preserved bit-identically (and the RTree entry stays valid).
 	if m.GeometryWKB != nil || m.GeometryAbsent {
+		geomTouched = true
 		set = append(set, quoteIdent(mp.geomColumn)+" = ?")
 		if m.GeometryAbsent {
 			args = append(args, nil)
 		} else {
-			enc, encStr, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
+			enc, encStr, bounds, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
 			if err != nil {
 				return provider.MutationOutcome{}, err
 			}
+			geomBounds = &bounds
 			if encStr != "" {
 				args = append(args, encStr)
 			} else {
@@ -352,6 +369,7 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 	if n != 1 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "update affected unexpected row count"}
 	}
+	t.recordMod(mp, m.FeatureID, geomBounds, geomTouched)
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
@@ -375,6 +393,7 @@ func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mut
 	if n != 1 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "delete affected unexpected row count"}
 	}
+	t.recordMod(mp, m.FeatureID, nil, true)
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 

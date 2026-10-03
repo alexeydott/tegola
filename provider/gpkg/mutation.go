@@ -57,22 +57,27 @@ func (p *Provider) DescribeSchema(ctx context.Context, layer string) (provider.S
 }
 
 func (p *Provider) writer() *Writer {
-	return &Writer{provider: p, mappings: make(map[string]*writeMapping)}
+	p.writerMu.Lock()
+	defer p.writerMu.Unlock()
+	if p.cachedWriter == nil {
+		p.cachedWriter = &Writer{provider: p, mappings: make(map[string]*writeMapping)}
+	}
+	return p.cachedWriter
 }
 
 // writeMapping is the admission result for one layer.
 type writeMapping struct {
-	layer          *Layer
-	table          string
-	idColumn       string
-	geomColumn     string
-	geomFormat     string // gpkg, wkb, wkt
-	geomType       string // point, linestring, polygon, ...
-	geomSRID       uint64
-	columns        map[string]provider.ColumnDescriptor // by column name
-	writable       map[string]string                   // public name -> column
-	readOnly       []string
-	domain         string
+	layer      *Layer
+	table      string
+	idColumn   string
+	geomColumn string
+	geomFormat string // gpkg, wkb, wkt
+	geomType   string // point, linestring, polygon, ...
+	geomSRID   uint64
+	columns    map[string]provider.ColumnDescriptor // by column name
+	writable   map[string]string                    // public name -> column
+	readOnly   []string
+	domain     string
 }
 
 // DescribeWritable implements provider.MutationProvider admission
@@ -83,16 +88,23 @@ func (w *Writer) DescribeWritable(ctx context.Context, layer string) (provider.W
 	if err != nil {
 		return provider.WriteDescriptor{}, err
 	}
+	// Defensive copies: callers must not be able to mutate the cached
+	// admission result through the returned descriptor.
+	writable := make(map[string]string, len(m.writable))
+	for k, v := range m.writable {
+		writable[k] = v
+	}
+	readOnly := append([]string(nil), m.readOnly...)
 	wd := provider.WriteDescriptor{
-		Layer:          layer,
-		Table:          m.table,
-		IDColumn:       m.idColumn,
-		GeometryColumn: m.geomColumn,
-		GeometryType:   m.geomType,
-		GeometrySRID:   m.geomSRID,
-		WritableColumns: m.writable,
-		ReadOnlyColumns: m.readOnly,
-		Domain:         m.domain,
+		Layer:           layer,
+		Table:           m.table,
+		IDColumn:        m.idColumn,
+		GeometryColumn:  m.geomColumn,
+		GeometryType:    m.geomType,
+		GeometrySRID:    m.geomSRID,
+		WritableColumns: writable,
+		ReadOnlyColumns: readOnly,
+		Domain:          m.domain,
 	}
 	return wd, nil
 }
@@ -207,11 +219,14 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 			boundsCols[b] = true
 		}
 	}
-	for _, c := range cols {
+	// Public writable properties: every non-PK, non-geometry column.
+	// Bounds backing columns are excluded (derived data). Iterate the
+	// table_xinfo descriptors (not table_info) so generated columns are
+	// seen and forced read-only.
+	for c, d := range colDesc {
 		if c == m.idColumn || c == m.geomColumn || boundsCols[c] {
 			continue
 		}
-		d := colDesc[c]
 		if d.IsGenerated {
 			m.readOnly = append(m.readOnly, c)
 			continue
@@ -253,7 +268,10 @@ func checkIntegerPK(db *sql.DB, table, pk string) error {
 
 func describeColumns(db *sql.DB, table string, cols []string) (map[string]provider.ColumnDescriptor, error) {
 	out := make(map[string]provider.ColumnDescriptor, len(cols))
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%v);", quoteIdent(table)))
+	// table_xinfo exposes hidden generated columns (hidden=2 virtual,
+	// hidden=3 stored) that table_info hides. Generated columns are
+	// always read-only: INSERT/UPDATE must reject them.
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_xinfo(%v);", quoteIdent(table)))
 	if err != nil {
 		return nil, err
 	}
@@ -263,26 +281,19 @@ func describeColumns(db *sql.DB, table string, cols []string) (map[string]provid
 		var name, ctype string
 		var notNull int
 		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+		var pk, hidden int
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk, &hidden); err != nil {
 			return nil, err
 		}
 		out[name] = provider.ColumnDescriptor{
-			Name:       name,
-			Type:       ctype,
-			Nullable:   notNull == 0,
-			IsDefault:  dflt.Valid,
-			IsGenerated: isGeneratedColumn(ctype),
+			Name:        name,
+			Type:        ctype,
+			Nullable:    notNull == 0,
+			IsDefault:   dflt.Valid,
+			IsGenerated: hidden >= 2,
 		}
 	}
 	return out, rows.Err()
-}
-
-func isGeneratedColumn(ctype string) bool {
-	// SQLite reports generated columns via a separate pragma in newer
-	// versions; declared types never mark generation. Conservative: no
-	// column is treated as generated from the type alone.
-	return false
 }
 
 func normalizeGeomType(g geom.Geometry) string {
@@ -328,6 +339,18 @@ type featureTx struct {
 	writer *Writer
 	tx     *sql.Tx
 	done   bool
+	// modified tracks tables touched by this transaction for GeoPackage
+	// metadata maintenance (gpkg_contents.last_change, RTree) at commit.
+	modified map[string]*tableModification
+}
+
+// tableModification records row-level changes for one table.
+type tableModification struct {
+	table   string
+	geomCol string
+	// geomChanged maps row id -> new bounds; nil bounds means the row was
+	// deleted (drop the RTree entry).
+	geomChanged map[uint64]*[4]float64
 }
 
 func (t *featureTx) mapping(layer string) (*writeMapping, error) {
@@ -362,6 +385,13 @@ func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) 
 		return provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "transaction already finished"}
 	}
 	t.done = true
+	if err := t.maintainGPKGMetadata(ctx); err != nil {
+		_ = t.tx.Rollback()
+		return provider.CommitReceipt{Status: provider.CommitUnknown}, &provider.MutationError{
+			Kind:   provider.MutationErrCommitUnknown,
+			Reason: fmt.Sprintf("gpkg metadata maintenance failed: %v", err),
+		}
+	}
 	if err := t.tx.Commit(); err != nil {
 		return provider.CommitReceipt{Status: provider.CommitUnknown}, &provider.MutationError{
 			Kind:   provider.MutationErrCommitUnknown,
@@ -369,6 +399,110 @@ func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) 
 		}
 	}
 	return provider.CommitReceipt{Status: provider.CommitCommitted}, nil
+}
+
+// maintainGPKGMetadata updates GeoPackage bookkeeping for tables touched
+// by this transaction: gpkg_contents.last_change and the RTree spatial
+// index (when present). Runs inside the transaction, before commit.
+func (t *featureTx) maintainGPKGMetadata(ctx context.Context) error {
+	for _, mod := range t.modified {
+		if err := t.touchContents(ctx, mod.table); err != nil {
+			return err
+		}
+		if err := t.maintainRTree(ctx, mod); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// touchContents bumps gpkg_contents.last_change for a feature table.
+// Tables without a gpkg_contents row (plain SQLite tables) are skipped.
+func (t *featureTx) touchContents(ctx context.Context, table string) error {
+	var n int
+	if err := t.tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM gpkg_contents WHERE table_name = ?`, table).Scan(&n); err != nil {
+		// No gpkg_contents table at all: plain SQLite, nothing to do.
+		return nil
+	}
+	if n == 0 {
+		return nil
+	}
+	_, err := t.tx.ExecContext(ctx,
+		`UPDATE gpkg_contents SET last_change = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE table_name = ?`, table)
+	return err
+}
+
+// maintainRTree syncs the RTree index for changed rows. Tables without an
+// RTree index table are skipped. Row-level triggers (created by
+// GeoPackage writers) would already have fired; this covers the
+// trigger-less case by reconciling entries for the touched rows.
+func (t *featureTx) maintainRTree(ctx context.Context, mod *tableModification) error {
+	rtree := "rtree_" + mod.table + "_" + mod.geomCol
+	var name string
+	if err := t.tx.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, rtree).Scan(&name); err != nil {
+		return nil // no RTree index: nothing to do
+	}
+	for id, bounds := range mod.geomChanged {
+		if _, err := t.tx.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE id = ?`, quoteIdent(rtree)), id); err != nil {
+			return err
+		}
+		if bounds == nil {
+			continue // deleted row: entry removed above
+		}
+		if _, err := t.tx.ExecContext(ctx,
+			fmt.Sprintf(`INSERT INTO %s (id, minx, maxx, miny, maxy) VALUES (?, ?, ?, ?, ?)`, quoteIdent(rtree)),
+			id, bounds[0], bounds[1], bounds[2], bounds[3]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recordMod marks a table as touched by this transaction.
+func (t *featureTx) recordMod(mp *writeMapping, id uint64, bounds *[4]float64, geomTouched bool) {
+	if t.modified == nil {
+		t.modified = make(map[string]*tableModification)
+	}
+	mod, ok := t.modified[mp.table]
+	if !ok {
+		mod = &tableModification{table: mp.table, geomCol: mp.geomColumn, geomChanged: make(map[uint64]*[4]float64)}
+		t.modified[mp.table] = mod
+	}
+	if geomTouched {
+		mod.geomChanged[id] = bounds
+	}
+}
+
+// geometryBounds computes the 2D envelope [minx, maxx, miny, maxy] of a
+// decoded geometry for RTree maintenance.
+func geometryBounds(g geom.Geometry) ([4]float64, error) {
+	var b [4]float64
+	pts, err := geom.GetCoordinates(g)
+	if err != nil {
+		return b, err
+	}
+	if len(pts) == 0 {
+		return b, fmt.Errorf("empty geometry has no bounds")
+	}
+	b = [4]float64{pts[0][0], pts[0][0], pts[0][1], pts[0][1]}
+	for _, p := range pts[1:] {
+		if p[0] < b[0] {
+			b[0] = p[0]
+		}
+		if p[0] > b[1] {
+			b[1] = p[0]
+		}
+		if p[1] < b[2] {
+			b[2] = p[1]
+		}
+		if p[1] > b[3] {
+			b[3] = p[1]
+		}
+	}
+	return b, nil
 }
 
 func (t *featureTx) Rollback(ctx context.Context) error {

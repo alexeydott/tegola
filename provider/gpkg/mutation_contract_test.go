@@ -320,3 +320,231 @@ func TestMutationNotFound(t *testing.T) {
 		}
 	}
 }
+
+func TestMutationWriterCached(t *testing.T) {
+	_, mp1 := newMutationFixture(t)
+	_, mp2 := newMutationFixture(t)
+	// Same provider returns the same cached Writer: no sql.DB pool is
+	// opened per transaction.
+	path := filepath.Join(t.TempDir(), "cached.gpkg")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(mutationDDL); err != nil {
+		t.Fatalf("ddl: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	conf := dict.Dict{
+		"filepath": path,
+		"layers": []map[string]interface{}{
+			{
+				"name":               "parcels",
+				"tablename":          "parcels",
+				"id_fieldname":       "fid",
+				"geometry_fieldname": "geom",
+				"geometry_format":    "wkb",
+				"srid":               4326,
+				"fields":             []string{"name", "lots", "price"},
+			},
+		},
+	}
+	p, err := gpkg.NewTileProvider(conf, nil)
+	if err != nil {
+		t.Fatalf("NewTileProvider: %v", err)
+	}
+	t.Cleanup(gpkg.Cleanup)
+	gp := p.(*gpkg.Provider)
+	w1 := gp.MutationWriter()
+	w2 := gp.MutationWriter()
+	if w1 != w2 {
+		t.Fatal("MutationWriter not cached: distinct Writer per call leaks sql.DB pools")
+	}
+	_ = mp1
+	_ = mp2
+}
+
+func TestMutationGeneratedColumnReadOnly(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gen.gpkg")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	ddl := `CREATE TABLE genparcels (
+		fid INTEGER PRIMARY KEY,
+		geom BLOB,
+		lots INTEGER NOT NULL,
+		double_lots INTEGER GENERATED ALWAYS AS (lots * 2) STORED
+	)`
+	if _, err := db.Exec(ddl); err != nil {
+		t.Fatalf("ddl: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	conf := dict.Dict{
+		"filepath": path,
+		"layers": []map[string]interface{}{
+			{
+				"name":               "genparcels",
+				"tablename":          "genparcels",
+				"id_fieldname":       "fid",
+				"geometry_fieldname": "geom",
+				"geometry_format":    "wkb",
+				"srid":               4326,
+				"fields":             []string{"lots"},
+			},
+		},
+	}
+	p, err := gpkg.NewTileProvider(conf, nil)
+	if err != nil {
+		t.Fatalf("NewTileProvider: %v", err)
+	}
+	t.Cleanup(gpkg.Cleanup)
+	mp := p.(*gpkg.Provider).MutationWriter()
+	wd, err := mp.DescribeWritable(context.Background(), "genparcels")
+	if err != nil {
+		t.Fatalf("DescribeWritable: %v", err)
+	}
+	if _, ok := wd.WritableColumns["double_lots"]; ok {
+		t.Fatal("generated column admitted as writable")
+	}
+	found := false
+	for _, c := range wd.ReadOnlyColumns {
+		if c == "double_lots" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("generated column not listed as read-only")
+	}
+	// Writing the generated column must be rejected.
+	tx, err := mp.BeginFeatureTx(context.Background(), provider.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	_, err = tx.Apply(context.Background(), provider.Mutation{
+		Op:         provider.MutationInsert,
+		Collection: "genparcels",
+		Properties: map[string]provider.MutationValue{
+			"lots":        intVal(3),
+			"double_lots": intVal(6),
+		},
+		GeometryWKB: wkbPoint(t, 1, 2),
+	})
+	if err == nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal("insert into generated column accepted")
+	}
+	_ = tx.Rollback(context.Background())
+}
+
+func TestMutationGPKGMetadataMaintained(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "meta.gpkg")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// Minimal GeoPackage metadata: gpkg_contents + an RTree index table.
+	setup := []string{
+		`CREATE TABLE parcels (fid INTEGER PRIMARY KEY, geom BLOB, name TEXT)`,
+		`CREATE TABLE gpkg_contents (table_name TEXT PRIMARY KEY, data_type TEXT, identifier TEXT, description TEXT, last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER)`,
+		`INSERT INTO gpkg_contents (table_name, data_type) VALUES ('parcels', 'features')`,
+		`CREATE TABLE gpkg_geometry_columns (table_name TEXT PRIMARY KEY, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT)`,
+		`INSERT INTO gpkg_geometry_columns (table_name, column_name, geometry_type_name, srs_id, z, m) VALUES ('parcels', 'geom', 'POINT', 4326, 0, 0)`,
+		`CREATE VIRTUAL TABLE rtree_parcels_geom USING rtree(id, minx, maxx, miny, maxy)`,
+	}
+	for _, q := range setup {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("setup %q: %v", q, err)
+		}
+	}
+	var before string
+	if err := db.QueryRow(`SELECT last_change FROM gpkg_contents WHERE table_name='parcels'`).Scan(&before); err != nil {
+		t.Fatalf("last_change: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	conf := dict.Dict{
+		"filepath": path,
+		"layers": []map[string]interface{}{
+			{
+				"name":               "parcels",
+				"tablename":          "parcels",
+				"id_fieldname":       "fid",
+				"geometry_fieldname": "geom",
+				"geometry_format":    "wkb",
+				"srid":               4326,
+				"fields":             []string{"name"},
+			},
+		},
+	}
+	p, err := gpkg.NewTileProvider(conf, nil)
+	if err != nil {
+		t.Fatalf("NewTileProvider: %v", err)
+	}
+	t.Cleanup(gpkg.Cleanup)
+	mp := p.(*gpkg.Provider).MutationWriter()
+
+	ctx := context.Background()
+	tx, err := mp.BeginFeatureTx(ctx, provider.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	out, err := tx.Apply(ctx, provider.Mutation{
+		Op:          provider.MutationInsert,
+		Collection:  "parcels",
+		Properties:  map[string]provider.MutationValue{"name": strVal("meta")},
+		GeometryWKB: wkbPoint(t, 10, 20),
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	db2, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+	var after string
+	if err := db2.QueryRow(`SELECT last_change FROM gpkg_contents WHERE table_name='parcels'`).Scan(&after); err != nil {
+		t.Fatalf("last_change after: %v", err)
+	}
+	if after == before {
+		t.Fatal("gpkg_contents.last_change not bumped by commit")
+	}
+	var minx, maxx, miny, maxy float64
+	if err := db2.QueryRow(`SELECT minx, maxx, miny, maxy FROM rtree_parcels_geom WHERE id = ?`, out.FeatureID).Scan(&minx, &maxx, &miny, &maxy); err != nil {
+		t.Fatalf("rtree entry missing: %v", err)
+	}
+	if minx != 10 || maxx != 10 || miny != 20 || maxy != 20 {
+		t.Fatalf("rtree bounds wrong: %v %v %v %v", minx, maxx, miny, maxy)
+	}
+
+	// Delete must drop the RTree entry.
+	tx2, err := mp.BeginFeatureTx(ctx, provider.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin2: %v", err)
+	}
+	if _, err := tx2.Apply(ctx, provider.Mutation{Op: provider.MutationDelete, Collection: "parcels", FeatureID: out.FeatureID}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := tx2.Commit(ctx); err != nil {
+		t.Fatalf("commit2: %v", err)
+	}
+	var n int
+	if err := db2.QueryRow(`SELECT COUNT(*) FROM rtree_parcels_geom WHERE id = ?`, out.FeatureID).Scan(&n); err != nil {
+		t.Fatalf("rtree count: %v", err)
+	}
+	if n != 0 {
+		t.Fatal("rtree entry not removed on delete")
+	}
+}
