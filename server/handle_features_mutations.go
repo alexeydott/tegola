@@ -1,0 +1,531 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/dimfeld/httptreemux"
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/feature"
+	"github.com/alexeydott/tegola/ogc/features"
+	"github.com/alexeydott/tegola/provider"
+)
+
+const (
+	mediaGeoJSON      = "application/geo+json"
+	mediaMergePatch   = "application/merge-patch+json"
+	maxMutationBody   = 4 << 20 // 4 MiB per mutation document
+)
+
+// writePolicy is the config-backed Policy: mutations are allowed only
+// for collections and operations listed in [features.write].
+type writePolicy struct {
+	cfg config.FeaturesWriteConfig
+}
+
+func (p writePolicy) CheckCollection(_ context.Context, _ feature.Principal, action feature.PolicyAction, collection string) feature.PolicyDecision {
+	op := map[feature.PolicyAction]string{
+		feature.ActionInsert:  "create",
+		feature.ActionReplace: "replace",
+		feature.ActionUpdate:  "update",
+		feature.ActionDelete:  "delete",
+	}[action]
+	if op == "" {
+		return feature.PolicyDecision{Allow: true}
+	}
+	if p.cfg.AllowsOperation(collection, op) {
+		return feature.PolicyDecision{Allow: true}
+	}
+	return feature.PolicyDecision{Reason: "operation not allowed for collection"}
+}
+
+func (p writePolicy) CheckRow(_ context.Context, _ feature.Principal, _ feature.PolicyAction, _ feature.PhysicalFeatureKey) feature.PolicyDecision {
+	return feature.PolicyDecision{Allow: true}
+}
+
+func (p writePolicy) CheckPostImage(_ context.Context, _ feature.Principal, _ feature.PhysicalFeatureKey, _ map[string]feature.TypedValue) feature.PolicyDecision {
+	return feature.PolicyDecision{Allow: true}
+}
+
+// mutationCoordinator builds the neutral coordinator bound to this API's
+// service and write config.
+func (api *FeatureAPI) mutationCoordinator() *feature.MutationCoordinator {
+	return &feature.MutationCoordinator{
+		PolicyFor: func(collection string) feature.Policy {
+			return writePolicy{cfg: api.cfg.Write}
+		},
+		SchemaFor: func(collection string) (*feature.SchemaDescriptor, error) {
+			return api.service.SchemaDescriptorFor(context.Background(), collection)
+		},
+		ProviderFor: func(collection string) (provider.MutationProvider, string, error) {
+			return api.service.MutationProviderFor(collection)
+		},
+	}
+}
+
+// writeEnabledFor reports whether any mutation is configured for the
+// collection. Routes are registered once; per-operation checks happen
+// per request.
+func (api *FeatureAPI) writeEnabledFor(collection string) bool {
+	if !api.cfg.Write.Enabled {
+		return false
+	}
+	for _, c := range api.cfg.Write.Collections {
+		if string(c.ID) == collection {
+			return len(c.Operations) > 0
+		}
+	}
+	return false
+}
+
+// allowedMethods returns the HTTP methods actually available on the
+// resource for this collection, per the write config.
+func (api *FeatureAPI) allowedMethods(collection string, item bool) []string {
+	methods := []string{http.MethodGet, http.MethodHead, http.MethodOptions}
+	if !api.writeEnabledFor(collection) {
+		return methods
+	}
+	if !item {
+		if api.cfg.Write.AllowsOperation(collection, "create") {
+			methods = append(methods, http.MethodPost)
+		}
+		return methods
+	}
+	if api.cfg.Write.AllowsOperation(collection, "replace") {
+		methods = append(methods, http.MethodPut)
+	}
+	if api.cfg.Write.AllowsOperation(collection, "update") {
+		methods = append(methods, http.MethodPatch)
+	}
+	if api.cfg.Write.AllowsOperation(collection, "delete") {
+		methods = append(methods, http.MethodDelete)
+	}
+	return methods
+}
+
+func (api *FeatureAPI) registerMutations(group *httptreemux.Group) {
+	if !api.cfg.Write.Enabled {
+		return
+	}
+	mk := func(h http.HandlerFunc) http.Handler {
+		return HeadersHandler(featureNoStoreHandler(h))
+	}
+	base := api.cfg.BasePath
+	group.UsingContext().Handler(http.MethodPost, base+"/collections/:collection/items", mk(api.serveCreateItem))
+	group.UsingContext().Handler(http.MethodPut, base+"/collections/:collection/items/:feature", mk(api.serveReplaceItem))
+	group.UsingContext().Handler(http.MethodPatch, base+"/collections/:collection/items/:feature", mk(api.servePatchItem))
+	group.UsingContext().Handler(http.MethodDelete, base+"/collections/:collection/items/:feature", mk(api.serveDeleteItem))
+	// Per-resource OPTIONS advertises the real Allow set.
+	group.UsingContext().Handler(http.MethodOptions, base+"/collections/:collection/items", mk(api.serveItemsOptions))
+	group.UsingContext().Handler(http.MethodOptions, base+"/collections/:collection/items/:feature", mk(api.serveItemOptions))
+}
+
+func (api *FeatureAPI) serveItemsOptions(w http.ResponseWriter, r *http.Request) {
+	collection := httptreemux.ContextParams(r.Context())["collection"]
+	api.writeOptions(w, api.allowedMethods(collection, false), false)
+}
+
+func (api *FeatureAPI) serveItemOptions(w http.ResponseWriter, r *http.Request) {
+	collection := httptreemux.ContextParams(r.Context())["collection"]
+	acceptPatch := api.cfg.Write.AllowsOperation(collection, "update")
+	api.writeOptions(w, api.allowedMethods(collection, true), acceptPatch)
+}
+
+func (api *FeatureAPI) writeOptions(w http.ResponseWriter, methods []string, acceptPatch bool) {
+	w.Header().Set("Allow", strings.Join(methods, ", "))
+	// CORS preflight needs the methods here, not only in Allow.
+	w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-Match, Content-Crs, Authorization")
+	if acceptPatch {
+		w.Header().Set("Accept-Patch", mediaMergePatch)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// readMutationBody reads and size-limits the request body.
+func readMutationBody(r *http.Request) ([]byte, error) {
+	if r.ContentLength > maxMutationBody {
+		return nil, fmt.Errorf("request body too large")
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxMutationBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(body)) > maxMutationBody {
+		return nil, fmt.Errorf("request body too large")
+	}
+	return body, nil
+}
+
+func parseFeatureIDParam(raw string) (uint64, error) {
+	if !decimalDigits(raw) {
+		return 0, fmt.Errorf("invalid feature ID")
+	}
+	return strconv.ParseUint(raw, 10, 64)
+}
+
+// checkPrecondition enforces If-Match against the current representation
+// ETag. If-Match: * checks existence. Absent If-Match is allowed unless
+// the collection mandates preconditions (428 then).
+func (api *FeatureAPI) checkPrecondition(r *http.Request, collection string, featureID uint64) (string, error) {
+	match := r.Header.Get("If-Match")
+	if match == "" {
+		return "", nil
+	}
+	if match == "*" {
+		// Existence check.
+		_, err := api.service.QueryFeature(r.Context(), collection, featureID)
+		if err != nil {
+			return "", err
+		}
+		return "", nil
+	}
+	current, err := api.currentETag(r, collection, featureID)
+	if err != nil {
+		return "", err
+	}
+	if !etagMatches(match, current) {
+		return "", &preconditionFailedError{current: current}
+	}
+	return current, nil
+}
+
+type preconditionFailedError struct{ current string }
+
+func (e *preconditionFailedError) Error() string { return "precondition failed" }
+
+func etagMatches(header, current string) bool {
+	// Only strong comparison is accepted for mutations; weak tags never
+	// grant write permission.
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "W/") {
+			continue
+		}
+		if part == current {
+			return true
+		}
+	}
+	return false
+}
+
+// currentETag reads the feature and computes its strong ETag.
+func (api *FeatureAPI) currentETag(r *http.Request, collection string, featureID uint64) (string, error) {
+	f, err := api.service.QueryFeature(r.Context(), collection, featureID)
+	if err != nil {
+		return "", err
+	}
+	return featureETag(f), nil
+}
+
+// featureETag computes the strong ETag of a service feature. The tag is
+// bound to the exact served representation (id + raw geometry JSON +
+// properties).
+func featureETag(f features.Feature) string {
+	props := make(map[string]interface{}, len(f.Properties))
+	for k, v := range f.Properties {
+		props[k] = v
+	}
+	canonical := canonicalFeatureBytes(f.ID, f.Geometry, props)
+	return strongETag(canonical)
+}
+
+// serveCreateItem implements POST /collections/{id}/items (Part 4 Create).
+func (api *FeatureAPI) serveCreateItem(w http.ResponseWriter, r *http.Request) {
+	collection := httptreemux.ContextParams(r.Context())["collection"]
+	if !api.cfg.Write.AllowsOperation(collection, "create") {
+		api.writeError(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "Create not allowed for this collection")
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !isGeoJSONContentType(ct) {
+		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/geo+json")
+		return
+	}
+	body, err := readMutationBody(r)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid request body")
+		return
+	}
+	gf, err := parseGeoJSONFeature(body)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid GeoJSON Feature")
+		return
+	}
+	schema, err := api.service.SchemaDescriptorFor(r.Context(), collection)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	m, err := buildInsertMutation(schema, collection, gf)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature")
+		return
+	}
+	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), feature.Principal{Anonymous: true}, m)
+	if err != nil {
+		api.writeMutationError(w, r, err)
+		return
+	}
+	if receipt.Status != provider.CommitCommitted {
+		api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
+		return
+	}
+	// Return the persisted representation (server defaults/triggers may
+	// have changed the data): re-read the canonical row.
+	created, err := api.service.QueryFeature(r.Context(), collection, outcome.FeatureID)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	loc := api.itemLocation(r, collection, outcome.FeatureID)
+	w.Header().Set("Location", loc)
+	api.writeMutationRepresentation(w, r, http.StatusCreated, featureETag(created), created)
+}
+
+// serveReplaceItem implements PUT /collections/{id}/items/{fid}.
+func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) {
+	collection := httptreemux.ContextParams(r.Context())["collection"]
+	if !api.cfg.Write.AllowsOperation(collection, "replace") {
+		api.writeError(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "Replace not allowed for this collection")
+		return
+	}
+	featureID, err := parseFeatureIDParam(httptreemux.ContextParams(r.Context())["feature"])
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature ID")
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !isGeoJSONContentType(ct) {
+		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/geo+json")
+		return
+	}
+	if _, err := api.checkPrecondition(r, collection, featureID); err != nil {
+		api.writePreconditionError(w, r, err)
+		return
+	}
+	body, err := readMutationBody(r)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid request body")
+		return
+	}
+	gf, err := parseGeoJSONFeature(body)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid GeoJSON Feature")
+		return
+	}
+	schema, err := api.service.SchemaDescriptorFor(r.Context(), collection)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	m, err := buildReplaceMutation(schema, collection, featureID, gf)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature")
+		return
+	}
+	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), feature.Principal{Anonymous: true}, m)
+	if err != nil {
+		api.writeMutationError(w, r, err)
+		return
+	}
+	if receipt.Status != provider.CommitCommitted {
+		api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
+		return
+	}
+	updated, err := api.service.QueryFeature(r.Context(), collection, outcome.FeatureID)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	api.writeMutationRepresentation(w, r, http.StatusOK, featureETag(updated), updated)
+}
+
+// servePatchItem implements PATCH with application/merge-patch+json.
+func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
+	collection := httptreemux.ContextParams(r.Context())["collection"]
+	if !api.cfg.Write.AllowsOperation(collection, "update") {
+		api.writeError(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "Update not allowed for this collection")
+		return
+	}
+	featureID, err := parseFeatureIDParam(httptreemux.ContextParams(r.Context())["feature"])
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature ID")
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != mediaMergePatch && !strings.HasPrefix(ct, mediaMergePatch+";") {
+		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/merge-patch+json")
+		return
+	}
+	if _, err := api.checkPrecondition(r, collection, featureID); err != nil {
+		api.writePreconditionError(w, r, err)
+		return
+	}
+	body, err := readMutationBody(r)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid request body")
+		return
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var patch map[string]interface{}
+	if err := dec.Decode(&patch); err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid merge patch")
+		return
+	}
+	current, err := api.service.QueryFeature(r.Context(), collection, featureID)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	schema, err := api.service.SchemaDescriptorFor(r.Context(), collection)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	m, err := buildPatchMutation(schema, collection, featureID, current, patch)
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid patch")
+		return
+	}
+	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), feature.Principal{Anonymous: true}, m)
+	if err != nil {
+		api.writeMutationError(w, r, err)
+		return
+	}
+	if receipt.Status != provider.CommitCommitted {
+		api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
+		return
+	}
+	updated, err := api.service.QueryFeature(r.Context(), collection, outcome.FeatureID)
+	if err != nil {
+		api.writeQueryError(w, r, err)
+		return
+	}
+	api.writeMutationRepresentation(w, r, http.StatusOK, featureETag(updated), updated)
+}
+
+// serveDeleteItem implements DELETE /collections/{id}/items/{fid}.
+func (api *FeatureAPI) serveDeleteItem(w http.ResponseWriter, r *http.Request) {
+	collection := httptreemux.ContextParams(r.Context())["collection"]
+	if !api.cfg.Write.AllowsOperation(collection, "delete") {
+		api.writeError(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "Delete not allowed for this collection")
+		return
+	}
+	featureID, err := parseFeatureIDParam(httptreemux.ContextParams(r.Context())["feature"])
+	if err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature ID")
+		return
+	}
+	if _, err := api.checkPrecondition(r, collection, featureID); err != nil {
+		api.writePreconditionError(w, r, err)
+		return
+	}
+	_, receipt, err := api.mutationCoordinator().Execute(r.Context(), feature.Principal{Anonymous: true}, provider.Mutation{
+		Op:         provider.MutationDelete,
+		Collection: collection,
+		FeatureID:  featureID,
+	})
+	if err != nil {
+		api.writeMutationError(w, r, err)
+		return
+	}
+	if receipt.Status != provider.CommitCommitted {
+		api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeMutationRepresentation writes a mutation response, preserving the
+// ETag that featureProtocolHeaders would delete for read responses.
+func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *http.Request, status int, etag string, value any) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		api.writeError(w, r, http.StatusInternalServerError, "InternalError", "Response encoding failed")
+		return
+	}
+	if int64(len(raw)) > api.cfg.MaxResponseBytes {
+		api.writeError(w, r, http.StatusBadRequest, "ResponseTooLarge", "Response exceeds publication limit")
+		return
+	}
+	featureProtocolHeaders(w.Header())
+	if etag != "" {
+		w.Header().Set("ETag", etag)
+		mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
+	}
+	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Location")
+	w.Header().Set("Content-Type", mediaGeoJSON)
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+	w.WriteHeader(status)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := w.Write(raw); err != nil {
+		// Headers already sent; log only.
+		fmt.Printf("mutation response write failed: %v\n", err)
+	}
+}
+
+func (api *FeatureAPI) itemLocation(r *http.Request, collection string, featureID uint64) string {
+	return api.link(r, "/collections/"+collection+"/items/"+strconv.FormatUint(featureID, 10), "self", mediaGeoJSON).Href
+}
+
+func isGeoJSONContentType(ct string) bool {
+	ct = strings.TrimSpace(strings.Split(ct, ";")[0])
+	return ct == mediaGeoJSON || ct == "application/vnd.geo+json"
+}
+
+// writeMutationError maps the mutation error taxonomy to HTTP.
+func (api *FeatureAPI) writeMutationError(w http.ResponseWriter, r *http.Request, err error) {
+	if me, ok := provider.AsMutationError(err); ok {
+		switch me.Kind {
+		case provider.MutationErrMalformedInput, provider.MutationErrSchemaViolation:
+			api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid input")
+			return
+		case provider.MutationErrDenied:
+			api.writeError(w, r, http.StatusForbidden, "Forbidden", "Operation denied")
+			return
+		case provider.MutationErrNotFound:
+			api.writeError(w, r, http.StatusNotFound, "NotFound", "Feature not found")
+			return
+		case provider.MutationErrPreconditionFailed:
+			api.writeError(w, r, http.StatusPreconditionFailed, "PreconditionFailed", "Precondition failed")
+			return
+		case provider.MutationErrLockConflict:
+			api.writeError(w, r, http.StatusConflict, "LockConflict", "Lock conflict")
+			return
+		case provider.MutationErrUnsupportedCapability:
+			api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Unsupported capability")
+			return
+		case provider.MutationErrQuotaExceeded:
+			api.writeError(w, r, http.StatusRequestEntityTooLarge, "QuotaExceeded", "Quota exceeded")
+			return
+		case provider.MutationErrDomainMismatch:
+			api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Transaction domain mismatch")
+			return
+		case provider.MutationErrCommitUnknown:
+			api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
+			return
+		}
+	}
+	var cnf features.CollectionNotFoundError
+	if errors.As(err, &cnf) {
+		api.writeError(w, r, http.StatusNotFound, "NotFound", "Collection not found")
+		return
+	}
+	api.writeQueryError(w, r, err)
+}
+
+func (api *FeatureAPI) writePreconditionError(w http.ResponseWriter, r *http.Request, err error) {
+	if _, ok := err.(*preconditionFailedError); ok {
+		api.writeError(w, r, http.StatusPreconditionFailed, "PreconditionFailed", "If-Match precondition failed")
+		return
+	}
+	api.writeQueryError(w, r, err)
+}

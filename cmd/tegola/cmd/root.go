@@ -116,6 +116,7 @@ func initConfigRuntime(configFile string, cacheRequired bool, logLevel string) (
 			QueryTimeout:     time.Duration(*settings.QueryTimeoutMS) * time.Millisecond,
 			Title:            string(settings.Title),
 			Description:      string(settings.Description),
+			Write:            settings.Write,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("could not construct feature runtime: %w", err)

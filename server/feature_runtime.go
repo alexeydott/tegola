@@ -22,6 +22,8 @@ type FeatureAPIConfig struct {
 	MaxLimit         uint
 	Title            string
 	Description      string
+	// Write gates Part 4 mutations. Zero value disables all writes.
+	Write config.FeaturesWriteConfig
 }
 
 // FeatureAPI wraps a resolved service. Build it with NewFeatureAPI before routing.
@@ -124,6 +126,10 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 			group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodHead, path, observer, handler))
 		}
 	}
+	// Part 4 mutation routes (POST/PUT/PATCH/DELETE/OPTIONS). Registered
+	// only when [features.write] is enabled; per-collection and
+	// per-operation checks happen per request.
+	bound.registerMutations(group)
 	oldOptions := router.OptionsHandler
 	router.OptionsHandler = func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		oldOptions(w, r, params)
@@ -140,9 +146,22 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 		}
 		setHeaders(w)
 		featureProtocolHeaders(w.Header())
-		w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+		w.Header().Set("Allow", strings.Join(bound.allowForPath(r.URL.Path), ", "))
 		bound.writeError(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "Method not supported")
 	}
+}
+
+// allowForPath computes the Allow header for a feature API path,
+// including write methods where configured.
+func (api *FeatureAPI) allowForPath(path string) []string {
+	rel := strings.TrimPrefix(path, api.cfg.BasePath)
+	rel = strings.TrimPrefix(rel, "/")
+	parts := strings.Split(rel, "/")
+	if len(parts) >= 3 && parts[0] == "collections" && parts[2] == "items" {
+		collection := parts[1]
+		return api.allowedMethods(collection, len(parts) > 3)
+	}
+	return []string{http.MethodGet, http.MethodHead, http.MethodOptions}
 }
 
 func featureNoStoreHandler(next http.Handler) http.Handler {

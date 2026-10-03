@@ -2,6 +2,7 @@
 package features
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/alexeydott/proj"
+	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/tegola/provider"
 	"github.com/alexeydott/tegola/provider/crsconfig"
 )
@@ -56,6 +58,40 @@ func (s *Service) Collections() []CollectionMetadata {
 	}
 	sort.Slice(metadata, func(i, j int) bool { return metadata[i].ID < metadata[j].ID })
 	return metadata
+}
+
+// MutationProviderFor resolves the mutation-capable provider and the
+// provider layer name for a collection. It returns an error when the
+// collection is unknown or its provider does not implement
+// provider.MutationProvider.
+func (s *Service) MutationProviderFor(id string) (provider.MutationProvider, string, error) {
+	collection, ok := s.collections[id]
+	if !ok {
+		return nil, "", CollectionNotFoundError{CollectionID: id}
+	}
+	mp, ok := collection.querier.(provider.MutationProvider)
+	if !ok {
+		return nil, "", fmt.Errorf("features: collection %q provider does not support mutations", id)
+	}
+	return mp, collection.layer, nil
+}
+
+// SchemaDescriptorFor builds the neutral feature schema descriptor for
+// a collection from the provider's SchemaProvider contract.
+func (s *Service) SchemaDescriptorFor(ctx context.Context, id string) (*feature.SchemaDescriptor, error) {
+	collection, ok := s.collections[id]
+	if !ok {
+		return nil, CollectionNotFoundError{CollectionID: id}
+	}
+	sp, ok := collection.querier.(provider.SchemaProvider)
+	if !ok {
+		return nil, fmt.Errorf("features: collection %q provider does not describe schemas", id)
+	}
+	psd, err := sp.DescribeSchema(ctx, collection.layer)
+	if err != nil {
+		return nil, err
+	}
+	return providerSchemaToFeature(id, psd), nil
 }
 
 func (s *Service) Collection(id string) (CollectionMetadata, error) {

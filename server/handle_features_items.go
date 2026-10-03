@@ -107,6 +107,9 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 		Links []featureLink `json:"links"`
 	}{Feature: feature, Links: links}
 	w.Header().Set("Content-Crs", "<"+outputURI+">")
+	// Strong ETag bound to the exact served representation, for use
+	// with If-Match on Part 4 mutations.
+	w.Header().Set("ETag", featureETag(feature))
 	api.writeRepresentation(w, r, http.StatusOK, "application/geo+json", response, links)
 }
 
