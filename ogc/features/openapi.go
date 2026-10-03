@@ -51,9 +51,8 @@ func (s *Service) OpenAPI(options OpenAPIOptions) (map[string]any, error) {
 		id := hex.EncodeToString([]byte(metadata.ID))
 		add(base, "Collection_"+id, "Collection metadata", "application/json", "Collection", nil, false, nil)
 		parameters := []any{
-			openAPIParameter("limit", "Page size. Values above the maximum are accepted and clamped to that maximum.", map[string]any{
+			openAPIParameter("limit", "Page size. Values above the maximum are rejected with 400.", map[string]any{
 				"type": "integer", "minimum": 1, "maximum": options.MaxLimit, "default": options.DefaultLimit,
-				"x-tegola-limit-clamping": true,
 			}),
 			openAPIParameter("offset", "Tegola extension: stable feature-ID paging offset, decimal uint64 (maximum 18446744073709551615).", map[string]any{"type": "string", "pattern": "^[0-9]+$", "default": "0"}),
 			openAPIParameter("bbox", "Four or six finite coordinates. With bbox-crs omitted, CRS84 longitude/latitude or CRS84h longitude/latitude/height applies respectively; antimeridian wrapping is supported.", map[string]any{
@@ -160,11 +159,11 @@ func openAPIPath(id, summary, media, schema string, parameters []any, spatial bo
 		}
 		responses["301"] = redirect
 		for status, description := range map[string]string{
-			"400": "Invalid, repeated, blank or unknown query parameter",
+			"400": "Invalid, repeated, blank or unknown query parameter; or the response exceeds the publication limit (reduce limit)",
 			"404": "Resource not found", "405": "Method not supported; Allow: GET, HEAD, OPTIONS",
 			"406": "Requested representation is unavailable", "408": "Request cancelled or deadline exceeded",
 			"414": "Raw query exceeds 65536 bytes", "431": "Aggregate Accept headers exceed 16384 bytes",
-			"500": "Resource failed, including source integrity, encoding or ResponseTooLarge",
+			"500": "Resource failed, including source integrity or encoding",
 			"501": "Query operation is unsupported",
 		} {
 			response := map[string]any{"description": description, "headers": openAPIHeaders(false)}

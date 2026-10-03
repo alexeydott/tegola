@@ -44,7 +44,7 @@ func TestFeatureRepresentationLimitsHeadAndCancellation(t *testing.T) {
 		w := httptest.NewRecorder()
 		w.Header().Set("Content-Crs", "private")
 		api.writeJSON(w, r, 200, "application/json", strings.Repeat("a", 1024))
-		if w.Code != 500 || w.Header().Get("Content-Crs") != "" {
+		if w.Code != 400 || w.Header().Get("Content-Crs") != "" {
 			t.Fatalf("oversize %d %v", w.Code, w.Header())
 		}
 		if method == "HEAD" && w.Body.Len() != 0 {
@@ -96,7 +96,7 @@ func TestFeatureRepresentationExactBoundaryAndHTML(t *testing.T) {
 		api.protocolHandler(api.negotiate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			api.writeRepresentation(w, r, 200, "application/json", strings.Repeat("a", 2048), nil)
 		}), "application/json")).ServeHTTP(w, r)
-		if w.Code != 500 || w.Header().Get("Content-Type") != "application/json" {
+		if w.Code != 400 || w.Header().Get("Content-Type") != "application/json" {
 			t.Fatal(w.Code, w.Header())
 		}
 		if method == "HEAD" && w.Body.Len() != 0 {

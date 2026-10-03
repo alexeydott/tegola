@@ -74,8 +74,11 @@ func TestOpenAPICapabilityPaths(t *testing.T) {
 		t.Fatal("error compatibility undocumented", core)
 	}
 	limit := core["parameters"].([]any)[0].(map[string]any)["schema"].(map[string]any)
-	if limit["default"] != uint(3) || limit["maximum"] != uint(17) || limit["x-tegola-limit-clamping"] != true {
+	if limit["default"] != uint(3) || limit["maximum"] != uint(17) {
 		t.Fatal(limit)
+	}
+	if _, clamped := limit["x-tegola-limit-clamping"]; clamped {
+		t.Fatal("limit clamping still advertised", limit)
 	}
 	for _, id := range []string{"xy", "mixed.~"} {
 		operation := paths["/collections/"+id+"/items"].(map[string]any)["get"].(map[string]any)

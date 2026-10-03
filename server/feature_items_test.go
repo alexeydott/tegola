@@ -18,14 +18,19 @@ import (
 
 func TestFeatureItemsParameters(t *testing.T) {
 	api := discoveryAPI(t)
-	for _, raw := range []string{"unknown=1", "limit=1&limit=2", "limit=0", "limit=-1", "offset=18446744073709551616", "limit=%zz", "limit=1;offset=2", "bbox=1,2,3", "bbox=1,2,3,4,5", "bbox=NaN,0,1,1", "bbox=-181,0,1,1", "bbox=0,3,1,2", "bbox=0,0,5,1,1,4", "datetime=../..", "datetime=2020-01-01T1:00:00Z", "datetime=2020-01-01T00:00:00%2B24:00", "datetime=2020-01-01T00:00:00%2B00:60", "datetime=2020-01-01T00:00:00,1Z", "datetime=2020-01-02T00:00:00Z/2020-01-01T00:00:00Z"} {
+	for _, raw := range []string{"unknown=1", "limit=1&limit=2", "limit=0", "limit=-1", "limit=10001", "offset=18446744073709551616", "limit=%zz", "limit=1;offset=2", "bbox=1,2,3", "bbox=1,2,3,4,5", "bbox=NaN,0,1,1", "bbox=-181,0,1,1", "bbox=0,3,1,2", "bbox=0,0,5,1,1,4", "datetime=../..", "datetime=2020-01-01T1:00:00Z", "datetime=2020-01-01T00:00:00%2B24:00", "datetime=2020-01-01T00:00:00%2B00:60", "datetime=2020-01-01T00:00:00,1Z", "datetime=2020-01-02T00:00:00Z/2020-01-01T00:00:00Z"} {
 		t.Run(raw, func(t *testing.T) {
 			if _, _, err := api.parseItemsQuery(raw); err == nil {
 				t.Fatal("invalid query accepted")
 			}
 		})
 	}
-	q, _, err := api.parseItemsQuery("limit=999999999999999999999999&offset=3&bbox=170,-10,-5,-170,10,9")
+	// Over-maximum limits are rejected, not silently clamped: the clamp could
+	// still blow the response budget with a 500.
+	if _, _, err := api.parseItemsQuery("limit=999999999999999999999999&offset=3"); err == nil {
+		t.Fatal("over-maximum limit accepted")
+	}
+	q, _, err := api.parseItemsQuery("limit=10000&offset=3&bbox=170,-10,-5,-170,10,9")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +85,8 @@ func TestFeatureItemsHTTP(t *testing.T) {
 		path   string
 		status int
 	}{
-		{"/features/collections/alpha/items?limit=100&offset=3", 200},
+		{"/features/collections/alpha/items?limit=10&offset=3", 200},
+		{"/features/collections/alpha/items?limit=100&offset=3", 400},
 		{"/features/collections/alpha/items/7", 200},
 		{"/features/collections/alpha/items/99", 404},
 		{"/features/collections/missing/items", 404},
@@ -135,7 +141,7 @@ func TestFeatureItemsPagingLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest("GET", "/features/collections/alpha/items?limit=100&offset=3&bbox=170,-10,-170,10&datetime=2020-01-01T00%3A00%3A00%2B02%3A00", nil))
+	router.ServeHTTP(response, httptest.NewRequest("GET", "/features/collections/alpha/items?limit=10&offset=3&bbox=170,-10,-170,10&datetime=2020-01-01T00%3A00%3A00%2B02%3A00", nil))
 	if response.Code != 200 {
 		t.Fatal(response.Code, response.Body.String())
 	}

@@ -273,13 +273,31 @@ func (s spatialQuery) matches(g geom.Geometry, source uint64, query provider.Fea
 		transform = !s.pinnedSource.Equivalent(s.pinnedTarget)
 	}
 	if transform {
+		// A single vertex outside the target's finite forward domain (the
+		// poles in Web Mercator) must not fail the whole bbox predicate.
+		// Retry it clamped to the exact canonical-extent latitude; only this
+		// predicate copy is clamped, never the delivered geometry.
+		forwardWithDomainClamp := func(forward func([]float64) ([]float64, error), srid uint64, ll []float64) ([]float64, error) {
+			xy, err := forward(ll)
+			if err == nil {
+				return xy, nil
+			}
+			clamped, ok := crsconfig.ClampForwardDomain(srid, ll)
+			if !ok {
+				return nil, err
+			}
+			if xy, cerr := forward(clamped); cerr == nil {
+				return xy, nil
+			}
+			return nil, err
+		}
 		if s.pinnedSource != nil {
 			transformed, err = codec.TransformFeatureSpatialGeometry(g, func(p [2]float64) ([2]float64, error) {
 				ll, err := s.pinnedSource.Inverse(p[:])
 				if err != nil {
 					return [2]float64{}, err
 				}
-				xy, err := s.pinnedTarget.Forward(ll)
+				xy, err := forwardWithDomainClamp(s.pinnedTarget.Forward, s.pinnedTarget.CanonicalSRID(), ll)
 				if err != nil {
 					return [2]float64{}, err
 				}
@@ -291,7 +309,7 @@ func (s spatialQuery) matches(g geom.Geometry, source uint64, query provider.Fea
 				if err != nil {
 					return [2]float64{}, err
 				}
-				xy, err := s.target.Forward(ll)
+				xy, err := forwardWithDomainClamp(s.target.Forward, query.BoundsSRID, ll)
 				if err != nil {
 					return [2]float64{}, err
 				}

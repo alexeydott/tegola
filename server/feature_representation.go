@@ -57,6 +57,9 @@ func (api *FeatureAPI) writeRepresentation(w http.ResponseWriter, r *http.Reques
 			code = "RequestTimeout"
 			description = "Request did not complete"
 		} else if errors.Is(err, errFeatureResponseTooLarge) {
+			// Client-actionable: narrow the query (smaller limit, bbox,
+			// filter). Not a server malfunction.
+			status = http.StatusBadRequest
 			code = "ResponseTooLarge"
 			description = "Response exceeds publication limit"
 		} else {

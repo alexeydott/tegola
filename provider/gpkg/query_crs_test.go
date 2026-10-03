@@ -157,3 +157,41 @@ func TestFeatureCRSFrozenSourceIgnoresRegistryOverride(t *testing.T) {
 		t.Fatal("source converter consulted mutable registry", ids)
 	}
 }
+
+func TestFeatureCRSPolarVertexBboxClamp(t *testing.T) {
+	def4326, _ := crsconfig.CanonicalFeatureDefinition(4326)
+	def3857, _ := crsconfig.CanonicalFeatureDefinition(3857)
+	source, err := crsconfig.NewFeatureProjection(def4326)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := crsconfig.NewFeatureProjection(def3857)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := spatialQuery{pinnedSource: source, pinnedTarget: target}
+	// Antarctica-like polygon: vertices exactly at the pole have no finite
+	// Web Mercator image. The bbox predicate must clamp them to the domain
+	// edge instead of failing the whole query.
+	antarctica := geom.Polygon{{{0, -90}, {90, -90}, {90, -60}, {0, -60}, {0, -90}}}
+	// Canonical full-world EPSG:3857 extent: the rounded ±20037508.34 bound
+	// would still exclude a clamped polar vertex, so the test uses the exact
+	// canonical edge.
+	world := provider.FeatureQuery{BoundsSRID: 3857, Bounds: []geom.Extent{{-20037508.342789244, -20037508.342789244, 20037508.342789244, 20037508.342789244}}}
+	matched, err := s.matches(antarctica, 4326, world)
+	if err != nil || !matched {
+		t.Fatalf("polar bbox predicate: matched=%v err=%v", matched, err)
+	}
+	// A lone polar point exercises the clamp without any non-polar edge to
+	// mask an out-of-extent image: its clamped y must sit inside the world.
+	pole := geom.Point{0, -90}
+	matched, err = s.matches(pole, 4326, world)
+	if err != nil || !matched {
+		t.Fatalf("polar point bbox predicate: matched=%v err=%v", matched, err)
+	}
+	away := provider.FeatureQuery{BoundsSRID: 3857, Bounds: []geom.Extent{{5000000, 5000000, 6000000, 6000000}}}
+	matched, err = s.matches(antarctica, 4326, away)
+	if err != nil || matched {
+		t.Fatalf("negative control: matched=%v err=%v", matched, err)
+	}
+}

@@ -96,6 +96,114 @@ INSERT INTO items VALUES(10,'POINT (0 0)',NULL,NULL,NULL),(20,'POINT (0 0)',-2,'
 	}
 }
 
+func TestFeatureFilterParameterizedTypes(t *testing.T) {
+	p, _ := filterTestProvider(t, `CREATE TABLE items(id INTEGER PRIMARY KEY,geom TEXT,name TEXT(15),code VARCHAR(32),rank MEDIUMINT,score REAL,ratio DOUBLE PRECISION,note CHAR(4));
+INSERT INTO items VALUES(10,'POINT (0 0)','alpha','A1',1,0.5,1.25,'n1'),(20,'POINT (0 0)','beta','B2',2,1.5,NULL,'n2'),
+(30,'POINT (0 0)','gamma','C3',3,NULL,2.5,NULL),(40,'POINT (0 0)',NULL,'D4',NULL,3.5,3.75,'n4');`, nil)
+	meta, err := p.layers["items"].FeatureQueryables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []provider.FeatureQueryable{
+		{Name: "code", Type: provider.QueryableString, Nullable: true},
+		{Name: "name", Type: provider.QueryableString, Nullable: true},
+		{Name: "note", Type: provider.QueryableString, Nullable: true},
+		{Name: "rank", Type: provider.QueryableInteger, Nullable: true},
+		{Name: "ratio", Type: provider.QueryableNumber, Nullable: true},
+		{Name: "score", Type: provider.QueryableNumber, Nullable: true},
+	}
+	if !reflect.DeepEqual(meta.Fields(), want) {
+		t.Fatalf("metadata %#v", meta.Fields())
+	}
+	for _, test := range []struct {
+		name string
+		node provider.FilterNode
+		ids  []uint64
+	}{
+		{"text_param", filterTestCompare(t, "name", "beta", provider.FilterString, provider.FilterEqual), []uint64{20}},
+		{"varchar", filterTestCompare(t, "code", "C3", provider.FilterString, provider.FilterEqual), []uint64{30}},
+		{"mediumint", filterTestCompare(t, "rank", "2", provider.FilterNumber, provider.FilterGreaterEqual), []uint64{20, 30}},
+		{"real_equal", filterTestCompare(t, "score", "1.5", provider.FilterNumber, provider.FilterEqual), []uint64{20}},
+		{"real_range", filterTestCompare(t, "score", "1", provider.FilterNumber, provider.FilterGreater), []uint64{20, 40}},
+		{"real_fraction", filterTestCompare(t, "ratio", "2.5", provider.FilterNumber, provider.FilterLessEqual), []uint64{10, 30}},
+		{"real_null", provider.FilterNode{Kind: provider.FilterIsNull, Property: "score"}, []uint64{30}},
+		{"real_not_null", provider.FilterNode{Kind: provider.FilterIsNotNull, Property: "ratio"}, []uint64{10, 30, 40}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := provider.FeatureQuery{Limit: 10, Filter: filterTestExpression(t, test.node)}
+			ids, result := queryIDs(t, p, query)
+			if !reflect.DeepEqual(ids, test.ids) || result.NumberMatched == nil || *result.NumberMatched != uint64(len(test.ids)) {
+				t.Fatalf("IDs %v want %v result%+v", ids, test.ids, result)
+			}
+		})
+	}
+}
+
+func TestFeatureFilterNumberExactBounds(t *testing.T) {
+	// score holds REAL values; n is NUMERIC holding integers (typeof integer
+	// at rest) so the review's integer-backed example exercises the number
+	// path. id 3 is the NULL control: NULL never matches any comparison.
+	p, _ := filterTestProvider(t, `CREATE TABLE items(id INTEGER PRIMARY KEY,geom TEXT,score REAL,n NUMERIC);
+INSERT INTO items VALUES(1,'POINT (0 0)',0.1,9007199254740992),(2,'POINT (0 0)',0.3,0),(3,'POINT (0 0)',NULL,NULL);`, nil)
+	for _, test := range []struct {
+		name   string
+		column string
+		text   string
+		op     provider.FilterCompareOperator
+		ids    []uint64
+	}{
+		// 9007199254740993 is not representable as float64: the nearest
+		// double equals the stored 9007199254740992, so a nearest-float
+		// binding would wrongly report equality.
+		{"int_equal_not_representable", "n", "9007199254740993", provider.FilterEqual, []uint64{}},
+		{"int_not_equal_not_representable", "n", "9007199254740993", provider.FilterNotEqual, []uint64{1, 2}},
+		{"int_less_not_representable", "n", "9007199254740993", provider.FilterLess, []uint64{1, 2}},
+		{"int_less_equal_not_representable", "n", "9007199254740993", provider.FilterLessEqual, []uint64{1, 2}},
+		{"int_greater_not_representable", "n", "9007199254740993", provider.FilterGreater, []uint64{}},
+		{"int_greater_equal_not_representable", "n", "9007199254740993", provider.FilterGreaterEqual, []uint64{}},
+		{"int_equal_representable", "n", "9007199254740992", provider.FilterEqual, []uint64{1}},
+		// 1e-4096 underflows to zero as float64; it must not match a stored zero.
+		{"underflow_equal", "n", "1e-4096", provider.FilterEqual, []uint64{}},
+		{"underflow_not_equal", "n", "1e-4096", provider.FilterNotEqual, []uint64{1, 2}},
+		{"underflow_less", "n", "1e-4096", provider.FilterLess, []uint64{2}},
+		{"underflow_less_equal", "n", "1e-4096", provider.FilterLessEqual, []uint64{2}},
+		{"underflow_greater", "n", "1e-4096", provider.FilterGreater, []uint64{1}},
+		{"underflow_greater_equal", "n", "1e-4096", provider.FilterGreaterEqual, []uint64{1}},
+		// Overflow folds to constants: every finite value is below 1e4096
+		// and above -1e4096.
+		{"overflow_less", "n", "1e4096", provider.FilterLess, []uint64{1, 2}},
+		{"overflow_less_equal", "n", "1e4096", provider.FilterLessEqual, []uint64{1, 2}},
+		{"overflow_greater", "n", "1e4096", provider.FilterGreater, []uint64{}},
+		{"overflow_greater_equal", "n", "1e4096", provider.FilterGreaterEqual, []uint64{}},
+		{"overflow_equal", "n", "1e4096", provider.FilterEqual, []uint64{}},
+		{"overflow_not_equal", "n", "1e4096", provider.FilterNotEqual, []uint64{1, 2}},
+		{"neg_overflow_greater", "n", "-1e4096", provider.FilterGreater, []uint64{1, 2}},
+		{"neg_overflow_greater_equal", "n", "-1e4096", provider.FilterGreaterEqual, []uint64{1, 2}},
+		{"neg_overflow_less", "n", "-1e4096", provider.FilterLess, []uint64{}},
+		{"neg_overflow_less_equal", "n", "-1e4096", provider.FilterLessEqual, []uint64{}},
+		{"neg_overflow_equal", "n", "-1e4096", provider.FilterEqual, []uint64{}},
+		{"neg_overflow_not_equal", "n", "-1e4096", provider.FilterNotEqual, []uint64{1, 2}},
+		// Directed bounds: 0.1 is not representable and its nearest double
+		// is above the exact literal, so score > 0.1 must see the stored
+		// 0.1 while score <= 0.1 must not. 0.3's nearest double is below
+		// the literal, mirroring the other direction.
+		{"real_equal_exact_only", "score", "0.1", provider.FilterEqual, []uint64{}},
+		{"real_not_equal_exact_only", "score", "0.1", provider.FilterNotEqual, []uint64{1, 2}},
+		{"real_greater_directed", "score", "0.1", provider.FilterGreater, []uint64{1, 2}},
+		{"real_less_equal_directed", "score", "0.1", provider.FilterLessEqual, []uint64{}},
+		{"real_less_directed", "score", "0.3", provider.FilterLess, []uint64{1, 2}},
+		{"real_greater_equal_directed", "score", "0.3", provider.FilterGreaterEqual, []uint64{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := provider.FeatureQuery{Limit: 10, Filter: filterTestExpression(t, filterTestCompare(t, test.column, test.text, provider.FilterNumber, test.op))}
+			ids, result := queryIDs(t, p, query)
+			if !reflect.DeepEqual(ids, test.ids) || result.NumberMatched == nil || *result.NumberMatched != uint64(len(test.ids)) {
+				t.Fatalf("IDs %v want %v result%+v", ids, test.ids, result)
+			}
+		})
+	}
+}
+
 func TestFeatureFilterInvalidDomainCannotBeMasked(t *testing.T) {
 	for _, test := range []struct{ name, column, value string }{
 		{"integer", "n", "'bad'"}, {"bool_two", "b", "2"}, {"bool_text", "b", "'bad'"},
@@ -220,11 +328,19 @@ func TestFeatureFilterSchemaDriftAndOptionalMetadata(t *testing.T) {
 	if !errors.As(err, &data) {
 		t.Fatalf("schema change: %v", err)
 	}
-	// Unsupported scalar declarations do not invalidate Core or advertise types.
+	// Newly supported scalar declarations are advertised; still-unsupported
+	// ones (TIMESTAMP) do not invalidate Core or advertise types.
 	p, _ = filterTestProvider(t, `CREATE TABLE items(id INTEGER PRIMARY KEY,geom TEXT,f REAL,d NUMERIC,at TIMESTAMP); INSERT INTO items VALUES(1,NULL,1,2,NULL);`, nil)
 	meta, err := p.layers["items"].FeatureQueryables()
-	if err != nil || len(meta.Fields()) != 0 {
-		t.Fatalf("unproved metadata: %#v %v", meta.Fields(), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMeta := []provider.FeatureQueryable{
+		{Name: "d", Type: provider.QueryableNumber, Nullable: true},
+		{Name: "f", Type: provider.QueryableNumber, Nullable: true},
+	}
+	if !reflect.DeepEqual(meta.Fields(), wantMeta) {
+		t.Fatalf("metadata %#v", meta.Fields())
 	}
 	if ids, _ := queryIDs(t, p, provider.FeatureQuery{Limit: 1}); !reflect.DeepEqual(ids, []uint64{1}) {
 		t.Fatal(ids)
