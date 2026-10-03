@@ -150,6 +150,15 @@ func assembleRouter(a *atlas.Atlas, options RouterOptions) *httptreemux.TreeMux 
 		options.Features.register(r, group, o)
 	}
 
+	if options.WFS != nil {
+		wfsBase := string(options.WFS.Config.BasePath)
+		if wfsBase == "" {
+			wfsBase = "/wfs"
+		}
+		group.UsingContext().Handler(http.MethodGet, wfsBase, HeadersHandler(options.WFS))
+		group.UsingContext().Handler(http.MethodPost, wfsBase, HeadersHandler(options.WFS))
+	}
+
 	// setup viewer routes, which can be excluded via build flags
 	setupViewer(o, group)
 

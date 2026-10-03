@@ -35,7 +35,10 @@ type FeatureAPI struct {
 }
 
 // RouterOptions enables explicit feature publication; nil Features preserves legacy behavior.
-type RouterOptions struct{ Features *FeatureAPI }
+type RouterOptions struct {
+	Features *FeatureAPI
+	WFS      *WFSHandler
+}
 
 // NewFeatureAPI validates settings and public IDs independently of TOML callers.
 func NewFeatureAPI(service *features.Service, cfg FeatureAPIConfig) (*FeatureAPI, error) {

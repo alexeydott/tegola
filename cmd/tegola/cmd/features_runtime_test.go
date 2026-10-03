@@ -95,17 +95,17 @@ provider_layer = "missing.source"
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
-	api, err := initConfigRuntime(path, false, "ERROR")
-	if api != nil || err == nil || !strings.Contains(err.Error(), "could not register features") {
-		t.Fatalf("enabled missing source silently omitted: %v %v", api, err)
+	rt, err := initConfigRuntime(path, false, "ERROR")
+	if rt != nil || err == nil || !strings.Contains(err.Error(), "could not register features") {
+		t.Fatalf("enabled missing source silently omitted: %v %v", rt, err)
 	}
 	// Disabled syntactically valid publication does not resolve a missing source.
 	body = strings.Replace(body, "enabled = true", "enabled = false", 1)
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
-	api, err = initConfigRuntime(path, true, "ERROR")
-	if api != nil || err == nil || !strings.Contains(err.Error(), "no cache defined") {
-		t.Fatalf("disabled source was resolved: %v %v", api, err)
+	rt, err = initConfigRuntime(path, true, "ERROR")
+	if rt != nil || err == nil || !strings.Contains(err.Error(), "no cache defined") {
+		t.Fatalf("disabled source was resolved: %v %v", rt, err)
 	}
 }

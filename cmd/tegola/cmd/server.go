@@ -33,7 +33,7 @@ var serverCmd = &cobra.Command{
 	RunE:    func(cmd *cobra.Command, args []string) error { return runServer(cmd, args, nil) },
 }
 
-func runServer(cmd *cobra.Command, args []string, featureAPI *server.FeatureAPI) error {
+func runServer(cmd *cobra.Command, args []string, rt *FeatureRuntime) error {
 	gdcmd.New()
 	defer gdcmd.Complete()
 	gdcmd.OnComplete(provider.Cleanup)
@@ -107,7 +107,12 @@ func runServer(cmd *cobra.Command, args []string, featureAPI *server.FeatureAPI)
 	}
 
 	// start our webserver
-	srv, err := server.StartWithOptions(nil, serverPort, server.RouterOptions{Features: featureAPI})
+	opts := server.RouterOptions{}
+	if rt != nil {
+		opts.Features = rt.API
+		opts.WFS = rt.WFS
+	}
+	srv, err := server.StartWithOptions(nil, serverPort, opts)
 	if err != nil {
 		return err
 	}

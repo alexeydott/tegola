@@ -37,6 +37,25 @@ func (p *Provider) MutationWriter() provider.MutationProvider {
 	return p.writer()
 }
 
+// DescribeWritable implements provider.MutationProvider via the writer.
+func (p *Provider) DescribeWritable(ctx context.Context, layer string) (provider.WriteDescriptor, error) {
+	return p.MutationWriter().DescribeWritable(ctx, layer)
+}
+
+// BeginFeatureTx implements provider.MutationProvider via the writer.
+func (p *Provider) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
+	return p.MutationWriter().BeginFeatureTx(ctx, options)
+}
+
+// DescribeSchema implements provider.SchemaProvider via the writer.
+func (p *Provider) DescribeSchema(ctx context.Context, layer string) (provider.SchemaDescriptor, error) {
+	w, ok := p.MutationWriter().(*Writer)
+	if !ok {
+		return provider.SchemaDescriptor{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "schema not available"}
+	}
+	return w.DescribeSchema(ctx, layer)
+}
+
 func (p *Provider) writer() *Writer {
 	return &Writer{provider: p, mappings: make(map[string]*writeMapping)}
 }

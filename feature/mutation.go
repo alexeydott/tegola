@@ -22,37 +22,71 @@ type MutationCoordinator struct {
 
 // Execute runs one mutation as its own transaction.
 func (c *MutationCoordinator) Execute(ctx context.Context, principal Principal, m provider.Mutation) (provider.MutationOutcome, provider.CommitReceipt, error) {
-	var empty provider.MutationOutcome
-	action, err := policyActionFor(m.Op.String())
+	outcomes, receipt, err := c.ExecuteAll(ctx, principal, []provider.Mutation{m})
 	if err != nil {
+		return provider.MutationOutcome{}, receipt, err
+	}
+	return outcomes[0], receipt, nil
+}
+
+// ExecuteAll runs all mutations in one native transaction, in order.
+// Later actions see earlier changes. A request spanning two independent
+// domains is rejected before any change (ADR-0012).
+func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principal, mutations []provider.Mutation) ([]provider.MutationOutcome, provider.CommitReceipt, error) {
+	var empty []provider.MutationOutcome
+	if len(mutations) == 0 {
 		return empty, provider.CommitReceipt{}, &provider.MutationError{
 			Kind:   provider.MutationErrMalformedInput,
-			Reason: err.Error(),
+			Reason: "no mutations",
 		}
 	}
-	policy := c.PolicyFor(m.Collection)
-	if d := policy.CheckCollection(ctx, principal, action, m.Collection); !d.Allow {
-		return empty, provider.CommitReceipt{}, &provider.MutationError{
-			Kind:   provider.MutationErrDenied,
-			Reason: "collection policy denied: " + d.Reason,
+	// Policy + structural validation for every action happens before Begin.
+	for i := range mutations {
+		m := &mutations[i]
+		action, err := policyActionFor(m.Op.String())
+		if err != nil {
+			return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: err.Error()}
+		}
+		policy := c.PolicyFor(m.Collection)
+		if d := policy.CheckCollection(ctx, principal, action, m.Collection); !d.Allow {
+			return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "collection policy denied: " + d.Reason}
+		}
+		schema, err := c.SchemaFor(m.Collection)
+		if err != nil {
+			return empty, provider.CommitReceipt{}, err
+		}
+		if err := validateMutationInput(schema, *m); err != nil {
+			return empty, provider.CommitReceipt{}, err
 		}
 	}
-	schema, err := c.SchemaFor(m.Collection)
-	if err != nil {
-		return empty, provider.CommitReceipt{}, err
+	// Resolve providers and check the single-domain rule before Begin.
+	type bound struct {
+		mp    provider.MutationProvider
+		layer string
 	}
-	if err := validateMutationInput(schema, m); err != nil {
-		return empty, provider.CommitReceipt{}, err
+	bounds := make([]bound, len(mutations))
+	domain := ""
+	for i := range mutations {
+		mp, layer, err := c.ProviderFor(mutations[i].Collection)
+		if err != nil {
+			return empty, provider.CommitReceipt{}, err
+		}
+		wd, err := mp.DescribeWritable(ctx, layer)
+		if err != nil {
+			return empty, provider.CommitReceipt{}, err
+		}
+		if domain == "" {
+			domain = wd.Domain
+		} else if wd.Domain != domain {
+			return empty, provider.CommitReceipt{}, &provider.MutationError{
+				Kind:   provider.MutationErrDomainMismatch,
+				Reason: "transaction spans multiple domains",
+			}
+		}
+		mutations[i].Collection = layer
+		bounds[i] = bound{mp: mp, layer: layer}
 	}
-	mp, layer, err := c.ProviderFor(m.Collection)
-	if err != nil {
-		return empty, provider.CommitReceipt{}, err
-	}
-	if _, err := mp.DescribeWritable(ctx, layer); err != nil {
-		return empty, provider.CommitReceipt{}, err
-	}
-	m.Collection = layer
-	tx, err := mp.BeginFeatureTx(ctx, provider.TxOptions{})
+	tx, err := bounds[0].mp.BeginFeatureTx(ctx, provider.TxOptions{})
 	if err != nil {
 		return empty, provider.CommitReceipt{}, err
 	}
@@ -63,14 +97,15 @@ func (c *MutationCoordinator) Execute(ctx context.Context, principal Principal, 
 		}
 	}()
 	if err := ctx.Err(); err != nil {
-		return empty, provider.CommitReceipt{}, &provider.MutationError{
-			Kind:   provider.MutationErrMalformedInput,
-			Reason: "context cancelled before begin",
-		}
+		return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "context cancelled before begin"}
 	}
-	outcome, err := tx.Apply(ctx, m)
-	if err != nil {
-		return empty, provider.CommitReceipt{}, err
+	outcomes := make([]provider.MutationOutcome, 0, len(mutations))
+	for i := range mutations {
+		outcome, err := tx.Apply(ctx, mutations[i])
+		if err != nil {
+			return empty, provider.CommitReceipt{}, err
+		}
+		outcomes = append(outcomes, outcome)
 	}
 	receipt, err := tx.Commit(ctx)
 	if err != nil {
@@ -79,7 +114,7 @@ func (c *MutationCoordinator) Execute(ctx context.Context, principal Principal, 
 	if receipt.Status == provider.CommitCommitted {
 		committed = true
 	}
-	return outcome, receipt, nil
+	return outcomes, receipt, nil
 }
 
 // validateMutationInput runs schema validation before Begin: unknown

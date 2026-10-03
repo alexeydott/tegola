@@ -1,0 +1,297 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/feature"
+	"github.com/alexeydott/tegola/ogc/features"
+	"github.com/alexeydott/tegola/ogc/wfs"
+	"github.com/alexeydott/tegola/provider"
+)
+
+const maxWFSBody = 4 << 20 // 4 MiB
+
+// WFSHandler serves WFS 1.1.0 / 2.0 KVP and XML requests.
+type WFSHandler struct {
+	Service     *features.Service
+	Config      config.WFSConfig
+	WriteConfig config.FeaturesWriteConfig
+}
+
+func (h *WFSHandler) coordinator() *feature.MutationCoordinator {
+	return &feature.MutationCoordinator{
+		PolicyFor: func(collection string) feature.Policy {
+			return writePolicy{cfg: h.WriteConfig}
+		},
+		SchemaFor: func(collection string) (*feature.SchemaDescriptor, error) {
+			return h.Service.SchemaDescriptorFor(context.Background(), collection)
+		},
+		ProviderFor: func(collection string) (provider.MutationProvider, string, error) {
+			return h.Service.MutationProviderFor(collection)
+		},
+	}
+}
+
+func (h *WFSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		h.serveKVP(w, r)
+	case http.MethodPost:
+		h.serveXML(w, r)
+	default:
+		h.writeException(w, r, wfs.V202, http.StatusMethodNotAllowed, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Text: "method not supported"},
+		})
+	}
+}
+
+func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	service := strings.ToUpper(q.Get("service"))
+	if service != "" && service != "WFS" {
+		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionInvalidParameterValue, Locator: "service", Text: "service must be WFS"},
+		})
+		return
+	}
+	request := strings.ToLower(q.Get("request"))
+	if request == "" {
+		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionMissingParameterValue, Locator: "request", Text: "request is required"},
+		})
+		return
+	}
+	v, err := wfs.Negotiate(q.Get("version"), nil)
+	if err != nil {
+		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionInvalidParameterValue, Locator: "version", Text: err.Error()},
+		})
+		return
+	}
+	params := map[string]string{}
+	for k, vs := range q {
+		if len(vs) > 0 {
+			params[strings.ToLower(k)] = vs[0]
+		}
+	}
+	switch request {
+	case "getcapabilities":
+		h.writeXML(w, r, http.StatusOK, wfs.Capabilities(v, h.Service, wfsBaseURL(r, h.Config), h.writeOps()))
+	case "describefeaturetype":
+		typeName := params["typename"]
+		if typeName == "" {
+			typeName = params["typenames"]
+		}
+		if typeName == "" {
+			h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+				{Code: wfs.ExceptionMissingParameterValue, Locator: "typeName", Text: "typeName is required"},
+			})
+			return
+		}
+		schema, err := h.Service.SchemaDescriptorFor(r.Context(), typeName)
+		if err != nil {
+			h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+				{Code: wfs.ExceptionInvalidParameterValue, Locator: "typeName", Text: fmt.Sprintf("unknown type %q", typeName)},
+			})
+			return
+		}
+		view := wfsSchemaView(schema)
+		h.writeXML(w, r, http.StatusOK, wfs.DescribeFeatureType(v, typeName, view))
+	case "getfeature":
+		req, errs := wfs.ParseGetFeatureKVP(v, params)
+		if errs != nil {
+			h.writeException(w, r, v, http.StatusBadRequest, errs)
+			return
+		}
+		body, errs := wfs.ExecuteGetFeature(r.Context(), h.Service, req)
+		if errs != nil {
+			h.writeException(w, r, v, http.StatusBadRequest, errs)
+			return
+		}
+		h.writeXML(w, r, http.StatusOK, body)
+	default:
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Locator: "request", Text: fmt.Sprintf("unsupported request %q", request)},
+		})
+	}
+}
+
+func (h *WFSHandler) serveXML(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength > maxWFSBody {
+		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionInvalidParameterValue, Text: "request body too large"},
+		})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxWFSBody+1))
+	if err != nil || int64(len(body)) > maxWFSBody {
+		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionInvalidParameterValue, Text: "invalid request body"},
+		})
+		return
+	}
+	v, op, err := wfs.ParseVersionedRequest(body)
+	if err != nil {
+		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionInvalidParameterValue, Text: err.Error()},
+		})
+		return
+	}
+	switch strings.ToLower(op) {
+	case "getcapabilities":
+		h.writeXML(w, r, http.StatusOK, wfs.Capabilities(v, h.Service, wfsBaseURL(r, h.Config), h.writeOps()))
+	case "describefeaturetype":
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Text: "DescribeFeatureType via POST XML is not supported in this profile"},
+		})
+	case "getfeature":
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Text: "GetFeature via POST XML is not supported in this profile"},
+		})
+	case "transaction":
+		h.serveTransaction(w, r, v, body)
+	default:
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Text: fmt.Sprintf("unsupported operation %q", op)},
+		})
+	}
+}
+
+// serveTransaction executes a WFS Transaction (W32/W33).
+func (h *WFSHandler) serveTransaction(w http.ResponseWriter, r *http.Request, v wfs.Version, body []byte) {
+	if !h.WriteConfig.Enabled {
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Text: "Transaction is not enabled"},
+		})
+		return
+	}
+	actions, err := wfs.ParseTransaction(v, body)
+	if err != nil {
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionInvalidParameterValue, Text: err.Error()},
+		})
+		return
+	}
+	// Map WFS actions to Part 4 operation names for the write allowlist.
+	for _, act := range actions {
+		op := map[provider.MutationOp]string{
+			provider.MutationInsert:  "create",
+			provider.MutationReplace: "replace",
+			provider.MutationUpdate:  "update",
+			provider.MutationDelete:  "delete",
+		}[act.Op]
+		if !h.WriteConfig.AllowsOperation(act.TypeName, op) {
+			h.writeException(w, r, v, http.StatusForbidden, []wfs.Exception{
+				{Code: wfs.ExceptionInvalidParameterValue, Text: fmt.Sprintf("operation %q not allowed for type %q", op, act.TypeName)},
+			})
+			return
+		}
+	}
+	results, err := wfs.ExecuteTransaction(r.Context(), h.coordinator(), func(c string) (*feature.SchemaDescriptor, error) {
+		return h.Service.SchemaDescriptorFor(r.Context(), c)
+	}, v, actions)
+	if err != nil {
+		h.writeTransactionError(w, r, v, err)
+		return
+	}
+	h.writeXML(w, r, http.StatusOK, wfs.TransactionResponse(v, results))
+}
+
+func (h *WFSHandler) writeTransactionError(w http.ResponseWriter, r *http.Request, v wfs.Version, err error) {
+	if me, ok := provider.AsMutationError(err); ok {
+		code := wfs.ExceptionNoApplicableCode
+		status := http.StatusBadRequest
+		switch me.Kind {
+		case provider.MutationErrDenied:
+			status = http.StatusForbidden
+		case provider.MutationErrNotFound:
+			code = wfs.ExceptionInvalidParameterValue
+		case provider.MutationErrDomainMismatch:
+			// Cross-domain rejected before any change.
+		}
+		h.writeException(w, r, v, status, []wfs.Exception{{Code: code, Text: "transaction failed"}})
+		return
+	}
+	h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+		{Code: wfs.ExceptionNoApplicableCode, Text: "transaction failed"},
+	})
+}
+
+func (h *WFSHandler) writeOps() map[string][]string {
+	out := map[string][]string{}
+	if !h.WriteConfig.Enabled {
+		return out
+	}
+	for _, c := range h.WriteConfig.Collections {
+		out[string(c.ID)] = c.Operations
+	}
+	return out
+}
+
+func (h *WFSHandler) writeException(w http.ResponseWriter, r *http.Request, v wfs.Version, status int, errs []wfs.Exception) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write([]byte(wfs.ExceptionReport(v, errs)))
+	}
+}
+
+func (h *WFSHandler) writeXML(w http.ResponseWriter, r *http.Request, status int, body string) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	w.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+func wfsBaseURL(r *http.Request, cfg config.WFSConfig) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	base := string(cfg.BasePath)
+	if base == "" {
+		base = "/wfs"
+	}
+	return scheme + "://" + r.Host + base
+}
+
+func wfsSchemaView(schema *feature.SchemaDescriptor) *wfs.FeatureSchemaView {
+	view := &wfs.FeatureSchemaView{
+		GeometryName:    schema.Geometry.Name,
+		GeometryXSDType: wfsGeometryXSDType(schema.Geometry.Type),
+	}
+	for _, p := range schema.Properties {
+		view.Properties = append(view.Properties, wfs.SchemaPropView{
+			Name:     p.Name,
+			Type:     p.Type.String(),
+			Nullable: p.Nullable,
+		})
+	}
+	return view
+}
+
+func wfsGeometryXSDType(t string) string {
+	switch t {
+	case "point":
+		return "PointPropertyType"
+	case "linestring":
+		return "LineStringPropertyType"
+	case "polygon":
+		return "PolygonPropertyType"
+	case "multipoint":
+		return "MultiPointPropertyType"
+	case "multilinestring":
+		return "MultiLineStringPropertyType"
+	case "multipolygon":
+		return "MultiPolygonPropertyType"
+	default:
+		return "GeometryPropertyType"
+	}
+}
