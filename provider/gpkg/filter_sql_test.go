@@ -96,6 +96,49 @@ INSERT INTO items VALUES(10,'POINT (0 0)',NULL,NULL,NULL),(20,'POINT (0 0)',-2,'
 	}
 }
 
+func TestFeatureFilterParameterizedTypes(t *testing.T) {
+	p, _ := filterTestProvider(t, `CREATE TABLE items(id INTEGER PRIMARY KEY,geom TEXT,name TEXT(15),code VARCHAR(32),rank MEDIUMINT,score REAL,ratio DOUBLE PRECISION,note CHAR(4));
+INSERT INTO items VALUES(10,'POINT (0 0)','alpha','A1',1,0.5,1.25,'n1'),(20,'POINT (0 0)','beta','B2',2,1.5,NULL,'n2'),
+(30,'POINT (0 0)','gamma','C3',3,NULL,2.5,NULL),(40,'POINT (0 0)',NULL,'D4',NULL,3.5,3.75,'n4');`, nil)
+	meta, err := p.layers["items"].FeatureQueryables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []provider.FeatureQueryable{
+		{Name: "code", Type: provider.QueryableString, Nullable: true},
+		{Name: "name", Type: provider.QueryableString, Nullable: true},
+		{Name: "note", Type: provider.QueryableString, Nullable: true},
+		{Name: "rank", Type: provider.QueryableInteger, Nullable: true},
+		{Name: "ratio", Type: provider.QueryableNumber, Nullable: true},
+		{Name: "score", Type: provider.QueryableNumber, Nullable: true},
+	}
+	if !reflect.DeepEqual(meta.Fields(), want) {
+		t.Fatalf("metadata %#v", meta.Fields())
+	}
+	for _, test := range []struct {
+		name string
+		node provider.FilterNode
+		ids  []uint64
+	}{
+		{"text_param", filterTestCompare(t, "name", "beta", provider.FilterString, provider.FilterEqual), []uint64{20}},
+		{"varchar", filterTestCompare(t, "code", "C3", provider.FilterString, provider.FilterEqual), []uint64{30}},
+		{"mediumint", filterTestCompare(t, "rank", "2", provider.FilterNumber, provider.FilterGreaterEqual), []uint64{20, 30}},
+		{"real_equal", filterTestCompare(t, "score", "1.5", provider.FilterNumber, provider.FilterEqual), []uint64{20}},
+		{"real_range", filterTestCompare(t, "score", "1", provider.FilterNumber, provider.FilterGreater), []uint64{20, 40}},
+		{"real_fraction", filterTestCompare(t, "ratio", "2.5", provider.FilterNumber, provider.FilterLessEqual), []uint64{10, 30}},
+		{"real_null", provider.FilterNode{Kind: provider.FilterIsNull, Property: "score"}, []uint64{30}},
+		{"real_not_null", provider.FilterNode{Kind: provider.FilterIsNotNull, Property: "ratio"}, []uint64{10, 30, 40}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := provider.FeatureQuery{Limit: 10, Filter: filterTestExpression(t, test.node)}
+			ids, result := queryIDs(t, p, query)
+			if !reflect.DeepEqual(ids, test.ids) || result.NumberMatched == nil || *result.NumberMatched != uint64(len(test.ids)) {
+				t.Fatalf("IDs %v want %v result%+v", ids, test.ids, result)
+			}
+		})
+	}
+}
+
 func TestFeatureFilterInvalidDomainCannotBeMasked(t *testing.T) {
 	for _, test := range []struct{ name, column, value string }{
 		{"integer", "n", "'bad'"}, {"bool_two", "b", "2"}, {"bool_text", "b", "'bad'"},
@@ -220,11 +263,19 @@ func TestFeatureFilterSchemaDriftAndOptionalMetadata(t *testing.T) {
 	if !errors.As(err, &data) {
 		t.Fatalf("schema change: %v", err)
 	}
-	// Unsupported scalar declarations do not invalidate Core or advertise types.
+	// Newly supported scalar declarations are advertised; still-unsupported
+	// ones (TIMESTAMP) do not invalidate Core or advertise types.
 	p, _ = filterTestProvider(t, `CREATE TABLE items(id INTEGER PRIMARY KEY,geom TEXT,f REAL,d NUMERIC,at TIMESTAMP); INSERT INTO items VALUES(1,NULL,1,2,NULL);`, nil)
 	meta, err := p.layers["items"].FeatureQueryables()
-	if err != nil || len(meta.Fields()) != 0 {
-		t.Fatalf("unproved metadata: %#v %v", meta.Fields(), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMeta := []provider.FeatureQueryable{
+		{Name: "d", Type: provider.QueryableNumber, Nullable: true},
+		{Name: "f", Type: provider.QueryableNumber, Nullable: true},
+	}
+	if !reflect.DeepEqual(meta.Fields(), wantMeta) {
+		t.Fatalf("metadata %#v", meta.Fields())
 	}
 	if ids, _ := queryIDs(t, p, provider.FeatureQuery{Limit: 1}); !reflect.DeepEqual(ids, []uint64{1}) {
 		t.Fatal(ids)

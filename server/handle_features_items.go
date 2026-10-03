@@ -237,7 +237,9 @@ func parsePageLimit(raw string, maximum uint) (uint, error) {
 	}
 	bound := strconv.FormatUint(uint64(maximum), 10)
 	if len(value) > len(bound) || (len(value) == len(bound) && value > bound) {
-		return maximum, nil
+		// No silent clamp: an over-maximum limit is a client error, and
+		// clamping it could still blow the response budget with a 500.
+		return 0, fmt.Errorf("limit exceeds maximum")
 	}
 	parsed, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {

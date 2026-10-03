@@ -247,13 +247,16 @@ func TestFeatureProtocolAcceptanceLimitsAndInvalid(t *testing.T) {
 	q := &protocolQuerier{}
 	srv := protocolServer(t, q, protocolLayer{}, "/")
 	base := "/features/collections/public/items"
-	for _, raw := range []string{"limit=3", "limit=99999999999999999999999999999999999"} {
-		r := protocolRequest(t, srv, "GET", base+"?"+raw)
-		if r.status != 200 || len(protocolIDs(t, r)) != 2 {
-			t.Fatalf("clamp %s: %d %s", raw, r.status, r.body)
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{{"limit=1", 1}, {"limit=2", 2}} {
+		r := protocolRequest(t, srv, "GET", base+"?"+tc.raw)
+		if r.status != 200 || len(protocolIDs(t, r)) != tc.want {
+			t.Fatalf("limit %s: %d %s", tc.raw, r.status, r.body)
 		}
 	}
-	for _, raw := range []string{"limit=0", "limit=-1", "limit=1.5", "limit=", "limit=1&limit=2", "offset=-1", "offset=18446744073709551615&limit=2", "other=x", "bbox=1,2,3", "bbox=NaN,0,1,1", "bbox=0,2,1,1", "bbox=0,0,2,1,1,1", "datetime=../..", "datetime=2020-01-02T00:00:00Z/2020-01-01T00:00:00Z", "datetime=garbage", "datetime=2015-01-01T23:59:60Z"} {
+	for _, raw := range []string{"limit=0", "limit=-1", "limit=1.5", "limit=", "limit=1&limit=2", "limit=3", "limit=99999999999999999999999999999999999", "offset=-1", "offset=18446744073709551615&limit=2", "other=x", "bbox=1,2,3", "bbox=NaN,0,1,1", "bbox=0,2,1,1", "bbox=0,0,2,1,1,1", "datetime=../..", "datetime=2020-01-02T00:00:00Z/2020-01-01T00:00:00Z", "datetime=garbage", "datetime=2015-01-01T23:59:60Z"} {
 		r := protocolRequest(t, srv, "GET", base+"?"+raw)
 		if r.status != 400 {
 			t.Errorf("%s: %d %s", raw, r.status, r.body)
