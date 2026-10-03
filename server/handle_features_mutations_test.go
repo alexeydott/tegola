@@ -404,3 +404,59 @@ func TestPart4OpenAPIWriteOps(t *testing.T) {
 		t.Fatal("no /schema path in OpenAPI")
 	}
 }
+
+func TestPart4RequireIfMatch428(t *testing.T) {
+	service, _ := part4Service(t)
+	writeCfg := config.FeaturesWriteConfig{Enabled: true, RequireIfMatch: true}
+	writeCfg.Collections = []config.WriteCollectionConfig{
+		{ID: "sites", Operations: []string{"create", "replace", "update", "delete"}},
+	}
+	api, err := NewFeatureAPI(service, FeatureAPIConfig{
+		BasePath:     "/features",
+		DefaultLimit: 100,
+		MaxLimit:     10000,
+		Title:        "t",
+		Write:        writeCfg,
+	})
+	if err != nil {
+		t.Fatalf("NewFeatureAPI: %v", err)
+	}
+	router := part4Router(t, api)
+	ct := map[string]string{"Content-Type": "application/geo+json"}
+
+	// Create (no If-Match needed for POST).
+	rec := doRequest(t, router, http.MethodPost, "/features/collections/sites/items",
+		`{"type":"Feature","geometry":{"type":"Point","coordinates":[10,20]},"properties":{"name":"r428"}}`, ct)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST status = %d", rec.Code)
+	}
+	var created map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id := int(created["id"].(float64))
+	getPath := "/features/collections/sites/items/" + strconv.Itoa(id)
+
+	// PUT without If-Match -> 428.
+	rec = doRequest(t, router, http.MethodPut, getPath,
+		`{"type":"Feature","geometry":{"type":"Point","coordinates":[11,21]},"properties":{"name":"r428b"}}`, ct)
+	if rec.Code != http.StatusPreconditionRequired {
+		t.Fatalf("PUT without If-Match status = %d, want 428", rec.Code)
+	}
+
+	// PUT with If-Match -> 200.
+	rec = doRequest(t, router, http.MethodGet, getPath, "", nil)
+	etag := rec.Header().Get("ETag")
+	rec = doRequest(t, router, http.MethodPut, getPath,
+		`{"type":"Feature","geometry":{"type":"Point","coordinates":[11,21]},"properties":{"name":"r428b"}}`,
+		map[string]string{"Content-Type": "application/geo+json", "If-Match": etag})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT with If-Match status = %d, want 200", rec.Code)
+	}
+
+	// DELETE without If-Match -> 428.
+	rec = doRequest(t, router, http.MethodDelete, getPath, "", nil)
+	if rec.Code != http.StatusPreconditionRequired {
+		t.Fatalf("DELETE without If-Match status = %d, want 428", rec.Code)
+	}
+}

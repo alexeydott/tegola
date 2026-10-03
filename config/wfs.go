@@ -59,8 +59,12 @@ func (w WFSConfig) Validate() error {
 // Everything is read-only unless a collection is listed here AND its
 // provider layer passes write admission at startup.
 type FeaturesWriteConfig struct {
-	Enabled     bool                      `toml:"enabled"`
+	Enabled     bool                  `toml:"enabled"`
 	Collections []WriteCollectionConfig `toml:"collections"`
+	// RequireIfMatch, when true, rejects PUT/PATCH/DELETE without an
+	// If-Match header with 428 Precondition Required. Disabled by
+	// default (If-Match is optional per RFC 7232).
+	RequireIfMatch bool `toml:"require_if_match"`
 }
 
 // WriteCollectionConfig allows mutation operations on one published

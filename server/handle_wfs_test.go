@@ -355,3 +355,161 @@ func TestWFSGetFeatureSortBy(t *testing.T) {
 func wfsIntVal(n int64) provider.MutationValue {
 	return provider.MutationValue{Kind: provider.MutationValueInteger, Integer: n}
 }
+
+func TestWFSGetPropertyValue(t *testing.T) {
+	service := wfsService(t)
+	_, router := wfsHandler(t, service)
+	mp, _, _ := service.MutationProviderFor("wfs_sites")
+	tx, _ := mp.BeginFeatureTx(context.Background(), provider.TxOptions{})
+	_, _ = tx.Apply(context.Background(), provider.Mutation{
+		Op:          provider.MutationInsert,
+		Collection:  "wfs_sites",
+		Properties:  map[string]provider.MutationValue{"name": wfsStrVal("propval"), "seats": wfsIntVal(9)},
+		GeometryWKB: wfsWKBPoint(t, 3, 4),
+	})
+	_, _ = tx.Commit(context.Background())
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetPropertyValue&version=2.0.0&typeNames=wfs_sites&valueReference=name", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "ValueCollection") {
+		t.Fatalf("not a ValueCollection: %s", body[:200])
+	}
+	if !strings.Contains(body, "propval") {
+		t.Fatal("property value missing")
+	}
+	// Unknown property -> 400.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetPropertyValue&version=2.0.0&typeNames=wfs_sites&valueReference=nope", nil))
+	if rec.Code != 400 {
+		t.Fatalf("unknown property status = %d, want 400", rec.Code)
+	}
+	// WFS 1.1 -> 400 (not supported).
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetPropertyValue&version=1.1.0&typeNames=wfs_sites&valueReference=name", nil))
+	if rec.Code != 400 {
+		t.Fatalf("WFS 1.1 status = %d, want 400", rec.Code)
+	}
+}
+
+func TestWFSStoredQueries(t *testing.T) {
+	service := wfsService(t)
+	_, router := wfsHandler(t, service)
+	mp, _, _ := service.MutationProviderFor("wfs_sites")
+	tx, _ := mp.BeginFeatureTx(context.Background(), provider.TxOptions{})
+	out, _ := tx.Apply(context.Background(), provider.Mutation{
+		Op:          provider.MutationInsert,
+		Collection:  "wfs_sites",
+		Properties:  map[string]provider.MutationValue{"name": wfsStrVal("stored")},
+		GeometryWKB: wfsWKBPoint(t, 5, 6),
+	})
+	_, _ = tx.Commit(context.Background())
+
+	// ListStoredQueries.
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=ListStoredQueries&version=2.0.0", nil))
+	if rec.Code != 200 {
+		t.Fatalf("ListStoredQueries status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "GetFeatureById") {
+		t.Fatal("mandatory stored query not listed")
+	}
+
+	// DescribeStoredQueries.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=DescribeStoredQueries&version=2.0.0&storedQuery_id=urn:ogc:def:query:OGC-WFS::GetFeatureById", nil))
+	if rec.Code != 200 {
+		t.Fatalf("DescribeStoredQueries status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// GetFeature via stored query.
+	fid := "wfs_sites." + strconv.FormatUint(out.FeatureID, 10)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetFeature&version=2.0.0&storedQuery_id=urn:ogc:def:query:OGC-WFS::GetFeatureById&typeName=wfs_sites&id="+fid, nil))
+	if rec.Code != 200 {
+		t.Fatalf("stored query GetFeature status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "stored") {
+		t.Fatal("stored query did not return the feature")
+	}
+
+	// Unknown stored query -> 400.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=GetFeature&version=2.0.0&storedQuery_id=urn:unknown", nil))
+	if rec.Code != 400 {
+		t.Fatalf("unknown stored query status = %d, want 400", rec.Code)
+	}
+}
+
+func TestWFSLockFeature(t *testing.T) {
+	service := wfsService(t)
+	h, router := wfsHandler(t, service)
+	// Enable write for lock test.
+	h.WriteConfig.Enabled = true
+	mp, _, _ := service.MutationProviderFor("wfs_sites")
+	tx, _ := mp.BeginFeatureTx(context.Background(), provider.TxOptions{})
+	out, _ := tx.Apply(context.Background(), provider.Mutation{
+		Op:          provider.MutationInsert,
+		Collection:  "wfs_sites",
+		Properties:  map[string]provider.MutationValue{"name": wfsStrVal("locked")},
+		GeometryWKB: wfsWKBPoint(t, 7, 8),
+	})
+	_, _ = tx.Commit(context.Background())
+	fid := "wfs_sites." + strconv.FormatUint(out.FeatureID, 10)
+
+	// Lock the feature.
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=LockFeature&version=1.1.0&typeName=wfs_sites&featureId="+fid, nil))
+	if rec.Code != 200 {
+		t.Fatalf("LockFeature status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "LockId") {
+		t.Fatalf("no LockId in response: %s", body)
+	}
+	lockID := extractLockID(t, body)
+
+	// Transaction without lockId on locked feature -> 403.
+	updateXML := `<wfs:Transaction version="1.1.0" service="WFS" xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc">
+  <wfs:Update typeName="wfs_sites">
+    <wfs:Property><wfs:Name>name</wfs:Name><wfs:Value>hacked</wfs:Value></wfs:Property>
+    <ogc:Filter><ogc:FeatureId fid="` + fid + `"/></ogc:Filter>
+  </wfs:Update>
+</wfs:Transaction>`
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/wfs", strings.NewReader(updateXML))
+	req.Header.Set("Content-Type", "application/xml")
+	router.ServeHTTP(rec, req)
+	if rec.Code != 403 {
+		t.Fatalf("locked update without lockId status = %d, want 403", rec.Code)
+	}
+
+	// Transaction with lockId -> 200.
+	updateXML = `<wfs:Transaction version="1.1.0" service="WFS" lockId="` + lockID + `" xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc">
+  <wfs:Update typeName="wfs_sites">
+    <wfs:Property><wfs:Name>name</wfs:Name><wfs:Value>unlocked</wfs:Value></wfs:Property>
+    <ogc:Filter><ogc:FeatureId fid="` + fid + `"/></ogc:Filter>
+  </wfs:Update>
+</wfs:Transaction>`
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/wfs", strings.NewReader(updateXML))
+	req.Header.Set("Content-Type", "application/xml")
+	router.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("locked update with lockId status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func extractLockID(t *testing.T, body string) string {
+	t.Helper()
+	i := strings.Index(body, "<wfs:LockId>")
+	if i < 0 {
+		t.Fatalf("no LockId: %s", body)
+	}
+	i += len("<wfs:LockId>")
+	j := strings.Index(body[i:], "</wfs:LockId>")
+	return body[i : i+j]
+}

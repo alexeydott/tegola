@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexeydott/tegola/config"
 	"github.com/alexeydott/tegola/feature"
@@ -124,6 +126,45 @@ func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.writeXML(w, r, http.StatusOK, body)
+	case "getpropertyvalue":
+		req, errs := wfs.ParseGetPropertyValueKVP(v, params)
+		if errs != nil {
+			h.writeException(w, r, v, http.StatusBadRequest, errs)
+			return
+		}
+		body, errs := wfs.ExecuteGetPropertyValue(r.Context(), h.Service, req)
+		if errs != nil {
+			h.writeException(w, r, v, http.StatusBadRequest, errs)
+			return
+		}
+		h.writeXML(w, r, http.StatusOK, body)
+	case "liststoredqueries":
+		if v == wfs.V110 {
+			h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+				{Code: wfs.ExceptionOperationNotSupported, Text: "stored queries require WFS 2.0"},
+			})
+			return
+		}
+		h.writeXML(w, r, http.StatusOK, wfs.ListStoredQueries(v))
+	case "describestoredqueries":
+		if v == wfs.V110 {
+			h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+				{Code: wfs.ExceptionOperationNotSupported, Text: "stored queries require WFS 2.0"},
+			})
+			return
+		}
+		var ids []string
+		if sq := params["storedquery_id"]; sq != "" {
+			ids = []string{sq}
+		}
+		body, errs := wfs.DescribeStoredQueries(v, ids)
+		if errs != nil {
+			h.writeException(w, r, v, http.StatusBadRequest, errs)
+			return
+		}
+		h.writeXML(w, r, http.StatusOK, body)
+	case "lockfeature":
+		h.serveLockFeature(w, r, v, params)
 	default:
 		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionOperationNotSupported, Locator: "request", Text: fmt.Sprintf("unsupported request %q", request)},
@@ -180,12 +221,32 @@ func (h *WFSHandler) serveTransaction(w http.ResponseWriter, r *http.Request, v 
 		})
 		return
 	}
-	actions, err := wfs.ParseTransaction(v, body)
+	actions, lockID, err := wfs.ParseTransaction(v, body)
 	if err != nil {
 		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionInvalidParameterValue, Text: err.Error()},
 		})
 		return
+	}
+	// Enforce locks: locked features require the matching lockId.
+	for _, act := range actions {
+		if act.Op == provider.MutationInsert {
+			continue
+		}
+		for _, fid := range act.FilterIDs {
+			if wfs.IsLocked(act.TypeName, fid) {
+				if lockID == "" {
+					h.writeException(w, r, v, http.StatusForbidden, []wfs.Exception{
+						{Code: wfs.ExceptionNoApplicableCode, Text: fmt.Sprintf("feature %d is locked", fid)},
+					})
+					return
+				}
+				if exc := wfs.CheckLock(lockID, act.TypeName, fid); exc != nil {
+					h.writeException(w, r, v, http.StatusForbidden, []wfs.Exception{*exc})
+					return
+				}
+			}
+		}
 	}
 	// Map WFS actions to Part 4 operation names for the write allowlist.
 	for _, act := range actions {
@@ -304,4 +365,55 @@ func wfsGeometryXSDType(t string) string {
 	default:
 		return "GeometryPropertyType"
 	}
+}
+
+// serveLockFeature implements WFS 1.1 LockFeature (KVP).
+func (h *WFSHandler) serveLockFeature(w http.ResponseWriter, r *http.Request, v wfs.Version, params map[string]string) {
+	if v != wfs.V110 {
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Text: "LockFeature is a WFS 1.1 operation"},
+		})
+		return
+	}
+	typeName := params["typename"]
+	if typeName == "" {
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionMissingParameterValue, Locator: "typeName", Text: "typeName is required"},
+		})
+		return
+	}
+	// Parse feature IDs from featureId parameter (WFS FIDs).
+	var ids []uint64
+	if fids := params["featureid"]; fids != "" {
+		for _, fid := range strings.Split(fids, ",") {
+			_, id, err := feature.DecodeWFSFID(strings.TrimSpace(fid))
+			if err != nil {
+				h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+					{Code: wfs.ExceptionInvalidParameterValue, Locator: "featureId", Text: fmt.Sprintf("invalid feature ID %q", fid)},
+				})
+				return
+			}
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionMissingParameterValue, Locator: "featureId", Text: "featureId is required"},
+		})
+		return
+	}
+	expiry := 5 * time.Minute
+	if e := params["expiry"]; e != "" {
+		if n, err := strconv.Atoi(e); err == nil && n > 0 {
+			expiry = time.Duration(n) * time.Minute
+		}
+	}
+	lock := wfs.AcquireLock(typeName, ids, expiry)
+	if lock == nil {
+		h.writeException(w, r, v, http.StatusConflict, []wfs.Exception{
+			{Code: wfs.ExceptionNoApplicableCode, Text: "features already locked"},
+		})
+		return
+	}
+	h.writeXML(w, r, http.StatusOK, wfs.LockFeatureResponse(lock))
 }

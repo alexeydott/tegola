@@ -175,10 +175,14 @@ func parseFeatureIDParam(raw string) (uint64, error) {
 
 // checkPrecondition enforces If-Match against the current representation
 // ETag. If-Match: * checks existence. Absent If-Match is allowed unless
-// the collection mandates preconditions (428 then).
+// RequireIfMatch is set, in which case 428 Precondition Required is
+// returned.
 func (api *FeatureAPI) checkPrecondition(r *http.Request, collection string, featureID uint64) (string, error) {
 	match := r.Header.Get("If-Match")
 	if match == "" {
+		if api.cfg.Write.RequireIfMatch {
+			return "", &preconditionRequiredError{}
+		}
 		return "", nil
 	}
 	if match == "*" {
@@ -202,6 +206,12 @@ func (api *FeatureAPI) checkPrecondition(r *http.Request, collection string, fea
 type preconditionFailedError struct{ current string }
 
 func (e *preconditionFailedError) Error() string { return "precondition failed" }
+
+// preconditionRequiredError is returned when RequireIfMatch is set and
+// the request carries no If-Match header (428).
+type preconditionRequiredError struct{}
+
+func (e *preconditionRequiredError) Error() string { return "precondition required" }
 
 func etagMatches(header, current string) bool {
 	// Only strong comparison is accepted for mutations; weak tags never
@@ -533,6 +543,10 @@ func (api *FeatureAPI) writeMutationError(w http.ResponseWriter, r *http.Request
 func (api *FeatureAPI) writePreconditionError(w http.ResponseWriter, r *http.Request, err error) {
 	if _, ok := err.(*preconditionFailedError); ok {
 		api.writeError(w, r, http.StatusPreconditionFailed, "PreconditionFailed", "If-Match precondition failed")
+		return
+	}
+	if _, ok := err.(*preconditionRequiredError); ok {
+		api.writeError(w, r, http.StatusPreconditionRequired, "PreconditionRequired", "If-Match header is required")
 		return
 	}
 	api.writeQueryError(w, r, err)
