@@ -41,6 +41,17 @@ type SortCriterion struct {
 
 // ParseGetFeatureKVP parses the KVP subset for GetFeature.
 func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []Exception) {
+	// Stored query dispatch (WFS 2.0).
+	if sqID := q["storedquery_id"]; sqID != "" {
+		if v == V110 {
+			return nil, []Exception{{Code: ExceptionOperationNotSupported, Text: "stored queries require WFS 2.0"}}
+		}
+		sq, ok := GetStoredQuery(sqID)
+		if !ok {
+			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "storedQueryId", Text: fmt.Sprintf("unknown stored query %q", sqID)}}
+		}
+		return sq.ToGetFeature(q)
+	}
 	req := &GetFeatureRequest{Version: v, MaxFeatures: 1000}
 	typeName := q["typename"]
 	if typeName == "" {
