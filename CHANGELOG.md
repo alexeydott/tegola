@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Integrate PR #1 OGC Features fixes for GeoPackage Queryables, polar bbox predicates and limit errors; preserve exact integer/REAL filter comparisons and reject non-finite scalar values.
+
 - Accept MySQL identifier aliases with or without `AS` in direct startup geometry samples, avoiding unnecessary derived-table materialization. Preserve the three-valid-MOS early stop and the 16-row inspection window.
 
 ## v0.21.0-fork.2 — 2026-10-02

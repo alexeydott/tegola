@@ -351,17 +351,21 @@ calls `TileFeatures` or constructs a tile.
 
 ### Optional scalar filtering
 
-Ordinary table feature profiles can expose selected `INTEGER`/`INT`/`BIGINT`/
-`SMALLINT`/`TINYINT`, `BOOLEAN`/`BOOL`, and `TEXT` properties as queryables. Names
+Ordinary table feature profiles can expose integer declarations (including
+`MEDIUMINT`, `INT2` and `INT8`), `BOOLEAN`/`BOOL`, numeric declarations
+(`REAL`, `DOUBLE`, `DOUBLE PRECISION`, `FLOAT`, `NUMERIC`, `DECIMAL`), and text
+declarations (`TEXT`, `CHAR`, `CHARACTER`, `VARCHAR`, `NCHAR`, `NATIVE CHARACTER`,
+`NVARCHAR`, `CLOB`). Declaration case and size parameters are normalized. Names
 are exact public column names; identity, geometry, bounds and private fields
-are excluded. Other declarations, including NUMERIC, REAL and date/time types,
-are not advertised. Optional catalog admission failure preserves Core queries
-and tile rendering; custom feature SQL remains unsupported.
+are excluded. Date/time and other declarations are not advertised. Optional
+catalog admission failure preserves Core queries and tile rendering; custom
+feature SQL remains unsupported.
 
 Filtered requests verify frozen table declarations and database encoding in
 their read snapshot, then check every advertised scalar domain with SQL before
 applying the client predicate. INTEGER values must have SQLite integer storage;
-booleans must be integer 0 or 1. TEXT requires a UTF-8 database, valid UTF-8 bytes
+booleans must be integer 0 or 1. Numbers require integer or finite REAL storage.
+TEXT requires a UTF-8 database, valid UTF-8 bytes
 and at most **1 MiB per source cell**. NULL remains NULL. This integrity check
 can scan the source table even when the requested filter matches no rows.
 It does not materialize the table in Go. A provider-owned SQLite driver installs
@@ -369,7 +373,9 @@ a fixed, bounded UTF-8 validator on every connection; tile and unfiltered query
 paths retain their existing behavior.
 
 String comparisons use UTF-8 byte ordering with significant trailing spaces;
-integer comparisons preserve exact numeric literals and SQL three-valued logic.
+numeric comparisons preserve exact numeric literals and SQL three-valued logic.
+Integer storage uses exact integer bounds; REAL storage uses directed float64
+bounds without silently rounding the literal.
 The SQL filter is combined with bbox/datetime/identity predicates before exact
 geometry matching, counts and pagination. These capabilities do not themselves
 declare an OGC conformance class.

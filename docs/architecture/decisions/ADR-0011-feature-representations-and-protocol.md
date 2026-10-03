@@ -1,6 +1,7 @@
 # ADR-0011: Feature representations, API definition and protocol limits
 
 Status: Accepted after independent architecture and security review on 2026-10-02.
+Limit and response-size error behavior amended with PR #1 on 2026-10-03.
 
 ## Decision
 
@@ -27,8 +28,8 @@ an admitted temporal mapping retain exact provider filtering. Advertise filterin
 Queryables and referenced CRS support only where the collection supports it.
 Document existing error behavior for unsupported optional parameters separately.
 The configured `limit.maximum`
-remains in the parameter schema; requests above it are clamped as permitted by
-OGC Core requirements 21 and 22. Include actual defaults, media types, headers,
+remains in the parameter schema; requests above it receive 400 `InvalidParameter`
+before provider I/O. Include actual defaults, media types, headers,
 errors and enabled operations. Validate the generated document with an independent
 OpenAPI validator, including negative controls.
 
@@ -90,7 +91,7 @@ through CLI and Lambda wiring.
 Reject a raw query above 64 KiB with 414 and aggregate Accept headers above 16 KiB
 with 431 before parsing or provider I/O. These fixed guards also apply to HEAD.
 Measure the complete selected response before committing headers. Oversized
-responses produce generic 500 `ResponseTooLarge`, without a partial success body;
+responses produce generic 400 `ResponseTooLarge`, without a partial success body;
 HEAD reports the corresponding error headers and suppresses its body.
 
 Retain the existing 408 mapping for cancellation and deadline errors, preserve

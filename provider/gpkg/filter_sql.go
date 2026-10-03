@@ -182,8 +182,11 @@ func (profile *featureFilterProfile) verify(ctx context.Context, tx *sql.Tx, tab
 		domain := "typeof(" + source + ")='integer'"
 		switch c.kind {
 		case provider.QueryableNumber:
-			// REAL-affinity columns may store whole numbers as integers.
-			domain = "typeof(" + source + ") IN ('integer','real')"
+			// NUMERIC/DECIMAL affinity can retain exact int64 values or REAL
+			// values. Both storage classes must be finite before filtering.
+			maximum := fmt.Sprintf("%.17g", math.MaxFloat64)
+			domain = "typeof(" + source + ") IN ('integer','real') AND " +
+				source + ">=-" + maximum + " AND " + source + "<=" + maximum
 		case provider.QueryableBoolean:
 			domain += " AND " + source + " IN (0,1)"
 		case provider.QueryableString:
@@ -360,7 +363,21 @@ func compileFilterInteger(source string, operator provider.FilterCompareOperator
 	return source + " " + direction + " ?", nil
 }
 
-// compileFilterNumber compiles a comparison against a REAL-affinity column.
+// compileFilterNumber dispatches by actual SQLite storage, preserving integer
+// precision in NUMERIC/DECIMAL columns. Arguments follow SQL branch order.
+func compileFilterNumber(source string, operator provider.FilterCompareOperator, literal provider.FilterLiteral, args *[]any) (string, error) {
+	integer, err := compileFilterInteger(source, operator, literal, args)
+	if err != nil {
+		return "", err
+	}
+	real, err := compileFilterReal(source, operator, literal, args)
+	if err != nil {
+		return "", err
+	}
+	return "CASE WHEN typeof(" + source + ")='integer' THEN (" + integer + ") ELSE (" + real + ") END", nil
+}
+
+// compileFilterReal compiles a comparison against a REAL storage value.
 // SQLite stores REAL values as float64, so the comparison must be exact in
 // float64 terms. The CQL2 numeric literal is an exact rational, and binding
 // its nearest float64 would change semantics whenever the literal is not
@@ -373,7 +390,7 @@ func compileFilterInteger(source string, operator provider.FilterCompareOperator
 // Literals beyond the float64 range fold to constants: every finite stored
 // value is below a +infinite literal and above a -infinite one. NULL never
 // matches, mirroring the integer path.
-func compileFilterNumber(source string, operator provider.FilterCompareOperator, literal provider.FilterLiteral, args *[]any) (string, error) {
+func compileFilterReal(source string, operator provider.FilterCompareOperator, literal provider.FilterLiteral, args *[]any) (string, error) {
 	rational, ok := literal.Number()
 	if !ok {
 		return "", invalidQuery("filter", "invalid numeric literal")
