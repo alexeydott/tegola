@@ -36,7 +36,7 @@ func actionToMutation(v Version, schema *feature.SchemaDescriptor, act Transacti
 		m.FeatureID = act.FilterIDs[0]
 		return []provider.Mutation{m}, nil
 	case provider.MutationUpdate:
-		return updateActionToMutations(schema, act)
+		return updateActionToMutations(v, schema, act)
 	case provider.MutationDelete:
 		return deleteActionToMutations(act)
 	default:
@@ -75,12 +75,27 @@ func insertActionToMutation(v Version, schema *feature.SchemaDescriptor, act Tra
 	return m, nil
 }
 
-func updateActionToMutations(schema *feature.SchemaDescriptor, act TransactionAction) ([]provider.Mutation, error) {
+func updateActionToMutations(v Version, schema *feature.SchemaDescriptor, act TransactionAction) ([]provider.Mutation, error) {
 	if len(act.FilterIDs) == 0 {
 		return nil, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "Update without a feature ID filter is not supported"}
 	}
 	props := map[string]provider.MutationValue{}
+	var geomWKB []byte
 	for name, literal := range act.Properties {
+		if name == schema.Geometry.Name {
+			// Geometry replacement: <Value> carries raw GML.
+			swap := v != V110
+			g, err := gml.ParseGeometry(literal, swap)
+			if err != nil {
+				return nil, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid GML geometry: %v", err)}
+			}
+			raw, err := wkb.EncodeBytes(g)
+			if err != nil {
+				return nil, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKB encode: %v", err)}
+			}
+			geomWKB = raw
+			continue
+		}
 		desc, ok := schema.Property(name)
 		if !ok {
 			return nil, &provider.MutationError{Kind: provider.MutationErrSchemaViolation, Reason: fmt.Sprintf("unknown property %q", name)}
@@ -94,10 +109,12 @@ func updateActionToMutations(schema *feature.SchemaDescriptor, act TransactionAc
 	var out []provider.Mutation
 	for _, id := range act.FilterIDs {
 		out = append(out, provider.Mutation{
-			Op:         provider.MutationUpdate,
-			Collection: act.TypeName,
-			FeatureID:  id,
-			Properties: props,
+			Op:           provider.MutationUpdate,
+			Collection:   act.TypeName,
+			FeatureID:    id,
+			Properties:   props,
+			GeometryWKB:  geomWKB,
+			GeometrySRID: 4326,
 		})
 	}
 	return out, nil

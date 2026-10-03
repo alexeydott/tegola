@@ -98,7 +98,9 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 	var ids []uint64
 	dec := xml.NewDecoder(strings.NewReader(inner))
 	var curProp, curValue string
+	var curValueXML strings.Builder
 	inValue, inRef := false, false
+	valueDepth := 0 // >0 while capturing nested XML inside <Value>
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -106,6 +108,17 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if inValue && valueDepth == 0 && t.Name.Local != "Value" {
+				// Nested XML inside <Value> (e.g. GML geometry): capture raw.
+				valueDepth = 1
+				writeStartElement(&curValueXML, t)
+				continue
+			}
+			if valueDepth > 0 {
+				valueDepth++
+				writeStartElement(&curValueXML, t)
+				continue
+			}
 			switch t.Name.Local {
 			case "Property":
 				curProp, curValue = "", ""
@@ -125,6 +138,15 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 				}
 			}
 		case xml.EndElement:
+			if valueDepth > 0 {
+				valueDepth--
+				curValueXML.WriteString("</" + t.Name.Local + ">")
+				if valueDepth == 0 {
+					curValue = curValueXML.String()
+					curValueXML.Reset()
+				}
+				continue
+			}
 			switch t.Name.Local {
 			case "Property":
 				if curProp != "" {
@@ -136,6 +158,10 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 				inValue = false
 			}
 		case xml.CharData:
+			if valueDepth > 0 {
+				curValueXML.WriteString(xmlEscape(string(t)))
+				continue
+			}
 			text := strings.TrimSpace(string(t))
 			if text == "" {
 				continue
@@ -148,6 +174,15 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 		}
 	}
 	return props, ids, nil
+}
+
+// writeStartElement appends a raw start tag (local name + attributes) to sb.
+func writeStartElement(sb *strings.Builder, t xml.StartElement) {
+	sb.WriteString("<" + t.Name.Local)
+	for _, at := range t.Attr {
+		sb.WriteString(" " + at.Name.Local + `="` + xmlEscape(at.Value) + `"`)
+	}
+	sb.WriteString(">")
 }
 
 // parseFeatureElement extracts the type name, scalar properties and the
