@@ -13,7 +13,7 @@ import (
 const MaxInspectionGeometryBytes = 64 << 20
 
 var mysqlSampleIdentifier = regexp.MustCompile("^(?:`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_$]*)(?:\\s*\\.\\s*(?:`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_$]*))*$")
-var mysqlSampleAlias = regexp.MustCompile("(?i)\\s+AS\\s+(`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_$]*)$")
+var mysqlSampleAlias = regexp.MustCompile("(?i)\\s+(?:AS\\s+)?(`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_$]*)$")
 
 func sampleQuote(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
@@ -89,8 +89,14 @@ func mysqlDirectSampleGeometry(sql, field string) (string, string, bool) {
 		identifier := strings.TrimSpace(part)
 		output := ""
 		if match := mysqlSampleAlias.FindStringSubmatchIndex(identifier); match != nil {
-			output = sampleName(identifier[match[2]:match[3]])
-			identifier = strings.TrimSpace(identifier[:match[0]])
+			candidate := strings.TrimSpace(identifier[:match[0]])
+			// Whitespace before the final qualified identifier is not an
+			// alias (for example, table . column). Strip a suffix only when
+			// the remaining expression independently proves an identifier.
+			if mysqlSampleIdentifier.MatchString(candidate) {
+				output = sampleName(identifier[match[2]:match[3]])
+				identifier = candidate
+			}
 		}
 		if !mysqlSampleIdentifier.MatchString(identifier) {
 			return "", "", false

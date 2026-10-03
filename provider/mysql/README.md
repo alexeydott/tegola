@@ -463,7 +463,8 @@ has `WHERE 1=0` or `LIMIT 0`. Metadata inspection first checks the full result
 projection with zero rows; supported SELECT forms use a direct `LIMIT 0`.
 Format/class sampling then transfers only the configured geometry column.
 A direct sample rewrite requires simple identifier projections with optional
-`AS` aliases and a unique geometry output. Expressions, stars, DISTINCT/ALL,
+aliases (with or without `AS`) and a unique geometry output. Expressions, stars,
+DISTINCT/ALL,
 grouping, ordering, unions, windows, locking, executable comments and ambiguous
 projections use a conservative geometry-only derived query. That fallback may
 still materialize. Direct sampling retains smaller existing limits and offsets
