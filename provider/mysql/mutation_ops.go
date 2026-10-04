@@ -79,13 +79,30 @@ func (t *featureTx) Rollback(ctx context.Context) error {
 
 // encodeStorageGeometry validates the input WKB and encodes to the layer's
 // storage format: mos blob, wkb bytes, wkt text, or MySQL/MariaDB native.
-func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) (enc []byte, encStr string, err error) {
+// GeometryAssignment is a typed geometry value for SQL construction (R03).
+// It carries either a bind parameter (safe) or a SQL expression template
+// with bind args (for native functions). Never a raw interpolated string.
+type GeometryAssignment struct {
+	// BindValue is used when the geometry is a simple bind parameter.
+	BindValue interface{}
+	// ExprTemplate is a SQL fragment like "ST_GeomFromText(?, ?)".
+	ExprTemplate string
+	// ExprArgs are bound to the template placeholders.
+	ExprArgs []interface{}
+}
+
+// IsExpr reports whether this is a SQL expression (vs plain bind).
+func (ga GeometryAssignment) IsExpr() bool {
+	return ga.ExprTemplate != ""
+}
+
+func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) (GeometryAssignment, error) {
 	g, err := wkb.DecodeBytes(wkbBytes)
 	if err != nil {
-		return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid WKB: %v", err)}
+		return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid WKB: %v", err)}
 	}
 	if err := checkGeometryType(g, mp.geomType); err != nil {
-		return nil, "", err
+		return GeometryAssignment{}, err
 	}
 	srid := inputSRID
 	if srid == 0 {
@@ -94,28 +111,28 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 	if srid != mp.geomSRID {
 		g, err = transformGeometry(g, srid, mp.geomSRID)
 		if err != nil {
-			return nil, "", err
+			return GeometryAssignment{}, err
 		}
 	}
 	rawWKB, err := wkb.EncodeBytes(g)
 	if err != nil {
-		return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKB encode: %v", err)}
+		return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKB encode: %v", err)}
 	}
 	switch mp.geomFormat {
 	case "mos":
 		blob, err := mos.Encode(g, mp.mosOpts)
 		if err != nil {
-			return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("MOS encode: %v", err)}
+			return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("MOS encode: %v", err)}
 		}
-		return blob, "", nil
+		return GeometryAssignment{BindValue: blob}, nil
 	case "wkb":
-		return rawWKB, "", nil
+		return GeometryAssignment{BindValue: rawWKB}, nil
 	case "wkt":
 		var sb strings.Builder
 		if err := wkt.Encode(&sb, g); err != nil {
-			return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
+			return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
 		}
-		return nil, sb.String(), nil
+		return GeometryAssignment{BindValue: sb.String()}, nil
 	case "mariadb", "mysql", "auto":
 		// Native server-side construction via ST_GeomFromText: the Go
 		// driver binds []byte as MYSQL_TYPE_STRING, which the GEOMETRY
@@ -123,11 +140,15 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 		// and lets the server assign the SRID.
 		var sb strings.Builder
 		if err := wkt.Encode(&sb, g); err != nil {
-			return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
+			return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
 		}
-		return nil, fmt.Sprintf("ST_GeomFromText(%q,%d)", sb.String(), mp.geomSRID), nil
+		// R03: parameterized, no Go quoting (ANSI_QUOTES safe).
+		return GeometryAssignment{
+			ExprTemplate: "ST_GeomFromText(?, ?)",
+			ExprArgs:     []interface{}{sb.String(), mp.geomSRID},
+		}, nil
 	default:
-		return nil, "", &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("unsupported geometry format %q", mp.geomFormat)}
+		return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("unsupported geometry format %q", mp.geomFormat)}
 	}
 }
 
@@ -300,21 +321,18 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 		args = append(args, v)
 	}
 	if m.GeometryWKB != nil {
-		enc, encStr, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
+		ga, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
 		cols = append(cols, quoteIdent(mp.geomColumn))
-		if strings.HasPrefix(encStr, "ST_GeomFromText(") {
-			// server-side constructor: inline the expression
-			holders = append(holders, encStr)
+		// R03: typed assignment - expression template or bind value.
+		if ga.IsExpr() {
+			holders = append(holders, ga.ExprTemplate)
+			args = append(args, ga.ExprArgs...)
 		} else {
 			holders = append(holders, "?")
-			if encStr != "" {
-				args = append(args, encStr)
-			} else {
-				args = append(args, enc)
-			}
+			args = append(args, ga.BindValue)
 		}
 	}
 	if len(cols) == 0 {
@@ -351,16 +369,17 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		args = append(args, v)
 	}
 	if m.GeometryWKB != nil {
-		enc, encStr, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
+		ga, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
-		// A14: native geometry expression inlined, not bound as string.
-		if encStr != "" {
-			sets = append(sets, quoteIdent(mp.geomColumn)+" = "+encStr)
+		// R03: typed assignment - expression template or bind value.
+		if ga.IsExpr() {
+			sets = append(sets, quoteIdent(mp.geomColumn)+" = "+ga.ExprTemplate)
+			args = append(args, ga.ExprArgs...)
 		} else {
 			sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
-			args = append(args, enc)
+			args = append(args, ga.BindValue)
 		}
 	}
 	if len(sets) == 0 {
@@ -395,17 +414,17 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 		args = append(args, v)
 	}
 	if m.GeometryWKB != nil {
-		enc, encStr, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
+		ga, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
-		// A14: Native geometry expression must be inlined as SQL, not bound
-		// as a string parameter. encStr is like ST_GeomFromText('...',4326).
-		if encStr != "" {
-			sets = append(sets, quoteIdent(mp.geomColumn)+" = "+encStr)
+		// R03: typed assignment - expression template or bind value.
+		if ga.IsExpr() {
+			sets = append(sets, quoteIdent(mp.geomColumn)+" = "+ga.ExprTemplate)
+			args = append(args, ga.ExprArgs...)
 		} else {
 			sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
-			args = append(args, enc)
+			args = append(args, ga.BindValue)
 		}
 	}
 	if len(sets) == 0 {
