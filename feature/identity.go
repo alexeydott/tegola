@@ -25,8 +25,12 @@ type PhysicalFeatureKey struct {
 }
 
 func (k PhysicalFeatureKey) String() string {
-	return k.Domain + "." + k.Relation + "." + k.PK +
-		"#s" + k.SourceIncarnation + "#e" + strconv.FormatUint(k.EntityIncarnation, 10)
+	base := k.Domain + "." + k.Relation + "." + k.PK
+	// A38: append incarnation only when set (backward compatible).
+	if k.SourceIncarnation != "" || k.EntityIncarnation != 0 {
+		base += "#s" + k.SourceIncarnation + "#e" + strconv.FormatUint(k.EntityIncarnation, 10)
+	}
+	return base
 }
 
 // EncodeWFSFID reversibly encodes collection + numeric ID as a WFS

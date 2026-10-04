@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/alexeydott/geom"
@@ -14,6 +16,7 @@ import (
 	"github.com/alexeydott/proj"
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
+	pa "github.com/alexeydott/tegola/provider/audit"
 )
 
 // valueToSQL converts a neutral MutationValue to a driver value using the
@@ -437,6 +440,10 @@ func (t *featureTx) existsInTx(ctx context.Context, mp *writeMapping, featureID 
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	// A03: fail-fast CAS check inside the native transaction.
+	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+		return provider.MutationOutcome{}, err
+	}
 	// R04: verify existence to distinguish not-found from no-op.
 	exists, err := t.existsInTx(ctx, mp, m.FeatureID)
 	if err != nil {
@@ -508,6 +515,10 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 }
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	// A03: fail-fast CAS check inside the native transaction.
+	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+		return provider.MutationOutcome{}, err
+	}
 	_, found, err := t.selectRow(ctx, mp, m.FeatureID)
 	if err != nil {
 		return provider.MutationOutcome{}, err
@@ -531,17 +542,40 @@ func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mut
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
-// checkRevision enforces the If-Revision precondition inside the
-// transaction. Without a proven revision column the profile cannot prove
-// CAS; callers then rely on representation ETags at the HTTP layer.
-func (t *featureTx) checkRevision(ctx context.Context, mp *writeMapping, m provider.Mutation) error {
-	if m.IfRevision == "" {
+// checkRevisionCAS implements the A03 If-Match check inside the native
+// transaction. SQLite has no SELECT ... FOR UPDATE, but the tx holds the
+// single connection write lock, so the read is already serialized.
+// An empty ifRevision skips the check; "0" means "no revision yet".
+func checkRevisionCAS(ctx context.Context, tx *sql.Tx, collection string, featureID uint64, ifRevision string) error {
+	if ifRevision == "" {
 		return nil
 	}
-	return &provider.MutationError{
-		Kind:   provider.MutationErrUnsupportedCapability,
-		Reason: "revision preconditions require an explicit revision column (not admitted for this layer)",
+	var curRev int64
+	err := tx.QueryRowContext(ctx,
+		`SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ?`,
+		collection, featureID).Scan(&curRev)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			if ifRevision != "0" {
+				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0", ifRevision)}
+			}
+			return nil
+		}
+		if pa.IsMissingTable(err) {
+			// Cannot enforce the precondition without the revisions table.
+			return &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "revision precondition requires tegola_revisions table (run migration)"}
+		}
+		return mapSQLError(err)
 	}
+	if strconv.FormatInt(curRev, 10) != ifRevision {
+		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %d", ifRevision, curRev)}
+	}
+	return nil
+}
+
+func (t *featureTx) checkRevision(ctx context.Context, mp *writeMapping, m provider.Mutation) error {
+	// A03: delegate to the in-transaction CAS check.
+	return checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision)
 }
 
 // mapSQLError classifies storage errors without leaking internals.
