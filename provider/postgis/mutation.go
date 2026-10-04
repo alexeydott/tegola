@@ -178,6 +178,12 @@ func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID ui
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
+	// R09: verify service schema version BEFORE opening the data tx.
+	// No DDL or missing-table probes inside the tx (aborts in PostgreSQL).
+	// Run migrations manually via provider/audit Migrate before write traffic.
+	if err := w.checkServiceSchema(ctx); err != nil {
+		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("service schema: %v", err)}
+	}
 	// Explicitly request read-write: the provider defaults
 	// default_transaction_read_only=TRUE for query workloads.
 	tx, err := w.provider.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadWrite})
@@ -187,6 +193,23 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	// A01: No DDL in data transaction. Audit tables must be created via
 	// migration before write traffic (see provider/audit/sql.go).
 	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID}, nil
+}
+
+// checkServiceSchema verifies the tegola service schema version.
+// R09: explicit fail before write, not silent missing-table inside tx.
+func (w *Writer) checkServiceSchema(ctx context.Context) error {
+	// Use a dedicated connection for the version check.
+	conn, err := w.provider.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire: %w", err)
+	}
+	defer conn.Release()
+	var v int
+	err = conn.QueryRow(ctx, `SELECT version FROM tegola_schema_version WHERE version = $1`, pa.CurrentSchemaVersion).Scan(&v)
+	if err != nil {
+		return fmt.Errorf("not migrated (run provider/audit Migrate): %w", err)
+	}
+	return nil
 }
 
 // splitStmts splits DDL on semicolons.

@@ -25,6 +25,16 @@ CREATE TABLE IF NOT EXISTS tegola_outbox (
 	dispatched INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tegola_outbox_undispatched ON tegola_outbox(dispatched) WHERE dispatched = 0;
+CREATE TABLE IF NOT EXISTS tegola_revisions (
+	collection TEXT NOT NULL,
+	feature_id INTEGER NOT NULL,
+	revision INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (collection, feature_id)
+);
+CREATE TABLE IF NOT EXISTS tegola_schema_version (
+	version INTEGER PRIMARY KEY,
+	applied_at TEXT NOT NULL
+);
 `
 
 // MySQL DDL
@@ -42,7 +52,7 @@ CREATE TABLE IF NOT EXISTS tegola_audit (
 	request_id VARCHAR(100) DEFAULT '',
 	INDEX idx_audit_collection (collection),
 	INDEX idx_audit_ts (ts)
-);
+) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS tegola_outbox (
 	id BIGINT PRIMARY KEY AUTO_INCREMENT,
 	ts VARCHAR(40) NOT NULL,
@@ -52,7 +62,17 @@ CREATE TABLE IF NOT EXISTS tegola_outbox (
 	payload TEXT,
 	dispatched TINYINT NOT NULL DEFAULT 0,
 	INDEX idx_outbox_undispatched (dispatched)
-);
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS tegola_revisions (
+	collection VARCHAR(255) NOT NULL,
+	feature_id BIGINT NOT NULL,
+	revision BIGINT NOT NULL DEFAULT 0,
+	PRIMARY KEY (collection, feature_id)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS tegola_schema_version (
+	version INT PRIMARY KEY,
+	applied_at VARCHAR(40) NOT NULL
+) ENGINE=InnoDB;
 `
 
 // PostgreSQL DDL
@@ -79,4 +99,14 @@ CREATE TABLE IF NOT EXISTS tegola_outbox (
 	dispatched BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX IF NOT EXISTS idx_tegola_outbox_undispatched ON tegola_outbox(dispatched) WHERE NOT dispatched;
+CREATE TABLE IF NOT EXISTS tegola_revisions (
+	collection TEXT NOT NULL,
+	feature_id BIGINT NOT NULL,
+	revision BIGINT NOT NULL DEFAULT 0,
+	PRIMARY KEY (collection, feature_id)
+);
+CREATE TABLE IF NOT EXISTS tegola_schema_version (
+	version INTEGER PRIMARY KEY,
+	applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `

@@ -363,7 +363,8 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	// W13: ensure audit tables exist
+	// W13: ensure audit tables exist (SQLite DDL in tx is safe; R09
+	// migration gate applies to MySQL/PostgreSQL where DDL breaks tx).
 	if err := ensureAuditTables(ctx, tx); err != nil {
 		_ = tx.Rollback()
 		return nil, err

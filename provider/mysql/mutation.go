@@ -170,13 +170,17 @@ func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID ui
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
+	// R09: ensure service schema BEFORE opening the data transaction.
+	// A01: No DDL in data transaction (implicit COMMIT in MySQL).
+	if err := pa.CheckSchemaVersion(ctx, w.provider.db, "mysql"); err != nil {
+		if merr := pa.Migrate(ctx, w.provider.db, "mysql"); merr != nil {
+			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("schema migration: %v", merr)}
+		}
+	}
 	tx, err := w.provider.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
 	}
-	// A01: No DDL in data transaction. Audit tables must be created via
-	// migration before write traffic (see provider/audit/sql.go).
-	// DDL causes implicit COMMIT in MySQL, breaking atomicity.
 	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID}, nil
 }
 
