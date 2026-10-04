@@ -250,6 +250,10 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 			}
 		}
 		for k, v := range props {
+			// A23: nil -> omit (not "<nil>" string).
+			if v == nil {
+				continue
+			}
 			gf.Properties[k] = fmt.Sprintf("%v", v)
 		}
 		// Keep sort keys alongside for post-query sorting.

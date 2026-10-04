@@ -376,12 +376,15 @@ func TransactionResponse(v Version, results []TransactionResult) string {
 		sb.WriteString(fmt.Sprintf(`<wfs:totalReplaced>%d</wfs:totalReplaced>`, rep))
 	}
 	sb.WriteString(`</wfs:TransactionSummary>` + "\n")
+	// A24: version-specific IDs. 1.1 uses ogc:FeatureId; 2.0 uses
+	// fes:ResourceId only (ogc namespace not declared in 2.0 root).
 	for _, r := range results {
 		if r.Op == provider.MutationInsert && r.FeatureID != 0 {
 			fid, _ := feature.EncodeWFSFID(r.TypeName, r.FeatureID)
 			sb.WriteString(`  <wfs:InsertResults><wfs:Feature>`)
-			sb.WriteString(`<ogc:FeatureId fid="` + xmlEscape(fid) + `"/>`)
-			if v != V110 {
+			if v == V110 {
+				sb.WriteString(`<ogc:FeatureId fid="` + xmlEscape(fid) + `"/>`)
+			} else {
 				sb.WriteString(`<fes:ResourceId rid="` + xmlEscape(fid) + `"/>`)
 			}
 			sb.WriteString(`</wfs:Feature></wfs:InsertResults>` + "\n")

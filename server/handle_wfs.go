@@ -62,16 +62,28 @@ func (h *WFSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// kvpGet returns the query value for a case-insensitive key (A25).
+// OGC KVP parameter names are case-insensitive.
+func kvpGet(q map[string][]string, key string) string {
+	lower := strings.ToLower(key)
+	for k, v := range q {
+		if strings.ToLower(k) == lower && len(v) > 0 {
+			return v[0]
+		}
+	}
+	return ""
+}
+
 func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	service := strings.ToUpper(q.Get("service"))
+	service := strings.ToUpper(kvpGet(q, "service"))
 	if service != "" && service != "WFS" {
 		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionInvalidParameterValue, Locator: "service", Text: "service must be WFS"},
 		})
 		return
 	}
-	request := strings.ToLower(q.Get("request"))
+	request := strings.ToLower(kvpGet(q, "request"))
 	if request == "" {
 		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionMissingParameterValue, Locator: "request", Text: "request is required"},
@@ -82,7 +94,7 @@ func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
 	if av := q.Get("acceptversions"); av != "" {
 		accepted = strings.Split(av, ",")
 	}
-	v, err := wfs.Negotiate(q.Get("version"), accepted)
+	v, err := wfs.Negotiate(kvpGet(q, "version"), accepted)
 	if err != nil {
 		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionInvalidParameterValue, Locator: "version", Text: err.Error()},
