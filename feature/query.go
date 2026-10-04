@@ -35,7 +35,10 @@ type FeatureRecord struct {
 // top of it; behavior of the read API is unchanged (W06).
 type QueryService struct {
 	// QuerierFor resolves the provider.FeatureQuerier for a collection.
-	QuerierFor func(collection string) (provider.FeatureQuerier, string, error)
+	// A02: also returns the physical domain ID (e.g. "mysql:<hash>") to pin
+	// the binding; the Domain in PhysicalFeatureKey must identify the physical
+	// DB, not just the layer name.
+	QuerierFor func(collection string) (provider.FeatureQuerier, string, string, error)
 	// SchemaFor resolves the schema descriptor for a collection.
 	SchemaFor func(collection string) (*SchemaDescriptor, error)
 }
@@ -44,7 +47,7 @@ type QueryService struct {
 // each provider.Feature into a FeatureRecord with typed properties.
 // Fields restrict properties only; identity and geometry stay present.
 func (s *QueryService) RawQuery(ctx context.Context, collection string, query provider.FeatureQuery) ([]*FeatureRecord, provider.FeatureQueryResult, error) {
-	querier, layer, err := s.QuerierFor(collection)
+	querier, layer, domain, err := s.QuerierFor(collection)
 	if err != nil {
 		return nil, provider.FeatureQueryResult{}, err
 	}
@@ -54,7 +57,7 @@ func (s *QueryService) RawQuery(ctx context.Context, collection string, query pr
 	}
 	var out []*FeatureRecord
 	res, err := querier.QueryFeatures(ctx, layer, query, func(f *provider.Feature) error {
-		rec, convErr := s.convert(collection, layer, schema, f)
+		rec, convErr := s.convert(collection, layer, domain, schema, f)
 		if convErr != nil {
 			return convErr
 		}
@@ -67,7 +70,7 @@ func (s *QueryService) RawQuery(ctx context.Context, collection string, query pr
 	return out, res, nil
 }
 
-func (s *QueryService) convert(collection, layer string, schema *SchemaDescriptor, f *provider.Feature) (*FeatureRecord, error) {
+func (s *QueryService) convert(collection, layer, domain string, schema *SchemaDescriptor, f *provider.Feature) (*FeatureRecord, error) {
 	rec := &FeatureRecord{
 		Collection:    collection,
 		ID:            f.ID,
@@ -75,8 +78,9 @@ func (s *QueryService) convert(collection, layer string, schema *SchemaDescripto
 		Properties:    make(map[string]TypedValue, len(f.Tags)),
 		SchemaVersion: schema.SchemaVersion,
 	}
+	// A02: Domain identifies the physical DB, pinned at query time.
 	rec.Key = PhysicalFeatureKey{
-		Domain:   layer,
+		Domain:   domain,
 		Relation: schema.Collection,
 		PK:       uint64ToString(f.ID),
 	}

@@ -54,34 +54,37 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 			Reason: "no mutations",
 		}
 	}
-	// Policy + structural validation for every action happens before Begin.
+	// A02: Policy, provider resolution (pinned), and structural validation
+	// happen in a single pass before Begin. The provider instance is pinned
+	// at resolution time; the security context (principal) is bound to the
+	// pinned provider, preventing TOCTOU between policy check and execution.
+	type bound struct {
+		mp         provider.MutationProvider
+		layer      string
+		collection string // original public collection name (for audit)
+	}
+	bounds := make([]bound, len(mutations))
+	domain := ""
 	for i := range mutations {
 		m := &mutations[i]
+		origCollection := m.Collection
 		action, err := policyActionFor(m.Op.String())
 		if err != nil {
 			return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: err.Error()}
 		}
-		policy := c.PolicyFor(m.Collection)
-		if d := policy.CheckCollection(ctx, principal, action, m.Collection); !d.Allow {
+		policy := c.PolicyFor(origCollection)
+		if d := policy.CheckCollection(ctx, principal, action, origCollection); !d.Allow {
 			return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "collection policy denied: " + d.Reason}
 		}
-		schema, err := c.SchemaFor(m.Collection)
+		schema, err := c.SchemaFor(origCollection)
 		if err != nil {
 			return empty, provider.CommitReceipt{}, err
 		}
 		if err := validateMutationInput(schema, *m); err != nil {
 			return empty, provider.CommitReceipt{}, err
 		}
-	}
-	// Resolve providers and check the single-domain rule before Begin.
-	type bound struct {
-		mp    provider.MutationProvider
-		layer string
-	}
-	bounds := make([]bound, len(mutations))
-	domain := ""
-	for i := range mutations {
-		mp, layer, err := c.ProviderFor(mutations[i].Collection)
+		// A02: pin the provider binding at resolution time.
+		mp, layer, err := c.ProviderFor(origCollection)
 		if err != nil {
 			return empty, provider.CommitReceipt{}, err
 		}
@@ -107,8 +110,9 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 				Reason: "transaction spans multiple provider instances",
 			}
 		}
-		mutations[i].Collection = layer
-		bounds[i] = bound{mp: mp, layer: layer}
+		// A02: pin the binding; keep original collection for audit.
+		m.Collection = layer
+		bounds[i] = bound{mp: mp, layer: layer, collection: origCollection}
 	}
 	// W13: pass actor for audit. RequestID from context if available.
 	requestID, _ := ctx.Value("requestID").(string)
