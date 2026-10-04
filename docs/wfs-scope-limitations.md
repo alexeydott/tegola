@@ -1,61 +1,84 @@
-# WFS/WFS-T Scope and Known Limitations
+# WFS/WFS-T scope and operating limits
 
-This document honestly states what is implemented, what is planned,
-and what is explicitly out of scope (A39, A41, A42, A43).
+The branch provides WFS read/transaction adapters and an experimental OGC API
+Features CRUD implementation. Implementation, unit tests, native integration
+runs, and standards conformance are different levels of evidence. Neither this
+file nor the presence of a handler establishes full OGC conformance or production
+acceptance. See the current review evidence for exact runs and provider versions.
 
-## Implemented and tested
+## Publication and concurrency
 
-- WFS 1.1.0 and 2.0.2: GetCapabilities, DescribeFeatureType, GetFeature
-  (KVP and POST XML), GetPropertyValue, LockFeature, Transaction
-- OGC API Features Part 4 (CRUD): POST/PUT/PATCH/DELETE on collections/items
-- If-Match/If-None-Match preconditions via ETags (numeric revision or hash)
-- Providers: PostGIS, MySQL/MariaDB, GeoPackage (SQLite)
-- Geometry formats: PostGIS native, WKB, WKT, MOS blob
-- CRS: 4326 ↔ 3857 transforms; axis order from srsName (A07)
+Writes require explicit per-collection configuration. Use production authentication
+and require strong If-Match preconditions on existing features. A representation
+hash alone is not a substitute for an atomic revision check. External database
+writers must participate in revision management; otherwise concurrent-edit
+protection cannot be promised.
 
-## Known architectural limitations
+LockFeature is unavailable until a physical-feature guard can be enforced by
+all mutation paths and processes. Do not interpret an in-memory token store as a
+distributed database lock.
 
-### A30: GeoJSON intermediate model
-GetFeature currently decodes to `features.Feature` (GeoJSON geometry),
-then re-encodes to GML. Properties pass through `fmt.Sprintf`.
-A typed feature stream (shared geometry/value/schema snapshot for
-JSON and GML encoders) is planned but requires refactoring the
-GetFeature pipeline. Current behavior is correct but does extra
-JSON round-trips.
+A write-enabled server bypasses tile caches and emits no-store for tiles. Apply
+that policy to every reader replica serving the same editable data, including
+replicas whose own writes are disabled. Clear old persistent/CDN/browser caches
+before returning to a cached read-only deployment. Distributed cache invalidation
+and durable delivery of invalidation events are not supplied by this profile.
 
-## Planned (not yet implemented)
+## Embedded attribute editor
 
-- JSON Patch (RFC 6902): returns 415; only Merge Patch (RFC 7396) supported (A21)
-- Native COUNT for hits: bounded scan at 100k, 400 beyond (A29)
-- Provider-level SortBy/OFFSET: in-memory sort, startIndex supported (A28)
-- Per-map cache epochs: global epoch currently (A36)
-- Full FES filter: only ResourceId/FeatureId filters supported (A26)
+The viewer includes a limited source-feature attribute editor. Its default API
+path is `features`; change the same-origin path when the deployment configures a
+different Feature API base path. It loads the mutation schema, then loads a feature
+by decimal ID together with its ETag. Saving existing features sends JSON Patch
+operations only for changed attributes: geometry is retained. NULL, omitted
+properties and empty strings are distinct. Undo, redo and cancel act on the local
+attribute draft. Create accepts a manually entered GeoJSON geometry; it is not a
+map drawing tool.
 
-## Explicitly out of scope
+A 412 keeps the draft and disables saving until the source is explicitly loaded
+again. Copy the draft before reloading; there is no automatic conflict merge.
+Network/server failures preserve the draft and stop further writes because the
+commit outcome can be unknown. Verify the source before reconnecting. There is
+no automatic retry of a potentially committed write.
 
-### A41: Embedded UI editor
-No embedded web editor is provided. WFS-T endpoints are for external
-clients (QGIS, OpenLayers, custom apps). An `external-client-only`
-deployment profile is the intended use.
+A confirmed commit with failed source readback returns a minimal successful
+response and `Tegola-Commit-Status: committed`. The editor distinguishes this
+case from an unknown outcome and never retries the write. Successful saves
+refresh the viewer's loaded vector sources.
 
-### A42: HANA provider
-SAP HANA write support is not implemented. The provider matrix is:
-- PostGIS: implemented, tested with unit tests
-- MySQL/MariaDB: implemented, tested with unit tests
-- GeoPackage: implemented, tested with unit tests (369s suite)
-- HANA: not implemented, not advertised
+The editor rejects unsafe JavaScript integers and decimal tokens exceeding its
+conservative precision limit. Use an external lossless client for large IDs or
+exact decimal values; the editor does not claim a complete uint64 editing profile.
+Geometry drawing, geometry undo/redo, and collaborative conflict resolution remain
+outside the embedded profile. Existing authentication must be provided by the
+same-origin deployment; this UI is not an authentication management console.
 
-### A43: Operational acceptance
-Before production write traffic:
-- Run migrations on a backup; verify rollback
-- Test backup + real restore
-- Rehearse write-disable (config flag)
-- Set pool sizes and statement timeouts per provider
-- Define audit retention and PII policy
-- Reconcile unknown operations via audit log
+## Provider and protocol limits
 
-## Conformance (A39)
+PostGIS, MySQL/MariaDB and GeoPackage have mutation implementations. Their native
+test status must be recorded separately per database version, geometry encoding,
+CRS and operation; unit tests do not establish this matrix. HANA writes are not
+implemented and must not be admitted. Do not infer MOS, custom CRS or XYZ write
+support from the availability of those read formats.
 
-Conformance URIs are declared only for implemented features.
-Draft vs published spec revisions are not mixed.
-New conformance URIs require proof before declaration.
+Layers with configured or discovered derived bbox columns are rejected for
+writing because those columns are not maintained by this profile. Native
+GeoPackage RTree indexing is handled separately; do not assume derived bbox
+columns and a native spatial index are interchangeable.
+
+Both Merge Patch and the implemented JSON Patch subset are accepted by the REST
+adapter. Unsupported JSON Patch operations, filter expressions, spatial profiles
+and lock operations must fail explicitly. The bounded WFS filter, sort and hits
+implementation is not a declaration of full FES or WFS conformance.
+
+Part 4 follows a draft-derived implementation contract; no final Part 4 conformance
+class is declared merely because writes are enabled. The OpenAPI document describes
+installed methods and media types; conformance needs independent protocol evidence.
+
+## Operational acceptance
+
+Before enabling production writes, verify migration privileges and upgrade behavior,
+backup and actual restore, revision state after restore, write-disable procedures,
+connection pool limits and timeouts, audit retention, external-writer policy and
+reconciliation of unknown commit outcomes. A successful build and a local fixture
+run do not close these operational requirements.

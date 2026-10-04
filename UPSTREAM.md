@@ -45,6 +45,14 @@ and scopes. See [Feature API release notes](docs/release/feature-api.md),
 
 ## Tile HTTP caching (fork extension)
 
+The unreleased WFS/Feature API write profile is a fork extension. It adds
+explicit write admission, native provider mutations, conditional revisions and
+a limited embedded attribute editor. It does not extend the prior read-only
+conformance evidence to WFS-T or Part 4. LockFeature and distributed cache
+invalidation remain unavailable; write-enabled routers bypass tile caches and
+force no-store. Every reader replica must use the same cache policy for editable
+data. See [write scope and operational limits](docs/wfs-scope-limitations.md).
+
 `webserver.tile_http_max_age` now configures browser/shared-cache freshness for
 successful ordinary GET/HEAD tile responses (default `0`, opt-in). The outer tile middleware
 applies the same policy after cache lookup/rendering and gzip handling, so cache
