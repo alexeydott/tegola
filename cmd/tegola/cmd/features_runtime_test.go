@@ -110,3 +110,32 @@ provider_layer = "missing.source"
 		t.Fatalf("disabled source was resolved: %v %v", rt, err)
 	}
 }
+
+func TestStockRuntimeRejectsProductionWriteWithoutAuthenticator(t *testing.T) {
+	previousConfig, previousLogger := conf, slog.Default()
+	t.Cleanup(func() { conf = previousConfig; slog.SetDefault(previousLogger) })
+	for _, mode := range []string{"production", ""} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			body := `[features]
+enabled = true
+[[features.collections]]
+id = "sites"
+provider_layer = "missing.sites"
+[features.write]
+enabled = true
+auth_mode = "` + mode + `"
+[[features.write.collections]]
+id = "sites"
+operations = ["create"]
+`
+			path := filepath.Join(t.TempDir(), "production.toml")
+			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			rt, err := initConfigRuntime(path, false, "ERROR")
+			if rt != nil || err == nil || !strings.Contains(err.Error(), "stock executable has no production authenticator") {
+				t.Fatalf("expected explicit auth startup rejection: runtime=%v error=%v", rt, err)
+			}
+		})
+	}
+}

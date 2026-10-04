@@ -1,3 +1,5 @@
+[← Provider evidence](provider-matrix.md) · [Back to README](../README.md) · [Configuration →](configuration.md)
+
 # Write operations and recovery
 
 These procedures define required deployment checks, not a claim that every
@@ -50,6 +52,12 @@ Migration is outside feature data transactions. Rehearse it on a restored copy
 before deploying, including app rollback compatibility and the runtime role's
 permissions. There is no universally safe automatic downgrade procedure.
 
+MySQL write admission prepares a missing/supported older service schema before
+the endpoint is published, and rejects missing migration privileges at startup.
+`BeginFeatureTx` checks the prepared schema and opens the data transaction; it
+does not run first-request migration DDL. A runtime role can operate without DDL
+privileges only after the required schema has been prepared and validated.
+
 Use the database's actual metadata interface when checking columns:
 
 ```sql
@@ -91,7 +99,39 @@ transaction commits. Their timestamps are application observation times generate
 before/around commit, not a database-proven exact commit timestamp. The returned
 receipt is not automatically a durable, idempotently queryable request receipt.
 
+WFS responses after transaction coordination carry `Tegola-Commit-Status` and
+an optional `Tegola-Transaction-Id`; both headers are exposed through CORS.
+Validation failures before coordination need not carry a transaction receipt.
+The native GeoPackage writer currently supplies no transaction correlation ID;
+its WFS status header is still returned, but no correlation header is promised.
+MySQL/PostGIS IDs are available according to their receipt behavior below.
+A confirmed commit remains committed if a later readback or callback fails.
+
+PostGIS and MySQL commit receipts retain the generated transaction ID for both
+confirmed and unknown outcomes. The `Tegola-Transaction-ID` response header, when
+provided, correlates with the transaction ID stored in audit/outbox records; it
+is not a database-native transaction number or an idempotency token. Preserve it
+alongside the request and outcome when investigating a lost acknowledgement.
+
+Receipt states are distinct: `committed` confirms commit, `not-committed` means
+the coordinator has established that no commit occurred, and `unknown` leaves
+the outcome unresolved. An error response alone is not proof of rollback.
+Never automatically retry an unknown operation, especially Insert.
+
+Reconciliation is an operator procedure against the authoritative database and
+protected audit/outbox records. This service does not publish a receipt lookup
+endpoint or a per-user receipt ownership model. Do not expose unrestricted
+audit queries as a recovery API. A missing or not-yet-visible audit record is
+not proof of rollback; retain the unresolved state until reliable evidence
+establishes the outcome.
+
 Retain and protect audit records according to the deployment's privacy and
 retention policy. Outbox storage alone does not prove delivery, cache invalidation
 or exactly-once processing. Independently test restore, disk-full, timeout,
 connection-loss, shutdown and external-writer scenarios before production use.
+
+## See Also
+
+- [Write configuration](configuration.md#explicit-wfs-and-write-publication) — publication and authentication requirements.
+- [Provider evidence](provider-matrix.md) — executed scenarios and remaining acceptance work.
+- [Write scope](wfs-scope-limitations.md) — concurrency and cache boundaries.

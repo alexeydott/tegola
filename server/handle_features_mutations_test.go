@@ -15,6 +15,7 @@ import (
 
 	"github.com/alexeydott/tegola/config"
 	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/alexeydott/tegola/provider"
 	"github.com/alexeydott/tegola/provider/gpkg"
@@ -29,12 +30,17 @@ const part4DDL = `CREATE TABLE sites (
 
 func part4Service(t *testing.T) (*features.Service, *gpkg.Provider) {
 	t.Helper()
+	return part4ServiceDDL(t, part4DDL)
+}
+
+func part4ServiceDDL(t *testing.T, ddl string) (*features.Service, *gpkg.Provider) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "part4.gpkg")
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if _, err := db.Exec(part4DDL); err != nil {
+	if _, err := db.Exec(ddl); err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -495,5 +501,63 @@ func TestReviewMutationRejectsUnsupportedCRS(t *testing.T) {
 	rec := doRequest(t, router, http.MethodPost, "/features/collections/sites/items", `{"type":"Feature","geometry":{"type":"Point","coordinates":[10,20]},"properties":{"name":"bad"}}`, map[string]string{"Content-Type": mediaGeoJSON, "Content-Crs": "<http://www.opengis.net/def/crs/EPSG/0/3857>"})
 	if rec.Code != 400 {
 		t.Fatalf("unsupported CRS accepted: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPR2NonNullableGeometrySchemaAndInput(t *testing.T) {
+	service, _ := part4ServiceDDL(t, strings.Replace(part4DDL, "geom BLOB", "geom BLOB NOT NULL", 1))
+	router := part4Router(t, part4API(t, service))
+	schema := doRequest(t, router, http.MethodGet, "/features/collections/sites/schema", "", nil)
+	if schema.Code != 200 {
+		t.Fatalf("schema %d: %s", schema.Code, schema.Body.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(schema.Body.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	geometry := document["properties"].(map[string]any)["geometry"].(map[string]any)
+	if geometry["type"] != "object" {
+		t.Fatalf("NOT NULL geometry advertised nullable: %v", geometry)
+	}
+	rec := doRequest(t, router, http.MethodPost, "/features/collections/sites/items", `{"type":"Feature","geometry":null,"properties":{"name":"bad"}}`, map[string]string{"Content-Type": mediaGeoJSON})
+	if rec.Code != 400 {
+		t.Fatalf("explicit null must fail validation400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPR2ExplicitNullOnDefaultedNotNullProperty(t *testing.T) {
+	service, _ := part4ServiceDDL(t, strings.Replace(part4DDL, "seats INTEGER", "seats INTEGER NOT NULL DEFAULT 7", 1))
+	router := part4Router(t, part4API(t, service))
+	for _, body := range []string{
+		`{"type":"Feature","geometry":null,"properties":{"name":"bad","seats":null}}`,
+		`{"type":"Feature","geometry":null,"properties":{"name":"good"}}`,
+	} {
+		rec := doRequest(t, router, http.MethodPost, "/features/collections/sites/items", body, map[string]string{"Content-Type": mediaGeoJSON})
+		if strings.Contains(body, `"seats":null`) {
+			if rec.Code != 400 {
+				t.Fatalf("explicit null got %d: %s", rec.Code, rec.Body.String())
+			}
+		} else if rec.Code != 201 || !strings.Contains(rec.Body.String(), `"seats":7`) {
+			t.Fatalf("omission lost default %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// pr2Authenticator represents an embedding application's verified identity adapter.
+type pr2Authenticator struct{}
+
+func (pr2Authenticator) Principal(*http.Request) feature.Principal {
+	return feature.Principal{ID: "verified-editor"}
+}
+
+func TestPR2EmbeddedProductionAuthenticatorRemainsSupported(t *testing.T) {
+	service, _ := part4Service(t)
+	api := part4API(t, service)
+	api.cfg.Write.AuthMode = "production"
+	api.cfg.Authenticator = pr2Authenticator{}
+	router := part4Router(t, api)
+	rec := doRequest(t, router, http.MethodPost, "/features/collections/sites/items", `{"type":"Feature","geometry":null,"properties":{"name":"verified"}}`, map[string]string{"Content-Type": mediaGeoJSON})
+	if rec.Code != 201 {
+		t.Fatalf("embedded authenticator rejected %d: %s", rec.Code, rec.Body.String())
 	}
 }

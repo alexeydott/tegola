@@ -361,7 +361,7 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 	}
 	id, err := res.LastInsertId()
 	if err != nil || id <= 0 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "insert did not return a row id"}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: "insert did not return a row id"}
 	}
 	t.recordMod(mp, uint64(id), geomBounds, true)
 	return provider.MutationOutcome{FeatureID: uint64(id), Affected: 1}, nil

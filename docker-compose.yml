@@ -44,6 +44,8 @@ services:
       retries: 10
     environment:
       MYSQL_ROOT_PASSWORD: root
+      # Disposable CI fixtures provision isolated databases and restricted users.
+      MYSQL_ROOT_HOST: "%"
       # credentials match the live construction test in provider/mysql
       # (mysql_internal_test.go), which connects with database=test,
       # user=u, password=p.

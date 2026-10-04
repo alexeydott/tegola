@@ -23,20 +23,108 @@ import (
 	"github.com/alexeydott/tegola/provider"
 )
 
-// ParseFESFilter parses an OGC FES 2.0 <Filter> XML fragment.
-func ParseFESFilter(body []byte) (provider.FilterExpression, error) {
-	if err := validateFESStructure(body); err != nil {
+// FESFilter retains bounded XML lexical values until a collection's proven
+// queryable catalog supplies their types. It cannot be sent to a provider
+// directly; Resolve constructs the typed neutral expression.
+type FESFilter struct {
+	lexical provider.FilterExpression
+}
+
+// Root returns a detached lexical snapshot; its string literals have not yet
+// been assigned queryable types. Use Resolve before executing the filter.
+func (f FESFilter) Root() provider.FilterNode { return f.lexical.Root() }
+
+// Resolve binds each literal to the type of its admitted queryable property.
+func (f FESFilter) Resolve(catalog provider.FeatureQueryables) (provider.FilterExpression, error) {
+	if err := catalog.Validate(); err != nil {
 		return provider.FilterExpression{}, err
 	}
-	var doc fesFilter
-	if err := xml.Unmarshal(body, &doc); err != nil {
-		return provider.FilterExpression{}, fmt.Errorf("fes: invalid Filter XML: %w", err)
+	if err := f.lexical.Validate(); err != nil {
+		return provider.FilterExpression{}, err
 	}
-	node, err := fesNodeToFilter(doc.Inner)
+	root := f.lexical.Root()
+	var bind func(*provider.FilterNode) error
+	bind = func(node *provider.FilterNode) error {
+		if node.Kind == provider.FilterCompare {
+			field, ok := catalog.Lookup(node.Property)
+			if !ok {
+				return fmt.Errorf("fes: unknown queryable property %q", node.Property)
+			}
+			kind := map[provider.QueryableType]provider.FilterScalarType{
+				provider.QueryableString:    provider.FilterString,
+				provider.QueryableInteger:   provider.FilterNumber,
+				provider.QueryableNumber:    provider.FilterNumber,
+				provider.QueryableBoolean:   provider.FilterBoolean,
+				provider.QueryableDate:      provider.FilterDate,
+				provider.QueryableTimestamp: provider.FilterTimestamp,
+			}[field.Type]
+			text := node.Literal.Text()
+			if kind != provider.FilterString {
+				text = strings.TrimSpace(text)
+			}
+			if kind == provider.FilterBoolean {
+				switch text {
+				case "1":
+					text = "true"
+				case "0":
+					text = "false"
+				}
+			}
+			literal, err := provider.NewFilterLiteral(kind, text)
+			if err != nil {
+				return fmt.Errorf("fes: literal for property %q: %w", node.Property, err)
+			}
+			node.Literal = literal
+		}
+		for i := range node.Children {
+			if err := bind(&node.Children[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := bind(&root); err != nil {
+		return provider.FilterExpression{}, err
+	}
+	expression, err := provider.NewFilterExpression(root)
 	if err != nil {
 		return provider.FilterExpression{}, err
 	}
-	return provider.NewFilterExpression(node)
+	resolved, err := provider.ResolveFeatureFilter(expression, catalog)
+	if err != nil {
+		return provider.FilterExpression{}, err
+	}
+	return resolved.Expression(), nil
+}
+
+// ParseFESFilter parses an OGC FES 2.0 <Filter> XML fragment. The result must
+// be resolved against the selected collection's queryables before execution.
+func ParseFESFilter(body []byte) (FESFilter, error) {
+	return parseFESFilterContext(body, "", nil)
+}
+
+func parseFESFilterContext(body []byte, collection string, bindings map[string]string) (FESFilter, error) {
+	if err := validateFESStructure(body); err != nil {
+		return FESFilter{}, err
+	}
+	normalized, err := normalizeFESQNames(body, collection, bindings)
+	if err != nil {
+		return FESFilter{}, err
+	}
+	body = normalized
+	var doc fesFilter
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return FESFilter{}, fmt.Errorf("fes: invalid Filter XML: %w", err)
+	}
+	node, err := fesNodeToFilter(doc.Inner)
+	if err != nil {
+		return FESFilter{}, err
+	}
+	lexical, err := provider.NewFilterExpression(node)
+	if err != nil {
+		return FESFilter{}, err
+	}
+	return FESFilter{lexical: lexical}, nil
 }
 
 type fesFilter struct {
@@ -51,12 +139,10 @@ type fesInner struct {
 	// For nested parsing, we re-parse Content.
 }
 
-// fesLiteral creates a FilterLiteral, inferring number vs string.
+// fesLiteral validates and preserves lexical text without guessing a type.
+// FilterString is the storage carrier only; FESFilter.Resolve replaces it
+// using the collection's queryable type before provider execution.
 func fesLiteral(text string) (provider.FilterLiteral, error) {
-	// Try number first.
-	if _, err := provider.NewFilterLiteral(provider.FilterNumber, text); err == nil {
-		return provider.NewFilterLiteral(provider.FilterNumber, text)
-	}
 	return provider.NewFilterLiteral(provider.FilterString, text)
 }
 

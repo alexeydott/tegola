@@ -2,6 +2,8 @@ package feature
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -35,10 +37,10 @@ type MutationCoordinator struct {
 // Execute runs one mutation as its own transaction.
 func (c *MutationCoordinator) Execute(ctx context.Context, principal Principal, m provider.Mutation) (provider.MutationOutcome, provider.CommitReceipt, error) {
 	outcomes, receipt, err := c.ExecuteAll(ctx, principal, []provider.Mutation{m})
-	if err != nil {
+	if len(outcomes) == 0 {
 		return provider.MutationOutcome{}, receipt, err
 	}
-	return outcomes[0], receipt, nil
+	return outcomes[0], receipt, err
 }
 
 // ExecuteAll runs all mutations in one native transaction, in order.
@@ -56,7 +58,7 @@ func sameProvider(a, b provider.MutationProvider) bool {
 func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principal, mutations []provider.Mutation) ([]provider.MutationOutcome, provider.CommitReceipt, error) {
 	var empty []provider.MutationOutcome
 	if len(mutations) == 0 {
-		return empty, provider.CommitReceipt{}, &provider.MutationError{
+		return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{
 			Kind:   provider.MutationErrMalformedInput,
 			Reason: "no mutations",
 		}
@@ -79,17 +81,17 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		origCollection := m.Collection
 		action, err := policyActionFor(m.Op.String())
 		if err != nil {
-			return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: err.Error()}
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: err.Error()}
 		}
 		policy := c.PolicyFor(origCollection)
 		if policy == nil {
 			policy = DenyAllPolicy{}
 		}
 		if d := policy.CheckCollection(ctx, principal, action, origCollection); !d.Allow {
-			return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "collection policy denied: " + d.Reason}
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "collection policy denied: " + d.Reason}
 		}
 		if scope, ok := policy.(CollectionOnlyPolicy); !ok || !scope.CollectionOnly() {
-			return empty, provider.CommitReceipt{}, &provider.MutationError{
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{
 				Kind:   provider.MutationErrUnsupportedCapability,
 				Reason: "row-dependent authorization requires transactional pre-image and post-image support",
 			}
@@ -101,24 +103,24 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 			schema, err = c.SchemaFor(origCollection)
 		}
 		if err != nil {
-			return empty, provider.CommitReceipt{}, err
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, err
 		}
 		if err := validateMutationInput(schema, *m); err != nil {
-			return empty, provider.CommitReceipt{}, err
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, err
 		}
 		// A02: pin the provider binding at resolution time.
 		mp, layer, err := c.ProviderFor(origCollection)
 		if err != nil {
-			return empty, provider.CommitReceipt{}, err
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, err
 		}
 		wd, err := mp.DescribeWritable(ctx, layer)
 		if err != nil {
-			return empty, provider.CommitReceipt{}, err
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, err
 		}
 		if domain == "" {
 			domain = wd.Domain
 		} else if wd.Domain != domain {
-			return empty, provider.CommitReceipt{}, &provider.MutationError{
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{
 				Kind:   provider.MutationErrDomainMismatch,
 				Reason: "transaction spans multiple domains",
 			}
@@ -128,7 +130,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		// domain hash. Different instances may map the same layer name
 		// to different tables/roles.
 		if i > 0 && !sameProvider(bounds[0].mp, mp) {
-			return empty, provider.CommitReceipt{}, &provider.MutationError{
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{
 				Kind:   provider.MutationErrDomainMismatch,
 				Reason: "transaction spans multiple provider instances",
 			}
@@ -144,7 +146,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		RequestID: requestID,
 	})
 	if err != nil {
-		return empty, provider.CommitReceipt{}, err
+		return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, err
 	}
 	committed := false
 	defer func() {
@@ -157,7 +159,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		}
 	}()
 	if err := ctx.Err(); err != nil {
-		return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "context cancelled before begin"}
+		return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "context cancelled before begin"}
 	}
 	outcomes := make([]provider.MutationOutcome, 0, len(mutations))
 	for i := range mutations {
@@ -176,7 +178,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 				PK:       formatPK(mutations[i].FeatureID),
 			}
 			if d := policy.CheckRow(ctx, principal, action, key); !d.Allow {
-				return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "row policy denied: " + d.Reason}
+				return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "row policy denied: " + d.Reason}
 			}
 		}
 		// A09: atomic lock guard inside the transaction, before Apply.
@@ -188,7 +190,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 				PK:       formatPK(mutations[i].FeatureID),
 			}
 			if lerr := c.LockCheck(ctx, bounds[i].collection, lkey); lerr != nil {
-				return empty, provider.CommitReceipt{}, &provider.MutationError{
+				return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{
 					Kind:   provider.MutationErrLockConflict,
 					Reason: lerr.Error(),
 				}
@@ -196,13 +198,13 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		}
 		outcome, err := tx.Apply(ctx, mutations[i])
 		if err != nil {
-			return empty, provider.CommitReceipt{}, err
+			return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, err
 		}
 		outcomes = append(outcomes, outcome)
 		// A04: post-image policy check after Apply, before Commit.
 		if i < len(bounds) {
 			if d := policy.CheckPostImage(ctx, principal, key, nil); !d.Allow {
-				return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "post-image policy denied: " + d.Reason}
+				return empty, provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "post-image policy denied: " + d.Reason}
 			}
 		}
 	}
@@ -212,7 +214,14 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	if receipt.Status == provider.CommitCommitted {
 		committed = true
 	}
-	if err != nil && !committed {
+	if !committed {
+		if err == nil {
+			if receipt.Status == provider.CommitNotCommitted {
+				err = &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: "transaction was not committed"}
+			} else {
+				err = &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "commit outcome unknown"}
+			}
+		}
 		return empty, receipt, err
 	}
 	// A43: enrich the durable receipt.
@@ -230,9 +239,22 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	receipt.Collections = cols
 	// A36: notify cache invalidation hook.
 	if c.OnCommit != nil {
-		c.OnCommit(cols)
+		// An auxiliary notification cannot undo a confirmed database commit.
+		// Preserve both a provider auxiliary error and a callback failure.
+		err = errors.Join(err, notifyMutationCommit(c.OnCommit, append([]string(nil), cols...)))
 	}
 	return outcomes, receipt, err
+}
+
+// notifyMutationCommit contains callback failures at the post-commit boundary.
+func notifyMutationCommit(callback func([]string), collections []string) (err error) {
+	defer func() {
+		if failure := recover(); failure != nil {
+			err = fmt.Errorf("post-commit callback failed: %v", failure)
+		}
+	}()
+	callback(collections)
+	return nil
 }
 
 // validateMutationInput runs schema validation before Begin: unknown
@@ -243,6 +265,13 @@ func validateMutationInput(schema *SchemaDescriptor, m provider.Mutation) error 
 			return &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "delete requires a feature ID"}
 		}
 		return nil
+	}
+	missingCompleteGeometry := (m.Op == provider.MutationInsert || m.Op == provider.MutationReplace) && m.GeometryWKB == nil
+	if !schema.Geometry.Nullable && (m.GeometryAbsent || missingCompleteGeometry) {
+		return &provider.MutationError{
+			Kind:   provider.MutationErrSchemaViolation,
+			Reason: "geometry is required and does not accept null",
+		}
 	}
 	if m.Op == provider.MutationInsert && m.FeatureID != 0 {
 		return &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "insert must not carry a feature ID"}

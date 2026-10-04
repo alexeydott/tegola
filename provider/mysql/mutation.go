@@ -21,9 +21,11 @@ import (
 
 // Writer implements provider.MutationProvider for MySQL/MariaDB.
 type Writer struct {
-	provider *Provider
-	mu       sync.Mutex
-	mappings map[string]*writeMapping
+	provider   *Provider
+	mu         sync.Mutex
+	mappings   map[string]*writeMapping
+	schemaOnce sync.Once
+	schemaErr  error
 }
 
 func (p *Provider) MutationWriter() provider.MutationProvider {
@@ -67,9 +69,10 @@ func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.Sch
 		Table:    m.table,
 		IDColumn: m.idColumn,
 		Geometry: provider.GeometryColumnDescriptor{
-			Name: m.geomColumn,
-			Type: m.geomType,
-			SRID: m.geomSRID,
+			Name:     m.geomColumn,
+			Type:     m.geomType,
+			SRID:     m.geomSRID,
+			Nullable: m.columns[m.geomColumn].Nullable,
 		},
 	}
 	for _, col := range m.columns {
@@ -108,17 +111,18 @@ func (p *Provider) writer() *Writer {
 }
 
 type writeMapping struct {
-	table      string
-	idColumn   string
-	geomColumn string
-	geomFormat string // mos, wkb, wkt, mysql, mariadb, auto
-	geomType   string
-	geomSRID   uint64
-	mosOpts    mos.Options
-	columns    map[string]provider.ColumnDescriptor
-	writable   map[string]string
-	readOnly   []string
-	domain     string
+	createUnsupportedReason string
+	table                   string
+	idColumn                string
+	geomColumn              string
+	geomFormat              string // mos, wkb, wkt, mysql, mariadb, auto
+	geomType                string
+	geomSRID                uint64
+	mosOpts                 mos.Options
+	columns                 map[string]provider.ColumnDescriptor
+	writable                map[string]string
+	readOnly                []string
+	domain                  string
 }
 
 func (w *Writer) DescribeWritable(ctx context.Context, layer string) (provider.WriteDescriptor, error) {
@@ -126,20 +130,25 @@ func (w *Writer) DescribeWritable(ctx context.Context, layer string) (provider.W
 	if err != nil {
 		return provider.WriteDescriptor{}, err
 	}
+	w.schemaOnce.Do(func() { w.schemaErr = w.prepareServiceSchema(ctx) })
+	if w.schemaErr != nil {
+		return provider.WriteDescriptor{}, w.schemaErr
+	}
 	writable := make(map[string]string, len(m.writable))
 	for k, v := range m.writable {
 		writable[k] = v
 	}
 	return provider.WriteDescriptor{
-		Layer:           layer,
-		Table:           m.table,
-		IDColumn:        m.idColumn,
-		GeometryColumn:  m.geomColumn,
-		GeometryType:    m.geomType,
-		GeometrySRID:    m.geomSRID,
-		WritableColumns: writable,
-		ReadOnlyColumns: append([]string(nil), m.readOnly...),
-		Domain:          m.domain,
+		Layer:                   layer,
+		Table:                   m.table,
+		IDColumn:                m.idColumn,
+		GeometryColumn:          m.geomColumn,
+		GeometryType:            m.geomType,
+		GeometrySRID:            m.geomSRID,
+		WritableColumns:         writable,
+		ReadOnlyColumns:         append([]string(nil), m.readOnly...),
+		Domain:                  m.domain,
+		CreateUnsupportedReason: m.createUnsupportedReason,
 	}, nil
 }
 
@@ -186,24 +195,17 @@ func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID ui
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
-	// R09: ensure service schema BEFORE opening the data transaction.
-	// A01: No DDL in data transaction (implicit COMMIT in MySQL).
-	// Check version and engine before write traffic.
-	if err := pa.CheckSchemaVersion(ctx, w.provider.db, "mysql"); err != nil {
-		if merr := pa.Migrate(ctx, w.provider.db, "mysql"); merr != nil {
-			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("schema migration: %v", merr)}
-		}
-	}
+	// Startup admission performs DDL; request transactions only verify it.
 	if err := pa.CheckSchemaVersion(ctx, w.provider.db, "mysql"); err != nil {
 		return nil, err
 	}
 	// A01: verify table engines (InnoDB required for transactions).
 	if err := pa.CheckTableEngine(ctx, w.provider.db, "mysql"); err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("schema engine: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("schema engine: %v", err)}
 	}
 	tx, err := w.provider.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("begin: %v", err)}
 	}
 	// A34: generate a unique txID for audit/outbox correlation.
 	txID := fmt.Sprintf("%d-%d", time.Now().UTC().UnixNano(), rand.Int63())
@@ -233,26 +235,28 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	q := `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, EXTRA FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
 	rows, err := p.db.QueryContext(ctx, q, p.Database, l.tablename)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
 	defer rows.Close()
 	var pkCols []string
 	cols := map[string]provider.ColumnDescriptor{}
 	var order []string
+	autoIncrement := make(map[string]bool)
 	for rows.Next() {
 		var name, dtype, key, nullable, extra string
 		var defaultValue sql.NullString
 		if err := rows.Scan(&name, &dtype, &key, &nullable, &defaultValue, &extra); err != nil {
-			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+			return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 		}
-		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype, Nullable: nullable == "YES", IsDefault: defaultValue.Valid, IsGenerated: strings.Contains(extra, "GENERATED") || strings.Contains(extra, "auto_increment")}
+		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype, Nullable: nullable == "YES", IsDefault: defaultValue.Valid, IsGenerated: (strings.Contains(extra, "STORED GENERATED") || strings.Contains(extra, "VIRTUAL GENERATED")) || strings.Contains(extra, "auto_increment")}
 		order = append(order, name)
+		autoIncrement[name] = strings.Contains(extra, "auto_increment")
 		if key == "PRI" {
 			pkCols = append(pkCols, name)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
 	for _, field := range l.bboxFields {
 		if _, exists := cols[field]; field != "" && exists {
@@ -270,7 +274,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	err = p.db.QueryRowContext(ctx, `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
 		p.Database, l.tablename, pkCols[0]).Scan(&pkType)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect pk: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect pk: %v", err)}
 	}
 	upper := strings.ToUpper(pkType)
 	isInt := false
@@ -308,6 +312,9 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		columns:  cols,
 		writable: make(map[string]string),
 		domain:   p.domainID(),
+	}
+	if !autoIncrement[m.idColumn] {
+		m.createUnsupportedReason = "create requires an AUTO_INCREMENT primary key"
 	}
 	public := map[string]bool{}
 	if l.feature != nil {
@@ -368,3 +375,16 @@ func splitStmts(ddl string) []string {
 }
 
 func (m *writeMapping) revisionCollection() string { return m.table }
+
+// prepareServiceSchema runs once during initial write admission, before serving writes.
+func (w *Writer) prepareServiceSchema(ctx context.Context) error {
+	if err := pa.CheckSchemaVersion(ctx, w.provider.db, "mysql"); err != nil {
+		if err := pa.Migrate(ctx, w.provider.db, "mysql"); err != nil {
+			return fmt.Errorf("prepare mutation schema: %w", err)
+		}
+	}
+	if err := pa.CheckSchemaVersion(ctx, w.provider.db, "mysql"); err != nil {
+		return err
+	}
+	return pa.CheckTableEngine(ctx, w.provider.db, "mysql")
+}

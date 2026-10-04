@@ -6,7 +6,11 @@ package feature
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
+
+	"github.com/alexeydott/tegola/provider"
 )
 
 // ValueState distinguishes the four states a property can be in:
@@ -99,6 +103,8 @@ const (
 
 // GeometryDescriptor describes the geometry property.
 type GeometryDescriptor struct {
+	// Nullable reports whether an explicit null geometry is valid input.
+	Nullable bool
 	// Name is the public geometry property name ("geometry" for GeoJSON).
 	Name string
 	// Column is the storage geometry column.
@@ -154,7 +160,7 @@ func (s *SchemaDescriptor) ValidateInputValue(name string, v TypedValue) error {
 		return fmt.Errorf("property %q is read-only", name)
 	}
 	if v.State == ValueAbsent || v.State == ValueNull {
-		if v.State == ValueNull && !p.Nullable && !p.HasDefault {
+		if v.State == ValueNull && !p.Nullable {
 			return fmt.Errorf("property %q does not accept null", name)
 		}
 		return nil
@@ -178,6 +184,10 @@ func (s *SchemaDescriptor) ValidateInputValue(name string, v TypedValue) error {
 			if !allowed {
 				return fmt.Errorf("property %q value not in allowed set", name)
 			}
+		}
+	case TypeDateTime:
+		if !validRFC3339(v.String) {
+			return fmt.Errorf("property %q must be an RFC3339 timestamp", name)
 		}
 	case TypeDecimal:
 		if !isCanonicalDecimal(v.Decimal) {
@@ -237,4 +247,27 @@ func isCanonicalDecimal(s string) bool {
 		digits++
 	}
 	return digits > 0
+}
+
+var rfc3339Input = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$`)
+
+func validRFC3339(value string) bool {
+	if !rfc3339Input.MatchString(value) {
+		return false
+	}
+	// RFC3339 permits lowercase separators. Keep the original mutation value;
+	// normalize only the validation copy, as the read query parser does.
+	normalized := value[:10] + "T" + value[11:]
+	if strings.HasSuffix(normalized, "z") {
+		normalized = normalized[:len(normalized)-1] + "Z"
+	}
+	leap := normalized[17:19] == "60"
+	if leap {
+		normalized = normalized[:17] + "59" + normalized[19:]
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, normalized)
+	if err != nil {
+		return false
+	}
+	return !leap || provider.IsPositiveLeapSecondPredecessor(parsed)
 }

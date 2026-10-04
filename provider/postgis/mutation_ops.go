@@ -2,9 +2,7 @@ package postgis
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/alexeydott/geom"
@@ -13,6 +11,7 @@ import (
 	"github.com/alexeydott/proj"
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
+	pa "github.com/alexeydott/tegola/provider/audit"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -24,33 +23,25 @@ func ph(i int) string { return fmt.Sprintf("$%d", i) }
 // SELECT FOR UPDATE to lock the revision row (mirrors the MySQL helper).
 // Empty ifRevision skips the check; "0" requires no existing revision row.
 func checkRevisionCAS(ctx context.Context, tx pgx.Tx, collection string, featureID uint64, ifRevision string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO tegola_revisions(collection,feature_id,revision,incarnation)
+ VALUES($1,$2,0,0) ON CONFLICT DO NOTHING`, collection, featureID)
+	if err != nil {
+		return err
+	}
+	var revision, incarnation int64
+	if err = tx.QueryRow(ctx, `SELECT revision,incarnation FROM tegola_revisions
+ WHERE collection=$1 AND feature_id=$2 FOR UPDATE`, collection, featureID).Scan(&revision, &incarnation); err != nil {
+		return err
+	}
 	if ifRevision == "" {
 		return nil
 	}
-	// A38: ifRevision is "incarnation.revision" format.
-	var wantInc, wantRev string
-	if parts := strings.Split(ifRevision, "."); len(parts) == 2 {
-		wantInc, wantRev = parts[0], parts[1]
-	} else {
-		wantInc, wantRev = "0", ifRevision
-	}
-	var curRev, curInc int64
-	err := tx.QueryRow(ctx,
-		`SELECT revision, incarnation FROM tegola_revisions WHERE collection = $1 AND feature_id = $2 FOR UPDATE`,
-		collection, featureID).Scan(&curRev, &curInc)
+	wantInc, wantRev, err := pa.ParseRevision(ifRevision)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			if wantRev != "0" || wantInc != "0" {
-				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0.0", ifRevision)}
-			}
-			return nil
-		}
-		return &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision check: %v", err)}
+		return err
 	}
-	curStr := strconv.FormatInt(curInc, 10) + "." + strconv.FormatInt(curRev, 10)
-	wantStr := wantInc + "." + wantRev
-	if curStr != wantStr {
-		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %s", wantStr, curStr)}
+	if wantInc != incarnation || wantRev != revision {
+		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "revision mismatch"}
 	}
 	return nil
 }
@@ -257,6 +248,10 @@ func (t *featureTx) geomArg(mp *writeMapping, m provider.Mutation, args []interf
 }
 
 func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	if mp.createUnsupportedReason != "" {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: mp.createUnsupportedReason}
+	}
+
 	var cols, holders []string
 	var args []interface{}
 	for pub, mv := range m.Properties {
@@ -299,7 +294,7 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) RETURNING %s", tbl, strings.Join(cols, ", "), strings.Join(holders, ", "), quoteIdent(mp.idColumn))
 	var id uint64
 	if err := t.tx.QueryRow(ctx, q, args...).Scan(&id); err != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("insert: %v", err)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("insert: %v", err)}
 	}
 	return provider.MutationOutcome{FeatureID: id, Affected: 1}, nil
 }
@@ -373,24 +368,20 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	args = append(args, m.FeatureID)
 	tag, err := t.tx.Exec(ctx, q, args...)
 	if err != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("replace: %v", err)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("replace: %v", err)}
 	}
 	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
 	if n := tag.RowsAffected(); n != 1 {
 		if n == 0 {
 			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
 		}
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
 
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
-	// A03: in-transaction CAS check before the data mutation.
-	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
-		return provider.MutationOutcome{}, err
-	}
 	var sets []string
 	var args []interface{}
 	for pub, mv := range m.Properties {
@@ -439,35 +430,31 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 	args = append(args, m.FeatureID)
 	tag, err := t.tx.Exec(ctx, q, args...)
 	if err != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update: %v", err)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("update: %v", err)}
 	}
 	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
 	if n := tag.RowsAffected(); n != 1 {
 		if n == 0 {
 			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
 		}
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
-	// A03: in-transaction CAS check before the data mutation.
-	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
-		return provider.MutationOutcome{}, err
-	}
 	tbl := quoteIdent(mp.schema) + "." + quoteIdent(mp.table)
 	q := fmt.Sprintf("DELETE FROM %s WHERE %s = $1", tbl, quoteIdent(mp.idColumn))
 	tag, err := t.tx.Exec(ctx, q, m.FeatureID)
 	if err != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("delete: %v", err)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("delete: %v", err)}
 	}
 	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
 	if n := tag.RowsAffected(); n != 1 {
 		if n == 0 {
 			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
 		}
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }

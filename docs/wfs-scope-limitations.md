@@ -1,3 +1,5 @@
+[← API reference](api.md) · [Back to README](../README.md) · [Provider evidence →](provider-matrix.md)
+
 # WFS/WFS-T scope and operating limits
 
 The branch provides WFS read/transaction adapters and an experimental OGC API
@@ -13,6 +15,11 @@ and require strong If-Match preconditions on existing features. A representation
 hash alone is not a substitute for an atomic revision check. External database
 writers must participate in revision management; otherwise concurrent-edit
 protection cannot be promised.
+
+The stock CLI rejects production-mode writes because it does not install an
+authenticator. Custom hosts must supply authentication to both protocol adapters;
+the explicit anonymous `dev` profile is for disposable trusted environments.
+See [configuration](configuration.md#explicit-wfs-and-write-publication).
 
 LockFeature is unavailable until a physical-feature guard can be enforced by
 all mutation paths and processes. Do not interpret an in-memory token store as a
@@ -71,6 +78,22 @@ adapter. Unsupported JSON Patch operations, filter expressions, spatial profiles
 and lock operations must fail explicitly. The bounded WFS filter, sort and hits
 implementation is not a declaration of full FES or WFS conformance.
 
+Mutation schemas preserve storage nullability, including the geometry column.
+An explicit null is rejected for a non-nullable column even when it has a server
+default; omission and null are different inputs. Date-time properties must use
+the accepted RFC3339 timestamp syntax, including announced positive leap seconds
+validated consistently with query literals. DescribeFeatureType reflects geometry
+nullability through both `minOccurs` and `nillable`. Invalid values fail validation before
+the provider transaction. Create requires a generated primary key; no client ID
+is implicitly substituted for a missing database default. For PostGIS, only an
+identity or validated sequence-generated key establishes create capability;
+a constant or arbitrary default does not. Update/delete-only admission remains
+separate from this create restriction.
+
+Create and replacement require a geometry value when the storage geometry is
+non-nullable, including WFS input that omits the geometry property. A partial
+update with no geometry change preserves the existing geometry.
+
 Part 4 follows a draft-derived implementation contract; no final Part 4 conformance
 class is declared merely because writes are enabled. The OpenAPI document describes
 installed methods and media types; conformance needs independent protocol evidence.
@@ -82,3 +105,9 @@ backup and actual restore, revision state after restore, write-disable procedure
 connection pool limits and timeouts, audit retention, external-writer policy and
 reconciliation of unknown commit outcomes. A successful build and a local fixture
 run do not close these operational requirements.
+
+## See Also
+
+- [Provider evidence](provider-matrix.md) — native versions, formats and verification boundaries.
+- [Write operations](operational.md) — schema preparation, recovery and commit correlation.
+- [API reference](api.md) — routes, validation and protocol behavior.

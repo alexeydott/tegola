@@ -145,8 +145,8 @@ func DecodeHeader(buf []byte) (Header, error) {
 // Decode decodes the geometry prefix of a MOS blob into a tegola geometry.
 //
 // Mapping of MOS object types to geometries:
-//   - polygon: each subobject is a ring; all rings form one geom.Polygon
-//     (additional rings become holes).
+//   - polygon: each subobject is a ring; containment classifies exterior
+//     rings and holes into geom.Polygon or geom.MultiPolygon.
 //   - polyline: one subobject -> geom.LineString, several -> geom.MultiLineString.
 //   - point: one point -> geom.Point, several -> geom.MultiPoint.
 //   - text / image: anchor point of the first subobject -> geom.Point.

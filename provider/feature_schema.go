@@ -5,6 +5,9 @@ import "context"
 // WriteDescriptor describes what a layer admits for writing. It is
 // produced by write admission (ADR-0013), never implied by read access.
 type WriteDescriptor struct {
+	// CreateUnsupportedReason is nonempty when generated feature IDs are unavailable.
+	// Other mutation operations may still be admitted.
+	CreateUnsupportedReason string
 	// Layer is the provider layer name.
 	Layer string
 	// Table is the physical base relation name.
@@ -59,6 +62,8 @@ type ColumnDescriptor struct {
 
 // GeometryColumnDescriptor describes the storage geometry column.
 type GeometryColumnDescriptor struct {
+	// Nullable reports whether explicit NULL geometry is permitted by storage.
+	Nullable  bool
 	Name      string
 	Type      string
 	SRID      uint64

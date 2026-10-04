@@ -170,8 +170,12 @@ func validateWriteAdmission(service *features.Service, cfg config.FeaturesWriteC
 		if err != nil {
 			return err
 		}
-		if _, err := p.DescribeWritable(ctx, layer); err != nil {
+		descriptor, err := p.DescribeWritable(ctx, layer)
+		if err != nil {
 			return fmt.Errorf("write admission for collection %q: %w", c.ID, err)
+		}
+		if cfg.AllowsOperation(string(c.ID), "create") && descriptor.CreateUnsupportedReason != "" {
+			return fmt.Errorf("create admission for collection %q: %s", c.ID, descriptor.CreateUnsupportedReason)
 		}
 	}
 	return nil

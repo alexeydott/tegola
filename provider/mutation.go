@@ -170,6 +170,7 @@ const (
 	MutationErrQuotaExceeded
 	MutationErrDomainMismatch
 	MutationErrCommitUnknown
+	MutationErrExecutionFailed
 )
 
 // MutationError carries a classified mutation failure. Reason must not
@@ -203,6 +204,8 @@ func (k MutationErrorKind) String() string {
 		return "quota exceeded"
 	case MutationErrDomainMismatch:
 		return "transaction-domain mismatch"
+	case MutationErrExecutionFailed:
+		return "execution failed"
 	case MutationErrCommitUnknown:
 		return "commit unknown"
 	default:

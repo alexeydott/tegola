@@ -8,6 +8,11 @@ Mercator and encoding them as MVT features. This document describes the
 supported input formats, their bounding-box behaviour, and how
 `GeometryCollection` values are processed.
 
+These are read/tile contracts. Write admission is separate: a format that can
+be decoded for a tile is not automatically safe to modify. The
+[write evidence matrix](provider-matrix.md) identifies tested provider/format
+combinations and the [write scope](wfs-scope-limitations.md) lists admission limits.
+
 ## Supported formats
 
 `geometry_format` is a provider-level default and can be overridden per
@@ -39,6 +44,13 @@ configuration is the CRS: MOS custom SQL requires an explicit `srid` or
 `MapplGIS LayerInfo` metadata blob during registration-time MapplGIS table
 detection (see
 [provider-contract.md](provider-contract.md#system-info-auto-configuration-mapplgis-tables-only)).
+
+When writing an admitted MOS layer, the writer must use the same resolved
+precision and units as its reader. Integer quantization can change coordinates;
+verify decoded coordinates against the declared precision, not byte equality
+with an unrelated native geometry encoding. A raw MOS fixture without derived
+bounds does not establish write support for MapplGIS tables whose separate
+MINX/MAXX/MINY/MAXY columns must remain consistent with their geometry.
 
 ## CRS handling
 

@@ -180,16 +180,24 @@ func literalToMutationValue(t feature.LogicalType, literal string) (provider.Mut
 // ExecuteTransaction runs parsed actions through the coordinator in
 // document order, in one native transaction.
 func ExecuteTransaction(ctx context.Context, coord *feature.MutationCoordinator, schemas func(string) (*feature.SchemaDescriptor, error), v Version, actions []TransactionAction, principal feature.Principal) ([]TransactionResult, error) {
+	results, _, err := ExecuteTransactionWithReceipt(ctx, coord, schemas, v, actions, principal)
+	return results, err
+}
+
+// ExecuteTransactionWithReceipt preserves the commit outcome and correlation ID
+// even when execution fails or the database acknowledgement is lost.
+func ExecuteTransactionWithReceipt(ctx context.Context, coord *feature.MutationCoordinator, schemas func(string) (*feature.SchemaDescriptor, error), v Version, actions []TransactionAction, principal feature.Principal) ([]TransactionResult, provider.CommitReceipt, error) {
+	notCommitted := provider.CommitReceipt{Status: provider.CommitNotCommitted}
 	var mutations []provider.Mutation
 	var owners []TransactionAction // parallel to mutations for result mapping
 	for _, act := range actions {
 		schema, err := schemas(act.TypeName)
 		if err != nil {
-			return nil, err
+			return nil, notCommitted, err
 		}
 		ms, err := actionToMutation(v, schema, act)
 		if err != nil {
-			return nil, err
+			return nil, notCommitted, err
 		}
 		for _, m := range ms {
 			mutations = append(mutations, m)
@@ -198,10 +206,10 @@ func ExecuteTransaction(ctx context.Context, coord *feature.MutationCoordinator,
 	}
 	outcomes, receipt, err := coord.ExecuteAll(ctx, principal, mutations)
 	if err != nil && receipt.Status != provider.CommitCommitted {
-		return nil, err
+		return nil, receipt, err
 	}
 	if receipt.Status != provider.CommitCommitted {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "commit outcome unknown"}
+		return nil, receipt, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "commit outcome unknown"}
 	}
 	if err != nil {
 		log.Error("WFS transaction committed with auxiliary failure", "transaction", receipt.TransactionID, "error", err)
@@ -215,5 +223,5 @@ func ExecuteTransaction(ctx context.Context, coord *feature.MutationCoordinator,
 			Affected:  o.Affected,
 		})
 	}
-	return results, nil
+	return results, receipt, nil
 }

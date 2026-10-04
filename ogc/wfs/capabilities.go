@@ -62,7 +62,6 @@ func Capabilities(v Version, service *features.Service, baseURL string, writeOps
 	// Filter capabilities (advertised subset).
 	if v == V110 {
 		sb.WriteString("  <ogc:Filter_Capabilities>\n")
-		sb.WriteString("    <ogc:Spatial_Capabilities><ogc:GeometryOperands><ogc:GeometryOperand>gml:Point</ogc:GeometryOperand><ogc:GeometryOperand>gml:LineString</ogc:GeometryOperand><ogc:GeometryOperand>gml:Polygon</ogc:GeometryOperand></ogc:GeometryOperands><ogc:SpatialOperators><ogc:SpatialOperator name=\"BBOX\"/></ogc:SpatialOperators></ogc:Spatial_Capabilities>\n")
 		sb.WriteString("    <ogc:Scalar_Capabilities><ogc:LogicalOperators/><ogc:ComparisonOperators><ogc:ComparisonOperator>PropertyIsEqualTo</ogc:ComparisonOperator><ogc:ComparisonOperator>PropertyIsNotEqualTo</ogc:ComparisonOperator></ogc:ComparisonOperators></ogc:Scalar_Capabilities>\n")
 		sb.WriteString("    <ogc:Id_Capabilities><ogc:FID/></ogc:Id_Capabilities>\n")
 		sb.WriteString("  </ogc:Filter_Capabilities>\n")
@@ -70,7 +69,6 @@ func Capabilities(v Version, service *features.Service, baseURL string, writeOps
 		sb.WriteString("  <fes:Filter_Capabilities>\n")
 		sb.WriteString("    <fes:Conformance><fes:Constraint name=\"ImplementsQuery\"><fes:DefaultValue>true</fes:DefaultValue></fes:Constraint></fes:Conformance>\n")
 		sb.WriteString("    <fes:Id_Capabilities><fes:ResourceIdentifier name=\"fes:ResourceId\"/></fes:Id_Capabilities>\n")
-		sb.WriteString("    <fes:Spatial_Capabilities><fes:GeometryOperands><fes:GeometryOperand name=\"gml:Point\"/><fes:GeometryOperand name=\"gml:LineString\"/><fes:GeometryOperand name=\"gml:Polygon\"/></fes:GeometryOperands><fes:SpatialOperators><fes:SpatialOperator name=\"BBOX\"/></fes:SpatialOperators></fes:Spatial_Capabilities>\n")
 		sb.WriteString("  </fes:Filter_Capabilities>\n")
 	}
 	if v == V110 {
@@ -108,7 +106,14 @@ func DescribeFeatureType(v Version, collectionID string, schema *FeatureSchemaVi
 	case "MultiPolygonPropertyType":
 		geometryType = "MultiSurfacePropertyType"
 	}
-	sb.WriteString(`      <xsd:element name="` + xmlEscape(schema.GeometryName) + `" type="gml:` + xmlEscape(geometryType) + `" minOccurs="0" maxOccurs="1"/>` + "\n")
+	geometryNillable := ""
+	geometryMinOccurs := "1"
+	if schema.GeometryNullable {
+		geometryNillable = ` nillable="true"`
+		geometryMinOccurs = "0"
+	}
+	sb.WriteString(`      <xsd:element name="` + xmlEscape(schema.GeometryName) + `" type="gml:` +
+		xmlEscape(geometryType) + `" minOccurs="` + geometryMinOccurs + `" maxOccurs="1"` + geometryNillable + `/>` + "\n")
 	props := append([]SchemaPropView(nil), schema.Properties...)
 	sort.Slice(props, func(i, j int) bool { return props[i].Name < props[j].Name })
 	for _, p := range props {
@@ -139,9 +144,10 @@ func DescribeFeatureType(v Version, collectionID string, schema *FeatureSchemaVi
 
 // FeatureSchemaView is the DescribeFeatureType input.
 type FeatureSchemaView struct {
-	Properties      []SchemaPropView
-	GeometryName    string
-	GeometryXSDType string
+	Properties       []SchemaPropView
+	GeometryName     string
+	GeometryXSDType  string
+	GeometryNullable bool
 }
 
 // SchemaPropView is one property for XSD generation.

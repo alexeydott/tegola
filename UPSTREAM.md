@@ -53,6 +53,20 @@ invalidation remain unavailable; write-enabled routers bypass tile caches and
 force no-store. Every reader replica must use the same cache policy for editable
 data. See [write scope and operational limits](docs/wfs-scope-limitations.md).
 
+The PR #2 follow-up tightens that profile's input/admission and protocol contracts:
+stock CLI production writes fail startup without an authentication adapter;
+create requires a generated key, nullability and date-time syntax are validated,
+MySQL service schema is prepared before write publication, and receipts preserve
+transaction correlation. WFS qualified names, negotiated versions and public
+mounted URLs match discovery. MOS read and write evidence is recorded separately
+per provider in the [write matrix](docs/provider-matrix.md); native spatial-column
+tests do not establish MOS or bounds-backed MapplGIS acceptance. An additional
+audit follow-up binds FES literals through Queryables, preserves representation
+selection for conditional writes, and carries safe WFS receipt headers. Its
+[seven-finding evidence mapping](docs/provider-matrix.md#attached-audit-follow-up)
+distinguishes native deadlock and injected acknowledgement tests from unperformed
+wire-level fault/restore acceptance.
+
 `webserver.tile_http_max_age` now configures browser/shared-cache freshness for
 successful ordinary GET/HEAD tile responses (default `0`, opt-in). The outer tile middleware
 applies the same policy after cache lookup/rendering and gzip handling, so cache

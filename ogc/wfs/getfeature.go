@@ -36,7 +36,7 @@ type GetFeatureRequest struct {
 	// StartIndex is the 0-based offset for paging (A28).
 	StartIndex uint
 	// Filter is an optional FES filter expression (A26).
-	Filter *provider.FilterExpression
+	Filter *FESFilter
 }
 
 // SortCriterion is one sortBy term.
@@ -57,7 +57,11 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 		if !ok {
 			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "storedQueryId", Text: fmt.Sprintf("unknown stored query %q", sqID)}}
 		}
-		return sq.ToGetFeature(q)
+		parsed, ex := sq.ToGetFeature(q)
+		if parsed != nil {
+			parsed.Version = v
+		}
+		return parsed, ex
 	}
 	req := &GetFeatureRequest{Version: v, MaxFeatures: 1000}
 	if q["srsname"] != "" {
@@ -72,14 +76,6 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 	if selectors > 1 {
 		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "filter", Text: "filter, bbox and feature IDs are mutually exclusive"}}
 	}
-	// A26: parse the FILTER parameter (FES 2.0 XML) if present.
-	if f := q["filter"]; f != "" {
-		flt, err := ParseFESFilter([]byte(f))
-		if err != nil {
-			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "filter", Text: err.Error()}}
-		}
-		req.Filter = &flt
-	}
 	typeName := q["typename"]
 	if typeName == "" {
 		typeName = q["typenames"]
@@ -91,7 +87,28 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 	if strings.Contains(typeName, ",") {
 		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "typeName", Text: "multiple type names not supported"}}
 	}
-	req.TypeName = strings.TrimSpace(typeName)
+	resolved, err := ResolveTypeNameKVP(typeName, q)
+	if err != nil {
+		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "typeName", Text: err.Error()}}
+	}
+	req.TypeName = resolved
+	bindings, err := propertyBindingsKVP(resolved, q)
+	if err != nil {
+		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "namespaces", Text: err.Error()}}
+	}
+	if f := q["filter"]; f != "" {
+		// XML QName values use explicit declarations; the convenient advertised
+		// app prefix fallback applies only to KVP QName values.
+		filterBindings, err := kvpNamespaces(q)
+		if err != nil {
+			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "namespaces", Text: err.Error()}}
+		}
+		flt, err := parseFESFilterContext([]byte(f), resolved, filterBindings)
+		if err != nil {
+			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "filter", Text: err.Error()}}
+		}
+		req.Filter = &flt
+	}
 	if mf := q["maxfeatures"]; mf == "" {
 		mf = q["count"]
 		if mf != "" {
@@ -140,8 +157,8 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 	}
 	if fids != "" {
 		for _, fid := range strings.Split(fids, ",") {
-			collection, id, err := feature.DecodeWFSFID(strings.TrimSpace(fid))
-			if err != nil || collection != req.TypeName {
+			id, err := resolveFeatureID(strings.TrimSpace(fid), req.TypeName, bindings)
+			if err != nil {
 				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "featureId", Text: fmt.Sprintf("invalid feature ID %q", fid)}}
 			}
 			req.FeatureIDs = append(req.FeatureIDs, id)
@@ -161,9 +178,9 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 			if p == "" {
 				continue
 			}
-			// Strip namespace prefix if present.
-			if i := strings.Index(p, ":"); i >= 0 {
-				p = p[i+1:]
+			p, err = resolvePropertyQName(p, req.TypeName, bindings)
+			if err != nil {
+				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "propertyName", Text: err.Error()}}
 			}
 			req.PropertyNames = append(req.PropertyNames, p)
 		}
@@ -179,9 +196,9 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 			if len(parts) > 2 {
 				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "sortBy", Text: "invalid sort criterion"}}
 			}
-			prop := parts[0]
-			if i := strings.Index(prop, ":"); i >= 0 {
-				prop = prop[i+1:]
+			prop, err := resolvePropertyQName(parts[0], req.TypeName, bindings)
+			if err != nil {
+				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "sortBy", Text: err.Error()}}
 			}
 			crit.Property = prop
 			if len(parts) > 1 {
@@ -234,7 +251,15 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 	}
 	// A26: apply the FES filter if present.
 	if req.Filter != nil {
-		fq.Filter = req.Filter
+		catalog, err := service.Queryables(req.TypeName)
+		if err != nil {
+			return "", []Exception{{Code: ExceptionOperationNotSupported, Locator: "filter", Text: "queryables unavailable"}}
+		}
+		filter, err := req.Filter.Resolve(catalog)
+		if err != nil {
+			return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "filter", Text: err.Error()}}
+		}
+		fq.Filter = &filter
 	}
 	schema, err := service.SchemaDescriptorFor(ctx, req.TypeName)
 	if err != nil {

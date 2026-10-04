@@ -253,7 +253,7 @@ func openAPISchemas() map[string]any {
 func addWritePaths(paths map[string]any, base, id string, ops []string) {
 	has := func(op string) bool {
 		for _, o := range ops {
-			if o == op {
+			if strings.EqualFold(o, op) {
 				return true
 			}
 		}

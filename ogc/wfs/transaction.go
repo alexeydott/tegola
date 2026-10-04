@@ -44,6 +44,11 @@ type wfsActionInner struct {
 // ParseTransaction parses a WFS Transaction. Returns actions, lockId,
 // releaseAction ("ALL" default), and error.
 func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, string, error) {
+	normalized, err := normalizeTransactionQNames(body)
+	if err != nil {
+		return nil, "", "ALL", err
+	}
+	body = normalized
 	var doc wfsTransaction
 	if err := decodeDocument(body, &doc); err != nil {
 		return nil, "", "ALL", fmt.Errorf("invalid Transaction XML: %w", err)
@@ -508,7 +513,7 @@ func TransactionResponse(v Version, results []TransactionResult) string {
 	if v == V110 {
 		sb.WriteString(`<wfs:TransactionResponse xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/wfs http://schemas.opengis.net/wfs/1.1.0/wfs.xsd">` + "\n")
 	} else {
-		sb.WriteString(`<wfs:TransactionResponse xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:fes="http://www.opengis.net/fes/2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/wfs/2.0 http://schemas.opengis.net/wfs/2.0/wfs.xsd" version="2.0.2">` + "\n")
+		sb.WriteString(`<wfs:TransactionResponse xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:fes="http://www.opengis.net/fes/2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/wfs/2.0 http://schemas.opengis.net/wfs/2.0/wfs.xsd" version="` + xmlEscape(string(v)) + `">` + "\n")
 	}
 	var ins, upd, del, rep int
 	for _, r := range results {
