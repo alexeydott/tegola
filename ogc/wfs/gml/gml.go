@@ -4,6 +4,7 @@
 package gml
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -156,8 +157,9 @@ type Feature struct {
 	// GeometryName is the geometry property element name.
 	GeometryName string
 	Geometry     geom.Geometry
-	// Properties maps property names to values.
-	Properties map[string]string
+	// Properties maps property names to typed values.
+	// A30: interface{} preserves types; encoder formats via formatGMLValue.
+	Properties map[string]interface{}
 	// SortKeys carries per-criterion sort values for post-query sorting;
 	// not serialized, cleared before encoding.
 	SortKeys []string
@@ -176,7 +178,7 @@ func (e *Encoder) EncodeFeature(f Feature) error {
 	}
 	for _, name := range sortedKeys(f.Properties) {
 		e.sb.WriteString("<" + name + ">")
-		e.sb.WriteString(xmlEscape(f.Properties[name]))
+		e.sb.WriteString(xmlEscape(formatGMLValue(f.Properties[name])))
 		e.sb.WriteString("</" + name + ">")
 	}
 	e.sb.WriteString("</" + f.TypeName + ">")
@@ -186,7 +188,7 @@ func (e *Encoder) EncodeFeature(f Feature) error {
 
 func (e *Encoder) String() string { return e.sb.String() }
 
-func sortedKeys(m map[string]string) []string {
+func sortedKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -222,4 +224,34 @@ func xmlEscape(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// formatGMLValue formats a typed property value for GML output.
+// A30: preserves types instead of fmt.Sprintf("%v").
+func formatGMLValue(v interface{}) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int32:
+		return strconv.FormatInt(int64(t), 10)
+	case float64:
+		return strconv.FormatFloat(t, 'g', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(t), 'g', -1, 32)
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case []byte:
+		return base64.StdEncoding.EncodeToString(t)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }

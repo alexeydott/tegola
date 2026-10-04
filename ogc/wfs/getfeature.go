@@ -257,7 +257,7 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 			ID:           fid,
 			TypeName:     req.TypeName,
 			GeometryName: "geometry",
-			Properties:   map[string]string{},
+			Properties:   map[string]interface{}{},
 		}
 		// A30: use typed geometry directly when available, bypassing
 		// the GeoJSON intermediate parse.
@@ -282,10 +282,11 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		}
 		for k, v := range props {
 			// A23: nil -> omit (not "<nil>" string).
+			// A30: keep typed value; GML encoder formats via formatGMLValue.
 			if v == nil {
 				continue
 			}
-			gf.Properties[k] = fmt.Sprintf("%v", v)
+			gf.Properties[k] = v
 		}
 		// Keep sort keys alongside for post-query sorting.
 		if len(req.SortBy) > 0 {
