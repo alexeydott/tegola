@@ -3,7 +3,6 @@ package postgis
 import (
 	"context"
 	"errors"
-	"net"
 	"net/url"
 	"os"
 	"reflect"
@@ -191,9 +190,12 @@ func TestFeatureReliabilityLiveRowTransferCancellation(t *testing.T) {
 		}
 	}()
 	u.Host = relay.Address
-	host, port, _ := net.SplitHostPort(relay.Address)
-	t.Setenv("PGHOST", host)
-	t.Setenv("PGPORT", port)
+	// Keep the complete fixture URI authoritative. Setting only PGHOST/PGPORT
+	// selects environment mode, which discards the URI credentials/database.
+	// Ambient connection variables must not redirect the owned relay either.
+	for _, key := range connModeEnvTriggers {
+		t.Setenv(key, "")
+	}
 	tiler, err := NewTileProvider(dict.Dict{"name": "phase10_row_transfer", "uri": u.String(), ConfigKeyPoolMaxConns: 1, "layers": []map[string]any{{"name": "items", "tablename": qualified, "id_fieldname": "id", "geometry_fieldname": "geom", "geometry_format": "wkt", "geometry_type": "point", "srid": 4326, "fields": []string{"name"}}}}, nil)
 	if err != nil {
 		t.Fatal("owned relay provider registration failed")
@@ -219,8 +221,20 @@ func TestFeatureReliabilityLiveRowTransferCancellation(t *testing.T) {
 	select {
 	case stage := <-relay.Stage:
 		stack := make([]byte, 128*1024)
-		n := runtime.Stack(stack, true)
-		if !strings.Contains(string(stack[:n]), "pgx/v5.(*baseRows).Next") {
+		// The relay sends Stage after its socket write, before the provider
+		// goroutine necessarily consumes those bytes. Wait for the driver to
+		// reach Rows.Next instead of sampling that independent goroutine once.
+		observedNext := false
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			n := runtime.Stack(stack, true)
+			if strings.Contains(string(stack[:n]), "pgx/v5.(*baseRows).Next") {
+				observedNext = true
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if !observedNext {
 			t.Fatal("partial transfer not observed inside Rows.Next")
 		}
 		t.Logf("actual Rows.Next partial payload bytes%d", stage.Bytes)
