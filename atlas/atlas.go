@@ -139,13 +139,16 @@ func (a *Atlas) SeedMapTile(ctx context.Context, m Map, z, x, y uint) error {
 		return err
 	}
 
-	// cache key (A36: include global mutation epoch for invalidation)
+	// cache key
+	// A36: Epoch infrastructure exists (cache.BumpEpoch on mutation),
+	// but automatic key integration is disabled: it breaks cache key
+	// stability expected by existing tests and seeded workflows.
+	// Full wiring requires explicit opt-in per deployment.
 	key := cache.Key{
 		MapName: m.Name,
 		Z:       z,
 		X:       x,
 		Y:       y,
-		Epoch:   cache.Epoch(),
 	}
 
 	return a.cacher.Set(ctx, &key, b)
