@@ -354,6 +354,10 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 // A05: Replace is UPDATE of the existing row, NOT DELETE+INSERT.
 // Deleting first would fire ON DELETE CASCADE, run DELETE triggers, and
 // discard server-managed values. UPDATE preserves row identity.
+// R10: PUT (Replace) semantics. Currently implements partial update:
+// only provided properties are changed. Full replacement (clearing
+// omitted nullable fields to NULL/DEFAULT) is not yet implemented.
+// System fields (PK, created_at) are never modified.
 func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
 	// R04: verify existence before REPLACE. RowsAffected==0 after
 	// a verified existence means no-op (identical values), not 404.
