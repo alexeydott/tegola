@@ -254,6 +254,9 @@ type Provider struct {
 	geometryFormat string
 	// detected server flavor ("mysql" or "mariadb"), used by the auto format
 	serverFlavor string
+	// writerMu guards cachedWriter.
+	writerMu sync.Mutex
+	cachedWriter *Writer
 }
 
 func (p *Provider) Layers() ([]provider.LayerInfo, error) {
