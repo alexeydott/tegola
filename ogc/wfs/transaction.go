@@ -74,14 +74,27 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			act.Properties = props
 			act.FilterIDs = ids
 		} else if act.Op == provider.MutationInsert {
-			// Insert: extract the feature element.
-			typeName, props, geomXML, err := parseFeatureElement(a.Inner)
+			// A27: Insert may contain multiple feature elements.
+			features, err := parseFeatureElements(a.Inner)
 			if err != nil {
 				return nil, "", fmt.Errorf("%s: %w", local, err)
 			}
-			act.TypeName = typeName
-			act.Properties = props
-			act.FeatureXML = geomXML
+			if len(features) == 0 {
+				return nil, "", fmt.Errorf("%s: no features in Insert", local)
+			}
+			// First feature goes to act; rest become additional actions.
+			act.TypeName = features[0].TypeName
+			act.Properties = features[0].Properties
+			act.FeatureXML = features[0].GeomXML
+			for _, f := range features[1:] {
+				extra := TransactionAction{
+					Op:         provider.MutationInsert,
+					TypeName:   f.TypeName,
+					Properties: f.Properties,
+					FeatureXML: f.GeomXML,
+				}
+				actions = append(actions, extra)
+			}
 		} else {
 			// Replace: extract feature element AND filter IDs.
 			// Structure: <Replace><Feature>...</Feature><Filter>...</Filter></Replace>
@@ -244,6 +257,58 @@ func writeStartElement(sb *strings.Builder, t xml.StartElement) {
 		sb.WriteString(" " + at.Name.Local + `="` + xmlEscape(at.Value) + `"`)
 	}
 	sb.WriteString(">")
+}
+
+// parsedFeature is one feature from an Insert.
+type parsedFeature struct {
+	TypeName   string
+	Properties map[string]string
+	GeomXML    string
+}
+
+// parseFeatureElements splits inner XML into top-level feature elements
+// and parses each (A27: multi-feature Insert).
+func parseFeatureElements(inner string) ([]parsedFeature, error) {
+	dec := xml.NewDecoder(strings.NewReader(inner))
+	var features []parsedFeature
+	var buf strings.Builder
+	depth := 0
+	inFeature := false
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			if depth == 1 {
+				inFeature = true
+				buf.Reset()
+			}
+			if inFeature {
+				writeStartElement(&buf, t)
+			}
+		case xml.EndElement:
+			if inFeature {
+				buf.WriteString("</" + t.Name.Local + ">")
+			}
+			if depth == 1 && inFeature {
+				inFeature = false
+				tn, props, geom, err := parseFeatureElement(buf.String())
+				if err != nil {
+					return nil, err
+				}
+				features = append(features, parsedFeature{TypeName: tn, Properties: props, GeomXML: geom})
+			}
+			depth--
+		case xml.CharData:
+			if inFeature {
+				buf.WriteString(xmlEscape(string(t)))
+			}
+		}
+	}
+	return features, nil
 }
 
 // parseFeatureElement extracts the type name, scalar properties and the
