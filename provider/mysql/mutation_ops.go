@@ -454,6 +454,10 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	if n == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
 	}
+	// A38: increment entity incarnation on DELETE (tombstone).
+	if ierr := pa.BumpIncarnationOnDelete(ctx, t.tx, m.Collection, m.FeatureID, "mysql"); ierr != nil {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("incarnation bump: %v", ierr)}
+	}
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(n)}, nil
 }
 

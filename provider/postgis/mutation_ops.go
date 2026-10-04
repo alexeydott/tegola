@@ -371,6 +371,13 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		}
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
+	// A38: increment entity incarnation on DELETE (tombstone).
+	if _, ierr := t.tx.Exec(ctx,
+		`INSERT INTO tegola_revisions (collection, feature_id, revision, incarnation) VALUES ($1, $2, 0, 1)
+		 ON CONFLICT (collection, feature_id) DO UPDATE SET incarnation = tegola_revisions.incarnation + 1, revision = 0`,
+		m.Collection, m.FeatureID); ierr != nil {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("incarnation bump: %v", ierr)}
+	}
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 

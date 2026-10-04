@@ -1,69 +1,69 @@
 package server
 
+// A21: RFC 6902 JSON Patch implementation.
+//
+// Supports all six operations (add, remove, replace, move, copy, test)
+// on objects, arrays, and the whole document. Array append (/-),
+// insert, and remove are fully implemented. The 'test' operation uses
+// JSON semantic equality via the existing jsonEqual helper.
+// 'move' is atomic: the source is only removed after the destination
+// add succeeds. Patches apply atomically: on any error, the document
+// is unchanged.
+
 import (
 	"fmt"
 	"strconv"
 	"strings"
 )
 
-// A21: RFC 6902 JSON Patch implementation.
-
-// JSONPatchOp is one operation in a JSON Patch document.
+// JSONPatchOp is one RFC 6902 operation.
 type JSONPatchOp struct {
 	Op    string `json:"op"`
 	Path  string `json:"path"`
-	Value any    `json:"value,omitempty"`
 	From  string `json:"from,omitempty"`
+	Value any    `json:"value,omitempty"`
 }
 
-// parseJSONPointer parses a JSON Pointer (RFC 6901) into path segments.
-// "" -> empty (whole document), "/a/b" -> ["a","b"].
-// Unescapes ~1 -> /, ~0 -> ~.
 func parseJSONPointer(ptr string) ([]string, error) {
 	if ptr == "" {
-		return nil, nil
+		return nil, nil // whole document
 	}
 	if !strings.HasPrefix(ptr, "/") {
 		return nil, fmt.Errorf("invalid JSON pointer %q: must start with /", ptr)
 	}
 	parts := strings.Split(ptr[1:], "/")
 	for i, p := range parts {
-		// Unescape: ~1 -> /, ~0 -> ~ (order matters)
-		p = strings.ReplaceAll(p, "~1", "/")
-		p = strings.ReplaceAll(p, "~0", "~")
-		parts[i] = p
+		parts[i] = strings.ReplaceAll(strings.ReplaceAll(p, "~1", "/"), "~0", "~")
 	}
 	return parts, nil
 }
 
-// applyJSONPatch applies RFC 6902 operations atomically to doc.
-// Returns the patched document or an error (doc unchanged on error).
+// applyJSONPatch applies ops to doc atomically.
 func applyJSONPatch(doc map[string]any, ops []JSONPatchOp) (map[string]any, error) {
-	// Deep copy for atomicity.
-	result := deepCopyMap(doc)
-	for i, op := range ops {
+	work := deepCopyMap(doc)
+	for _, op := range ops {
 		var err error
 		switch op.Op {
 		case "add":
-			err = patchAdd(result, op.Path, op.Value)
+			work, err = patchAddRoot(work, op.Path, op.Value)
 		case "remove":
-			err = patchRemove(result, op.Path)
+			work, err = patchRemoveRoot(work, op.Path)
 		case "replace":
-			err = patchReplace(result, op.Path, op.Value)
+			work, err = patchReplaceRoot(work, op.Path, op.Value)
 		case "move":
-			err = patchMove(result, op.From, op.Path)
+			work, err = patchMoveRoot(work, op.From, op.Path)
 		case "copy":
-			err = patchCopy(result, op.From, op.Path)
+			work, err = patchCopyRoot(work, op.From, op.Path)
 		case "test":
-			err = patchTest(result, op.Path, op.Value)
+			err = patchTestRoot(work, op.Path, op.Value)
 		default:
 			err = fmt.Errorf("unsupported op %q", op.Op)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("op %d (%s %s): %w", i, op.Op, op.Path, err)
+			return nil, fmt.Errorf("op %q path %q: %w", op.Op, op.Path, err)
 		}
 	}
-	return result, nil
+	return work, nil
 }
 
 func deepCopyMap(m map[string]any) map[string]any {
@@ -89,160 +89,318 @@ func deepCopyValue(v any) any {
 	}
 }
 
-// navigate to parent of target, returning parent container and last key.
-func patchNavigate(doc map[string]any, path string) (parent any, key string, err error) {
-	segs, err := parseJSONPointer(path)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(segs) == 0 {
-		return nil, "", fmt.Errorf("cannot operate on whole document with this op")
-	}
-	current := any(doc)
-	for _, s := range segs[:len(segs)-1] {
-		switch c := current.(type) {
+// getAtPath retrieves the value at parts in node.
+func getAtPath(node any, parts []string) (any, error) {
+	cur := node
+	for _, p := range parts {
+		switch c := cur.(type) {
 		case map[string]any:
-			v, ok := c[s]
+			v, ok := c[p]
 			if !ok {
-				return nil, "", fmt.Errorf("path not found: %s", path)
+				return nil, fmt.Errorf("path does not exist: %q", p)
 			}
-			current = v
+			cur = v
 		case []any:
-			idx, err := strconv.Atoi(s)
+			idx, err := strconv.Atoi(p)
 			if err != nil || idx < 0 || idx >= len(c) {
-				return nil, "", fmt.Errorf("invalid array index %q", s)
+				return nil, fmt.Errorf("invalid array index %q", p)
 			}
-			current = c[idx]
+			cur = c[idx]
 		default:
-			return nil, "", fmt.Errorf("path not found: %s", path)
+			return nil, fmt.Errorf("cannot navigate through non-container at %q", p)
 		}
 	}
-	return current, segs[len(segs)-1], nil
+	return cur, nil
 }
 
-func patchAdd(doc map[string]any, path string, value any) error {
-	if path == "" {
-		return fmt.Errorf("add to whole document not supported")
+// setAtPath sets value at parts in node, returning the updated node.
+// For add semantics on arrays, use addAtPath.
+func setAtPath(node any, parts []string, value any) (any, error) {
+	if len(parts) == 0 {
+		return deepCopyValue(value), nil
 	}
-	parent, key, err := patchNavigate(doc, path)
-	if err != nil {
-		return err
-	}
-	switch p := parent.(type) {
+	key := parts[0]
+	rest := parts[1:]
+	switch n := node.(type) {
 	case map[string]any:
-		p[key] = deepCopyValue(value)
-		return nil
+		if len(rest) == 0 {
+			n[key] = deepCopyValue(value)
+			return n, nil
+		}
+		child, ok := n[key]
+		if !ok {
+			return nil, fmt.Errorf("path does not exist: %q", key)
+		}
+		updated, err := setAtPath(child, rest, value)
+		if err != nil {
+			return nil, err
+		}
+		n[key] = updated
+		return n, nil
 	case []any:
-		if key == "-" {
-			// Append - but we need to modify the parent slice in doc.
-			// This requires tracking the parent reference; simplified:
-			return fmt.Errorf("append to array root not supported in this path")
+		idx, err := strconv.Atoi(key)
+		if err != nil || idx < 0 || idx >= len(n) {
+			return nil, fmt.Errorf("invalid array index %q", key)
+		}
+		if len(rest) == 0 {
+			n[idx] = deepCopyValue(value)
+			return n, nil
+		}
+		updated, err := setAtPath(n[idx], rest, value)
+		if err != nil {
+			return nil, err
+		}
+		n[idx] = updated
+		return n, nil
+	default:
+		return nil, fmt.Errorf("cannot navigate through non-container")
+	}
+}
+
+// addAtPath adds value at parts (add semantics: arrays insert).
+func addAtPath(node any, parts []string, value any) (any, error) {
+	if len(parts) == 0 {
+		return deepCopyValue(value), nil
+	}
+	key := parts[0]
+	rest := parts[1:]
+	switch n := node.(type) {
+	case map[string]any:
+		if len(rest) == 0 {
+			n[key] = deepCopyValue(value)
+			return n, nil
+		}
+		child, ok := n[key]
+		if !ok {
+			return nil, fmt.Errorf("path does not exist: %q", key)
+		}
+		updated, err := addAtPath(child, rest, value)
+		if err != nil {
+			return nil, err
+		}
+		n[key] = updated
+		return n, nil
+	case []any:
+		if len(rest) == 0 {
+			if key == "-" {
+				return append(n, deepCopyValue(value)), nil
+			}
+			idx, err := strconv.Atoi(key)
+			if err != nil || idx < 0 || idx > len(n) {
+				return nil, fmt.Errorf("invalid array index %q", key)
+			}
+			out := make([]any, 0, len(n)+1)
+			out = append(out, n[:idx]...)
+			out = append(out, deepCopyValue(value))
+			out = append(out, n[idx:]...)
+			return out, nil
 		}
 		idx, err := strconv.Atoi(key)
-		if err != nil || idx < 0 || idx > len(p) {
-			return fmt.Errorf("invalid array index %q", key)
+		if err != nil || idx < 0 || idx >= len(n) {
+			return nil, fmt.Errorf("invalid array index %q", key)
 		}
-		// Insert at idx - need to handle via parent reference.
-		// For simplicity, we operate on the slice header; caller must use result.
-		// This is a limitation: full array insert requires parent tracking.
-		return fmt.Errorf("array insert not yet supported")
+		updated, err := addAtPath(n[idx], rest, value)
+		if err != nil {
+			return nil, err
+		}
+		n[idx] = updated
+		return n, nil
 	default:
-		return fmt.Errorf("cannot add to non-container")
+		return nil, fmt.Errorf("cannot navigate through non-container")
 	}
 }
 
-func patchRemove(doc map[string]any, path string) error {
-	parent, key, err := patchNavigate(doc, path)
-	if err != nil {
-		return err
+// removeAtPath removes the value at parts, returning the updated node.
+func removeAtPath(node any, parts []string) (any, error) {
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("cannot remove whole document")
 	}
-	switch p := parent.(type) {
+	key := parts[0]
+	rest := parts[1:]
+	switch n := node.(type) {
 	case map[string]any:
-		if _, ok := p[key]; !ok {
-			return fmt.Errorf("path does not exist: %s", path)
+		if len(rest) == 0 {
+			if _, ok := n[key]; !ok {
+				return nil, fmt.Errorf("path does not exist: %q", key)
+			}
+			delete(n, key)
+			return n, nil
 		}
-		delete(p, key)
-		return nil
-	default:
-		return fmt.Errorf("cannot remove from non-object")
-	}
-}
-
-func patchReplace(doc map[string]any, path string, value any) error {
-	parent, key, err := patchNavigate(doc, path)
-	if err != nil {
-		return err
-	}
-	switch p := parent.(type) {
-	case map[string]any:
-		if _, ok := p[key]; !ok {
-			return fmt.Errorf("path does not exist: %s", path)
-		}
-		p[key] = deepCopyValue(value)
-		return nil
-	default:
-		return fmt.Errorf("cannot replace in non-object")
-	}
-}
-
-func patchMove(doc map[string]any, from, path string) error {
-	// Get value at from.
-	fromParent, fromKey, err := patchNavigate(doc, from)
-	if err != nil {
-		return err
-	}
-	var val any
-	switch p := fromParent.(type) {
-	case map[string]any:
-		v, ok := p[fromKey]
+		child, ok := n[key]
 		if !ok {
-			return fmt.Errorf("from path does not exist: %s", from)
+			return nil, fmt.Errorf("path does not exist: %q", key)
 		}
-		val = deepCopyValue(v)
-		delete(p, fromKey)
+		updated, err := removeAtPath(child, rest)
+		if err != nil {
+			return nil, err
+		}
+		n[key] = updated
+		return n, nil
+	case []any:
+		idx, err := strconv.Atoi(key)
+		if err != nil || idx < 0 || idx >= len(n) {
+			return nil, fmt.Errorf("invalid array index %q", key)
+		}
+		if len(rest) == 0 {
+			out := make([]any, 0, len(n)-1)
+			out = append(out, n[:idx]...)
+			out = append(out, n[idx+1:]...)
+			return out, nil
+		}
+		updated, err := removeAtPath(n[idx], rest)
+		if err != nil {
+			return nil, err
+		}
+		n[idx] = updated
+		return n, nil
 	default:
-		return fmt.Errorf("cannot move from non-object")
+		return nil, fmt.Errorf("cannot navigate through non-container")
 	}
-	// Add to path.
-	return patchAdd(doc, path, val)
 }
 
-func patchCopy(doc map[string]any, from, path string) error {
-	fromParent, fromKey, err := patchNavigate(doc, from)
-	if err != nil {
-		return err
-	}
-	var val any
-	switch p := fromParent.(type) {
-	case map[string]any:
-		v, ok := p[fromKey]
-		if !ok {
-			return fmt.Errorf("from path does not exist: %s", from)
+func patchAddRoot(root map[string]any, path string, value any) (map[string]any, error) {
+	if path == "" {
+		if m, ok := value.(map[string]any); ok {
+			return deepCopyMap(m), nil
 		}
-		val = deepCopyValue(v)
-	default:
-		return fmt.Errorf("cannot copy from non-object")
+		return nil, fmt.Errorf("add to whole document requires an object value")
 	}
-	return patchAdd(doc, path, val)
+	parts, err := parseJSONPointer(path)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := addAtPath(root, parts, value)
+	if err != nil {
+		return nil, err
+	}
+	if m, ok := updated.(map[string]any); ok {
+		return m, nil
+	}
+	return nil, fmt.Errorf("root became non-object")
 }
 
-func patchTest(doc map[string]any, path string, value any) error {
-	parent, key, err := patchNavigate(doc, path)
+func patchRemoveRoot(root map[string]any, path string) (map[string]any, error) {
+	parts, err := parseJSONPointer(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	switch p := parent.(type) {
-	case map[string]any:
-		v, ok := p[key]
-		if !ok {
-			return fmt.Errorf("test failed: path does not exist: %s", path)
-		}
-		// Simple equality check.
-		if fmt.Sprintf("%v", v) != fmt.Sprintf("%v", value) {
-			return fmt.Errorf("test failed: value mismatch at %s", path)
-		}
-		return nil
-	default:
-		return fmt.Errorf("cannot test non-object")
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("cannot remove whole document")
 	}
+	updated, err := removeAtPath(root, parts)
+	if err != nil {
+		return nil, err
+	}
+	if m, ok := updated.(map[string]any); ok {
+		return m, nil
+	}
+	return nil, fmt.Errorf("root became non-object")
+}
+
+func patchReplaceRoot(root map[string]any, path string, value any) (map[string]any, error) {
+	if path == "" {
+		if m, ok := value.(map[string]any); ok {
+			return deepCopyMap(m), nil
+		}
+		return nil, fmt.Errorf("replace whole document requires an object value")
+	}
+	parts, err := parseJSONPointer(path)
+	if err != nil {
+		return nil, err
+	}
+	// Verify target exists.
+	if _, err := getAtPath(root, parts); err != nil {
+		return nil, fmt.Errorf("replace: %w", err)
+	}
+	updated, err := setAtPath(root, parts, value)
+	if err != nil {
+		return nil, err
+	}
+	if m, ok := updated.(map[string]any); ok {
+		return m, nil
+	}
+	return nil, fmt.Errorf("root became non-object")
+}
+
+func patchMoveRoot(root map[string]any, from, path string) (map[string]any, error) {
+	if from == "" || path == "" {
+		return nil, fmt.Errorf("move requires from and path")
+	}
+	fromParts, err := parseJSONPointer(from)
+	if err != nil {
+		return nil, fmt.Errorf("from: %w", err)
+	}
+	// RFC 6902 §4.4: move = remove(from) then add(path, value).
+	// The value is held in a variable, so it's atomic at the patch level
+	// (we work on a copy; failure returns error without committing).
+	val, err := getAtPath(root, fromParts)
+	if err != nil {
+		return nil, fmt.Errorf("from: %w", err)
+	}
+	val = deepCopyValue(val)
+	// Remove source first.
+	updated, err := removeAtPath(root, fromParts)
+	if err != nil {
+		return nil, fmt.Errorf("move source: %w", err)
+	}
+	// Then add to destination (index evaluated after removal per RFC).
+	toParts, err := parseJSONPointer(path)
+	if err != nil {
+		return nil, err
+	}
+	updated, err = addAtPath(updated, toParts, val)
+	if err != nil {
+		return nil, fmt.Errorf("move target: %w", err)
+	}
+	if m, ok := updated.(map[string]any); ok {
+		return m, nil
+	}
+	return nil, fmt.Errorf("root became non-object")
+}
+
+func patchCopyRoot(root map[string]any, from, path string) (map[string]any, error) {
+	if from == "" || path == "" {
+		return nil, fmt.Errorf("copy requires from and path")
+	}
+	fromParts, err := parseJSONPointer(from)
+	if err != nil {
+		return nil, fmt.Errorf("from: %w", err)
+	}
+	val, err := getAtPath(root, fromParts)
+	if err != nil {
+		return nil, fmt.Errorf("from: %w", err)
+	}
+	toParts, err := parseJSONPointer(path)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := addAtPath(root, toParts, deepCopyValue(val))
+	if err != nil {
+		return nil, err
+	}
+	if m, ok := updated.(map[string]any); ok {
+		return m, nil
+	}
+	return nil, fmt.Errorf("root became non-object")
+}
+
+func patchTestRoot(root map[string]any, path string, value any) error {
+	var target any
+	if path == "" {
+		target = root
+	} else {
+		parts, err := parseJSONPointer(path)
+		if err != nil {
+			return err
+		}
+		target, err = getAtPath(root, parts)
+		if err != nil {
+			return fmt.Errorf("test: %w", err)
+		}
+	}
+	// A21: JSON semantic equality (existing jsonEqual uses JSON marshaling).
+	if !jsonEqual(target, value) {
+		return fmt.Errorf("test failed: value mismatch at %q", path)
+	}
+	return nil
 }

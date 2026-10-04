@@ -160,6 +160,50 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 	return RevisionBump{Old: oldRev, New: newRev, OldInc: oldInc, NewInc: newInc}, nil
 }
 
+// BumpIncarnationOnDelete increments the entity incarnation on DELETE.
+// A38: this is the tombstone — a subsequent INSERT (recreate) will see
+// the incremented incarnation and know it's a new entity generation.
+// The revision row is kept (not deleted) to preserve the incarnation.
+func BumpIncarnationOnDelete(ctx context.Context, tx *sql.Tx, collection string, featureID uint64, dialect string) error {
+	var curInc int64
+	q := `SELECT incarnation FROM tegola_revisions WHERE collection = ? AND feature_id = ?`
+	if dialect == "mysql" {
+		q += ` FOR UPDATE`
+	}
+	err := tx.QueryRowContext(ctx, q, collection, featureID).Scan(&curInc)
+	if err == sql.ErrNoRows {
+		// No revision row: create one with incarnation=1 (deleted once).
+		if dialect == "mysql" {
+			_, err = tx.ExecContext(ctx,
+				`INSERT INTO tegola_revisions (collection, feature_id, revision, incarnation) VALUES (?, ?, 0, 1)
+				 ON DUPLICATE KEY UPDATE incarnation = incarnation + 1`, collection, featureID)
+		} else {
+			_, err = tx.ExecContext(ctx,
+				`INSERT INTO tegola_revisions (collection, feature_id, revision, incarnation) VALUES (?, ?, 0, 1)
+				 ON CONFLICT(collection, feature_id) DO UPDATE SET incarnation = tegola_revisions.incarnation + 1`,
+				collection, featureID)
+		}
+		return err
+	}
+	if err != nil {
+		if IsMissingTable(err) {
+			return nil // no revision tracking; skip
+		}
+		return err
+	}
+	// Increment incarnation.
+	if dialect == "mysql" {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE tegola_revisions SET incarnation = incarnation + 1, revision = 0 WHERE collection = ? AND feature_id = ?`,
+			collection, featureID)
+	} else {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE tegola_revisions SET incarnation = incarnation + 1, revision = 0 WHERE collection = ? AND feature_id = ?`,
+			collection, featureID)
+	}
+	return err
+}
+
 // isMissingTable reports whether err is a "no such table" error.
 // IsMissingTable reports whether err indicates a missing revisions table.
 func IsMissingTable(err error) bool {
