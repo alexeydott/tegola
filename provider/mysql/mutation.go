@@ -30,6 +30,36 @@ func (p *Provider) BeginFeatureTx(ctx context.Context, options provider.TxOption
 	return p.MutationWriter().BeginFeatureTx(ctx, options)
 }
 
+// DescribeSchema implements provider.SchemaProvider via the writer.
+func (p *Provider) DescribeSchema(ctx context.Context, layer string) (provider.SchemaDescriptor, error) {
+	w, ok := p.MutationWriter().(*Writer)
+	if !ok {
+		return provider.SchemaDescriptor{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "schema not available"}
+	}
+	return w.DescribeSchema(ctx, layer)
+}
+
+func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.SchemaDescriptor, error) {
+	m, err := w.mapping(ctx, layer)
+	if err != nil {
+		return provider.SchemaDescriptor{}, err
+	}
+	sd := provider.SchemaDescriptor{
+		Layer:    layer,
+		Table:    m.table,
+		IDColumn: m.idColumn,
+		Geometry: provider.GeometryColumnDescriptor{
+			Name: m.geomColumn,
+			Type: m.geomType,
+			SRID: m.geomSRID,
+		},
+	}
+	for _, col := range m.columns {
+		sd.Columns = append(sd.Columns, col)
+	}
+	return sd, nil
+}
+
 func (p *Provider) writer() *Writer {
 	p.writerMu.Lock()
 	defer p.writerMu.Unlock()

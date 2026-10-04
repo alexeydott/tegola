@@ -11,6 +11,7 @@ import (
 	"github.com/alexeydott/geom/encoding/wkb"
 	"github.com/alexeydott/geom/encoding/wkt"
 	"github.com/alexeydott/proj"
+	"github.com/alexeydott/tegola/basic"
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
 )
@@ -130,7 +131,34 @@ func transformGeometry(g geom.Geometry, from, to uint64) (geom.Geometry, error) 
 	if (from == 4326 && to == 3857) || (from == 3857 && to == 4326) {
 		return transform4326_3857(g, from == 4326)
 	}
+	// Custom proj4 CRS (e.g. etmerc) registered under a synthetic SRID:
+	// use the vendored proj engine directly.
+	if from == 4326 && basic.IsSyntheticSRID(to) {
+		return transformViaProj(g, proj.EPSGCode(to), true)
+	}
+	if to == 4326 && basic.IsSyntheticSRID(from) {
+		return transformViaProj(g, proj.EPSGCode(from), false)
+	}
 	return nil, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("CRS transform %d -> %d not supported", from, to)}
+}
+
+// transformViaProj converts between 4326 and a custom proj4 CRS registered
+// under a synthetic SRID. forward=true: 4326 -> custom; false: custom -> 4326.
+func transformViaProj(g geom.Geometry, code proj.EPSGCode, forward bool) (geom.Geometry, error) {
+	xform := func(x, y float64) ([2]float64, error) {
+		var out []float64
+		var err error
+		if forward {
+			out, err = proj.Convert(code, []float64{x, y})
+		} else {
+			out, err = proj.Inverse(code, []float64{x, y})
+		}
+		if err != nil {
+			return [2]float64{}, err
+		}
+		return [2]float64{out[0], out[1]}, nil
+	}
+	return mapGeometryPoints(g, xform)
 }
 
 func transform4326_3857(g geom.Geometry, forward bool) (geom.Geometry, error) {
@@ -380,4 +408,76 @@ func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mut
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
 	}
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(n)}, nil
+}
+
+// mapGeometryPoints applies xform to every vertex of g, preserving structure.
+func mapGeometryPoints(g geom.Geometry, xform func(x, y float64) ([2]float64, error)) (geom.Geometry, error) {
+	mapPts := func(pts [][2]float64) ([][2]float64, error) {
+		out := make([][2]float64, len(pts))
+		for i, p := range pts {
+			q, err := xform(p[0], p[1])
+			if err != nil {
+				return nil, err
+			}
+			out[i] = q
+		}
+		return out, nil
+	}
+	switch t := g.(type) {
+	case geom.Point:
+		q, err := xform(t[0], t[1])
+		if err != nil {
+			return nil, err
+		}
+		return geom.Point(q), nil
+	case geom.MultiPoint:
+		pts, err := mapPts([][2]float64(t))
+		if err != nil {
+			return nil, err
+		}
+		return geom.MultiPoint(pts), nil
+	case geom.LineString:
+		pts, err := mapPts([][2]float64(t))
+		if err != nil {
+			return nil, err
+		}
+		return geom.LineString(pts), nil
+	case geom.MultiLineString:
+		out := make(geom.MultiLineString, len(t))
+		for i, ls := range t {
+			pts, err := mapPts(ls)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = pts
+		}
+		return out, nil
+	case geom.Polygon:
+		rings := t.LinearRings()
+		out := make(geom.Polygon, len(rings))
+		for i, lr := range rings {
+			pts, err := mapPts(lr)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = pts
+		}
+		return out, nil
+	case geom.MultiPolygon:
+		out := make(geom.MultiPolygon, len(t))
+		for i, poly := range t {
+			rings := geom.Polygon(poly).LinearRings()
+			p2 := make(geom.Polygon, len(rings))
+			for j, lr := range rings {
+				pts, err := mapPts(lr)
+				if err != nil {
+					return nil, err
+				}
+				p2[j] = pts
+			}
+			out[i] = p2
+		}
+		return out, nil
+	}
+	return nil, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("cannot reproject %T", g)}
 }
