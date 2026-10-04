@@ -129,13 +129,8 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
 	}
-	// W13: ensure audit tables (idempotent)
-	for _, stmt := range splitStmts(pa.PostgresDDL) {
-		if _, err := tx.Exec(ctx, stmt); err != nil {
-			_ = tx.Rollback(ctx)
-			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("audit setup: %v", err)}
-		}
-	}
+	// A01: No DDL in data transaction. Audit tables must be created via
+	// migration before write traffic (see provider/audit/sql.go).
 	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID}, nil
 }
 

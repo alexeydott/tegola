@@ -98,6 +98,11 @@ func toCoord(v interface{}) ([2]float64, error) {
 	if !ok || len(arr) < 2 {
 		return [2]float64{}, fmt.Errorf("invalid coordinate")
 	}
+	// A19: Reject XYZ on XY-only profile instead of silently truncating Z.
+	// XY-only is the current supported profile; XYZ requires explicit support.
+	if len(arr) > 2 {
+		return [2]float64{}, fmt.Errorf("3D coordinates not supported: got %d ordinates, expected 2 (XY-only profile)", len(arr))
+	}
 	x, err := toFloat(arr[0])
 	if err != nil {
 		return [2]float64{}, err

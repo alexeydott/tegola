@@ -389,10 +389,12 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
-		sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
+		// A14: Native geometry expression must be inlined as SQL, not bound
+		// as a string parameter. encStr is like ST_GeomFromText('...',4326).
 		if encStr != "" {
-			args = append(args, encStr)
+			sets = append(sets, quoteIdent(mp.geomColumn)+" = "+encStr)
 		} else {
+			sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
 			args = append(args, enc)
 		}
 	}
@@ -406,9 +408,9 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 		return provider.MutationOutcome{}, mapSQLError(err)
 	}
 	n, _ := res.RowsAffected()
-	if n == 0 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
-	}
+	// A15: RowsAffected()==0 is ambiguous (no-op vs not-found).
+	// With default flags, identical-value UPDATE yields 0. Do not return 404.
+	_ = n
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(n)}, nil
 }
 

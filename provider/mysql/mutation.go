@@ -9,7 +9,6 @@ import (
 
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
-	pa "github.com/alexeydott/tegola/provider/audit"
 )
 
 // Writer implements provider.MutationProvider for MySQL/MariaDB.
@@ -129,13 +128,9 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
 	}
-	// W13: ensure audit tables (idempotent)
-	for _, stmt := range splitStmts(pa.MySQLDDL) {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			_ = tx.Rollback()
-			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("audit setup: %v", err)}
-		}
-	}
+	// A01: No DDL in data transaction. Audit tables must be created via
+	// migration before write traffic (see provider/audit/sql.go).
+	// DDL causes implicit COMMIT in MySQL, breaking atomicity.
 	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID}, nil
 }
 

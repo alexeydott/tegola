@@ -331,6 +331,10 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature ID")
 		return
 	}
+	// A09: enforce WFS locks on PUT (was missing)
+	if !api.checkWFSLock(w, r, collection, featureID) {
+		return
+	}
 	if ct := r.Header.Get("Content-Type"); !isGeoJSONContentType(ct) {
 		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/geo+json")
 		return
