@@ -250,7 +250,11 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 			GeometryName: "geometry",
 			Properties:   map[string]string{},
 		}
-		if len(f.Geometry) > 0 && string(f.Geometry) != "null" {
+		// A30: use typed geometry directly when available, bypassing
+		// the GeoJSON intermediate parse.
+		if f.GeometryTyped != nil {
+			gf.Geometry = f.GeometryTyped
+		} else if len(f.Geometry) > 0 && string(f.Geometry) != "null" {
 			g, err := parseServiceGeometry(f.Geometry)
 			if err != nil {
 				return err
