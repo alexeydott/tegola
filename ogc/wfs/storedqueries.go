@@ -105,11 +105,18 @@ func init() {
 				return nil, []Exception{{Code: ExceptionMissingParameterValue, Locator: "id", Text: "id is required"}}
 			}
 
-			typeName = strings.TrimSpace(typeName)
+			typeName, err := ResolveTypeNameKVP(typeName, params)
+			if err != nil {
+				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "typeName", Text: err.Error()}}
+			}
+			bindings, err := propertyBindingsKVP(typeName, params)
+			if err != nil {
+				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "namespaces", Text: err.Error()}}
+			}
 			var fid uint64
 			if strings.Contains(id, ".") {
-				collection, parsed, err := parseFeatureID(id)
-				if err != nil || collection != typeName {
+				parsed, err := resolveFeatureID(id, typeName, bindings)
+				if err != nil {
 					return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "id", Text: "ID does not identify this collection"}}
 				}
 				fid = parsed

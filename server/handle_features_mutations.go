@@ -822,11 +822,9 @@ func (api *FeatureAPI) serveCollectionSchema(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	// Geometry: GeoJSON geometry object or null (root Feature member).
-	geomSchema := map[string]any{
-		"oneOf": []any{
-			map[string]any{"type": "object"},
-			map[string]any{"type": "null"},
-		},
+	geomSchema := map[string]any{"type": "object"}
+	if sd.Geometry.Nullable {
+		geomSchema["type"] = []string{"object", "null"}
 	}
 	propsSchema := map[string]any{"type": "object", "properties": props}
 	if len(required) > 0 {

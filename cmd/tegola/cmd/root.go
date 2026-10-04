@@ -97,6 +97,14 @@ func initConfigRuntime(configFile string, cacheRequired bool, logLevel string) (
 		return nil, err
 	}
 
+	// The stock CLI has no authenticator configuration. Embedded servers may
+	// supply server.Authenticator, but publishing unusable production write
+	// endpoints here would make successful startup misleading.
+	write := conf.Features.Resolved().Write
+	if write.Enabled && write.IsProductionAuth() {
+		return nil, fmt.Errorf("features.write: stock executable has no production authenticator; use an embedded server with a configured Authenticator or explicit auth_mode=\"dev\" only on a trusted development network")
+	}
+
 	// init our providers
 	// but first convert []env.Map -> []dict.Dicter
 	provArr := make([]dict.Dicter, len(conf.Providers))

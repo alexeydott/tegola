@@ -139,9 +139,10 @@ func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.Sch
 		Table:    m.table,
 		IDColumn: m.idColumn,
 		Geometry: provider.GeometryColumnDescriptor{
-			Name: m.geomColumn,
-			Type: m.geomType,
-			SRID: m.geomSRID,
+			Name:     m.geomColumn,
+			Type:     m.geomType,
+			SRID:     m.geomSRID,
+			Nullable: m.columns[m.geomColumn].Nullable,
 		},
 	}
 	for _, col := range m.columns {

@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -21,33 +20,27 @@ import (
 // A03: checkRevisionCAS verifies IfRevision against the current revision
 // inside the transaction. Uses SELECT FOR UPDATE to lock the revision row.
 func checkRevisionCAS(ctx context.Context, tx *sql.Tx, collection string, featureID uint64, ifRevision string) error {
+	// Materializing zero also serializes two first edits of an existing feature.
+	_, err := tx.ExecContext(ctx, `INSERT INTO tegola_revisions(collection,feature_id,revision,incarnation)
+ VALUES(?,?,0,0) ON DUPLICATE KEY UPDATE feature_id=VALUES(feature_id)`, collection, featureID)
+	if err != nil {
+		return mapSQLError(err)
+	}
+	var revision, incarnation int64
+	err = tx.QueryRowContext(ctx, `SELECT revision,incarnation FROM tegola_revisions
+ WHERE collection=? AND feature_id=? FOR UPDATE`, collection, featureID).Scan(&revision, &incarnation)
+	if err != nil {
+		return mapSQLError(err)
+	}
 	if ifRevision == "" {
 		return nil
 	}
-	// A38: ifRevision is "incarnation.revision" format.
-	var wantInc, wantRev string
-	if parts := strings.Split(ifRevision, "."); len(parts) == 2 {
-		wantInc, wantRev = parts[0], parts[1]
-	} else {
-		wantInc, wantRev = "0", ifRevision
-	}
-	var curRev, curInc int64
-	err := tx.QueryRowContext(ctx,
-		`SELECT revision, incarnation FROM tegola_revisions WHERE collection = ? AND feature_id = ? FOR UPDATE`,
-		collection, featureID).Scan(&curRev, &curInc)
+	wantInc, wantRev, err := pa.ParseRevision(ifRevision)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			if wantRev != "0" || wantInc != "0" {
-				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0.0", ifRevision)}
-			}
-			return nil
-		}
-		return mapSQLError(err)
+		return err
 	}
-	curStr := strconv.FormatInt(curInc, 10) + "." + strconv.FormatInt(curRev, 10)
-	wantStr := wantInc + "." + wantRev
-	if curStr != wantStr {
-		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %s", wantStr, curStr)}
+	if wantInc != incarnation || wantRev != revision {
+		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "revision mismatch"}
 	}
 	return nil
 }
@@ -64,6 +57,11 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	mp, err := t.writer.mapping(ctx, m.Collection)
 	if err != nil {
 		return provider.MutationOutcome{}, err
+	}
+	if m.Op != provider.MutationInsert {
+		if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
+			return provider.MutationOutcome{}, err
+		}
 	}
 	var outcome provider.MutationOutcome
 	switch m.Op {
@@ -112,9 +110,9 @@ func (t *featureTx) recordAudit(ctx context.Context, m provider.Mutation, outcom
 
 func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) {
 	if err := t.tx.Commit(); err != nil {
-		return provider.CommitReceipt{Status: provider.CommitUnknown}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("commit: %v", err)}
+		return provider.CommitReceipt{Status: provider.CommitUnknown, TransactionID: t.txID}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("commit: %v", err)}
 	}
-	return provider.CommitReceipt{Status: provider.CommitCommitted}, nil
+	return provider.CommitReceipt{Status: provider.CommitCommitted, TransactionID: t.txID}, nil
 }
 
 func (t *featureTx) Rollback(ctx context.Context) error {
@@ -357,6 +355,10 @@ func mapSQLError(err error) error {
 }
 
 func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	if mp.createUnsupportedReason != "" {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: mp.createUnsupportedReason}
+	}
+
 	var cols, holders []string
 	var args []interface{}
 	for pub, mv := range m.Properties {
@@ -464,10 +466,6 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	if len(sets) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
 	}
-	// A03: in-tx CAS check.
-	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
-		return provider.MutationOutcome{}, err
-	}
 	args = append(args, m.FeatureID)
 	q := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?", quoteIdent(mp.table), strings.Join(sets, ", "), quoteIdent(mp.idColumn))
 	res, err := t.tx.ExecContext(ctx, q, args...)
@@ -556,10 +554,6 @@ func (t *featureTx) existsInTx(ctx context.Context, mp *writeMapping, featureID 
 }
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
-	// A03: in-tx CAS check.
-	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
-		return provider.MutationOutcome{}, err
-	}
 	q := fmt.Sprintf("DELETE FROM %s WHERE %s = ?", quoteIdent(mp.table), quoteIdent(mp.idColumn))
 	res, err := t.tx.ExecContext(ctx, q, m.FeatureID)
 	if err != nil {

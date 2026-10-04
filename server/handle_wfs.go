@@ -179,6 +179,13 @@ func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		typeName, err := wfs.ResolveTypeNameKVP(typeName, params)
+		if err != nil {
+			h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+				{Code: wfs.ExceptionInvalidParameterValue, Locator: "typeName", Text: err.Error()},
+			})
+			return
+		}
 		schema, err := h.Service.SchemaDescriptorFor(r.Context(), typeName)
 		if err != nil {
 			h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
@@ -433,21 +440,24 @@ func (h *WFSHandler) writeXML(w http.ResponseWriter, r *http.Request, status int
 }
 
 func wfsBaseURL(r *http.Request, cfg config.WFSConfig) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+	root := URLRoot(r)
+	rootPath := strings.Trim(root.Path, "/")
+	if rootPath != "" {
+		rootPath = "/" + rootPath
 	}
-	base := string(cfg.BasePath)
-	if base == "" {
-		base = "/wfs"
+	target := url.URL{
+		Scheme: root.Scheme,
+		Host:   root.Host,
+		Path:   rootPath + strings.TrimSuffix(URIPrefix, "/") + string(cfg.Resolved().BasePath),
 	}
-	return scheme + "://" + r.Host + base
+	return target.String()
 }
 
 func wfsSchemaView(schema *feature.SchemaDescriptor) *wfs.FeatureSchemaView {
 	view := &wfs.FeatureSchemaView{
-		GeometryName:    schema.Geometry.Name,
-		GeometryXSDType: wfsGeometryXSDType(schema.Geometry.Type),
+		GeometryName:     schema.Geometry.Name,
+		GeometryXSDType:  wfsGeometryXSDType(schema.Geometry.Type),
+		GeometryNullable: schema.Geometry.Nullable,
 	}
 	for _, p := range schema.Properties {
 		view.Properties = append(view.Properties, wfs.SchemaPropView{

@@ -6,7 +6,9 @@ package feature
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 )
 
 // ValueState distinguishes the four states a property can be in:
@@ -99,6 +101,8 @@ const (
 
 // GeometryDescriptor describes the geometry property.
 type GeometryDescriptor struct {
+	// Nullable reports whether an explicit null geometry is valid input.
+	Nullable bool
 	// Name is the public geometry property name ("geometry" for GeoJSON).
 	Name string
 	// Column is the storage geometry column.
@@ -154,7 +158,7 @@ func (s *SchemaDescriptor) ValidateInputValue(name string, v TypedValue) error {
 		return fmt.Errorf("property %q is read-only", name)
 	}
 	if v.State == ValueAbsent || v.State == ValueNull {
-		if v.State == ValueNull && !p.Nullable && !p.HasDefault {
+		if v.State == ValueNull && !p.Nullable {
 			return fmt.Errorf("property %q does not accept null", name)
 		}
 		return nil
@@ -178,6 +182,10 @@ func (s *SchemaDescriptor) ValidateInputValue(name string, v TypedValue) error {
 			if !allowed {
 				return fmt.Errorf("property %q value not in allowed set", name)
 			}
+		}
+	case TypeDateTime:
+		if !validRFC3339(v.String) {
+			return fmt.Errorf("property %q must be an RFC3339 timestamp", name)
 		}
 	case TypeDecimal:
 		if !isCanonicalDecimal(v.Decimal) {
@@ -237,4 +245,14 @@ func isCanonicalDecimal(s string) bool {
 		digits++
 	}
 	return digits > 0
+}
+
+var rfc3339Input = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$`)
+
+func validRFC3339(value string) bool {
+	if !rfc3339Input.MatchString(value) {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil
 }

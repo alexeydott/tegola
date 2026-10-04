@@ -27,25 +27,27 @@ type GetPropertyValueRequest struct {
 }
 
 func ParseGetPropertyValueKVP(v Version, q map[string]string) (*GetPropertyValueRequest, []Exception) {
-	if v != V200 {
+	if v != V200 && v != V202 {
 		return nil, []Exception{{Code: ExceptionOperationNotSupported, Text: "GetPropertyValue requires WFS 2.0"}}
 	}
 	vr := strings.TrimSpace(q["valuereference"])
 	if vr == "" {
 		return nil, []Exception{{Code: ExceptionMissingParameterValue, Locator: "valueReference", Text: "valueReference is required"}}
 	}
-	// A single QName is supported; never silently discard XPath predicates or steps.
-	parts := strings.Split(vr, ":")
-	if len(parts) > 2 || !gml.ValidNCName(parts[0]) || (len(parts) == 2 && !gml.ValidNCName(parts[1])) {
-		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: "valueReference must be a simple property name"}}
-	}
-	vr = parts[len(parts)-1]
 	if q["propertyname"] != "" {
 		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "propertyName", Text: "use valueReference for property selection"}}
 	}
 	query, ex := ParseGetFeatureKVP(v, q)
 	if len(ex) > 0 {
 		return nil, ex
+	}
+	bindings, err := propertyBindingsKVP(query.TypeName, q)
+	if err != nil {
+		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "namespaces", Text: err.Error()}}
+	}
+	vr, err = resolvePropertyQName(vr, query.TypeName, bindings)
+	if err != nil {
+		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: err.Error()}}
 	}
 	return &GetPropertyValueRequest{Version: v, TypeName: query.TypeName, ValueReference: vr, MaxFeatures: query.MaxFeatures, BBox: query.BBox, FeatureIDs: query.FeatureIDs, ResultType: query.ResultType, StartIndex: query.StartIndex, SortBy: query.SortBy, Filter: query.Filter}, nil
 }
@@ -54,13 +56,13 @@ func ParseGetPropertyValueKVP(v Version, q map[string]string) (*GetPropertyValue
 // GetFeature. Extracting its encoded property preserves scalar and GML geometry
 // representations, including xsi:nil, without a second query implementation.
 func ExecuteGetPropertyValue(ctx context.Context, service *features.Service, req *GetPropertyValueRequest) (string, []Exception) {
-	if req.Version != V200 {
+	if req.Version != V200 && req.Version != V202 {
 		return "", []Exception{{Code: ExceptionOperationNotSupported, Text: "GetPropertyValue requires WFS 2.0"}}
 	}
 	if !gml.ValidNCName(req.ValueReference) {
 		return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: "invalid property name"}}
 	}
-	query := &GetFeatureRequest{Version: V200, TypeName: req.TypeName, MaxFeatures: req.MaxFeatures, BBox: req.BBox, FeatureIDs: req.FeatureIDs, ResultType: req.ResultType, StartIndex: req.StartIndex, SortBy: req.SortBy, Filter: req.Filter, PropertyNames: []string{req.ValueReference}}
+	query := &GetFeatureRequest{Version: req.Version, TypeName: req.TypeName, MaxFeatures: req.MaxFeatures, BBox: req.BBox, FeatureIDs: req.FeatureIDs, ResultType: req.ResultType, StartIndex: req.StartIndex, SortBy: req.SortBy, Filter: req.Filter, PropertyNames: []string{req.ValueReference}}
 	out, ex := ExecuteGetFeature(ctx, service, query)
 	if len(ex) > 0 {
 		for i := range ex {

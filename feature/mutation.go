@@ -244,6 +244,13 @@ func validateMutationInput(schema *SchemaDescriptor, m provider.Mutation) error 
 		}
 		return nil
 	}
+	missingCompleteGeometry := (m.Op == provider.MutationInsert || m.Op == provider.MutationReplace) && m.GeometryWKB == nil
+	if !schema.Geometry.Nullable && (m.GeometryAbsent || missingCompleteGeometry) {
+		return &provider.MutationError{
+			Kind:   provider.MutationErrSchemaViolation,
+			Reason: "geometry is required and does not accept null",
+		}
+	}
 	if m.Op == provider.MutationInsert && m.FeatureID != 0 {
 		return &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "insert must not carry a feature ID"}
 	}

@@ -69,9 +69,10 @@ func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.Sch
 		Table:    m.table,
 		IDColumn: m.idColumn,
 		Geometry: provider.GeometryColumnDescriptor{
-			Name: m.geomColumn,
-			Type: m.geomType,
-			SRID: m.geomSRID,
+			Name:     m.geomColumn,
+			Type:     m.geomType,
+			SRID:     m.geomSRID,
+			Nullable: m.columns[m.geomColumn].Nullable,
 		},
 	}
 	for _, col := range m.columns {
@@ -116,18 +117,19 @@ func (p *Provider) writer() *Writer {
 }
 
 type writeMapping struct {
-	schema     string
-	table      string
-	idColumn   string
-	geomColumn string
-	geomFormat string // mos, wkb, wkt, "" (postgis native)
-	geomType   string
-	geomSRID   uint64
-	mosOpts    mos.Options
-	columns    map[string]provider.ColumnDescriptor
-	writable   map[string]string
-	readOnly   []string
-	domain     string
+	createUnsupportedReason string
+	schema                  string
+	table                   string
+	idColumn                string
+	geomColumn              string
+	geomFormat              string // mos, wkb, wkt, "" (postgis native)
+	geomType                string
+	geomSRID                uint64
+	mosOpts                 mos.Options
+	columns                 map[string]provider.ColumnDescriptor
+	writable                map[string]string
+	readOnly                []string
+	domain                  string
 	// A32: bounds columns (minx,maxx,miny,maxy); empty if not configured.
 	bboxFields [4]string
 	// A38: schema fingerprint for incarnation (hash of columns+PK).
@@ -144,15 +146,16 @@ func (w *Writer) DescribeWritable(ctx context.Context, layer string) (provider.W
 		writable[k] = v
 	}
 	return provider.WriteDescriptor{
-		Layer:           layer,
-		Table:           m.table,
-		IDColumn:        m.idColumn,
-		GeometryColumn:  m.geomColumn,
-		GeometryType:    m.geomType,
-		GeometrySRID:    m.geomSRID,
-		WritableColumns: writable,
-		ReadOnlyColumns: append([]string(nil), m.readOnly...),
-		Domain:          m.domain,
+		Layer:                   layer,
+		Table:                   m.table,
+		IDColumn:                m.idColumn,
+		GeometryColumn:          m.geomColumn,
+		GeometryType:            m.geomType,
+		GeometrySRID:            m.geomSRID,
+		WritableColumns:         writable,
+		ReadOnlyColumns:         append([]string(nil), m.readOnly...),
+		Domain:                  m.domain,
+		CreateUnsupportedReason: m.createUnsupportedReason,
 	}, nil
 }
 
@@ -380,6 +383,9 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		writable: make(map[string]string),
 		domain:   p.domainID(),
 	}
+	if id := cols[pkCol]; !id.IsDefault && !id.IsGenerated {
+		m.createUnsupportedReason = "create requires a generated or default primary key"
+	}
 	public := map[string]bool{}
 	if l.feature != nil {
 		for _, field := range l.feature.projections {
@@ -451,6 +457,11 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
+	if m.Op != provider.MutationInsert {
+		if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
+			return provider.MutationOutcome{}, err
+		}
+	}
 	var outcome provider.MutationOutcome
 	switch m.Op {
 	case provider.MutationInsert:
@@ -492,9 +503,9 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 
 func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) {
 	if err := t.tx.Commit(ctx); err != nil {
-		return provider.CommitReceipt{Status: provider.CommitUnknown}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("commit: %v", err)}
+		return provider.CommitReceipt{Status: provider.CommitUnknown, TransactionID: t.txID}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("commit: %v", err)}
 	}
-	return provider.CommitReceipt{Status: provider.CommitCommitted}, nil
+	return provider.CommitReceipt{Status: provider.CommitCommitted, TransactionID: t.txID}, nil
 }
 
 func (t *featureTx) Rollback(ctx context.Context) error {

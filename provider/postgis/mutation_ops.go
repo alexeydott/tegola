@@ -2,9 +2,7 @@ package postgis
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/alexeydott/geom"
@@ -13,6 +11,7 @@ import (
 	"github.com/alexeydott/proj"
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
+	pa "github.com/alexeydott/tegola/provider/audit"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -24,33 +23,25 @@ func ph(i int) string { return fmt.Sprintf("$%d", i) }
 // SELECT FOR UPDATE to lock the revision row (mirrors the MySQL helper).
 // Empty ifRevision skips the check; "0" requires no existing revision row.
 func checkRevisionCAS(ctx context.Context, tx pgx.Tx, collection string, featureID uint64, ifRevision string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO tegola_revisions(collection,feature_id,revision,incarnation)
+ VALUES($1,$2,0,0) ON CONFLICT DO NOTHING`, collection, featureID)
+	if err != nil {
+		return err
+	}
+	var revision, incarnation int64
+	if err = tx.QueryRow(ctx, `SELECT revision,incarnation FROM tegola_revisions
+ WHERE collection=$1 AND feature_id=$2 FOR UPDATE`, collection, featureID).Scan(&revision, &incarnation); err != nil {
+		return err
+	}
 	if ifRevision == "" {
 		return nil
 	}
-	// A38: ifRevision is "incarnation.revision" format.
-	var wantInc, wantRev string
-	if parts := strings.Split(ifRevision, "."); len(parts) == 2 {
-		wantInc, wantRev = parts[0], parts[1]
-	} else {
-		wantInc, wantRev = "0", ifRevision
-	}
-	var curRev, curInc int64
-	err := tx.QueryRow(ctx,
-		`SELECT revision, incarnation FROM tegola_revisions WHERE collection = $1 AND feature_id = $2 FOR UPDATE`,
-		collection, featureID).Scan(&curRev, &curInc)
+	wantInc, wantRev, err := pa.ParseRevision(ifRevision)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			if wantRev != "0" || wantInc != "0" {
-				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0.0", ifRevision)}
-			}
-			return nil
-		}
-		return &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision check: %v", err)}
+		return err
 	}
-	curStr := strconv.FormatInt(curInc, 10) + "." + strconv.FormatInt(curRev, 10)
-	wantStr := wantInc + "." + wantRev
-	if curStr != wantStr {
-		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %s", wantStr, curStr)}
+	if wantInc != incarnation || wantRev != revision {
+		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "revision mismatch"}
 	}
 	return nil
 }
@@ -257,6 +248,10 @@ func (t *featureTx) geomArg(mp *writeMapping, m provider.Mutation, args []interf
 }
 
 func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	if mp.createUnsupportedReason != "" {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: mp.createUnsupportedReason}
+	}
+
 	var cols, holders []string
 	var args []interface{}
 	for pub, mv := range m.Properties {
@@ -387,10 +382,6 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
-	// A03: in-transaction CAS check before the data mutation.
-	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
-		return provider.MutationOutcome{}, err
-	}
 	var sets []string
 	var args []interface{}
 	for pub, mv := range m.Properties {
@@ -452,10 +443,6 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 }
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
-	// A03: in-transaction CAS check before the data mutation.
-	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
-		return provider.MutationOutcome{}, err
-	}
 	tbl := quoteIdent(mp.schema) + "." + quoteIdent(mp.table)
 	q := fmt.Sprintf("DELETE FROM %s WHERE %s = $1", tbl, quoteIdent(mp.idColumn))
 	tag, err := t.tx.Exec(ctx, q, m.FeatureID)

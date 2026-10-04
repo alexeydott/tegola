@@ -18,6 +18,7 @@ func providerSchemaToFeature(collectionID string, psd provider.SchemaDescriptor)
 		SchemaVersion: "1",
 		Geometry: feature.GeometryDescriptor{
 			Name:      "geometry",
+			Nullable:  psd.Geometry.Nullable,
 			Column:    psd.Geometry.Name,
 			Type:      strings.ToLower(psd.Geometry.Type),
 			Dimension: feature.DimXY,

@@ -25,9 +25,18 @@ import (
 
 // ParseFESFilter parses an OGC FES 2.0 <Filter> XML fragment.
 func ParseFESFilter(body []byte) (provider.FilterExpression, error) {
+	return parseFESFilterContext(body, "", nil)
+}
+
+func parseFESFilterContext(body []byte, collection string, bindings map[string]string) (provider.FilterExpression, error) {
 	if err := validateFESStructure(body); err != nil {
 		return provider.FilterExpression{}, err
 	}
+	normalized, err := normalizeFESQNames(body, collection, bindings)
+	if err != nil {
+		return provider.FilterExpression{}, err
+	}
+	body = normalized
 	var doc fesFilter
 	if err := xml.Unmarshal(body, &doc); err != nil {
 		return provider.FilterExpression{}, fmt.Errorf("fes: invalid Filter XML: %w", err)
