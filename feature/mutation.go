@@ -140,10 +140,14 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	for i := range mutations {
 		// A04: row-level policy check inside the transaction, before Apply.
 		// The key uses the bound physical relation (not the public name).
+		// A04: post-image check after Apply uses the same key.
+		var policy Policy
+		var action PolicyAction
+		var key PhysicalFeatureKey
 		if i < len(bounds) {
-			policy := c.PolicyFor(mutations[i].Collection)
-			action, _ := policyActionFor(mutations[i].Op.String())
-			key := PhysicalFeatureKey{
+			policy = c.PolicyFor(bounds[i].collection)
+			action, _ = policyActionFor(mutations[i].Op.String())
+			key = PhysicalFeatureKey{
 				Domain:   domain,
 				Relation: bounds[i].layer,
 				PK:       formatPK(mutations[i].FeatureID),
@@ -157,6 +161,12 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 			return empty, provider.CommitReceipt{}, err
 		}
 		outcomes = append(outcomes, outcome)
+		// A04: post-image policy check after Apply, before Commit.
+		if i < len(bounds) {
+			if d := policy.CheckPostImage(ctx, principal, key, nil); !d.Allow {
+				return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "post-image policy denied: " + d.Reason}
+			}
+		}
 	}
 	receipt, err := tx.Commit(ctx)
 	// A35: preserve the receipt even on commit error, so the caller
