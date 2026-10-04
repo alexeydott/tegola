@@ -485,14 +485,27 @@ func (t *featureTx) maintainGPKGMetadata(ctx context.Context) error {
 	return nil
 }
 
+// isNoSuchTable reports whether err is SQLite "no such table".
+func isNoSuchTable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such table")
+}
+
 // touchContents bumps gpkg_contents.last_change for a feature table.
 // Tables without a gpkg_contents row (plain SQLite tables) are skipped.
 func (t *featureTx) touchContents(ctx context.Context, table string) error {
 	var n int
 	if err := t.tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM gpkg_contents WHERE table_name = ?`, table).Scan(&n); err != nil {
-		// No gpkg_contents table at all: plain SQLite, nothing to do.
-		return nil
+		// A33: distinguish "no gpkg_contents table" (plain SQLite, skip)
+		// from real storage errors (propagate).
+		if isNoSuchTable(err) {
+			return nil
+		}
+		return err
 	}
 	if n == 0 {
 		return nil
@@ -511,7 +524,11 @@ func (t *featureTx) maintainRTree(ctx context.Context, mod *tableModification) e
 	var name string
 	if err := t.tx.QueryRowContext(ctx,
 		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, rtree).Scan(&name); err != nil {
-		return nil // no RTree index: nothing to do
+		// A33: ErrNoRows means no RTree (skip); other errors propagate.
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
 	}
 	for id, bounds := range mod.geomChanged {
 		if _, err := t.tx.ExecContext(ctx,
