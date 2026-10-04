@@ -49,30 +49,42 @@ func normalizeTypeName(tn string) string {
 
 // --- SQL-backed store ---
 
-// SQLLockStoreDDL creates the locks table (migration, not in data tx).
+// SQLLockStoreDDL creates the lock tables (R06: separate leases and members).
+// One lease (token) can cover multiple features without PK violation.
 const SQLLockStoreDDL = `
-CREATE TABLE IF NOT EXISTS tegola_locks (
+CREATE TABLE IF NOT EXISTS tegola_lock_leases (
 	lock_id TEXT PRIMARY KEY,
-	type_name TEXT NOT NULL,
-	feature_id INTEGER NOT NULL,
 	owner TEXT NOT NULL DEFAULT '',
 	acquired_at TEXT NOT NULL,
 	expires_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_tegola_locks_lookup ON tegola_locks(type_name, feature_id);
+CREATE TABLE IF NOT EXISTS tegola_lock_members (
+	lock_id TEXT NOT NULL REFERENCES tegola_lock_leases(lock_id) ON DELETE CASCADE,
+	type_name TEXT NOT NULL,
+	feature_id INTEGER NOT NULL,
+	PRIMARY KEY (lock_id, type_name, feature_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tegola_lock_members_lookup ON tegola_lock_members(type_name, feature_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tegola_lock_members_guard ON tegola_lock_members(type_name, feature_id);
 `
 
-// MySQLLockStoreDDL is the MySQL variant.
+// MySQLLockStoreDDL is the MySQL variant (R06).
 const MySQLLockStoreDDL = `
-CREATE TABLE IF NOT EXISTS tegola_locks (
+CREATE TABLE IF NOT EXISTS tegola_lock_leases (
 	lock_id VARCHAR(64) PRIMARY KEY,
-	type_name VARCHAR(255) NOT NULL,
-	feature_id BIGINT NOT NULL,
 	owner VARCHAR(255) NOT NULL DEFAULT '',
 	acquired_at VARCHAR(40) NOT NULL,
-	expires_at VARCHAR(40) NOT NULL,
-	INDEX idx_tegola_locks_lookup (type_name, feature_id)
-);
+	expires_at VARCHAR(40) NOT NULL
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS tegola_lock_members (
+	lock_id VARCHAR(64) NOT NULL,
+	type_name VARCHAR(255) NOT NULL,
+	feature_id BIGINT NOT NULL,
+	PRIMARY KEY (lock_id, type_name, feature_id),
+	UNIQUE KEY uq_lock_member_guard (type_name, feature_id),
+	INDEX idx_lock_member_lookup (type_name, feature_id),
+	CONSTRAINT fk_lock_member_lease FOREIGN KEY (lock_id) REFERENCES tegola_lock_leases(lock_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
 `
 
 // sqlLockStore is a DB-backed LockStore.
@@ -94,38 +106,48 @@ func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint6
 	exp := now.Add(expiry)
 	norm := normalizeTypeName(typeName)
 
-	// Clean expired locks and check conflicts in one transaction.
+	// R06: atomic acquire with new schema. Clean expired, check conflicts,
+	// insert lease + members in one tx. Fail-closed on storage errors.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
-	ph := "?"
-	if s.dialect == "postgres" {
-		ph = "$1" // simplified; full impl uses numbered params
+	nowStr := now.Format(time.RFC3339Nano)
+	expStr := exp.Format(time.RFC3339Nano)
+
+	// Delete expired leases (cascade deletes members).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tegola_lock_leases WHERE expires_at < ?`, nowStr); err != nil {
+		return nil, err
 	}
-	_ = ph
 
-	// Delete expired.
-	_, _ = tx.ExecContext(ctx, `DELETE FROM tegola_locks WHERE expires_at < ?`, now.Format(time.RFC3339Nano))
-
-	// Check conflicts.
+	// Check conflicts via the unique guard.
 	for _, id := range ids {
 		var existing string
 		err := tx.QueryRowContext(ctx,
-			`SELECT lock_id FROM tegola_locks WHERE type_name = ? AND feature_id = ? AND expires_at >= ? LIMIT 1`,
-			norm, id, now.Format(time.RFC3339Nano)).Scan(&existing)
+			`SELECT m.lock_id FROM tegola_lock_members m
+			 JOIN tegola_lock_leases l ON l.lock_id = m.lock_id
+			 WHERE m.type_name = ? AND m.feature_id = ? AND l.expires_at >= ? LIMIT 1`,
+			norm, id, nowStr).Scan(&existing)
 		if err == nil {
-			return nil, nil // conflict
+			return nil, nil // conflict: already locked
+		}
+		if err != sql.ErrNoRows {
+			return nil, err // R06: fail-closed, not fail-open
 		}
 	}
 
 	lockID := newLockID()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO tegola_lock_leases (lock_id, owner, acquired_at, expires_at) VALUES (?, ?, ?, ?)`,
+		lockID, owner, nowStr, expStr); err != nil {
+		return nil, err
+	}
 	for _, id := range ids {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO tegola_locks (lock_id, type_name, feature_id, owner, acquired_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			lockID, norm, id, owner, now.Format(time.RFC3339Nano), exp.Format(time.RFC3339Nano)); err != nil {
+			`INSERT INTO tegola_lock_members (lock_id, type_name, feature_id) VALUES (?, ?, ?)`,
+			lockID, norm, id); err != nil {
 			return nil, err
 		}
 	}
@@ -143,34 +165,38 @@ func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint6
 }
 
 func (s *sqlLockStore) Release(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM tegola_locks WHERE lock_id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM tegola_lock_leases WHERE lock_id = ?`, id)
 	return err
 }
 
 func (s *sqlLockStore) Check(ctx context.Context, lockID, typeName string, featureID uint64) *Exception {
+	// R06: verify membership in the lease, not just lock_id existence.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	var dbType string
-	var dbID int64
+	norm := normalizeTypeName(typeName)
+	var one int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT type_name, feature_id FROM tegola_locks WHERE lock_id = ? AND expires_at >= ?`,
-		lockID, now).Scan(&dbType, &dbID)
+		`SELECT 1 FROM tegola_lock_members m
+		 JOIN tegola_lock_leases l ON l.lock_id = m.lock_id
+		 WHERE m.lock_id = ? AND m.type_name = ? AND m.feature_id = ? AND l.expires_at >= ?`,
+		lockID, norm, featureID, now).Scan(&one)
 	if err != nil {
-		return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: fmt.Sprintf("unknown or expired lock %q", lockID)}
-	}
-	if dbType != normalizeTypeName(typeName) {
-		return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: "lock does not cover this type"}
-	}
-	if uint64(dbID) != featureID {
-		return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: "lock does not cover this feature"}
+		if err == sql.ErrNoRows {
+			return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: fmt.Sprintf("lock %q does not cover %s.%d or expired", lockID, typeName, featureID)}
+		}
+		// R06: storage error -> fail-closed.
+		return &Exception{Code: ExceptionNoApplicableCode, Locator: "lockId", Text: fmt.Sprintf("lock store error: %v", err)}
 	}
 	return nil
 }
 
 func (s *sqlLockStore) IsLocked(ctx context.Context, typeName string, featureID uint64) bool {
+	// R06: fail-closed. Storage error -> treat as locked.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var id string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT lock_id FROM tegola_locks WHERE type_name = ? AND feature_id = ? AND expires_at >= ? LIMIT 1`,
+		`SELECT m.lock_id FROM tegola_lock_members m
+		 JOIN tegola_lock_leases l ON l.lock_id = m.lock_id
+		 WHERE m.type_name = ? AND m.feature_id = ? AND l.expires_at >= ? LIMIT 1`,
 		normalizeTypeName(typeName), featureID, now).Scan(&id)
 	return err == nil
 }
