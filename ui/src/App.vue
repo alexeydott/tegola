@@ -1,6 +1,6 @@
 <template>
   <div id="app">
-    <Viewer v-if="capabilities && activeMap && !editMode" />
+    <Viewer v-if="capabilities && activeMap" />
 
     <ViewerHeader v-if="capabilities" :capabilities="capabilities" />
 
@@ -10,7 +10,7 @@
       {{ editMode ? 'View Map' : 'Edit Features' }}
     </button>
 
-    <EditorPanel v-if="editMode" />
+    <EditorPanel v-show="editMode" />
   </div>
 </template>
 
@@ -98,6 +98,7 @@ export default {
 </script>
 
 <style>
+.edit-toggle { position: absolute; top: 12px; right: 16px; z-index: 3; }
 body,
 html {
   font-family: Helvetica, Arial, sans-serif;
