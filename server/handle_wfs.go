@@ -404,10 +404,15 @@ func (h *WFSHandler) serveLockFeature(w http.ResponseWriter, r *http.Request, v 
 		})
 		return
 	}
+	// R07: WFS 1.1 expiry is in minutes, WFS 2.0 in seconds.
 	expiry := 5 * time.Minute
 	if e := params["expiry"]; e != "" {
 		if n, err := strconv.Atoi(e); err == nil && n > 0 {
-			expiry = time.Duration(n) * time.Minute
+			if v == "2.0.0" || v == "2.0" {
+				expiry = time.Duration(n) * time.Second
+			} else {
+				expiry = time.Duration(n) * time.Minute
+			}
 		}
 	}
 	lock := wfs.AcquireLock(typeName, ids, expiry)
@@ -417,5 +422,5 @@ func (h *WFSHandler) serveLockFeature(w http.ResponseWriter, r *http.Request, v 
 		})
 		return
 	}
-	h.writeXML(w, r, http.StatusOK, wfs.LockFeatureResponse(lock))
+	h.writeXML(w, r, http.StatusOK, wfs.LockFeatureResponse(lock, string(v)))
 }

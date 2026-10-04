@@ -55,8 +55,8 @@ const SQLLockStoreDDL = `
 CREATE TABLE IF NOT EXISTS tegola_lock_leases (
 	lock_id TEXT PRIMARY KEY,
 	owner TEXT NOT NULL DEFAULT '',
-	acquired_at TEXT NOT NULL,
-	expires_at TEXT NOT NULL
+	acquired_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tegola_lock_members (
 	lock_id TEXT NOT NULL REFERENCES tegola_lock_leases(lock_id) ON DELETE CASCADE,
@@ -73,8 +73,8 @@ const MySQLLockStoreDDL = `
 CREATE TABLE IF NOT EXISTS tegola_lock_leases (
 	lock_id VARCHAR(64) PRIMARY KEY,
 	owner VARCHAR(255) NOT NULL DEFAULT '',
-	acquired_at VARCHAR(40) NOT NULL,
-	expires_at VARCHAR(40) NOT NULL
+	acquired_at BIGINT NOT NULL,
+	expires_at BIGINT NOT NULL
 ) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS tegola_lock_members (
 	lock_id VARCHAR(64) NOT NULL,
@@ -114,11 +114,11 @@ func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint6
 	}
 	defer tx.Rollback()
 
-	nowStr := now.Format(time.RFC3339Nano)
-	expStr := exp.Format(time.RFC3339Nano)
+	nowNano := now.UnixNano()
+	expNano := exp.UnixNano()
 
 	// Delete expired leases (cascade deletes members).
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tegola_lock_leases WHERE expires_at < ?`, nowStr); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tegola_lock_leases WHERE expires_at < ?`, nowNano); err != nil {
 		return nil, err
 	}
 
@@ -129,7 +129,7 @@ func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint6
 			`SELECT m.lock_id FROM tegola_lock_members m
 			 JOIN tegola_lock_leases l ON l.lock_id = m.lock_id
 			 WHERE m.type_name = ? AND m.feature_id = ? AND l.expires_at >= ? LIMIT 1`,
-			norm, id, nowStr).Scan(&existing)
+			norm, id, nowNano).Scan(&existing)
 		if err == nil {
 			return nil, nil // conflict: already locked
 		}
@@ -141,7 +141,7 @@ func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint6
 	lockID := newLockID()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO tegola_lock_leases (lock_id, owner, acquired_at, expires_at) VALUES (?, ?, ?, ?)`,
-		lockID, owner, nowStr, expStr); err != nil {
+		lockID, owner, nowNano, expNano); err != nil {
 		return nil, err
 	}
 	for _, id := range ids {
@@ -171,7 +171,7 @@ func (s *sqlLockStore) Release(ctx context.Context, id string) error {
 
 func (s *sqlLockStore) Check(ctx context.Context, lockID, typeName string, featureID uint64) *Exception {
 	// R06: verify membership in the lease, not just lock_id existence.
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().UnixNano()
 	norm := normalizeTypeName(typeName)
 	var one int
 	err := s.db.QueryRowContext(ctx,
@@ -191,7 +191,7 @@ func (s *sqlLockStore) Check(ctx context.Context, lockID, typeName string, featu
 
 func (s *sqlLockStore) IsLocked(ctx context.Context, typeName string, featureID uint64) bool {
 	// R06: fail-closed. Storage error -> treat as locked.
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().UnixNano()
 	var id string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT m.lock_id FROM tegola_lock_members m

@@ -80,9 +80,14 @@ func IsLocked(typeName string, featureID uint64) bool {
 }
 
 // LockFeatureResponse renders the WFS 1.1 LockFeature response.
-func LockFeatureResponse(lock *FeatureLock) string {
+// LockFeatureResponse builds the version-specific response (R07).
+func LockFeatureResponse(lock *FeatureLock, version string) string {
 	var sb strings.Builder
-	sb.WriteString(`<wfs:LockFeatureResponse xmlns:wfs="http://www.opengis.net/wfs">`)
+	ns := "http://www.opengis.net/wfs"
+	if version == "2.0.0" || version == "2.0" {
+		ns = "http://www.opengis.net/wfs/2.0"
+	}
+	sb.WriteString(fmt.Sprintf(`<wfs:LockFeatureResponse xmlns:wfs="%s">`, ns))
 	sb.WriteString(fmt.Sprintf(`<wfs:LockId>%s</wfs:LockId>`, xmlEscape(lock.ID)))
 	sb.WriteString(`</wfs:LockFeatureResponse>`)
 	return sb.String()
