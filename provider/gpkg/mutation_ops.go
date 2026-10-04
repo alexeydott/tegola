@@ -538,6 +538,10 @@ func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mut
 	if n != 1 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "delete affected unexpected row count"}
 	}
+	// A38: increment entity incarnation on DELETE (tombstone).
+	if ierr := pa.BumpIncarnationOnDelete(ctx, t.tx, m.Collection, m.FeatureID, "sqlite"); ierr != nil {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("incarnation bump: %v", ierr)}
+	}
 	t.recordMod(mp, m.FeatureID, nil, true)
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }

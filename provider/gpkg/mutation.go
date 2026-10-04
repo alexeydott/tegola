@@ -432,15 +432,17 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
-	// A03: revision check + bump inside the data transaction.
-	// IfRevision (from If-Match) is validated against the locked revision
-	// row; mismatch -> 412. The bump is atomic with the data change.
-	bump, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "sqlite")
-	if rerr != nil {
-		return provider.MutationOutcome{}, rerr
+	// A38: for DELETE, incarnation already bumped in t.delete(); skip revision bump.
+	if m.Op != provider.MutationDelete {
+		// A03: revision check + bump inside the data transaction.
+		bump, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "sqlite")
+		if rerr != nil {
+			return provider.MutationOutcome{}, rerr
+		}
+		// A38: revision format is "incarnation.revision".
+		outcome.Revision = formatIncarnationRevision(bump.NewInc, bump.New)
+		outcome.RevisionBefore = formatIncarnationRevision(bump.OldInc, bump.Old)
 	}
-	outcome.Revision = formatRevision(bump.New)
-	outcome.RevisionBefore = formatRevision(bump.Old)
 	// W13: audit + outbox in the same transaction as the data
 	entry := auditEntryFor(m.Collection, m.Op, outcome, t.actor, t.requestID, "")
 	if aerr := recordAuditTx(ctx, t.tx, entry, outboxEventType(m.Op)); aerr != nil {
@@ -650,4 +652,12 @@ func formatRevision(n int64) string {
 		return ""
 	}
 	return strconv.FormatInt(n, 10)
+}
+
+// formatIncarnationRevision renders "incarnation.revision" (A38).
+func formatIncarnationRevision(inc, rev int64) string {
+	if rev < 0 {
+		return ""
+	}
+	return strconv.FormatInt(inc, 10) + "." + strconv.FormatInt(rev, 10)
 }
