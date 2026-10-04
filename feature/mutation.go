@@ -197,12 +197,28 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	if err != nil {
 		return empty, receipt, err
 	}
+	// A43: enrich the durable receipt.
+	receipt.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	receipt.Actor = principal.ID
+	cols := make([]string, 0, len(mutations))
+	seen := map[string]bool{}
+	for _, m := range mutations {
+		// Use the original collection name from bounds for the receipt.
+		coll := m.Collection
+		for _, b := range bounds {
+			if b.layer == m.Collection {
+				coll = b.collection
+				break
+			}
+		}
+		if !seen[coll] {
+			seen[coll] = true
+			cols = append(cols, coll)
+		}
+	}
+	receipt.Collections = cols
 	// A36: notify cache invalidation hook.
 	if c.OnCommit != nil {
-		cols := make([]string, 0, len(mutations))
-		for _, m := range mutations {
-			cols = append(cols, m.Collection)
-		}
 		c.OnCommit(cols)
 	}
 	return outcomes, receipt, nil

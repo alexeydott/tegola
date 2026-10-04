@@ -109,6 +109,13 @@ type CommitReceipt struct {
 	// TransactionID is the provider's native transaction identifier,
 	// for audit correlation.
 	TransactionID string
+	// A43: durable receipt fields.
+	// Timestamp is the commit time (UTC).
+	Timestamp string
+	// Actor is the principal that performed the mutation.
+	Actor string
+	// Collections lists the mutated collections.
+	Collections []string
 }
 
 // TxOptions configures BeginFeatureTx.
