@@ -222,6 +222,18 @@ func parseFeatureElement(inner string) (string, map[string]string, string, error
 					continue
 				}
 			}
+			// OL style: <geometryProperty><gml:Point>… — GML wrapped in a
+			// property element at depth 2, geometry element at depth 3.
+			if depth == 3 && !inGeom && isGMLGeometryElement(t.Name.Local) {
+				inGeom, geomDepth = true, depth
+				buf.Reset()
+				buf.WriteString("<" + t.Name.Local)
+				for _, at := range t.Attr {
+					buf.WriteString(fmt.Sprintf(` %s="%s"`, at.Name.Local, at.Value))
+				}
+				buf.WriteString(">")
+				continue
+			}
 			if inGeom {
 				buf.WriteString("<" + t.Name.Local + ">")
 			}
