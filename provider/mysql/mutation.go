@@ -172,10 +172,15 @@ func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID ui
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
 	// R09: ensure service schema BEFORE opening the data transaction.
 	// A01: No DDL in data transaction (implicit COMMIT in MySQL).
+	// Check version and engine before write traffic.
 	if err := pa.CheckSchemaVersion(ctx, w.provider.db, "mysql"); err != nil {
 		if merr := pa.Migrate(ctx, w.provider.db, "mysql"); merr != nil {
 			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("schema migration: %v", merr)}
 		}
+	}
+	// A01: verify table engines (InnoDB required for transactions).
+	if err := pa.CheckTableEngine(ctx, w.provider.db, "mysql"); err != nil {
+		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("schema engine: %v", err)}
 	}
 	tx, err := w.provider.db.BeginTx(ctx, nil)
 	if err != nil {
