@@ -94,8 +94,31 @@ type sqlLockStore struct {
 }
 
 // NewSQLLockStore creates a DB-backed lock store.
-func NewSQLLockStore(db *sql.DB, dialect string) LockStore {
-	return &sqlLockStore{db: db, dialect: dialect}
+// NewSQLLockStore creates a DB-backed LockStore, ensuring the lock tables
+// exist (A10: persistent physical guards). Returns an error if the schema
+// cannot be created.
+func NewSQLLockStore(ctx context.Context, db *sql.DB, dialect string) (LockStore, error) {
+	var ddl string
+	switch dialect {
+	case "mysql":
+		ddl = MySQLLockStoreDDL
+	default: // sqlite, postgres
+		ddl = SQLLockStoreDDL
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return nil, fmt.Errorf("wfs: lock store schema: %w", err)
+	}
+	return &sqlLockStore{db: db, dialect: dialect}, nil
+}
+
+// NewSQLLockStoreOrPanic is like NewSQLLockStore but panics on error.
+// For use in tests and simple setups.
+func NewSQLLockStoreOrPanic(db *sql.DB, dialect string) LockStore {
+	s, err := NewSQLLockStore(context.Background(), db, dialect)
+	if err != nil {
+		panic(err)
+	}
+	return s
 }
 
 func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint64, owner string, expiry time.Duration) (*FeatureLock, error) {
