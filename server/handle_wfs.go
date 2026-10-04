@@ -245,7 +245,7 @@ func (h *WFSHandler) serveTransaction(w http.ResponseWriter, r *http.Request, v 
 		})
 		return
 	}
-	actions, lockID, err := wfs.ParseTransaction(v, body)
+	actions, lockID, releaseAction, err := wfs.ParseTransaction(v, body)
 	if err != nil {
 		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionInvalidParameterValue, Text: err.Error()},
@@ -293,6 +293,11 @@ func (h *WFSHandler) serveTransaction(w http.ResponseWriter, r *http.Request, v 
 	if err != nil {
 		h.writeTransactionError(w, r, v, err)
 		return
+	}
+	// A11: full lock lifecycle. Release the lock after successful
+	// Transaction if releaseAction="ALL" (the default).
+	if lockID != "" && releaseAction == "ALL" {
+		wfs.ReleaseLock(lockID)
 	}
 	h.writeXML(w, r, http.StatusOK, wfs.TransactionResponse(v, results))
 }

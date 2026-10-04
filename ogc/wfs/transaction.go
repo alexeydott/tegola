@@ -24,10 +24,11 @@ type TransactionAction struct {
 
 // wfsTransaction is the wire struct for decoding.
 type wfsTransaction struct {
-	XMLName xml.Name         `xml:"Transaction"`
-	Version string           `xml:"version,attr"`
-	LockID  string           `xml:"lockId,attr"`
-	Actions []wfsActionInner `xml:",any"`
+	XMLName       xml.Name         `xml:"Transaction"`
+	Version       string           `xml:"version,attr"`
+	LockID        string           `xml:"lockId,attr"`
+	ReleaseAction string           `xml:"releaseAction,attr"`
+	Actions       []wfsActionInner `xml:",any"`
 }
 
 type wfsActionInner struct {
@@ -39,10 +40,12 @@ type wfsActionInner struct {
 
 // ParseTransaction parses a WFS Transaction document (1.1 or 2.0).
 // Structural XML limits are enforced by the HTTP layer before calling.
-func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, error) {
+// ParseTransaction parses a WFS Transaction. Returns actions, lockId,
+// releaseAction ("ALL" default), and error.
+func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, string, error) {
 	var doc wfsTransaction
 	if err := xml.Unmarshal(body, &doc); err != nil {
-		return nil, "", fmt.Errorf("invalid Transaction XML: %w", err)
+		return nil, "", "ALL", fmt.Errorf("invalid Transaction XML: %w", err)
 	}
 	var actions []TransactionAction
 	for _, a := range doc.Actions {
@@ -59,7 +62,7 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			act.TypeName = stripPrefix(a.TypeName)
 		case "Replace":
 			if v == V110 {
-				return nil, "", fmt.Errorf("Replace is not a WFS 1.1 action")
+				return nil, "", "ALL", fmt.Errorf("Replace is not a WFS 1.1 action")
 			}
 			act.Op = provider.MutationReplace
 		default:
@@ -69,7 +72,7 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 		if act.Op == provider.MutationUpdate || act.Op == provider.MutationDelete {
 			props, ids, err := parseActionFilter(a.Inner, act.TypeName)
 			if err != nil {
-				return nil, "", err
+				return nil, "", "ALL", err
 			}
 			act.Properties = props
 			act.FilterIDs = ids
@@ -77,10 +80,10 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			// A27: Insert may contain multiple feature elements.
 			features, err := parseFeatureElements(a.Inner)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: %w", local, err)
+				return nil, "", "ALL", fmt.Errorf("%s: %w", local, err)
 			}
 			if len(features) == 0 {
-				return nil, "", fmt.Errorf("%s: no features in Insert", local)
+				return nil, "", "ALL", fmt.Errorf("%s: no features in Insert", local)
 			}
 			// First feature goes to act; rest become additional actions.
 			act.TypeName = features[0].TypeName
@@ -100,7 +103,7 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			// Structure: <Replace><Feature>...</Feature><Filter>...</Filter></Replace>
 			typeName, props, geomXML, err := parseFeatureElement(a.Inner)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: %w", local, err)
+				return nil, "", "ALL", fmt.Errorf("%s: %w", local, err)
 			}
 			act.TypeName = typeName
 			act.Properties = props
@@ -108,16 +111,20 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			// Extract FilterIDs from the Filter element
 			_, ids, ferr := parseActionFilter(a.Inner, act.TypeName)
 			if ferr != nil {
-				return nil, "", ferr
+				return nil, "", "ALL", ferr
 			}
 			act.FilterIDs = ids
 		}
 		actions = append(actions, act)
 	}
 	if len(actions) == 0 {
-		return nil, "", fmt.Errorf("no transaction actions found")
+		return nil, "", "ALL", fmt.Errorf("no transaction actions found")
 	}
-	return actions, doc.LockID, nil
+	releaseAction := doc.ReleaseAction
+	if releaseAction == "" {
+		releaseAction = "ALL"
+	}
+	return actions, doc.LockID, releaseAction, nil
 }
 
 // parseActionFilter extracts Property assignments and ResourceId/FeatureId
