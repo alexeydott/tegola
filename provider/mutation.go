@@ -139,6 +139,12 @@ type MutationProvider interface {
 	BeginFeatureTx(ctx context.Context, options TxOptions) (FeatureTx, error)
 }
 
+// RevisionReader is implemented by providers that track per-feature
+// revisions (A03). CurrentRevision returns "0" when no revision exists.
+type RevisionReader interface {
+	CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error)
+}
+
 // MutationErrorKind is the taxonomy from ADR-0012. Adapters map each
 // kind to their protocol-specific response; not every kind is a 409.
 type MutationErrorKind int

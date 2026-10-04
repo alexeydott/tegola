@@ -86,7 +86,7 @@ func part4Service(t *testing.T) (*features.Service, *gpkg.Provider) {
 
 func part4API(t *testing.T, service *features.Service) *FeatureAPI {
 	t.Helper()
-	writeCfg := config.FeaturesWriteConfig{Enabled: true}
+	writeCfg := config.FeaturesWriteConfig{Enabled: true, AuthMode: "dev"}
 	writeCfg.Collections = []config.WriteCollectionConfig{
 		{ID: "sites", Operations: []string{"create", "replace", "update", "delete"}},
 	}
@@ -407,7 +407,7 @@ func TestPart4OpenAPIWriteOps(t *testing.T) {
 
 func TestPart4RequireIfMatch428(t *testing.T) {
 	service, _ := part4Service(t)
-	writeCfg := config.FeaturesWriteConfig{Enabled: true, RequireIfMatch: true}
+	writeCfg := config.FeaturesWriteConfig{Enabled: true, RequireIfMatch: true, AuthMode: "dev"}
 	writeCfg.Collections = []config.WriteCollectionConfig{
 		{ID: "sites", Operations: []string{"create", "replace", "update", "delete"}},
 	}

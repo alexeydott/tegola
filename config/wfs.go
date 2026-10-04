@@ -65,6 +65,18 @@ type FeaturesWriteConfig struct {
 	// If-Match header with 428 Precondition Required. Disabled by
 	// default (If-Match is optional per RFC 7232).
 	RequireIfMatch bool `toml:"require_if_match"`
+	// AuthMode selects the write authorization profile (A04):
+	//   "dev"        - anonymous writes allowed (explicitly unsafe;
+	//                  for trusted networks / development only).
+	//   "production" - authenticator required; anonymous principals are
+	//                  denied (deny-by-default). This is the default when
+	//                  write is enabled.
+	AuthMode string `toml:"auth_mode"`
+}
+
+// IsProductionAuth reports whether production auth mode is active.
+func (c FeaturesWriteConfig) IsProductionAuth() bool {
+	return c.AuthMode == "" || c.AuthMode == "production"
 }
 
 // WriteCollectionConfig allows mutation operations on one published

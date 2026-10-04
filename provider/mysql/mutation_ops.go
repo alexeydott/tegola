@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/alexeydott/geom"
@@ -44,6 +45,12 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
+	// A03: revision check + bump inside the data transaction.
+	newRev, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "mysql")
+	if rerr != nil {
+		return provider.MutationOutcome{}, rerr
+	}
+	outcome.Revision = strconv.FormatInt(newRev, 10)
 	// W13: audit in same transaction
 	if aerr := t.recordAudit(ctx, m, outcome); aerr != nil {
 		return provider.MutationOutcome{}, aerr
@@ -323,19 +330,12 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 	return provider.MutationOutcome{FeatureID: uint64(id), Affected: 1}, nil
 }
 
+// A05: Replace is UPDATE of the existing row, NOT DELETE+INSERT.
+// Deleting first would fire ON DELETE CASCADE, run DELETE triggers, and
+// discard server-managed values. UPDATE preserves row identity.
 func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
-	// Replace = delete + insert with explicit ID.
-	if _, err := t.delete(ctx, mp, m); err != nil {
-		return provider.MutationOutcome{}, err
-	}
-	m2 := m
-	m2.Op = provider.MutationInsert
-	// Insert with explicit ID: add ID column.
-	var cols, holders []string
+	var sets []string
 	var args []interface{}
-	cols = append(cols, quoteIdent(mp.idColumn))
-	holders = append(holders, "?")
-	args = append(args, m.FeatureID)
 	for pub, mv := range m.Properties {
 		col, ok := mp.writable[pub]
 		if !ok {
@@ -345,8 +345,7 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		if err != nil {
 			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: err.Error()}
 		}
-		cols = append(cols, quoteIdent(col))
-		holders = append(holders, "?")
+		sets = append(sets, quoteIdent(col)+" = ?")
 		args = append(args, v)
 	}
 	if m.GeometryWKB != nil {
@@ -354,19 +353,28 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
-		cols = append(cols, quoteIdent(mp.geomColumn))
-		holders = append(holders, "?")
+		// A14: native geometry expression inlined, not bound as string.
 		if encStr != "" {
-			args = append(args, encStr)
+			sets = append(sets, quoteIdent(mp.geomColumn)+" = "+encStr)
 		} else {
+			sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
 			args = append(args, enc)
 		}
 	}
-	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdent(mp.table), strings.Join(cols, ", "), strings.Join(holders, ", "))
-	if _, err := t.tx.ExecContext(ctx, q, args...); err != nil {
+	if len(sets) == 0 {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
+	}
+	args = append(args, m.FeatureID)
+	q := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?", quoteIdent(mp.table), strings.Join(sets, ", "), quoteIdent(mp.idColumn))
+	res, err := t.tx.ExecContext(ctx, q, args...)
+	if err != nil {
 		return provider.MutationOutcome{}, mapSQLError(err)
 	}
-	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+	}
+	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(n)}, nil
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {

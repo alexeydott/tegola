@@ -371,14 +371,12 @@ func wfsGeometryXSDType(t string) string {
 	}
 }
 
-// serveLockFeature implements WFS 1.1 LockFeature (KVP).
+// serveLockFeature implements WFS 1.1 and 2.0 LockFeature (KVP).
+//
+// A11: WFS 2.0 DOES define LockFeature (09-025r2 §11). The previous
+// version gate was wrong. Expiry units differ: 1.1 uses minutes,
+// 2.0 uses seconds per the spec.
 func (h *WFSHandler) serveLockFeature(w http.ResponseWriter, r *http.Request, v wfs.Version, params map[string]string) {
-	if v != wfs.V110 {
-		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
-			{Code: wfs.ExceptionOperationNotSupported, Text: "LockFeature is a WFS 1.1 operation"},
-		})
-		return
-	}
 	typeName := params["typename"]
 	if typeName == "" {
 		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{

@@ -2,12 +2,15 @@ package mysql
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/alexeydott/tegola/mos"
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
+
 	"github.com/alexeydott/tegola/provider"
 )
 
@@ -58,6 +61,17 @@ func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.Sch
 		sd.Columns = append(sd.Columns, col)
 	}
 	return sd, nil
+}
+
+// domainID returns an opaque identifier for the physical MySQL/MariaDB
+// database this provider instance is connected to.
+//
+// A02: the domain must identify the physical DB (host+port+dbname), not
+// just the database name. Two instances pointing at different servers
+// must never share a domain even if db names match.
+func (p *Provider) domainID() string {
+	sum := sha256.Sum256([]byte(p.Host + "|" + strconv.Itoa(p.Port) + "|" + p.Database))
+	return "mysql:" + hex.EncodeToString(sum[:])[:16]
 }
 
 func (p *Provider) writer() *Writer {
@@ -115,12 +129,22 @@ func (w *Writer) mapping(ctx context.Context, layer string) (*writeMapping, erro
 	if !ok {
 		return nil, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("layer %q not found", layer)}
 	}
-	m, err := admitLayer(ctx, w.provider.db, w.provider.Database, &l)
+	m, err := admitLayer(ctx, w.provider, &l)
 	if err != nil {
 		return nil, err
 	}
 	w.mappings[layer] = m
 	return m, nil
+}
+
+// CurrentRevision implements provider.RevisionReader (A03).
+func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
+	var rev int64
+	err := w.provider.db.QueryRowContext(ctx, `SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, featureID).Scan(&rev)
+	if err != nil {
+		return "0", nil
+	}
+	return strconv.FormatInt(rev, 10), nil
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
@@ -139,7 +163,7 @@ func deny(reason string) (*writeMapping, error) {
 }
 
 // admitLayer runs write admission for one MySQL layer.
-func admitLayer(ctx context.Context, db *sql.DB, database string, l *Layer) (*writeMapping, error) {
+func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, error) {
 	if l.sql != "" {
 		return deny(fmt.Sprintf("layer %q uses custom SQL and is read-only", l.name))
 	}
@@ -148,7 +172,7 @@ func admitLayer(ctx context.Context, db *sql.DB, database string, l *Layer) (*wr
 	}
 	// Columns and PK via information_schema.
 	q := `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
-	rows, err := db.QueryContext(ctx, q, database, l.tablename)
+	rows, err := p.db.QueryContext(ctx, q, p.Database, l.tablename)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
@@ -175,8 +199,8 @@ func admitLayer(ctx context.Context, db *sql.DB, database string, l *Layer) (*wr
 	}
 	// Integer PK check.
 	var pkType string
-	err = db.QueryRowContext(ctx, `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
-		database, l.tablename, pkCols[0]).Scan(&pkType)
+	err = p.db.QueryRowContext(ctx, `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+		p.Database, l.tablename, pkCols[0]).Scan(&pkType)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect pk: %v", err)}
 	}
@@ -215,7 +239,7 @@ func admitLayer(ctx context.Context, db *sql.DB, database string, l *Layer) (*wr
 		},
 		columns:  cols,
 		writable: make(map[string]string),
-		domain:   "mysql:" + database,  // BUG-2 fix: per-database, not per-table
+		domain:   p.domainID(),
 	}
 	_ = order
 	for name := range cols {

@@ -1,126 +1,82 @@
 package wfs
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 )
 
-// LockFeature implements WFS 1.1 feature locking (WFS 2.0 removed it).
+// LockFeature implements WFS 1.1 and 2.0 feature locking.
 //
-// Locks are held in memory with an expiry. A Transaction that mutates a
-// locked feature must present the lock ID; otherwise the mutation is
-// rejected. This is the reference profile; a production deployment with
-// multiple server instances needs a shared lock store.
+// A11: WFS 2.0 DOES define LockFeature (the previous comment claiming
+// removal was wrong). Both versions are supported; wire differences are
+// handled in the HTTP adapters.
+//
+// A10: locks are held via a LockStore. The default is in-memory (single
+// process). Deployments with multiple instances MUST configure a shared
+// SQL-backed store via SetLockStore.
 
-// FeatureLock is one held lock.
+// FeatureLock is one held lock. Owner identifies the locker (A10).
 type FeatureLock struct {
 	ID         string
 	TypeName   string
 	FeatureIDs []uint64
+	Owner      string
+	Acquired   time.Time
 	Expires    time.Time
 }
 
 var (
-	lockMu     sync.Mutex
-	locks      = map[string]*FeatureLock{}
-	lockExpiry = 5 * time.Minute // default WFS 1.1 expiry
+	lockStoreMu sync.RWMutex
+	lockStore   LockStore = NewMemoryLockStore()
+	lockExpiry            = 5 * time.Minute // default expiry
 )
 
-// AcquireLock locks features and returns the lock ID.
+// SetLockStore installs a shared lock store (A10). Must be called before
+// serving traffic.
+func SetLockStore(s LockStore) {
+	lockStoreMu.Lock()
+	defer lockStoreMu.Unlock()
+	if s != nil {
+		lockStore = s
+	}
+}
+
+func getLockStore() LockStore {
+	lockStoreMu.RLock()
+	defer lockStoreMu.RUnlock()
+	return lockStore
+}
+
+// AcquireLock locks features and returns the lock, or nil on conflict.
 func AcquireLock(typeName string, ids []uint64, expiry time.Duration) *FeatureLock {
-	lockMu.Lock()
-	defer lockMu.Unlock()
-	// Expire old locks.
-	now := time.Now()
-	for id, l := range locks {
-		if now.After(l.Expires) {
-			delete(locks, id)
-		}
-	}
-	// Check for conflicts.
-	for _, l := range locks {
-		// BUG-3 fix: normalize namespace prefixes
-		if stripPrefix(l.TypeName) != stripPrefix(typeName) {
-			continue
-		}
-		for _, id := range ids {
-			for _, locked := range l.FeatureIDs {
-				if id == locked {
-					return nil // conflict
-				}
-			}
-		}
-	}
 	if expiry <= 0 {
 		expiry = lockExpiry
 	}
-	lock := &FeatureLock{
-		ID:         fmt.Sprintf("lock-%d", now.UnixNano()),
-		TypeName:   typeName,
-		FeatureIDs: ids,
-		Expires:    now.Add(expiry),
+	lock, err := getLockStore().Acquire(context.Background(), typeName, ids, "", expiry)
+	if err != nil || lock == nil {
+		return nil
 	}
-	locks[lock.ID] = lock
 	return lock
 }
 
 // ReleaseLock releases a lock by ID.
 func ReleaseLock(id string) bool {
-	lockMu.Lock()
-	defer lockMu.Unlock()
-	if _, ok := locks[id]; ok {
-		delete(locks, id)
-		return true
-	}
-	return false
+	err := getLockStore().Release(context.Background(), id)
+	return err == nil
 }
 
 // CheckLock verifies that a lock ID covers the given feature.
 // Returns nil if the lock is valid for the feature.
 func CheckLock(lockID, typeName string, featureID uint64) *Exception {
-	lockMu.Lock()
-	defer lockMu.Unlock()
-	l, ok := locks[lockID]
-	if !ok {
-		return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: fmt.Sprintf("unknown lock %q", lockID)}
-	}
-	if time.Now().After(l.Expires) {
-		delete(locks, lockID)
-		return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: "lock expired"}
-	}
-	// BUG-3 fix: normalize namespace prefixes for comparison
-	if stripPrefix(l.TypeName) != stripPrefix(typeName) {
-		return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: "lock does not cover this type"}
-	}
-	for _, id := range l.FeatureIDs {
-		if id == featureID {
-			return nil
-		}
-	}
-	return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: "lock does not cover this feature"}
+	return getLockStore().Check(context.Background(), lockID, typeName, featureID)
 }
 
 // IsLocked reports whether a feature is currently locked (by any lock).
 func IsLocked(typeName string, featureID uint64) bool {
-	lockMu.Lock()
-	defer lockMu.Unlock()
-	now := time.Now()
-	for _, l := range locks {
-		if now.After(l.Expires) {
-			continue
-		}
-		if l.TypeName != typeName {
-			continue
-		}
-		for _, id := range l.FeatureIDs {
-			if id == featureID {
-				return true
-			}
-		}
-	}
-	return false
+	return getLockStore().IsLocked(context.Background(), typeName, featureID)
 }
 
 // LockFeatureResponse renders the WFS 1.1 LockFeature response.

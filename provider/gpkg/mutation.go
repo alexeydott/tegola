@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/mos"
+	pa "github.com/alexeydott/tegola/provider/audit"
 	"github.com/alexeydott/tegola/provider"
 )
 
@@ -319,6 +321,17 @@ func normalizeGeomType(g geom.Geometry) string {
 }
 
 // BeginFeatureTx implements provider.MutationProvider.
+// CurrentRevision implements provider.RevisionReader (A03).
+func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
+	var rev int64
+	err := w.db.QueryRowContext(ctx, `SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, featureID).Scan(&rev)
+	if err != nil {
+		// Table missing or no row: revision 0.
+		return "0", nil
+	}
+	return strconv.FormatInt(rev, 10), nil
+}
+
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -393,6 +406,14 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
+	// A03: revision check + bump inside the data transaction.
+	// IfRevision (from If-Match) is validated against the locked revision
+	// row; mismatch -> 412. The bump is atomic with the data change.
+	newRev, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "sqlite")
+	if rerr != nil {
+		return provider.MutationOutcome{}, rerr
+	}
+	outcome.Revision = formatRevision(newRev)
 	// W13: audit + outbox in the same transaction as the data
 	entry := auditEntryFor(m.Collection, m.Op, outcome, t.actor, t.requestID, "")
 	if aerr := recordAuditTx(ctx, t.tx, entry, outboxEventType(m.Op)); aerr != nil {
@@ -576,4 +597,9 @@ func writablePublicNames(mp *writeMapping) []string {
 		names = append(names, pub)
 	}
 	return names
+}
+
+// formatRevision renders a revision counter for ETag/If-Match use.
+func formatRevision(n int64) string {
+	return strconv.FormatInt(n, 10)
 }

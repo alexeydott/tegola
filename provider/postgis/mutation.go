@@ -7,6 +7,10 @@ import (
 	"sync"
 
 	"github.com/alexeydott/tegola/mos"
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
+
 	"github.com/alexeydott/tegola/provider"
 	pa "github.com/alexeydott/tegola/provider/audit"
 	"github.com/jackc/pgx/v5"
@@ -59,6 +63,22 @@ func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.Sch
 		sd.Columns = append(sd.Columns, col)
 	}
 	return sd, nil
+}
+
+// domainID returns an opaque identifier for the physical PostgreSQL
+// database this provider instance is connected to.
+//
+// A02: the domain must identify the physical DB (host+dbname), not a
+// schema or table. Two provider instances pointing at different databases
+// must never share a domain even if schema names match; tables in
+// different schemas of the SAME database share one domain because
+// PostgreSQL can cover them in a single native transaction.
+func (p *Provider) domainID() string {
+	cc := p.config.ConnConfig
+	// host|port|database uniquely identifies the physical DB.
+	// User/password are excluded: same DB, different roles = same domain.
+	sum := sha256.Sum256([]byte(cc.Host + "|" + strconv.Itoa(int(cc.Port)) + "|" + cc.Database))
+	return "postgis:" + hex.EncodeToString(sum[:])[:16]
 }
 
 func (p *Provider) writer() *Writer {
@@ -120,6 +140,16 @@ func (w *Writer) mapping(ctx context.Context, layer string) (*writeMapping, erro
 	}
 	w.mappings[layer] = m
 	return m, nil
+}
+
+// CurrentRevision implements provider.RevisionReader (A03).
+func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
+	var rev int64
+	err := w.provider.pool.QueryRow(ctx, `SELECT revision FROM tegola_revisions WHERE collection = $1 AND feature_id = $2`, layer, featureID).Scan(&rev)
+	if err != nil {
+		return "0", nil
+	}
+	return strconv.FormatInt(rev, 10), nil
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
@@ -233,7 +263,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		},
 		columns:  cols,
 		writable: make(map[string]string),
-		domain:   "postgis:" + schema,  // BUG-2 fix: per-database (schema), not per-table
+		domain:   p.domainID(),
 	}
 	for name := range cols {
 		if name == m.idColumn || name == m.geomColumn {
@@ -289,6 +319,12 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
+	// A03: revision check + bump inside the data transaction.
+	newRev, rerr := checkAndBumpRevision(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision)
+	if rerr != nil {
+		return provider.MutationOutcome{}, rerr
+	}
+	outcome.Revision = strconv.FormatInt(newRev, 10)
 	// W13: audit in same transaction
 	if aerr := pa.RecordPgxTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, ""); aerr != nil {
 		return provider.MutationOutcome{}, aerr
@@ -306,4 +342,58 @@ func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) 
 func (t *featureTx) Rollback(ctx context.Context) error {
 	_ = t.tx.Rollback(ctx)
 	return nil
+}
+
+// checkAndBumpRevision implements A03 for PostGIS: the IfRevision
+// precondition is validated against the revision row locked FOR UPDATE
+// inside the data transaction, then the revision is bumped atomically.
+func checkAndBumpRevision(ctx context.Context, tx pgx.Tx, collection string, featureID uint64, want string) (int64, error) {
+	var cur int64
+	err := tx.QueryRow(ctx, `SELECT revision FROM tegola_revisions WHERE collection = $1 AND feature_id = $2 FOR UPDATE`, collection, featureID).Scan(&cur)
+	found := true
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			found = false
+		} else if isMissingTableErr(err) {
+			// Table not migrated: skip if no precondition, else fail.
+			if want != "" {
+				return 0, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "revision precondition requires tegola_revisions table (run migration)"}
+			}
+			return 0, nil
+		} else {
+			return 0, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "revision read: " + err.Error()}
+		}
+	}
+	if want != "" {
+		var wantNum int64
+		if _, err := fmt.Sscanf(want, "%d", &wantNum); err != nil {
+			return 0, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "invalid If-Revision " + want}
+		}
+		var curNum int64
+		if found {
+			curNum = cur
+		}
+		if wantNum != curNum {
+			return 0, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: have %d, want %d", curNum, wantNum)}
+		}
+	}
+	newRev := cur + 1
+	if !found {
+		newRev = 1
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO tegola_revisions (collection, feature_id, revision) VALUES ($1, $2, $3)
+		 ON CONFLICT (collection, feature_id) DO UPDATE SET revision = EXCLUDED.revision`,
+		collection, featureID, newRev); err != nil {
+		if isMissingTableErr(err) {
+			return 0, nil
+		}
+		return 0, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "revision bump: " + err.Error()}
+	}
+	return newRev, nil
+}
+
+func isMissingTableErr(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "does not exist") || strings.Contains(msg, "no such table")
 }

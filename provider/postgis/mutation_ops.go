@@ -222,15 +222,18 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 	return provider.MutationOutcome{FeatureID: id, Affected: 1}, nil
 }
 
+// A05: Replace is implemented as UPDATE of the existing row, NOT
+// DELETE+INSERT. Deleting first would fire ON DELETE CASCADE (losing child
+// rows), run DELETE triggers, and discard server-managed values
+// (created_at, incarnation). UPDATE preserves the row identity: PK,
+// FK references, and system fields stay intact.
+//
+// Omitted properties are left unchanged (documented deviation from strict
+// PUT "replace entire resource" semantics; nulling them without reliable
+// nullability metadata would be unsafe).
 func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
-	if _, err := t.delete(ctx, mp, m); err != nil {
-		return provider.MutationOutcome{}, err
-	}
-	var cols, holders []string
+	var sets []string
 	var args []interface{}
-	cols = append(cols, quoteIdent(mp.idColumn))
-	holders = append(holders, ph(1))
-	args = append(args, m.FeatureID)
 	for pub, mv := range m.Properties {
 		col, ok := mp.writable[pub]
 		if !ok {
@@ -240,8 +243,7 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		if err != nil {
 			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: err.Error()}
 		}
-		cols = append(cols, quoteIdent(col))
-		holders = append(holders, ph(len(args)+1))
+		sets = append(sets, quoteIdent(col)+" = "+ph(len(args)+1))
 		args = append(args, v)
 	}
 	if m.GeometryWKB != nil {
@@ -249,16 +251,23 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
-		cols = append(cols, quoteIdent(mp.geomColumn))
-		holders = append(holders, h[0])
+		sets = append(sets, quoteIdent(mp.geomColumn)+" = "+h[0])
 		args = a
 	}
+	if len(sets) == 0 {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
+	}
 	tbl := quoteIdent(mp.schema) + "." + quoteIdent(mp.table)
-	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tbl, strings.Join(cols, ", "), strings.Join(holders, ", "))
-	if _, err := t.tx.Exec(ctx, q, args...); err != nil {
+	q := fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s", tbl, strings.Join(sets, ", "), quoteIdent(mp.idColumn), ph(len(args)+1))
+	args = append(args, m.FeatureID)
+	tag, err := t.tx.Exec(ctx, q, args...)
+	if err != nil {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("replace: %v", err)}
 	}
-	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
+	if tag.RowsAffected() == 0 {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+	}
+	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(tag.RowsAffected())}, nil
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {

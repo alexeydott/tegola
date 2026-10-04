@@ -109,6 +109,14 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 
 // parseActionFilter extracts Property assignments and ResourceId/FeatureId
 // filters from Update/Delete inner XML.
+// parseActionFilter extracts Property assignments and ResourceId/FeatureId
+// filters from Update/Delete inner XML.
+//
+// A26 (fail-closed): only pure ID filters are accepted. The filter must
+// consist solely of fes:ResourceId / ogc:FeatureId elements (optionally
+// wrapped in a single fes:Filter). Any other predicate (PropertyIsEqualTo,
+// And/Or/Not, BBOX, etc.) is rejected explicitly instead of being silently
+// ignored, which would widen the affected set.
 func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 	props := map[string]string{}
 	var ids []uint64
@@ -116,7 +124,10 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 	var curProp, curValue string
 	var curValueXML strings.Builder
 	inValue, inRef := false, false
-	valueDepth := 0 // >0 while capturing nested XML inside <Value>
+	valueDepth := 0
+	depth := 0
+	inFilter := false
+	filterDepth := 0
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -124,8 +135,9 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			if inValue && valueDepth == 0 && t.Name.Local != "Value" {
-				// Nested XML inside <Value> (e.g. GML geometry): capture raw.
+			depth++
+			local := t.Name.Local
+			if inValue && valueDepth == 0 && local != "Value" {
 				valueDepth = 1
 				writeStartElement(&curValueXML, t)
 				continue
@@ -135,23 +147,36 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 				writeStartElement(&curValueXML, t)
 				continue
 			}
-			switch t.Name.Local {
-			case "Property":
-				curProp, curValue = "", ""
-			case "Name", "ValueReference":
-				inRef = true
-			case "Value":
-				inValue = true
-			case "FeatureId", "ResourceId":
-				for _, at := range t.Attr {
-					if at.Name.Local == "fid" || at.Name.Local == "rid" {
-						_, id, err := feature.DecodeWFSFID(at.Value)
-						if err != nil {
-							return nil, nil, fmt.Errorf("invalid feature ID %q", at.Value)
+			if local == "Filter" && !inFilter {
+				inFilter = true
+				filterDepth = depth
+				continue
+			}
+			if inFilter {
+				// A26: inside Filter, only ResourceId/FeatureId allowed.
+				switch local {
+				case "ResourceId", "FeatureId":
+					for _, at := range t.Attr {
+						if at.Name.Local == "fid" || at.Name.Local == "rid" {
+							_, id, err := feature.DecodeWFSFID(at.Value)
+							if err != nil {
+								return nil, nil, fmt.Errorf("invalid feature ID %q", at.Value)
+							}
+							ids = append(ids, id)
 						}
-						ids = append(ids, id)
 					}
+				default:
+					return nil, nil, fmt.Errorf("unsupported filter predicate <%s>: only ResourceId/FeatureId filters are supported", local)
 				}
+				continue
+			}
+			switch local {
+			case "Property":
+			curProp, curValue = "", ""
+			case "Name", "ValueReference":
+			inRef = true
+			case "Value":
+			inValue = true
 			}
 		case xml.EndElement:
 			if valueDepth > 0 {
@@ -163,6 +188,10 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 				}
 				continue
 			}
+			if inFilter && depth == filterDepth && t.Name.Local == "Filter" {
+				inFilter = false
+			}
+			depth--
 			switch t.Name.Local {
 			case "Property":
 				if curProp != "" {

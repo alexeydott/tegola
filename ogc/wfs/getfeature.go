@@ -52,6 +52,11 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 		}
 		return sq.ToGetFeature(q)
 	}
+	// A26 (fail-closed): FILTER/FES is not implemented for KVP GetFeature.
+	// Silently ignoring it would return unfiltered data. Reject explicitly.
+	if f := q["filter"]; f != "" {
+		return nil, []Exception{{Code: ExceptionOperationNotSupported, Locator: "filter", Text: "FILTER parameter is not supported in this profile; omit it or use featureId"}}
+	}
 	req := &GetFeatureRequest{Version: v, MaxFeatures: 1000}
 	typeName := q["typename"]
 	if typeName == "" {

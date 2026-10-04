@@ -1,6 +1,7 @@
 package feature
 
 import (
+	"strconv"
 	"context"
 
 	"github.com/alexeydott/tegola/provider"
@@ -106,6 +107,20 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	}
 	outcomes := make([]provider.MutationOutcome, 0, len(mutations))
 	for i := range mutations {
+		// A04: row-level policy check inside the transaction, before Apply.
+		// The key uses the bound physical relation (not the public name).
+		if i < len(bounds) {
+			policy := c.PolicyFor(mutations[i].Collection)
+			action, _ := policyActionFor(mutations[i].Op.String())
+			key := PhysicalFeatureKey{
+				Domain:   domain,
+				Relation: bounds[i].layer,
+				PK:       formatPK(mutations[i].FeatureID),
+			}
+			if d := policy.CheckRow(ctx, principal, action, key); !d.Allow {
+				return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "row policy denied: " + d.Reason}
+			}
+		}
 		outcome, err := tx.Apply(ctx, mutations[i])
 		if err != nil {
 			return empty, provider.CommitReceipt{}, err
@@ -175,4 +190,9 @@ func mutationValueToTyped(schema *SchemaDescriptor, name string, mv provider.Mut
 		tv.Boolean = mv.Boolean
 	}
 	return tv
+}
+
+// formatPK renders a feature ID for policy keys.
+func formatPK(id uint64) string {
+	return strconv.FormatUint(id, 10)
 }

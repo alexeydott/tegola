@@ -32,7 +32,12 @@ type writePolicy struct {
 	cfg config.FeaturesWriteConfig
 }
 
-func (p writePolicy) CheckCollection(_ context.Context, _ feature.Principal, action feature.PolicyAction, collection string) feature.PolicyDecision {
+func (p writePolicy) CheckCollection(_ context.Context, principal feature.Principal, action feature.PolicyAction, collection string) feature.PolicyDecision {
+	// A04: deny-by-default in production auth mode. Anonymous writes are
+	// only allowed in explicit "dev" mode.
+	if p.cfg.IsProductionAuth() && principal.Anonymous {
+		return feature.PolicyDecision{Reason: "anonymous writes denied in production auth mode (set auth_mode=\"dev\" for trusted networks only)"}
+	}
 	op := map[feature.PolicyAction]string{
 		feature.ActionInsert:  "create",
 		feature.ActionReplace: "replace",
@@ -251,10 +256,15 @@ func etagMatches(header, current string) bool {
 	return false
 }
 
-// currentETag reads the feature and computes its strong ETag exactly as
-// serveItem would serve it in JSON (same response shape with links), so
-// If-Match compares against the validator the client actually received.
+// currentETag returns the revision-based validator for a feature (A03).
+// The revision is bumped atomically with each mutation inside the native
+// transaction, so it is a strong validator: equal revisions guarantee
+// equal state. Falls back to the representation hash when the provider
+// does not track revisions.
 func (api *FeatureAPI) currentETag(r *http.Request, collection string, featureID uint64) (string, error) {
+	if rev := api.currentRevision(r.Context(), collection, featureID); rev != "" {
+		return `"` + rev + `"`, nil
+	}
 	f, err := api.service.QueryFeature(r.Context(), collection, featureID)
 	if err != nil {
 		return "", err
@@ -265,6 +275,39 @@ func (api *FeatureAPI) currentETag(r *http.Request, collection string, featureID
 		return "", err
 	}
 	return strongETag(raw), nil
+}
+
+// currentRevision returns the provider-tracked revision for a feature,
+// or "" when unavailable.
+func (api *FeatureAPI) currentRevision(ctx context.Context, collection string, featureID uint64) string {
+	p, _, err := api.service.MutationProviderFor(collection)
+	if err != nil {
+		return ""
+	}
+	rr, ok := p.(provider.RevisionReader)
+	if !ok {
+		return ""
+	}
+	rev, err := rr.CurrentRevision(ctx, collection, featureID)
+	if err != nil || rev == "" {
+		return ""
+	}
+	return rev
+}
+
+// revisionFromETag extracts the revision from a revision-based ETag
+// (`"123"`). Returns "" for hash-based or malformed ETags.
+func revisionFromETag(etag string) string {
+	etag = strings.Trim(etag, `"`)
+	if etag == "" {
+		return ""
+	}
+	for _, c := range etag {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return etag
 }
 
 // serveCreateItem implements POST /collections/{id}/items (Part 4 Create).
@@ -339,10 +382,14 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/geo+json")
 		return
 	}
-	if _, err := api.checkPrecondition(r, collection, featureID); err != nil {
+	// A03: capture the matched ETag; its revision becomes the in-tx precondition.
+	matchedETag, err := api.checkPrecondition(r, collection, featureID)
+	if err != nil {
 		api.writePreconditionError(w, r, err)
 		return
 	}
+	// A03: revision for the in-transaction CAS check ("" = no precondition).
+	ifRevision := revisionFromETag(matchedETag)
 	body, err := readMutationBody(r)
 	if err != nil {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid request body")
@@ -359,6 +406,7 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	m, err := buildReplaceMutation(schema, collection, featureID, gf)
+	m.IfRevision = ifRevision
 	if err != nil {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature")
 		return
@@ -400,10 +448,14 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/merge-patch+json")
 		return
 	}
-	if _, err := api.checkPrecondition(r, collection, featureID); err != nil {
+	// A03: capture the matched ETag; its revision becomes the in-tx precondition.
+	matchedETag, err := api.checkPrecondition(r, collection, featureID)
+	if err != nil {
 		api.writePreconditionError(w, r, err)
 		return
 	}
+	// A03: revision for the in-transaction CAS check ("" = no precondition).
+	ifRevision := revisionFromETag(matchedETag)
 	body, err := readMutationBody(r)
 	if err != nil {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid request body")
@@ -427,6 +479,7 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := buildPatchMutation(schema, collection, featureID, current, patch)
+	m.IfRevision = ifRevision
 	if err != nil {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid patch")
 		return
@@ -464,14 +517,19 @@ func (api *FeatureAPI) serveDeleteItem(w http.ResponseWriter, r *http.Request) {
 	if !api.checkWFSLock(w, r, collection, featureID) {
 		return
 	}
-	if _, err := api.checkPrecondition(r, collection, featureID); err != nil {
+	// A03: capture the matched ETag; its revision becomes the in-tx precondition.
+	matchedETag, err := api.checkPrecondition(r, collection, featureID)
+	if err != nil {
 		api.writePreconditionError(w, r, err)
 		return
 	}
+	// A03: revision for the in-transaction CAS check ("" = no precondition).
+	ifRevision := revisionFromETag(matchedETag)
 	_, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), provider.Mutation{
 		Op:         provider.MutationDelete,
 		Collection: collection,
 		FeatureID:  featureID,
+		IfRevision: ifRevision,
 	})
 	if err != nil {
 		api.writeMutationError(w, r, err)

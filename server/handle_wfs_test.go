@@ -84,7 +84,7 @@ func wfsService(t *testing.T) *features.Service {
 func wfsHandler(t *testing.T, service *features.Service) (*WFSHandler, http.Handler) {
 	t.Helper()
 	wfsCfg := config.WFSConfig{Enabled: true, BasePath: "/wfs"}.Resolved()
-	writeCfg := config.FeaturesWriteConfig{Enabled: true}
+	writeCfg := config.FeaturesWriteConfig{Enabled: true, AuthMode: "dev"}
 	writeCfg.Collections = []config.WriteCollectionConfig{
 		{ID: "wfs_sites", Operations: []string{"create", "replace", "update", "delete"}},
 	}
