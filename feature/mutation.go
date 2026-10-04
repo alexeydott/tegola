@@ -23,6 +23,11 @@ type MutationCoordinator struct {
 	// OnCommit, if set, is called after successful commit with the
 	// mutated collections (A36: for cache invalidation).
 	OnCommit func(collections []string)
+	// LockCheck, if set, is called inside the transaction before each
+	// Apply (A09: atomic guard). It receives the public collection name
+	// and the pinned physical key. Returns non-nil error to abort with
+	// MutationErrLockConflict.
+	LockCheck func(ctx context.Context, collection string, key PhysicalFeatureKey) error
 }
 
 // Execute runs one mutation as its own transaction.
@@ -154,6 +159,21 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 			}
 			if d := policy.CheckRow(ctx, principal, action, key); !d.Allow {
 				return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "row policy denied: " + d.Reason}
+			}
+		}
+		// A09: atomic lock guard inside the transaction, before Apply.
+		// The HTTP-layer check is TOCTOU; this re-checks under the tx.
+		if c.LockCheck != nil && i < len(bounds) {
+			lkey := PhysicalFeatureKey{
+				Domain:   domain,
+				Relation: bounds[i].layer,
+				PK:       formatPK(mutations[i].FeatureID),
+			}
+			if lerr := c.LockCheck(ctx, bounds[i].collection, lkey); lerr != nil {
+				return empty, provider.CommitReceipt{}, &provider.MutationError{
+					Kind:   provider.MutationErrLockConflict,
+					Reason: lerr.Error(),
+				}
 			}
 		}
 		outcome, err := tx.Apply(ctx, mutations[i])
