@@ -13,6 +13,7 @@ import (
 	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/alexeydott/tegola/ogc/wfs"
+	"github.com/alexeydott/tegola/cache"
 	"github.com/alexeydott/tegola/provider"
 )
 
@@ -45,6 +46,10 @@ func (h *WFSHandler) coordinator() *feature.MutationCoordinator {
 		},
 		ProviderFor: func(collection string) (provider.MutationProvider, string, error) {
 			return h.Service.MutationProviderFor(collection)
+		},
+		// A36: bump cache epoch after successful WFS-T mutation.
+		OnCommit: func(collections []string) {
+			cache.BumpEpoch()
 		},
 	}
 }

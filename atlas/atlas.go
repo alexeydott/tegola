@@ -139,12 +139,13 @@ func (a *Atlas) SeedMapTile(ctx context.Context, m Map, z, x, y uint) error {
 		return err
 	}
 
-	// cache key
+	// cache key (A36: include global mutation epoch for invalidation)
 	key := cache.Key{
 		MapName: m.Name,
 		Z:       z,
 		X:       x,
 		Y:       y,
+		Epoch:   cache.Epoch(),
 	}
 
 	return a.cacher.Set(ctx, &key, b)

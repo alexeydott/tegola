@@ -20,6 +20,9 @@ type MutationCoordinator struct {
 	// ProviderFor resolves the MutationProvider and provider layer name
 	// for a collection.
 	ProviderFor func(collection string) (provider.MutationProvider, string, error)
+	// OnCommit, if set, is called after successful commit with the
+	// mutated collections (A36: for cache invalidation).
+	OnCommit func(collections []string)
 }
 
 // Execute runs one mutation as its own transaction.
@@ -159,6 +162,14 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	}
 	if err != nil {
 		return empty, receipt, err
+	}
+	// A36: notify cache invalidation hook.
+	if c.OnCommit != nil {
+		cols := make([]string, 0, len(mutations))
+		for _, m := range mutations {
+			cols = append(cols, m.Collection)
+		}
+		c.OnCommit(cols)
 	}
 	return outcomes, receipt, nil
 }

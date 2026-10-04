@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"sync"
 	"context"
 	"fmt"
 	"path"
@@ -149,6 +150,9 @@ type Key struct {
 	Z         uint
 	X         uint
 	Y         uint
+	// A36: Epoch invalidates cache on mutation. Zero means "no epoch"
+	// (backward compatible with existing keys).
+	Epoch uint64
 }
 
 func (k Key) String() string {
@@ -156,12 +160,41 @@ func (k Key) String() string {
 	// join with forward slashes regardless of the OS separator (P6-33).
 	// empty MapName/LayerName collapse away, which is load-bearing for
 	// synthetic (map-less) keys (P5-17).
-	return path.Join(
+	base := path.Join(
 		k.MapName,
 		k.LayerName,
 		strconv.FormatUint(uint64(k.Z), 10),
 		strconv.FormatUint(uint64(k.X), 10),
 		strconv.FormatUint(uint64(k.Y), 10))
+	// A36: epoch prefixes the key when non-zero.
+	if k.Epoch != 0 {
+		return path.Join("e"+strconv.FormatUint(k.Epoch, 10), base)
+	}
+	return base
+}
+
+// A36: global mutation epoch for cache invalidation. Bumped after every
+// successful mutation; included in tile cache keys. Conservative
+// (invalidates all maps) but correct. Per-map epochs are a future
+// optimization.
+var globalEpoch = struct {
+	sync.RWMutex
+	v uint64
+}{}
+
+// BumpEpoch increments the global mutation epoch. Call after successful commit.
+func BumpEpoch() uint64 {
+	globalEpoch.Lock()
+	defer globalEpoch.Unlock()
+	globalEpoch.v++
+	return globalEpoch.v
+}
+
+// Epoch returns the current global mutation epoch (0 if no mutations yet).
+func Epoch() uint64 {
+	globalEpoch.RLock()
+	defer globalEpoch.RUnlock()
+	return globalEpoch.v
 }
 
 // InitFunc initialize a cache given a config map.
