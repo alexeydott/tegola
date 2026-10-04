@@ -158,6 +158,17 @@ func (w *Writer) mapping(ctx context.Context, layer string) (*writeMapping, erro
 	return m, nil
 }
 
+// mappingCached returns the cached mapping without pool queries (A12).
+// Use inside Apply (tx holds a pool connection); fail if not admitted.
+func (w *Writer) mappingCached(layer string) (*writeMapping, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if m, ok := w.mappings[layer]; ok {
+		return m, nil
+	}
+	return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("layer %q not admitted before tx (call DescribeWritable first)", layer)}
+}
+
 // CurrentRevision implements provider.RevisionReader (A03).
 func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
 	var rev int64
@@ -365,7 +376,8 @@ type featureTx struct {
 }
 
 func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.MutationOutcome, error) {
-	mp, err := t.writer.mapping(ctx, m.Collection)
+	// A12: use cached mapping; no pool queries inside tx.
+	mp, err := t.writer.mappingCached(m.Collection)
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
