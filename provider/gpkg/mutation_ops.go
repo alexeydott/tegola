@@ -1,6 +1,7 @@
 package gpkg
 
 import (
+	"database/sql"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -344,6 +345,14 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 }
 
 func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	// R04: verify existence to distinguish not-found from no-op.
+	exists, err := t.existsInTx(ctx, mp, m.FeatureID)
+	if err != nil {
+		return provider.MutationOutcome{}, err
+	}
+	if !exists {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+	}
 	_, found, err := t.selectRow(ctx, mp, m.FeatureID)
 	if err != nil {
 		return provider.MutationOutcome{}, err
@@ -407,14 +416,35 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		return provider.MutationOutcome{}, mapSQLError(err)
 	}
 	n, _ := res.RowsAffected()
-	if n != 1 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "replace affected unexpected row count"}
-	}
+	// R04: n==0 can be no-op; existence verified separately.
+	_ = n
 	t.recordMod(mp, m.FeatureID, geomBounds, geomTouched)
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
+// existsInTx checks feature existence within the tx (R04).
+func (t *featureTx) existsInTx(ctx context.Context, mp *writeMapping, featureID uint64) (bool, error) {
+	var one int
+	q := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = ? LIMIT 1", quoteIdent(mp.table), quoteIdent(mp.idColumn))
+	err := t.tx.QueryRowContext(ctx, q, featureID).Scan(&one)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, mapSQLError(err)
+	}
+	return true, nil
+}
+
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	// R04: verify existence to distinguish not-found from no-op.
+	exists, err := t.existsInTx(ctx, mp, m.FeatureID)
+	if err != nil {
+		return provider.MutationOutcome{}, err
+	}
+	if !exists {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+	}
 	_, found, err := t.selectRow(ctx, mp, m.FeatureID)
 	if err != nil {
 		return provider.MutationOutcome{}, err
@@ -471,9 +501,8 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 		return provider.MutationOutcome{}, mapSQLError(err)
 	}
 	n, _ := res.RowsAffected()
-	if n != 1 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "update affected unexpected row count"}
-	}
+	// R04: n==0 can be no-op; existence verified separately.
+	_ = n
 	t.recordMod(mp, m.FeatureID, geomBounds, geomTouched)
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
