@@ -58,6 +58,38 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 	}
 }
 
+// A32: compute bounds from WKB for derived bounds columns.
+func geometryBoundsFromWKB(wkbBytes []byte) ([4]float64, error) {
+	var b [4]float64
+	g, err := wkb.DecodeBytes(wkbBytes)
+	if err != nil {
+		return b, err
+	}
+	pts, err := geom.GetCoordinates(g)
+	if err != nil {
+		return b, err
+	}
+	if len(pts) == 0 {
+		return b, fmt.Errorf("empty geometry has no bounds")
+	}
+	b = [4]float64{pts[0][0], pts[0][0], pts[0][1], pts[0][1]}
+	for _, p := range pts[1:] {
+		if p[0] < b[0] {
+			b[0] = p[0]
+		}
+		if p[0] > b[1] {
+			b[1] = p[0]
+		}
+		if p[1] < b[2] {
+			b[2] = p[1]
+		}
+		if p[1] > b[3] {
+			b[3] = p[1]
+		}
+	}
+	return b, nil
+}
+
 func checkGeometryType(g geom.Geometry, want string) error {
 	if want == "" {
 		return nil
@@ -209,6 +241,17 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 		cols = append(cols, quoteIdent(mp.geomColumn))
 		holders = append(holders, h[0])
 		args = a
+		// A32: maintain derived bounds columns.
+		if mp.bboxFields[0] != "" {
+			b, berr := geometryBoundsFromWKB(m.GeometryWKB)
+			if berr == nil {
+				for i, bf := range mp.bboxFields {
+					cols = append(cols, quoteIdent(bf))
+					holders = append(holders, ph(len(args)+1))
+					args = append(args, b[i])
+				}
+			}
+		}
 	}
 	if len(cols) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "insert carries no properties or geometry"}
@@ -253,9 +296,24 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		}
 		sets = append(sets, quoteIdent(mp.geomColumn)+" = "+h[0])
 		args = a
+		// A32: maintain derived bounds columns.
+		if mp.bboxFields[0] != "" {
+			if b, berr := geometryBoundsFromWKB(m.GeometryWKB); berr == nil {
+				for i, bf := range mp.bboxFields {
+					sets = append(sets, quoteIdent(bf)+" = "+ph(len(args)+1))
+					args = append(args, b[i])
+				}
+			}
+		}
 	} else if m.GeometryAbsent {
 		// A18: explicit geometry clear.
 		sets = append(sets, quoteIdent(mp.geomColumn)+" = NULL")
+		// A32: clear derived bounds too.
+		if mp.bboxFields[0] != "" {
+			for _, bf := range mp.bboxFields {
+				sets = append(sets, quoteIdent(bf)+" = NULL")
+			}
+		}
 	}
 	if len(sets) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
@@ -299,9 +357,24 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 		}
 		sets = append(sets, quoteIdent(mp.geomColumn)+" = "+h[0])
 		args = a
+		// A32: maintain derived bounds columns.
+		if mp.bboxFields[0] != "" {
+			if b, berr := geometryBoundsFromWKB(m.GeometryWKB); berr == nil {
+				for i, bf := range mp.bboxFields {
+					sets = append(sets, quoteIdent(bf)+" = "+ph(len(args)+1))
+					args = append(args, b[i])
+				}
+			}
+		}
 	} else if m.GeometryAbsent {
 		// A18: explicit geometry clear.
 		sets = append(sets, quoteIdent(mp.geomColumn)+" = NULL")
+		// A32: clear derived bounds too.
+		if mp.bboxFields[0] != "" {
+			for _, bf := range mp.bboxFields {
+				sets = append(sets, quoteIdent(bf)+" = NULL")
+			}
+		}
 	}
 	if len(sets) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "update carries no changes"}

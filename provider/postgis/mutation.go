@@ -116,6 +116,8 @@ type writeMapping struct {
 	writable   map[string]string
 	readOnly   []string
 	domain     string
+	// A32: bounds columns (minx,maxx,miny,maxy); empty if not configured.
+	bboxFields [4]string
 }
 
 func (w *Writer) DescribeWritable(ctx context.Context, layer string) (provider.WriteDescriptor, error) {
@@ -334,6 +336,8 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		geomFormat: format,
 		geomType:   normalizeGeomType(l.geomType),
 		geomSRID:   l.srid,
+		// A32: bounds columns for derived bounds maintenance.
+		bboxFields: [4]string{l.bboxFields[0], l.bboxFields[1], l.bboxFields[2], l.bboxFields[3]},
 		mosOpts: mos.Options{
 			Precision:  l.mosConfig.Precision,
 			UnitFactor: l.mosConfig.UnitFactor,
