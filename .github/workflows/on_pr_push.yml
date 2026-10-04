@@ -111,6 +111,9 @@ jobs:
 
         # Mutation regression suites use only the disposable compose databases.
         TEGOLA_REVIEW_MYSQL_DSN: u:p@tcp(localhost:3306)/test
+        # Isolated follow-up fixtures create databases and restricted test users.
+        TEGOLA_REVIEW_MYSQL_ADMIN_DSN: root:root@tcp(localhost:3306)/test
+        TEGOLA_MOS_MYSQL_DSN: u:p@tcp(localhost:3306)/test
         TEGOLA_REVIEW_POSTGIS_DSN: postgres://postgres:postgres@localhost:5432/tegola?sslmode=disable
 
         # HANA tests: only run when the connection string is provided as a repo secret.
