@@ -304,19 +304,38 @@ func (api *FeatureAPI) currentRevision(ctx context.Context, collection string, f
 	return rev
 }
 
-// revisionFromETag extracts the revision from a revision-based ETag
-// (`"123"`). Returns "" for hash-based or malformed ETags.
+// revisionFromETag extracts the revision from a revision-based ETag.
+// A38: ETag format is `"incarnation.revision"` (e.g. `"0.5"`, `"1.0"`).
+// For backward compatibility, plain `"123"` is treated as incarnation 0.
+// Returns "" for hash-based or malformed ETags.
+// Returns the full "incarnation.revision" string for CAS comparison.
 func revisionFromETag(etag string) string {
 	etag = strings.Trim(etag, `"`)
 	if etag == "" {
 		return ""
 	}
+	// A38: allow "incarnation.revision" format.
+	parts := strings.Split(etag, ".")
+	if len(parts) == 2 {
+		for _, p := range parts {
+			if p == "" {
+				return ""
+			}
+			for _, c := range p {
+				if c < '0' || c > '9' {
+					return ""
+				}
+			}
+		}
+		return etag // return full "inc.rev" for CAS
+	}
+	// Legacy: plain revision number (incarnation 0).
 	for _, c := range etag {
 		if c < '0' || c > '9' {
 			return ""
 		}
 	}
-	return etag
+	return "0." + etag // normalize to new format
 }
 
 // serveCreateItem implements POST /collections/{id}/items (Part 4 Create).

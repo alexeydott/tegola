@@ -24,21 +24,30 @@ func checkRevisionCAS(ctx context.Context, tx *sql.Tx, collection string, featur
 	if ifRevision == "" {
 		return nil
 	}
-	var curRev int64
+	// A38: ifRevision is "incarnation.revision" format.
+	var wantInc, wantRev string
+	if parts := strings.Split(ifRevision, "."); len(parts) == 2 {
+		wantInc, wantRev = parts[0], parts[1]
+	} else {
+		wantInc, wantRev = "0", ifRevision
+	}
+	var curRev, curInc int64
 	err := tx.QueryRowContext(ctx,
-		`SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ? FOR UPDATE`,
-		collection, featureID).Scan(&curRev)
+		`SELECT revision, incarnation FROM tegola_revisions WHERE collection = ? AND feature_id = ? FOR UPDATE`,
+		collection, featureID).Scan(&curRev, &curInc)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			if ifRevision != "0" {
-				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0", ifRevision)}
+			if wantRev != "0" || wantInc != "0" {
+				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0.0", ifRevision)}
 			}
 			return nil
 		}
 		return mapSQLError(err)
 	}
-	if strconv.FormatInt(curRev, 10) != ifRevision {
-		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %d", ifRevision, curRev)}
+	curStr := strconv.FormatInt(curInc, 10) + "." + strconv.FormatInt(curRev, 10)
+	wantStr := wantInc + "." + wantRev
+	if curStr != wantStr {
+		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %s", wantStr, curStr)}
 	}
 	return nil
 }
@@ -78,8 +87,9 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 		return provider.MutationOutcome{}, rerr
 	}
 	if bump.New >= 0 {
-			outcome.Revision = strconv.FormatInt(bump.New, 10)
-			outcome.RevisionBefore = strconv.FormatInt(bump.Old, 10)
+			// A38: revision format is "incarnation.revision".
+			outcome.Revision = strconv.FormatInt(bump.NewInc, 10) + "." + strconv.FormatInt(bump.New, 10)
+			outcome.RevisionBefore = strconv.FormatInt(bump.OldInc, 10) + "." + strconv.FormatInt(bump.Old, 10)
 		}
 	// W13: audit in same transaction
 	if aerr := t.recordAudit(ctx, m, outcome); aerr != nil {

@@ -36,18 +36,21 @@ const (
 	collection TEXT NOT NULL,
 	feature_id INTEGER NOT NULL,
 	revision INTEGER NOT NULL DEFAULT 0,
+	incarnation INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (collection, feature_id)
 );`
 	RevisionMySQLDDL = `CREATE TABLE IF NOT EXISTS tegola_revisions (
 	collection VARCHAR(255) NOT NULL,
 	feature_id BIGINT NOT NULL,
 	revision BIGINT NOT NULL DEFAULT 0,
+	incarnation BIGINT NOT NULL DEFAULT 0,
 	PRIMARY KEY (collection, feature_id)
 );`
 	RevisionPostgresDDL = `CREATE TABLE IF NOT EXISTS tegola_revisions (
 	collection TEXT NOT NULL,
 	feature_id BIGINT NOT NULL,
 	revision BIGINT NOT NULL DEFAULT 0,
+	incarnation BIGINT NOT NULL DEFAULT 0,
 	PRIMARY KEY (collection, feature_id)
 );`
 )
@@ -61,18 +64,21 @@ const (
 type RevisionBump struct {
 	Old int64
 	New int64
+	// A38: incarnation (entity generation).
+	OldInc int64
+	NewInc int64
 }
 
 func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string, featureID uint64, want string, dialect string) (RevisionBump, error) {
-	var cur int64
+	var cur, curInc int64
 	var found bool
 	// Lock the revision row within this transaction.
 	// MySQL: SELECT ... FOR UPDATE. SQLite: the tx itself serializes.
-	q := `SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ?`
+	q := `SELECT revision, incarnation FROM tegola_revisions WHERE collection = ? AND feature_id = ?`
 	if dialect == "mysql" {
 		q += ` FOR UPDATE`
 	}
-	err := tx.QueryRowContext(ctx, q, collection, featureID).Scan(&cur)
+	err := tx.QueryRowContext(ctx, q, collection, featureID).Scan(&cur, &curInc)
 	switch {
 	case err == nil:
 		found = true
@@ -93,32 +99,49 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision read: %v", err)}
 	}
 	if want != "" {
-		// want is the If-Match value; "0" means "no revision yet".
-		var wantNum int64
-		if _, err := fmt.Sscanf(want, "%d", &wantNum); err != nil {
-			return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
+		// A38: want is "incarnation.revision" format; "0.0" means "no revision yet".
+		var wantInc, wantRev int64
+		if parts := strings.Split(want, "."); len(parts) == 2 {
+			if _, err := fmt.Sscanf(parts[0], "%d", &wantInc); err != nil {
+				return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
+			}
+			if _, err := fmt.Sscanf(parts[1], "%d", &wantRev); err != nil {
+				return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
+			}
+		} else {
+			// Legacy: plain revision number (incarnation 0).
+			if _, err := fmt.Sscanf(want, "%d", &wantRev); err != nil {
+				return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
+			}
+			wantInc = 0
 		}
-		var curNum int64
+		var curRevNum, curIncNum int64
 		if found {
-			curNum = cur
+			curRevNum = cur
+			curIncNum = curInc
 		}
-		if wantNum != curNum {
-			return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: have %d, want %d", curNum, wantNum)}
+		if wantRev != curRevNum || wantInc != curIncNum {
+			return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: have %d.%d, want %d.%d", curIncNum, curRevNum, wantInc, wantRev)}
 		}
 	}
 	newRev := cur + 1
 	if !found {
 		newRev = 1
 	}
+	// A38: preserve incarnation on bump (only DELETE increments it).
+	newInc := curInc
+	if !found {
+		newInc = 0
+	}
 	if dialect == "mysql" {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO tegola_revisions (collection, feature_id, revision) VALUES (?, ?, ?)
-			 ON DUPLICATE KEY UPDATE revision = ?`, collection, featureID, newRev, newRev)
+			`INSERT INTO tegola_revisions (collection, feature_id, revision, incarnation) VALUES (?, ?, ?, ?)
+			 ON DUPLICATE KEY UPDATE revision = ?, incarnation = ?`, collection, featureID, newRev, newInc, newRev, newInc)
 	} else {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO tegola_revisions (collection, feature_id, revision) VALUES (?, ?, ?)
-			 ON CONFLICT(collection, feature_id) DO UPDATE SET revision = excluded.revision`,
-			collection, featureID, newRev)
+			`INSERT INTO tegola_revisions (collection, feature_id, revision, incarnation) VALUES (?, ?, ?, ?)
+			 ON CONFLICT(collection, feature_id) DO UPDATE SET revision = excluded.revision, incarnation = excluded.incarnation`,
+			collection, featureID, newRev, newInc)
 	}
 	if err != nil {
 		if IsMissingTable(err) {
@@ -128,10 +151,13 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision bump: %v", err)}
 	}
 	oldRev := cur
+	oldInc := curInc
 	if !found {
 		oldRev = 0
+		oldInc = 0
 	}
-	return RevisionBump{Old: oldRev, New: newRev}, nil
+	// newInc was set earlier (preserved from curInc, or 0 if not found).
+	return RevisionBump{Old: oldRev, New: newRev, OldInc: oldInc, NewInc: newInc}, nil
 }
 
 // isMissingTable reports whether err is a "no such table" error.

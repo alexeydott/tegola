@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS tegola_revisions (
 	collection TEXT NOT NULL,
 	feature_id INTEGER NOT NULL,
 	revision INTEGER NOT NULL DEFAULT 0,
+	incarnation INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (collection, feature_id)
 );
 CREATE TABLE IF NOT EXISTS tegola_schema_version (
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS tegola_revisions (
 	collection VARCHAR(255) NOT NULL,
 	feature_id BIGINT NOT NULL,
 	revision BIGINT NOT NULL DEFAULT 0,
+	incarnation BIGINT NOT NULL DEFAULT 0,
 	PRIMARY KEY (collection, feature_id)
 ) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS tegola_schema_version (
@@ -103,6 +105,7 @@ CREATE TABLE IF NOT EXISTS tegola_revisions (
 	collection TEXT NOT NULL,
 	feature_id BIGINT NOT NULL,
 	revision BIGINT NOT NULL DEFAULT 0,
+	incarnation BIGINT NOT NULL DEFAULT 0,
 	PRIMARY KEY (collection, feature_id)
 );
 CREATE TABLE IF NOT EXISTS tegola_schema_version (

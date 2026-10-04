@@ -27,21 +27,30 @@ func checkRevisionCAS(ctx context.Context, tx pgx.Tx, collection string, feature
 	if ifRevision == "" {
 		return nil
 	}
-	var curRev int64
+	// A38: ifRevision is "incarnation.revision" format.
+	var wantInc, wantRev string
+	if parts := strings.Split(ifRevision, "."); len(parts) == 2 {
+		wantInc, wantRev = parts[0], parts[1]
+	} else {
+		wantInc, wantRev = "0", ifRevision
+	}
+	var curRev, curInc int64
 	err := tx.QueryRow(ctx,
-		`SELECT revision FROM tegola_revisions WHERE collection = $1 AND feature_id = $2 FOR UPDATE`,
-		collection, featureID).Scan(&curRev)
+		`SELECT revision, incarnation FROM tegola_revisions WHERE collection = $1 AND feature_id = $2 FOR UPDATE`,
+		collection, featureID).Scan(&curRev, &curInc)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			if ifRevision != "0" {
-				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0", ifRevision)}
+			if wantRev != "0" || wantInc != "0" {
+				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0.0", ifRevision)}
 			}
 			return nil
 		}
 		return &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision check: %v", err)}
 	}
-	if strconv.FormatInt(curRev, 10) != ifRevision {
-		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %d", ifRevision, curRev)}
+	curStr := strconv.FormatInt(curInc, 10) + "." + strconv.FormatInt(curRev, 10)
+	wantStr := wantInc + "." + wantRev
+	if curStr != wantStr {
+		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %s", wantStr, curStr)}
 	}
 	return nil
 }
