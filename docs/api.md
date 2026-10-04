@@ -360,6 +360,13 @@ implemented JSON Patch subset. `/collections/{collection}/schema` under the
 Feature API base path describes mutation input; Queryables describes filtering,
 not write admission. Consult the live OpenAPI document for installed methods.
 
+Property defaults apply to omitted input, not to explicit null. Non-nullable
+attributes and geometry reject null during validation. Date-time properties
+require RFC3339 timestamps; their schema format is not merely a UI hint.
+Create input does not require a client feature ID: the source must generate its
+primary key. An update-only collection does not acquire create capability merely
+because it has an integer key.
+
 Use the ETag from the same source-feature response as the editing draft, and
 send it with If-Match. A conflict returns 412; a missing required precondition
 returns 428. ETags include revision/incarnation and a representation digest;
@@ -370,6 +377,34 @@ require source reconciliation before any retry.
 
 The [write scope](wfs-scope-limitations.md) documents unsupported locks,
 cache policy, external-writer limitations and the bounded embedded editor.
+
+### WFS names, versions and operation links
+
+Capabilities operation links follow the same public URL policy as Feature API:
+the resolved URL root, configured `webserver.uri_prefix`, and WFS `basepath`
+are all included. A service mounted at `/v1/wfs` behind a configured HTTPS proxy
+must advertise that public path and scheme, not an internal unprefixed URL.
+
+Use the feature type QName advertised by capabilities, for example `app:sites`.
+The QName resolves to the local published collection ID `sites`; it is not a new
+collection ID. Qualified property references resolve against that collection's
+application namespace. Unqualified local aliases remain accepted. An undeclared,
+foreign or malformed prefix is rejected rather than stripped arbitrarily.
+
+For XML requests declare prefixes in scope. For KVP requests an alternative
+prefix can be bound with `NAMESPACES=xmlns(prefix,http://example.com/tegola/sites)`
+for the `sites` collection; the WFS 1.1 `xmlns(prefix=URI)` form is also accepted.
+The parameter aliases `NAMESPACE` and `NAMESPACES` are supported. The advertised
+`app` prefix fallback applies only to KVP QName fields. An XML FES expression
+needs its own declarations or an explicit request namespace binding; there is
+no implicit `app` binding inside XML. Do not reuse a different collection's
+namespace URI for a filter property.
+
+GetPropertyValue supports the configured WFS 2.0.0 and 2.0.2 versions, not 1.1.0.
+Transaction responses retain the negotiated version instead of upgrading 2.0.0
+to 2.0.2. The KVP `BBOX` parameter remains supported, but an XML FES/Filter
+`BBOX` predicate is outside this parser's subset and is not advertised as a
+spatial filter operator. These distinct paths are not interchangeable.
 
 ## See Also
 

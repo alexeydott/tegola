@@ -237,8 +237,15 @@ For standard providers other than `mvt_postgis`, `TEGOLA_OPTIONS` accepts comma-
 
 ## Explicit WFS and write publication
 
-WFS and writes are opt-in. After configuring `[features]` and its source
-collections, a production write profile can include:
+WFS and writes are opt-in. The stock `tegola serve` executable has no production
+authentication adapter. It rejects enabled writes with `auth_mode = "production"`
+or an omitted auth mode at startup, instead of starting unusable write routes.
+An HTTP proxy or an Authorization header alone does not install an authenticator
+in Tegola.
+
+The following production configuration is for a custom host that supplies the
+authentication adapter to both Feature API and WFS handlers; it is not a working
+stock CLI authentication setup:
 
 ```toml
 [wfs]
@@ -260,6 +267,9 @@ Production requires an installed authenticator; anonymous writes are denied.
 `auth_mode = "dev"` deliberately permits anonymous writes and is only appropriate
 for a trusted disposable test deployment. The provider must separately admit
 the physical layer for writing. Enabling WFS alone never enables transactions.
+Create additionally requires a database-generated primary key; an ordinary
+integer primary key may still be admitted for update/delete when create is not
+configured. Operation names are case-insensitive, including OpenAPI publication.
 Read [write scope and operating limits](wfs-scope-limitations.md) before enabling
 this profile, including the cache policy required on all reader replicas.
 

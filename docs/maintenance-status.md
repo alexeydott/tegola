@@ -18,6 +18,16 @@ tile diagnostics work. Source tag `v0.21.0-fork.2` binds
 original dates and scopes. Source integration and release builds do not extend
 those records into unperformed database or deployed AWS acceptance.
 
+## WFS and MOS follow-up (2026-10-04)
+
+The WFS/Feature API write work and PR #2 follow-up have their own
+[scope contract](wfs-scope-limitations.md), [native evidence matrix](provider-matrix.md)
+and [recovery requirements](operational.md). The follow-up addresses protocol
+names/versions/public URLs, schema validation and write admission. Native spatial
+column and raw MOS results are recorded separately; neither establishes full
+WFS/Part 4 certification or production restore/fault acceptance. This source work
+does not move the historical `v0.21.0-fork.2` release tag.
+
 ## Markdown audit scope
 
 The audit enumerated all 199 Git-tracked `.md`/`.markdown` files, ignoring
