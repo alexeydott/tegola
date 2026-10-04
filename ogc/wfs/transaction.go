@@ -67,7 +67,7 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			continue
 		}
 		if act.Op == provider.MutationUpdate || act.Op == provider.MutationDelete {
-			props, ids, err := parseActionFilter(a.Inner)
+			props, ids, err := parseActionFilter(a.Inner, act.TypeName)
 			if err != nil {
 				return nil, "", err
 			}
@@ -93,7 +93,7 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			act.Properties = props
 			act.FeatureXML = geomXML
 			// Extract FilterIDs from the Filter element
-			_, ids, ferr := parseActionFilter(a.Inner)
+			_, ids, ferr := parseActionFilter(a.Inner, act.TypeName)
 			if ferr != nil {
 				return nil, "", ferr
 			}
@@ -117,7 +117,18 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 // wrapped in a single fes:Filter). Any other predicate (PropertyIsEqualTo,
 // And/Or/Not, BBOX, etc.) is rejected explicitly instead of being silently
 // ignored, which would widen the affected set.
-func parseActionFilter(inner string) (map[string]string, []uint64, error) {
+// fidMatchesType checks if a FID collection matches the action typeName (R11).
+func fidMatchesType(fidColl, typeName string) bool {
+	strip := func(s string) string {
+		if i := strings.LastIndex(s, ":"); i >= 0 {
+			return s[i+1:]
+		}
+		return s
+	}
+	return strip(fidColl) == strip(typeName)
+}
+
+func parseActionFilter(inner, typeName string) (map[string]string, []uint64, error) {
 	props := map[string]string{}
 	var ids []uint64
 	dec := xml.NewDecoder(strings.NewReader(inner))
@@ -158,9 +169,14 @@ func parseActionFilter(inner string) (map[string]string, []uint64, error) {
 				case "ResourceId", "FeatureId":
 					for _, at := range t.Attr {
 						if at.Name.Local == "fid" || at.Name.Local == "rid" {
-							_, id, err := feature.DecodeWFSFID(at.Value)
+							// R11: verify FID belongs to the action's typeName.
+							// A ResourceId like "other.1" must not target "sites.1".
+							fidColl, id, err := feature.DecodeWFSFID(at.Value)
 							if err != nil {
 								return nil, nil, fmt.Errorf("invalid feature ID %q", at.Value)
+							}
+							if fidColl != "" && !fidMatchesType(fidColl, typeName) {
+								return nil, nil, fmt.Errorf("feature ID %q does not belong to typeName %q", at.Value, typeName)
 							}
 							ids = append(ids, id)
 						}
