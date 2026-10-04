@@ -94,6 +94,46 @@ func TestEncodeWFSFIDSanitizes(t *testing.T) {
 	}
 }
 
+// A31: FID encoding must be injective and NCName-valid.
+// 'a:b' and 'a_b' must produce distinct FIDs; '%' is illegal in NCName.
+func TestFIDInjectiveNCName(t *testing.T) {
+	fid1, err := EncodeWFSFID("a:b", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid2, err := EncodeWFSFID("a_b", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fid1 == fid2 {
+		t.Fatalf("not injective: %q == %q", fid1, fid2)
+	}
+	// No '%' in output (illegal in XML NCName).
+	for _, fid := range []string{fid1, fid2} {
+		for _, r := range fid {
+			if r == '%' {
+				t.Fatalf("illegal percent in NCName %q", fid)
+			}
+		}
+	}
+	// Round-trip.
+	for _, tc := range []struct{ coll string; id uint64 }{
+		{"a:b", 1}, {"a_b", 2}, {"caf\u00e9", 3}, {"_lead", 4}, {"9start", 5},
+	} {
+		fid, err := EncodeWFSFID(tc.coll, tc.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotColl, gotID, err := DecodeWFSFID(fid)
+		if err != nil {
+			t.Fatalf("decode %q: %v", fid, err)
+		}
+		if gotColl != tc.coll || gotID != tc.id {
+			t.Fatalf("round-trip %q: got %q,%d want %q,%d", fid, gotColl, gotID, tc.coll, tc.id)
+		}
+	}
+}
+
 func TestPhysicalFeatureKey(t *testing.T) {
 	k := PhysicalFeatureKey{Domain: "gpkg", Relation: "parcels", PK: "42"}
 	if k.String() != "gpkg.parcels.42" {

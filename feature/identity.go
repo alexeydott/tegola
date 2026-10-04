@@ -35,9 +35,9 @@ func (k PhysicalFeatureKey) String() string {
 
 // EncodeWFSFID reversibly encodes collection + numeric ID as a WFS
 // feature ID. The result satisfies XML NCName constraints.
-// A31: injective encoding via percent-escaping. Unlike sanitizeNCName
-// (which mapped both "a:b" and "a_b" to "a_b"), this is reversible:
-// invalid chars become %XX, % becomes %25.
+// A31: injective NCName-safe encoding via _xHH_ escapes. Unlike the old
+// sanitizeNCName (which mapped both "a:b" and "a_b" to "a_b"), this is
+// reversible and valid per XML NCName (no '%' which is illegal in NCName).
 func EncodeWFSFID(collection string, id uint64) (string, error) {
 	if collection == "" {
 		return "", fmt.Errorf("empty collection for FID encoding")
@@ -71,22 +71,32 @@ func DecodeWFSFID(fid string) (collection string, id uint64, err error) {
 // encodeNCName percent-encodes chars invalid in XML NCName.
 // Valid chars pass through; '%' -> '%25', others -> '%XX'.
 // Injective: distinct inputs produce distinct outputs.
+// encodeNCName reversibly encodes a string as a valid XML NCName.
+// A31: uses _xHH_ escapes (not percent-encoding; '%' is invalid in NCName).
+// Valid NCName chars pass through; '_' -> '_x5F_' to avoid ambiguity;
+// other invalid chars -> '_xHH_' per UTF-8 byte. Injective and NCName-safe.
 func encodeNCName(s string) string {
 	var b strings.Builder
 	for i, r := range s {
 		valid := false
 		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
 			valid = true
+		case r == '_':
+			// Escape underscore to avoid ambiguity with _xHH_ sequences.
+			for _, c := range []byte("_") {
+				fmt.Fprintf(&b, "_x%02X_", c)
+			}
+			continue
 		case r >= '0' && r <= '9', r == '.', r == '-':
 			valid = i != 0
 		}
 		if valid {
 			b.WriteRune(r)
 		} else {
-			// Percent-encode the UTF-8 bytes.
+			// _xHH_ escape per UTF-8 byte.
 			for _, c := range []byte(string(r)) {
-				fmt.Fprintf(&b, "%%%02X", c)
+				fmt.Fprintf(&b, "_x%02X_", c)
 			}
 		}
 	}
@@ -94,8 +104,8 @@ func encodeNCName(s string) string {
 	if out == "" {
 		return ""
 	}
-	// Ensure valid NCName start.
-	if c := out[0]; c >= '0' && c <= '9' || c == '.' || c == '-' {
+	// Ensure valid NCName start (letter or underscore).
+	if c := out[0]; (c >= '0' && c <= '9') || c == '.' || c == '-' {
 		out = "_" + out
 	}
 	return out
@@ -105,17 +115,15 @@ func encodeNCName(s string) string {
 func decodeNCName(s string) (string, error) {
 	var b strings.Builder
 	for i := 0; i < len(s); {
-		if s[i] == '%' {
-			if i+2 >= len(s) {
-				return "", fmt.Errorf("truncated percent-encoding in %q", s)
-			}
+		if i+5 <= len(s) && s[i] == '_' && s[i+1] == 'x' && s[i+4] == '_' {
+			// _xHH_ escape.
 			var v byte
-			_, err := fmt.Sscanf(s[i:i+3], "%%%02X", &v)
+			_, err := fmt.Sscanf(s[i:i+5], "_x%02X_", &v)
 			if err != nil {
-				return "", fmt.Errorf("invalid percent-encoding in %q", s)
+				return "", fmt.Errorf("invalid _xHH_ escape in %q", s)
 			}
 			b.WriteByte(v)
-			i += 3
+			i += 5
 		} else {
 			b.WriteByte(s[i])
 			i++
