@@ -257,15 +257,33 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	if err := rows.Err(); err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
-	// PK via pg_constraint.
-	var pkCol string
-	err = p.pool.QueryRow(ctx, `
+	// A08: PK via pg_constraint. Must be exactly one column; composite
+	// PKs are rejected at admission (not silently truncated to first col).
+	pkRows, err := p.pool.Query(ctx, `
 		SELECT a.attname FROM pg_index i
 		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-		WHERE i.indrelid = $1::regclass AND i.indisprimary`, schema+"."+table).Scan(&pkCol)
+		WHERE i.indrelid = $1::regclass AND i.indisprimary
+		ORDER BY array_position(i.indkey, a.attnum)`, schema+"."+table)
 	if err != nil {
-		return deny(fmt.Sprintf("layer %q: no single-column primary key found", l.name))
+		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect pk: %v", err)}
 	}
+	var pkCols []string
+	for pkRows.Next() {
+		var c string
+		if err := pkRows.Scan(&c); err != nil {
+			pkRows.Close()
+			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect pk: %v", err)}
+		}
+		pkCols = append(pkCols, c)
+	}
+	pkRows.Close()
+	if len(pkCols) == 0 {
+		return deny(fmt.Sprintf("layer %q: no primary key found", l.name))
+	}
+	if len(pkCols) > 1 {
+		return deny(fmt.Sprintf("layer %q: composite primary key %v not supported (need single-column PK)", l.name, pkCols))
+	}
+	pkCol := pkCols[0]
 	// Integer PK check.
 	var pkType string
 	err = p.pool.QueryRow(ctx, `SELECT data_type FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name=$3`,

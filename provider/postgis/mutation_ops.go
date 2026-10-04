@@ -264,10 +264,14 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("replace: %v", err)}
 	}
-	if tag.RowsAffected() == 0 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
+	if n := tag.RowsAffected(); n != 1 {
+		if n == 0 {
+			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+		}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
-	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(tag.RowsAffected())}, nil
+	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
@@ -303,10 +307,14 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 	if err != nil {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update: %v", err)}
 	}
-	if tag.RowsAffected() == 0 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
+	if n := tag.RowsAffected(); n != 1 {
+		if n == 0 {
+			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+		}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
-	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(tag.RowsAffected())}, nil
+	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
@@ -316,8 +324,12 @@ func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mut
 	if err != nil {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("delete: %v", err)}
 	}
-	if tag.RowsAffected() == 0 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
+	if n := tag.RowsAffected(); n != 1 {
+		if n == 0 {
+			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+		}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
-	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(tag.RowsAffected())}, nil
+	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
