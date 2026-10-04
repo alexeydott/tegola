@@ -198,9 +198,14 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		}
 	}
 	// resultType=hits: count only, no feature encoding.
+	// W27: numberMatched must be the global matching count, not the page
+	// count. Do not apply MaxFeatures limit here; use max int32 as the
+	// effective "no limit" (provider requires Limit > 0).
 	if req.ResultType == "hits" {
+		hitsQ := fq
+		hitsQ.Limit = 1<<31 - 1
 		count := 0
-		_, err = service.QueryCollection(ctx, req.TypeName, fq, func(f features.Feature) error {
+		_, err = service.QueryCollection(ctx, req.TypeName, hitsQ, func(f features.Feature) error {
 			count++
 			return nil
 		})
@@ -279,7 +284,16 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 }
 
 // sortFeatures orders buffered GML features by the sort criteria.
+// Numeric strings compare numerically; otherwise lexicographically.
 func sortFeatures(fs []gml.Feature, criteria []SortCriterion) {
+	less := func(a, b string) bool {
+		af, aerr := strconv.ParseFloat(a, 64)
+		bf, berr := strconv.ParseFloat(b, 64)
+		if aerr == nil && berr == nil {
+			return af < bf
+		}
+		return a < b
+	}
 	sort.SliceStable(fs, func(i, j int) bool {
 		for k, sc := range criteria {
 			a, b := fs[i].SortKeys[k], fs[j].SortKeys[k]
@@ -287,9 +301,9 @@ func sortFeatures(fs []gml.Feature, criteria []SortCriterion) {
 				continue
 			}
 			if sc.Descending {
-				return a > b
+				return less(b, a)
 			}
-			return a < b
+			return less(a, b)
 		}
 		return false
 	})

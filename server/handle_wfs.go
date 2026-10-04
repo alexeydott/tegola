@@ -78,7 +78,11 @@ func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	v, err := wfs.Negotiate(q.Get("version"), nil)
+	var accepted []string
+	if av := q.Get("acceptversions"); av != "" {
+		accepted = strings.Split(av, ",")
+	}
+	v, err := wfs.Negotiate(q.Get("version"), accepted)
 	if err != nil {
 		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionInvalidParameterValue, Locator: "version", Text: err.Error()},
