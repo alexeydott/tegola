@@ -109,17 +109,21 @@ func (o Options) unitFactor() float64 {
 
 // kPrecision converts the configured decimal precision into the multiplicative
 // precision factor used by MapplGIS (x / kPrecision + OffsetX).
+// Delphi GetKPrecision caps precision at MAX_PRECISION=10:
+// Result := IntPower(10, Max(MIN(aPrecision, MAX_PRECISION), 0)).
 func (o Options) kPrecision() (float64, error) {
 	if math.IsNaN(o.Precision) || math.IsInf(o.Precision, 0) ||
-		o.Precision < 0 || math.Trunc(o.Precision) != o.Precision ||
-		o.Precision > 308 {
+		math.Trunc(o.Precision) != o.Precision {
 		return 0, fmt.Errorf("mos: invalid precision %v", o.Precision)
 	}
-	k := math.Pow(10, o.Precision)
-	if math.IsNaN(k) || math.IsInf(k, 0) || k <= 0 {
-		return 0, fmt.Errorf("mos: invalid precision %v", o.Precision)
+	p := o.Precision
+	if p < 0 {
+		p = 0
 	}
-	return k, nil
+	if p > 10 {
+		p = 10
+	}
+	return math.Pow(10, p), nil
 }
 
 // DecodeHeader parses the native MOS blob header. Both the native 10-byte
