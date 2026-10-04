@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +17,32 @@ import (
 	"github.com/alexeydott/tegola/provider"
 	pa "github.com/alexeydott/tegola/provider/audit"
 )
+
+// A03: checkRevisionCAS verifies IfRevision against the current revision
+// inside the transaction. Uses SELECT FOR UPDATE to lock the revision row.
+func checkRevisionCAS(ctx context.Context, tx *sql.Tx, collection string, featureID uint64, ifRevision string) error {
+	if ifRevision == "" {
+		return nil
+	}
+	var curRev int64
+	err := tx.QueryRowContext(ctx,
+		`SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ? FOR UPDATE`,
+		collection, featureID).Scan(&curRev)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			if ifRevision != "0" {
+				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0", ifRevision)}
+			}
+			return nil
+		}
+		return mapSQLError(err)
+	}
+	if strconv.FormatInt(curRev, 10) != ifRevision {
+		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %d", ifRevision, curRev)}
+	}
+	return nil
+}
+
 
 type featureTx struct {
 	writer *Writer
@@ -402,6 +429,10 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	if len(sets) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
 	}
+	// A03: in-tx CAS check.
+	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+		return provider.MutationOutcome{}, err
+	}
 	args = append(args, m.FeatureID)
 	q := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?", quoteIdent(mp.table), strings.Join(sets, ", "), quoteIdent(mp.idColumn))
 	res, err := t.tx.ExecContext(ctx, q, args...)
@@ -487,6 +518,10 @@ func (t *featureTx) existsInTx(ctx context.Context, mp *writeMapping, featureID 
 }
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	// A03: in-tx CAS check.
+	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+		return provider.MutationOutcome{}, err
+	}
 	q := fmt.Sprintf("DELETE FROM %s WHERE %s = ?", quoteIdent(mp.table), quoteIdent(mp.idColumn))
 	res, err := t.tx.ExecContext(ctx, q, m.FeatureID)
 	if err != nil {
