@@ -33,6 +33,8 @@ type GetFeatureRequest struct {
 	SortBy []SortCriterion
 	// StartIndex is the 0-based offset for paging (A28).
 	StartIndex uint
+	// Filter is an optional FES filter expression (A26).
+	Filter *provider.FilterExpression
 }
 
 // SortCriterion is one sortBy term.
@@ -54,12 +56,15 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 		}
 		return sq.ToGetFeature(q)
 	}
-	// A26 (fail-closed): FILTER/FES is not implemented for KVP GetFeature.
-	// Silently ignoring it would return unfiltered data. Reject explicitly.
-	if f := q["filter"]; f != "" {
-		return nil, []Exception{{Code: ExceptionOperationNotSupported, Locator: "filter", Text: "FILTER parameter is not supported in this profile; omit it or use featureId"}}
-	}
 	req := &GetFeatureRequest{Version: v, MaxFeatures: 1000}
+	// A26: parse the FILTER parameter (FES 2.0 XML) if present.
+	if f := q["filter"]; f != "" {
+		flt, err := ParseFESFilter([]byte(f))
+		if err != nil {
+			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "filter", Text: err.Error()}}
+		}
+		req.Filter = &flt
+	}
 	typeName := q["typename"]
 	if typeName == "" {
 		typeName = q["typenames"]
@@ -188,6 +193,10 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 	}
 	if len(req.FeatureIDs) > 0 {
 		fq.IDs = req.FeatureIDs
+	}
+	// A26: apply the FES filter if present.
+	if req.Filter != nil {
+		fq.Filter = req.Filter
 	}
 	schema, err := service.SchemaDescriptorFor(ctx, req.TypeName)
 	if err != nil {
