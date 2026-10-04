@@ -285,11 +285,11 @@ func (h *WFSHandler) writeTransactionError(w http.ResponseWriter, r *http.Reques
 		case provider.MutationErrDomainMismatch:
 			// Cross-domain rejected before any change.
 		}
-		h.writeException(w, r, v, status, []wfs.Exception{{Code: code, Text: "transaction failed"}})
+		h.writeException(w, r, v, status, []wfs.Exception{{Code: code, Text: "transaction failed: " + me.Reason}})
 		return
 	}
 	h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
-		{Code: wfs.ExceptionNoApplicableCode, Text: "transaction failed"},
+		{Code: wfs.ExceptionNoApplicableCode, Text: "transaction failed: " + err.Error()},
 	})
 }
 

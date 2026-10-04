@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"encoding/binary"
 	"fmt"
 	"strings"
 
@@ -91,24 +90,18 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 			return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
 		}
 		return nil, sb.String(), nil
-	case "mariadb":
-		// [1 byte BOM][4 bytes SRID][WKB]
-		out := make([]byte, 0, 5+len(rawWKB))
-		out = append(out, 1)
-		var tmp [4]byte
-		binary.LittleEndian.PutUint32(tmp[:], uint32(mp.geomSRID))
-		out = append(out, tmp[:]...)
-		out = append(out, rawWKB...)
-		return out, "", nil
-	default: // "mysql", "auto"
-		// [4 bytes SRID LE][1 byte BOM][WKB]
-		out := make([]byte, 0, 5+len(rawWKB))
-		var tmp [4]byte
-		binary.LittleEndian.PutUint32(tmp[:], uint32(mp.geomSRID))
-		out = append(out, tmp[:]...)
-		out = append(out, 1)
-		out = append(out, rawWKB...)
-		return out, "", nil
+	case "mariadb", "mysql", "auto":
+		// Native server-side construction via ST_GeomFromText: the Go
+		// driver binds []byte as MYSQL_TYPE_STRING, which the GEOMETRY
+		// column rejects (Error 1416). WKT text avoids the issue entirely
+		// and lets the server assign the SRID.
+		var sb strings.Builder
+		if err := wkt.Encode(&sb, g); err != nil {
+			return nil, "", &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
+		}
+		return nil, fmt.Sprintf("ST_GeomFromText(%q,%d)", sb.String(), mp.geomSRID), nil
+	default:
+		return nil, "", &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("unsupported geometry format %q", mp.geomFormat)}
 	}
 }
 
@@ -286,11 +279,16 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 			return provider.MutationOutcome{}, err
 		}
 		cols = append(cols, quoteIdent(mp.geomColumn))
-		holders = append(holders, "?")
-		if encStr != "" {
-			args = append(args, encStr)
+		if strings.HasPrefix(encStr, "ST_GeomFromText(") {
+			// server-side constructor: inline the expression
+			holders = append(holders, encStr)
 		} else {
-			args = append(args, enc)
+			holders = append(holders, "?")
+			if encStr != "" {
+				args = append(args, encStr)
+			} else {
+				args = append(args, enc)
+			}
 		}
 	}
 	if len(cols) == 0 {
