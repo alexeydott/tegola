@@ -152,11 +152,13 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		outcomes = append(outcomes, outcome)
 	}
 	receipt, err := tx.Commit(ctx)
-	if err != nil {
-		return empty, provider.CommitReceipt{}, err
-	}
+	// A35: preserve the receipt even on commit error, so the caller
+	// can distinguish committed/unknown/failed outcomes.
 	if receipt.Status == provider.CommitCommitted {
 		committed = true
+	}
+	if err != nil {
+		return empty, receipt, err
 	}
 	return outcomes, receipt, nil
 }
