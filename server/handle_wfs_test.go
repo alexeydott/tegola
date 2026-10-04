@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"encoding/xml"
 	"strings"
 	"testing"
 
@@ -165,6 +166,39 @@ func TestWFSGetFeature(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "wfs:FeatureCollection") {
 		t.Fatalf("not a feature collection: %s", body[:200])
+	}
+	// A40: validate XML namespaces (not just substrings).
+	{
+		var fc struct {
+			XMLName xml.Name `xml:"FeatureCollection"`
+			Xmlns   string   `xml:"xmlns:wfs,attr"`
+			Members []struct {
+				XMLName xml.Name `xml:"featureMember"`
+				ID      string   `xml:"id,attr"`
+			} `xml:"featureMember"`
+		}
+		// Parse with namespace awareness.
+		decoder := xml.NewDecoder(strings.NewReader(body))
+		foundWFS := false
+		for {
+			tok, err := decoder.Token()
+			if err != nil {
+				break
+			}
+			if se, ok := tok.(xml.StartElement); ok {
+				if se.Name.Local == "FeatureCollection" {
+					for _, attr := range se.Attr {
+						if attr.Name.Local == "wfs" && attr.Value == "http://www.opengis.net/wfs/2.0" {
+							foundWFS = true
+						}
+					}
+				}
+			}
+		}
+		if !foundWFS {
+			t.Fatal("WFS 2.0 namespace not declared in GetFeature response")
+		}
+		_ = fc
 	}
 	// A31: FID uses NCName-safe encoding (wfs_sites -> wfs_x5F_sites).
 	expectedFID, err := feature.EncodeWFSFID("wfs_sites", out.FeatureID)
