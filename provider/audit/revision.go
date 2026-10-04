@@ -9,9 +9,9 @@
 // to a monotonic revision counter. It is updated in the SAME transaction
 // as the data change:
 //
-//   1. checkRevision: SELECT the current revision (locked by the tx).
-//      If IfRevision != "" and != current -> PreconditionFailed (412).
-//   2. After the data mutation succeeds: bump the revision.
+//  1. checkRevision: SELECT the current revision (locked by the tx).
+//     If IfRevision != "" and != current -> PreconditionFailed (412).
+//  2. After the data mutation succeeds: bump the revision.
 //
 // The table must be created by migration before write traffic (A01: no
 // DDL inside the data transaction). If the table is missing, revision

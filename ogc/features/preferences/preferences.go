@@ -30,7 +30,7 @@ const (
 
 // Return values.
 const (
-	ReturnMinimal       = "minimal"
+	ReturnMinimal        = "minimal"
 	ReturnRepresentation = "representation"
 )
 

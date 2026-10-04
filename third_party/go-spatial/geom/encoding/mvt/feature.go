@@ -106,12 +106,12 @@ func NewCommand(cmd uint32, count int) Command {
 	return Command((cmd & 0x7) | (uint32(count) << 3))
 }
 
-//ID encodes the ID of the command
+// ID encodes the ID of the command
 func (c Command) ID() uint32 {
 	return uint32(c) & 0x7
 }
 
-//Count encode the count of elements in the command
+// Count encode the count of elements in the command
 func (c Command) Count() int {
 	return int(uint32(c) >> 3)
 }

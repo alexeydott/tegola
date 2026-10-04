@@ -76,10 +76,10 @@ type PropertyDescriptor struct {
 	Type   LogicalType
 	// Nullable, Required, ReadOnly, WriteOnly, HasDefault describe the
 	// write contract. ReadOnly properties are rejected as input.
-	Nullable  bool
-	Required  bool
-	ReadOnly  bool
-	WriteOnly bool
+	Nullable   bool
+	Required   bool
+	ReadOnly   bool
+	WriteOnly  bool
 	HasDefault bool
 	// MaxLength applies to strings; AllowedValues, when non-empty,
 	// restricts the value set.
@@ -124,7 +124,7 @@ type RevisionStrategy struct {
 type SchemaDescriptor struct {
 	Collection string
 	// IDColumn is the storage primary-key column backing the public ID.
-	IDColumn string
+	IDColumn   string
 	Properties []PropertyDescriptor
 	Geometry   GeometryDescriptor
 	Revision   RevisionStrategy

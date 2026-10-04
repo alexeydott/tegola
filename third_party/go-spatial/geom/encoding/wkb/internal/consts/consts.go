@@ -1,6 +1,7 @@
 package consts
 
-//  geometry types
+//	geometry types
+//
 // http://edndoc.esri.com/arcsde/9.1/general_topics/wkb_representation.htm
 const (
 	Point           uint32 = 1

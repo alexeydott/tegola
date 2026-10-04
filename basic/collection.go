@@ -25,7 +25,7 @@ func (c Collection) Geometries() []tegola.Geometry {
 	return geometries
 }
 
-//Geometeries return a set of geometeies that make that collection.
+// Geometeries return a set of geometeies that make that collection.
 //
 // Deprecated: kept only for backwards compatibility with any existing callers
 // relying on the (misspelled) previous method name/signature; use

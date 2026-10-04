@@ -55,10 +55,10 @@ type Event struct {
 
 // EventType constants.
 const (
-	EventCreated = "feature.created"
+	EventCreated  = "feature.created"
 	EventReplaced = "feature.replaced"
-	EventUpdated = "feature.updated"
-	EventDeleted = "feature.deleted"
+	EventUpdated  = "feature.updated"
+	EventDeleted  = "feature.deleted"
 )
 
 // Store persists audit entries and outbox events.

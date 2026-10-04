@@ -470,7 +470,7 @@ func FindPolygonIntersects(segments []Line, fn func(srcIdx, destIdx int, ptfn fu
 	FindIntersectsWithEventQueue(true, eq, segments, fn)
 }
 
-//  =================================== LINE methods ================================================= //
+// =================================== LINE methods ================================================= //
 func (s1 Line) DoesIntersect(s2 Line) bool {
 	return DoesIntersect(s1, s2)
 }

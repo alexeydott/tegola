@@ -117,7 +117,10 @@ func TestFIDInjectiveNCName(t *testing.T) {
 		}
 	}
 	// Round-trip.
-	for _, tc := range []struct{ coll string; id uint64 }{
+	for _, tc := range []struct {
+		coll string
+		id   uint64
+	}{
 		{"a:b", 1}, {"a_b", 2}, {"caf\u00e9", 3}, {"_lead", 4}, {"9start", 5},
 	} {
 		fid, err := EncodeWFSFID(tc.coll, tc.id)

@@ -38,12 +38,12 @@ type SchemaProvider interface {
 // SchemaDescriptor is the provider-level view of a layer schema. The
 // neutral feature.SchemaDescriptor is built from it.
 type SchemaDescriptor struct {
-	Layer      string
-	Table      string
-	IDColumn   string
-	Columns    []ColumnDescriptor
-	Geometry   GeometryColumnDescriptor
-	Revision   string
+	Layer    string
+	Table    string
+	IDColumn string
+	Columns  []ColumnDescriptor
+	Geometry GeometryColumnDescriptor
+	Revision string
 }
 
 // ColumnDescriptor describes one storage column.

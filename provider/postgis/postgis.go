@@ -1,13 +1,13 @@
 package postgis
 
 import (
-	"sync"
 	"context"
 	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexeydott/geom"

@@ -73,35 +73,35 @@ func (w Winding) Not() Winding {
 // reference: https://stackoverflow.com/questions/1165647/how-to-determine-if-a-list-of-polygon-points-are-in-clockwise-order
 
 /*
-func shoelace(pts ...[2]float64) (sum float64) {
-	for i := range pts {
-		j := (i + 1) % len(pts)
-		prd := (pts[j][0] - pts[i][0]) * (pts[j][1] + pts[i][1])
-		sum += prd
-		if debug {
-			log.Printf("sum(%v,%v): %g  -- %g", i, j, sum, prd)
+	func shoelace(pts ...[2]float64) (sum float64) {
+		for i := range pts {
+			j := (i + 1) % len(pts)
+			prd := (pts[j][0] - pts[i][0]) * (pts[j][1] + pts[i][1])
+			sum += prd
+			if debug {
+				log.Printf("sum(%v,%v): %g  -- %g", i, j, sum, prd)
+			}
 		}
-	}
-	if debug {
-		log.Printf("sum:%g", sum)
-	}
-	return sum
-}
-
-func openlayers2(pts ...[2]float64) (area float64) {
-	for i := range pts {
-		j := (i + 1) % len(pts)
-		area += pts[i][0] * pts[j][1]
-		area -= pts[j][0] * pts[i][1]
-
 		if debug {
-			log.Printf("area(%v,%v): %g", i, j, area)
+			log.Printf("sum:%g", sum)
 		}
+		return sum
 	}
-	if debug {
-		log.Printf("area:%g", area)
-	}
-	return area
+
+	func openlayers2(pts ...[2]float64) (area float64) {
+		for i := range pts {
+			j := (i + 1) % len(pts)
+			area += pts[i][0] * pts[j][1]
+			area -= pts[j][0] * pts[i][1]
+
+			if debug {
+				log.Printf("area(%v,%v): %g", i, j, area)
+			}
+		}
+		if debug {
+			log.Printf("area:%g", area)
+		}
+		return area
 
 }
 */

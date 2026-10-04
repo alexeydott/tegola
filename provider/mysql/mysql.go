@@ -255,7 +255,7 @@ type Provider struct {
 	// detected server flavor ("mysql" or "mariadb"), used by the auto format
 	serverFlavor string
 	// writerMu guards cachedWriter.
-	writerMu sync.Mutex
+	writerMu     sync.Mutex
 	cachedWriter *Writer
 }
 

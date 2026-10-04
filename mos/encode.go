@@ -2,10 +2,11 @@
 // prefix: it serializes a geometry into a MapplGIS MOS blob.
 //
 // Wire layout (all little-endian), matching the Delphi THeaderObject:
-//  12-byte header: oType(1), oTypeModification(1)=0, AddFlag(2)=0,
-//    subObjectsCount(2), pointsCount(4), ofl(2)=0
-//  subObjectsCount x uint32 point counts
-//  pointsCount x (int32 x, int32 y) contiguous
+//
+//	12-byte header: oType(1), oTypeModification(1)=0, AddFlag(2)=0,
+//	  subObjectsCount(2), pointsCount(4), ofl(2)=0
+//	subObjectsCount x uint32 point counts
+//	pointsCount x (int32 x, int32 y) contiguous
 //
 // Quantization mirrors DoublePointToPoint: stored = Round((coord-Offset) *
 // 10^Precision), round half away from zero; decode recovers

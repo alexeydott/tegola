@@ -19,7 +19,8 @@ import (
 // DMSToDD converts a degrees-minutes-seconds string to decimal-degrees
 //
 // Using an 8-part regexp, we support this format:
-//    [+-] nnn [°Dd] nnn ['Mm] nnn.nnn ["Ss] [NnEeWwSs]
+//
+//	[+-] nnn [°Dd] nnn ['Mm] nnn.nnn ["Ss] [NnEeWwSs]
 //
 // TODO: the original dmstor() may support more, but the parsing code
 // is messy and we don't have any testcases at this time.
