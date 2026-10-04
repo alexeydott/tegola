@@ -41,7 +41,8 @@ func AcquireLock(typeName string, ids []uint64, expiry time.Duration) *FeatureLo
 	}
 	// Check for conflicts.
 	for _, l := range locks {
-		if l.TypeName != typeName {
+		// BUG-3 fix: normalize namespace prefixes
+		if stripPrefix(l.TypeName) != stripPrefix(typeName) {
 			continue
 		}
 		for _, id := range ids {
@@ -89,7 +90,8 @@ func CheckLock(lockID, typeName string, featureID uint64) *Exception {
 		delete(locks, lockID)
 		return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: "lock expired"}
 	}
-	if l.TypeName != typeName {
+	// BUG-3 fix: normalize namespace prefixes for comparison
+	if stripPrefix(l.TypeName) != stripPrefix(typeName) {
 		return &Exception{Code: ExceptionInvalidParameterValue, Locator: "lockId", Text: "lock does not cover this type"}
 	}
 	for _, id := range l.FeatureIDs {

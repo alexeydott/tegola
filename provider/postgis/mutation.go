@@ -238,7 +238,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		},
 		columns:  cols,
 		writable: make(map[string]string),
-		domain:   "postgis:" + schema + "." + table,
+		domain:   "postgis:" + schema,  // BUG-2 fix: per-database (schema), not per-table
 	}
 	for name := range cols {
 		if name == m.idColumn || name == m.geomColumn {

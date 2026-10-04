@@ -73,8 +73,8 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			}
 			act.Properties = props
 			act.FilterIDs = ids
-		} else {
-			// Insert/Replace: extract the feature element.
+		} else if act.Op == provider.MutationInsert {
+			// Insert: extract the feature element.
 			typeName, props, geomXML, err := parseFeatureElement(a.Inner)
 			if err != nil {
 				return nil, "", fmt.Errorf("%s: %w", local, err)
@@ -82,6 +82,22 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, erro
 			act.TypeName = typeName
 			act.Properties = props
 			act.FeatureXML = geomXML
+		} else {
+			// Replace: extract feature element AND filter IDs.
+			// Structure: <Replace><Feature>...</Feature><Filter>...</Filter></Replace>
+			typeName, props, geomXML, err := parseFeatureElement(a.Inner)
+			if err != nil {
+				return nil, "", fmt.Errorf("%s: %w", local, err)
+			}
+			act.TypeName = typeName
+			act.Properties = props
+			act.FeatureXML = geomXML
+			// Extract FilterIDs from the Filter element
+			_, ids, ferr := parseActionFilter(a.Inner)
+			if ferr != nil {
+				return nil, "", ferr
+			}
+			act.FilterIDs = ids
 		}
 		actions = append(actions, act)
 	}
@@ -204,7 +220,12 @@ func parseFeatureElement(inner string) (string, map[string]string, string, error
 		case xml.StartElement:
 			depth++
 			if depth == 1 {
-				typeName = stripPrefix(t.Name.Local)
+				// Skip Filter elements; typeName is the feature element.
+				// BUG-1 fix: don't overwrite typeName with "Filter".
+				local := stripPrefix(t.Name.Local)
+				if local != "Filter" && typeName == "" {
+					typeName = local
+				}
 				continue
 			}
 			if depth == 2 {

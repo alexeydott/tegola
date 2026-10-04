@@ -220,7 +220,7 @@ func admitLayer(ctx context.Context, db *sql.DB, database string, l *Layer) (*wr
 		},
 		columns:  cols,
 		writable: make(map[string]string),
-		domain:   "mysql:" + database + "." + l.tablename,
+		domain:   "mysql:" + database,  // BUG-2 fix: per-database, not per-table
 	}
 	_ = order
 	for name := range cols {

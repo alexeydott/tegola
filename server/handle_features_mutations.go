@@ -16,6 +16,7 @@ import (
 	"github.com/alexeydott/tegola/config"
 	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/tegola/ogc/features"
+	"github.com/alexeydott/tegola/ogc/wfs"
 	"github.com/alexeydott/tegola/provider"
 )
 
@@ -132,6 +133,28 @@ func (api *FeatureAPI) registerMutations(group *httptreemux.Group) {
 func (api *FeatureAPI) serveItemsOptions(w http.ResponseWriter, r *http.Request) {
 	collection := httptreemux.ContextParams(r.Context())["collection"]
 	api.writeOptions(w, api.allowedMethods(collection, false), false)
+}
+
+
+// checkWFSLock enforces WFS LockFeature leases on REST mutations (BUG-4 fix).
+// Returns true if the request may proceed.
+func (api *FeatureAPI) checkWFSLock(w http.ResponseWriter, r *http.Request, collection string, featureID uint64) bool {
+	if wfs.IsLocked(collection, featureID) {
+		// Check if client provided a valid lockId
+		lockID := r.URL.Query().Get("lockId")
+		if lockID == "" {
+			lockID = r.Header.Get("Lock-Id")
+		}
+		if lockID == "" {
+			api.writeError(w, r, http.StatusForbidden, "Locked", fmt.Sprintf("feature %d is locked; provide lockId", featureID))
+			return false
+		}
+		if exc := wfs.CheckLock(lockID, collection, featureID); exc != nil {
+			api.writeError(w, r, http.StatusForbidden, "Locked", exc.Text)
+			return false
+		}
+	}
+	return true
 }
 
 func (api *FeatureAPI) serveItemOptions(w http.ResponseWriter, r *http.Request) {
@@ -365,6 +388,10 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature ID")
 		return
 	}
+	// BUG-4: enforce WFS locks on REST
+	if !api.checkWFSLock(w, r, collection, featureID) {
+		return
+	}
 	if ct := r.Header.Get("Content-Type"); ct != mediaMergePatch && !strings.HasPrefix(ct, mediaMergePatch+";") {
 		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/merge-patch+json")
 		return
@@ -427,6 +454,10 @@ func (api *FeatureAPI) serveDeleteItem(w http.ResponseWriter, r *http.Request) {
 	featureID, err := parseFeatureIDParam(httptreemux.ContextParams(r.Context())["feature"])
 	if err != nil {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature ID")
+		return
+	}
+	// BUG-4: enforce WFS locks on REST
+	if !api.checkWFSLock(w, r, collection, featureID) {
 		return
 	}
 	if _, err := api.checkPrecondition(r, collection, featureID); err != nil {
