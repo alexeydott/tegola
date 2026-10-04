@@ -58,9 +58,8 @@ func insertActionToMutation(v Version, schema *feature.SchemaDescriptor, act Tra
 		m.Properties[name] = mv
 	}
 	if act.FeatureXML != "" {
-		// GML axis order: 3.2.1 with EPSG:4326 is lat,lon on the wire.
-		swap := v != V110
-		g, err := gml.ParseGeometry(act.FeatureXML, swap)
+		// A07: axis order determined from srsName in the GML, not WFS version.
+		g, err := gml.ParseGeometry(act.FeatureXML, "")
 		if err != nil {
 			return m, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid GML geometry: %v", err)}
 		}
@@ -84,8 +83,8 @@ func updateActionToMutations(v Version, schema *feature.SchemaDescriptor, act Tr
 	for name, literal := range act.Properties {
 		if name == schema.Geometry.Name {
 			// Geometry replacement: <Value> carries raw GML.
-			swap := v != V110
-			g, err := gml.ParseGeometry(literal, swap)
+			// A07: axis order from srsName in the GML.
+			g, err := gml.ParseGeometry(literal, "")
 			if err != nil {
 				return nil, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid GML geometry: %v", err)}
 			}

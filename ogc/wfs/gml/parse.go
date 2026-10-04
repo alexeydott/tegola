@@ -34,8 +34,26 @@ import (
 // ParseGeometry parses a GML geometry element from raw XML. Coordinates are
 // expected in the document's axis order; the caller swaps axes when the
 // version/SRS requires it.
-func ParseGeometry(raw string, swapXY bool) (geom.Geometry, error) {
-	p := &parser{swapXY: swapXY}
+// axisSwapForSRS determines whether coordinates need XY swap based on
+// the srsName (A07). Axis order comes from the CRS definition, not the
+// WFS version:
+//   - urn:ogc:def:crs:EPSG::4326 -> lat,lon order -> swap to x,y
+//   - http://www.opengis.net/gml/srs/epsg.xml#4326 -> lon,lat -> no swap
+//   - EPSG:4326 -> commonly lon,lat -> no swap
+func axisSwapForSRS(srsName string) bool {
+	s := strings.ToLower(strings.TrimSpace(srsName))
+	// URN form declares lat,lon axis order per EPSG.
+	if strings.Contains(s, "urn:ogc:def:crs:epsg:") && strings.Contains(s, "4326") {
+		return true
+	}
+	return false
+}
+
+// ParseGeometry parses GML geometry. The srsNameHint is used when the
+// geometry has no srsName attribute; axis order is otherwise determined
+// from the srsName in the XML (A07).
+func ParseGeometry(raw string, srsNameHint string) (geom.Geometry, error) {
+	p := &parser{srsNameHint: srsNameHint}
 	if err := p.parse(raw); err != nil {
 		return nil, err
 	}
@@ -51,7 +69,8 @@ type coordList struct {
 }
 
 type parser struct {
-	swapXY bool
+	srsNameHint string
+	srsName     string // detected from geometry root element
 
 	geomType string
 	// stack of open element local names; stack[0] is the geometry root.
@@ -99,6 +118,8 @@ func (p *parser) parse(raw string) error {
 			if len(p.stack) == 0 {
 				p.rootSeen = true
 				p.geomType = name
+				// A07: capture srsName for axis order determination.
+				p.srsName = attrValue(t.Attr, "srsName")
 				if err := checkSupportedType(name); err != nil {
 					return err
 				}
@@ -194,7 +215,12 @@ func (p *parser) finishCoords() error {
 	if len(p.stack) > 0 {
 		elem = p.stack[len(p.stack)-1]
 	}
-	pts, err := parseCoordText(elem, p.coordText.String(), p.coordDim, p.swapXY)
+	// A07: axis order from srsName in XML, fallback to hint.
+	srs := p.srsName
+	if srs == "" {
+		srs = p.srsNameHint
+	}
+	pts, err := parseCoordText(elem, p.coordText.String(), p.coordDim, axisSwapForSRS(srs))
 	if err != nil {
 		return err
 	}
