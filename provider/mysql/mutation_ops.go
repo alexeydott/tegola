@@ -395,6 +395,9 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 			sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
 			args = append(args, ga.BindValue)
 		}
+	} else if m.GeometryAbsent {
+		// A18: explicit geometry clear -> SET NULL.
+		sets = append(sets, quoteIdent(mp.geomColumn)+" = NULL")
 	}
 	if len(sets) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
@@ -449,6 +452,9 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 			sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
 			args = append(args, ga.BindValue)
 		}
+	} else if m.GeometryAbsent {
+		// A18: explicit geometry clear -> SET NULL.
+		sets = append(sets, quoteIdent(mp.geomColumn)+" = NULL")
 	}
 	if len(sets) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "update carries no changes"}
