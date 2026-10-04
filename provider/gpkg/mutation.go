@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/tegola/internal/log"
+	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
 )
 
@@ -71,9 +72,10 @@ type writeMapping struct {
 	table      string
 	idColumn   string
 	geomColumn string
-	geomFormat string // gpkg, wkb, wkt
+	geomFormat string // gpkg, wkb, wkt, mos
 	geomType   string // point, linestring, polygon, ...
 	geomSRID   uint64
+	mosOpts    mos.Options // quantization for MOS encoding
 	columns    map[string]provider.ColumnDescriptor // by column name
 	writable   map[string]string                    // public name -> column
 	readOnly   []string
@@ -167,10 +169,7 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 	if format == "" {
 		format = "gpkg"
 	}
-	if format == "mos" {
-		return deny(fmt.Sprintf("layer %q uses MOS encoding (write not admitted)", l.name))
-	}
-	if format != "gpkg" && format != "wkb" && format != "wkt" {
+	if format != "gpkg" && format != "wkb" && format != "wkt" && format != "mos" {
 		return deny(fmt.Sprintf("layer %q has unsupported geometry format %q", l.name, format))
 	}
 	db, err := sql.Open(featureSQLiteDriver, sqliteWritableDSN(filepath))
@@ -207,6 +206,10 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 		geomFormat: format,
 		geomType:   geomType,
 		geomSRID:   l.srid,
+		mosOpts: mos.Options{
+			Precision:  l.mosConfig.Precision,
+			UnitFactor: l.mosConfig.UnitFactor,
+		},
 		columns:    colDesc,
 		writable:   make(map[string]string),
 		domain:     "gpkg:" + filepath,

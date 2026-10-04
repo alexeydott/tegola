@@ -10,6 +10,8 @@ import (
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/geom/encoding/wkb"
 	"github.com/alexeydott/geom/encoding/wkt"
+	"github.com/alexeydott/proj"
+	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
 )
 
@@ -93,6 +95,12 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 			return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
 		}
 		return nil, sb.String(), bounds, nil
+	case "mos":
+		enc, err := mos.Encode(g, mp.mosOpts)
+		if err != nil {
+			return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("MOS encode: %v", err)}
+		}
+		return enc, "", bounds, nil
 	default:
 		return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "geometry format " + mp.geomFormat}
 	}
@@ -177,16 +185,113 @@ func encodeGPKGGeometry(rawWKB []byte, srsID int32, envelope []float64) []byte {
 	return out
 }
 
-// transformGeometry reprojects between SRIDs. Only identical SRIDs are
-// supported in this profile; anything else is an explicit error, never a
-// silent passthrough.
+// transformGeometry reprojects between SRIDs. Identical SRIDs pass
+// through; 4326<->3857 uses the vendored projector. Anything else is an
+// explicit error, never a silent passthrough.
 func transformGeometry(g geom.Geometry, from, to uint64) (geom.Geometry, error) {
 	if from == to {
 		return g, nil
 	}
+	if (from == 4326 && to == 3857) || (from == 3857 && to == 4326) {
+		return transform4326_3857(g, from == 4326)
+	}
 	return nil, &provider.MutationError{
 		Kind:   provider.MutationErrUnsupportedCapability,
 		Reason: fmt.Sprintf("CRS transform %d -> %d not supported by this writer profile", from, to),
+	}
+}
+
+// transform4326_3857 reprojects all vertices between lon/lat degrees and
+// Web-Mercator metres. forward=true is 4326->3857.
+func transform4326_3857(g geom.Geometry, forward bool) (geom.Geometry, error) {
+	xform := func(x, y float64) ([2]float64, error) {
+		var in []float64
+		if forward {
+			in = []float64{x, y} // lon, lat
+		} else {
+			in = []float64{x, y} // mercator x, y
+		}
+		var out []float64
+		var err error
+		if forward {
+			out, err = proj.Convert(proj.EPSG3857, in)
+		} else {
+			out, err = proj.Inverse(proj.EPSG3857, in)
+		}
+		if err != nil {
+			return [2]float64{}, err
+		}
+		return [2]float64{out[0], out[1]}, nil
+	}
+	mapPts := func(pts [][2]float64) ([][2]float64, error) {
+		out := make([][2]float64, len(pts))
+		for i, p := range pts {
+			q, err := xform(p[0], p[1])
+			if err != nil {
+				return nil, err
+			}
+			out[i] = q
+		}
+		return out, nil
+	}
+	switch t := g.(type) {
+	case geom.Point:
+		q, err := xform(t[0], t[1])
+		if err != nil {
+			return nil, err
+		}
+		return geom.Point(q), nil
+	case geom.MultiPoint:
+		pts, err := mapPts([][2]float64(t))
+		if err != nil {
+			return nil, err
+		}
+		return geom.MultiPoint(pts), nil
+	case geom.LineString:
+		pts, err := mapPts(t)
+		if err != nil {
+			return nil, err
+		}
+		return geom.LineString(pts), nil
+	case geom.MultiLineString:
+		out := make(geom.MultiLineString, len(t))
+		for i, l := range t {
+			pts, err := mapPts(l)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = pts
+		}
+		return out, nil
+	case geom.Polygon:
+		out := make(geom.Polygon, len(t))
+		for i, r := range t {
+			pts, err := mapPts(r)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = pts
+		}
+		return out, nil
+	case geom.MultiPolygon:
+		out := make(geom.MultiPolygon, len(t))
+		for i, p := range t {
+			pp := make(geom.Polygon, len(p))
+			for j, r := range p {
+				pts, err := mapPts(r)
+				if err != nil {
+					return nil, err
+				}
+				pp[j] = pts
+			}
+			out[i] = pp
+		}
+		return out, nil
+	default:
+		return nil, &provider.MutationError{
+			Kind:   provider.MutationErrUnsupportedCapability,
+			Reason: fmt.Sprintf("cannot reproject geometry type %T", g),
+		}
 	}
 }
 
