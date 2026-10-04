@@ -1,9 +1,9 @@
 package gml
 
 import (
-	"io"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -41,23 +41,44 @@ import (
 //   - http://www.opengis.net/gml/srs/epsg.xml#4326 -> lon,lat -> no swap
 //   - EPSG:4326 -> commonly lon,lat -> no swap
 func axisSwapForSRS(srsName string) bool {
-	s := strings.ToLower(strings.TrimSpace(srsName))
-	// URN form declares lat,lon axis order per EPSG.
-	if strings.Contains(s, "urn:ogc:def:crs:epsg:") && strings.Contains(s, "4326") {
-		return true
+	_, swap, _ := parseSRS(srsName)
+	return swap
+}
+
+// parseSRS admits only the input CRS profiles supported by the mutation providers.
+func parseSRS(name string) (uint64, bool, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "epsg:4326", "http://www.opengis.net/gml/srs/epsg.xml#4326", "crs:84", "urn:ogc:def:crs:ogc:1.3:crs84", "http://www.opengis.net/def/crs/ogc/1.3/crs84":
+		return 4326, false, nil
+	case "urn:ogc:def:crs:epsg::4326", "urn:ogc:def:crs:epsg:6.6:4326", "http://www.opengis.net/def/crs/epsg/0/4326":
+		return 4326, true, nil
+	case "epsg:3857", "urn:ogc:def:crs:epsg::3857", "http://www.opengis.net/def/crs/epsg/0/3857", "http://www.opengis.net/gml/srs/epsg.xml#3857":
+		return 3857, false, nil
+	default:
+		return 0, false, fmt.Errorf("gml: unsupported srsName %q", name)
 	}
-	return false
 }
 
 // ParseGeometry parses GML geometry. The srsNameHint is used when the
 // geometry has no srsName attribute; axis order is otherwise determined
 // from the srsName in the XML (A07).
 func ParseGeometry(raw string, srsNameHint string) (geom.Geometry, error) {
+	g, _, err := ParseGeometryWithSRID(raw, srsNameHint)
+	return g, err
+}
+
+// ParseGeometryWithSRID also returns the CRS of the decoded XY coordinates.
+func ParseGeometryWithSRID(raw string, srsNameHint string) (geom.Geometry, uint64, error) {
 	p := &parser{srsNameHint: srsNameHint}
 	if err := p.parse(raw); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return p.build()
+	srid, _, err := parseSRS(p.srsName)
+	if err != nil {
+		return nil, 0, err
+	}
+	g, err := p.build()
+	return g, srid, err
 }
 
 // coordList is one parsed coordinate sequence (a ring, a line part, a point).
@@ -66,6 +87,7 @@ type coordList struct {
 	kind string // originating element, for error messages
 	// inner is meaningful for polygon rings: true inside <interior>.
 	inner bool
+	node  int // identity of the containing Point, LineString or LinearRing
 }
 
 type parser struct {
@@ -74,7 +96,9 @@ type parser struct {
 
 	geomType string
 	// stack of open element local names; stack[0] is the geometry root.
-	stack []string
+	stack    []string
+	nodes    []int
+	nextNode int
 	// dimStack parallels stack: srsDimension at each level (R05 inheritance).
 	dimStack []string
 	// coordinate text accumulation
@@ -93,7 +117,7 @@ type parser struct {
 	seenCoords bool
 	rootSeen   bool
 	// R05 G15: track open member elements to detect empty members.
-	memberStack []string
+	memberStack     []string
 	memberHasCoords []bool
 }
 
@@ -116,14 +140,38 @@ func (p *parser) parse(raw string) error {
 		case xml.StartElement:
 			name := t.Name.Local
 			if len(p.stack) == 0 {
+				if p.rootSeen {
+					return fmt.Errorf("gml: multiple geometry roots")
+				}
 				p.rootSeen = true
 				p.geomType = name
 				// A07: capture srsName for axis order determination.
 				p.srsName = attrValue(t.Attr, "srsName")
+				if p.srsName == "" {
+					p.srsName = p.srsNameHint
+				}
+				if _, _, err := parseSRS(p.srsName); err != nil {
+					return err
+				}
 				if err := checkSupportedType(name); err != nil {
 					return err
 				}
 			}
+			if nameSRS := attrValue(t.Attr, "srsName"); len(p.stack) > 0 && nameSRS != "" {
+				srid, swap, err := parseSRS(nameSRS)
+				rootSRID, rootSwap, _ := parseSRS(p.srsName)
+				if err != nil {
+					return err
+				}
+				if srid != rootSRID || swap != rootSwap {
+					return fmt.Errorf("gml: mixed coordinate reference systems are not supported")
+				}
+			}
+			if len(p.stack) > 0 && !validChild(p.stack[len(p.stack)-1], name) {
+				return fmt.Errorf("gml: unexpected <%s> inside <%s>", name, p.stack[len(p.stack)-1])
+			}
+			p.nextNode++
+			p.nodes = append(p.nodes, p.nextNode)
 			p.stack = append(p.stack, name)
 			p.dimStack = append(p.dimStack, attrValue(t.Attr, "srsDimension"))
 			// R05 G15: track member boundaries.
@@ -162,11 +210,14 @@ func (p *parser) parse(raw string) error {
 			}
 			if len(p.stack) > 0 {
 				p.stack = p.stack[:len(p.stack)-1]
+				p.nodes = p.nodes[:len(p.nodes)-1]
 				p.dimStack = p.dimStack[:len(p.dimStack)-1]
 			}
 		case xml.CharData:
 			if p.inCoords {
 				p.coordText.Write(t)
+			} else if strings.TrimSpace(string(t)) != "" {
+				return fmt.Errorf("gml: unexpected text outside coordinates")
 			}
 		}
 	}
@@ -231,36 +282,30 @@ func (p *parser) finishCoords() error {
 	}
 	inner := p.enclosingWrapper() == "interior"
 
-	// R05: accumulate repeated <pos> elements within the same geometric
-	// node (G06/G07). Each <pos> is one point; a LineString/LinearRing
-	// with N <pos> elements is one coordList with N points.
+	node := p.nodes[len(p.nodes)-2]
+	cl := coordList{pts: pts, kind: elem, inner: inner, node: node}
+	appendTo := func(dst *[]coordList) error {
+		if len(*dst) > 0 && (*dst)[len(*dst)-1].node == node {
+			last := &(*dst)[len(*dst)-1]
+			if elem != "pos" || last.kind != "pos" {
+				return fmt.Errorf("gml: repeated or mixed coordinate sequences")
+			}
+			last.pts = append(last.pts, pts...)
+		} else {
+			*dst = append(*dst, cl)
+		}
+		return nil
+	}
 	switch p.geomType {
-	case "Point", "LineString":
-		// Single geometry: append points to the current coordList.
-		if len(p.parts) > 0 && p.parts[len(p.parts)-1].kind == elem {
-			p.parts[len(p.parts)-1].pts = append(p.parts[len(p.parts)-1].pts, pts...)
-		} else {
-			p.parts = append(p.parts, coordList{pts: pts, kind: elem, inner: inner})
-		}
-	case "MultiPoint", "MultiLineString":
-		p.parts = append(p.parts, coordList{pts: pts, kind: elem, inner: inner})
+	case "Point", "LineString", "MultiPoint", "MultiLineString":
+		return appendTo(&p.parts)
 	case "Polygon":
-		// For Polygon, repeated <pos> in a LinearRing accumulate.
-		if len(p.rings) > 0 && p.rings[len(p.rings)-1].kind == elem && p.rings[len(p.rings)-1].inner == inner {
-			p.rings[len(p.rings)-1].pts = append(p.rings[len(p.rings)-1].pts, pts...)
-		} else {
-			p.rings = append(p.rings, coordList{pts: pts, kind: elem, inner: inner})
-		}
+		return appendTo(&p.rings)
 	case "MultiPolygon", "MultiSurface":
-		if len(p.curPoly) > 0 && p.curPoly[len(p.curPoly)-1].kind == elem && p.curPoly[len(p.curPoly)-1].inner == inner {
-			p.curPoly[len(p.curPoly)-1].pts = append(p.curPoly[len(p.curPoly)-1].pts, pts...)
-		} else {
-			p.curPoly = append(p.curPoly, coordList{pts: pts, kind: elem, inner: inner})
-		}
+		return appendTo(&p.curPoly)
 	default:
 		return fmt.Errorf("gml: unsupported geometry %q", p.geomType)
 	}
-	return nil
 }
 
 // build constructs the final geometry with validation.
@@ -427,6 +472,9 @@ func parseCoordText(elem, text, dim string, swapXY bool) ([][2]float64, error) {
 		return nil, err
 	}
 	// A06: odd ordinate count is a hard error, never a silent drop.
+	if elem == "pos" && len(nums) != 2 {
+		return nil, fmt.Errorf("gml: pos requires exactly two ordinates")
+	}
 	if len(nums)%2 != 0 {
 		return nil, fmt.Errorf("gml: <%s> has odd ordinate count %d (only 2D XY supported; Z/M rejected)", elem, len(nums))
 	}
@@ -476,4 +524,33 @@ func parseCoordinates311(s string) ([]float64, error) {
 		}
 	}
 	return out, nil
+}
+
+// validChild keeps unsupported or misplaced geometry nodes from being flattened.
+func validChild(parent, child string) bool {
+	switch parent {
+	case "Point":
+		return child == "pos" || child == "coordinates"
+	case "LineString", "LinearRing":
+		return isCoordElement(child)
+	case "Polygon":
+		return child == "exterior" || child == "interior"
+	case "exterior", "interior":
+		return child == "LinearRing"
+	case "MultiPoint":
+		return child == "pointMember"
+	case "MultiLineString":
+		return child == "lineStringMember"
+	case "MultiPolygon":
+		return child == "polygonMember"
+	case "MultiSurface":
+		return child == "surfaceMember"
+	case "pointMember":
+		return child == "Point"
+	case "lineStringMember":
+		return child == "LineString"
+	case "polygonMember", "surfaceMember":
+		return child == "Polygon"
+	}
+	return false
 }

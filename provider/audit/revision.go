@@ -25,6 +25,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/alexeydott/tegola/provider"
@@ -99,22 +100,11 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision read: %v", err)}
 	}
 	if want != "" {
-		// A38: want is "incarnation.revision" format; "0.0" means "no revision yet".
-		var wantInc, wantRev int64
-		if parts := strings.Split(want, "."); len(parts) == 2 {
-			if _, err := fmt.Sscanf(parts[0], "%d", &wantInc); err != nil {
-				return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
-			}
-			if _, err := fmt.Sscanf(parts[1], "%d", &wantRev); err != nil {
-				return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
-			}
-		} else {
-			// Legacy: plain revision number (incarnation 0).
-			if _, err := fmt.Sscanf(want, "%d", &wantRev); err != nil {
-				return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
-			}
-			wantInc = 0
+		wantInc, wantRev, err := ParseRevision(want)
+		if err != nil {
+			return RevisionBump{}, err
 		}
+
 		var curRevNum, curIncNum int64
 		if found {
 			curRevNum = cur
@@ -211,4 +201,23 @@ func IsMissingTable(err error) bool {
 	return strings.Contains(msg, "no such table") ||
 		strings.Contains(msg, "doesn't exist") ||
 		strings.Contains(msg, "does not exist")
+}
+
+// ParseRevision parses the complete token, rejecting trailing junk and negatives.
+func ParseRevision(value string) (incarnation, revision int64, err error) {
+	parts := strings.Split(value, ".")
+	if len(parts) == 1 {
+		parts = append([]string{"0"}, parts...)
+	}
+	if len(parts) != 2 {
+		return 0, 0, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "invalid revision"}
+	}
+	incarnation, err = strconv.ParseInt(parts[0], 10, 64)
+	if err == nil {
+		revision, err = strconv.ParseInt(parts[1], 10, 64)
+	}
+	if err != nil || incarnation < 0 || revision < 0 {
+		return 0, 0, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "invalid revision"}
+	}
+	return incarnation, revision, nil
 }

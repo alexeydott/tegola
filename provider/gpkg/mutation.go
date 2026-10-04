@@ -1,9 +1,11 @@
+//go:build cgo
+
 package gpkg
 
 import (
-	"errors"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,15 +14,15 @@ import (
 	"github.com/alexeydott/geom"
 	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/mos"
-	pa "github.com/alexeydott/tegola/provider/audit"
 	"github.com/alexeydott/tegola/provider"
+	pa "github.com/alexeydott/tegola/provider/audit"
 )
 
 // sqliteWritableDSN opens the GeoPackage for writing. busy_timeout keeps
 // writers patient; synchronous/foreign_keys are left at their safe
 // defaults (never disabled for speed).
 func sqliteWritableDSN(path string) string {
-	return "file:" + path + "?_busy_timeout=10000"
+	return "file:" + path + "?_busy_timeout=10000&_foreign_keys=on"
 }
 
 // Writer adds the provider.MutationProvider contract to the GPKG provider.
@@ -47,7 +49,7 @@ func (p *Provider) MutationWriter() provider.MutationProvider {
 // Returns "", nil when the writer has no write DB (read-only provider).
 func (p *Provider) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
 	w, ok := p.MutationWriter().(*Writer)
-	if !ok || w.db == nil {
+	if !ok {
 		return "", nil
 	}
 	return w.CurrentRevision(ctx, layer, featureID)
@@ -90,7 +92,7 @@ type writeMapping struct {
 	geomFormat string // gpkg, wkb, wkt, mos
 	geomType   string // point, linestring, polygon, ...
 	geomSRID   uint64
-	mosOpts    mos.Options // quantization for MOS encoding
+	mosOpts    mos.Options                          // quantization for MOS encoding
 	columns    map[string]provider.ColumnDescriptor // by column name
 	writable   map[string]string                    // public name -> column
 	readOnly   []string
@@ -143,7 +145,16 @@ func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.Sch
 		},
 	}
 	for _, col := range m.columns {
-		sd.Columns = append(sd.Columns, col)
+		_, writable := m.writable[col.Name]
+		published := writable || col.Name == m.idColumn || col.Name == m.geomColumn
+		for _, name := range m.readOnly {
+			if name == col.Name {
+				published = true
+			}
+		}
+		if published {
+			sd.Columns = append(sd.Columns, col)
+		}
 	}
 	return sd, nil
 }
@@ -171,6 +182,9 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 	deny := func(reason string) (*writeMapping, error) {
 		return nil, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: reason}
 	}
+	if l.boundFieldnames != nil {
+		return deny("writes to layers with derived bounds columns are not supported")
+	}
 	if l.sql != "" {
 		return deny(fmt.Sprintf("layer %q uses custom SQL and is read-only", l.name))
 	}
@@ -193,6 +207,15 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 	}
 	defer func() { _ = db.Close() }()
 
+	if format == "gpkg" {
+		var z, m int
+		if err := db.QueryRow(`SELECT z,m FROM gpkg_geometry_columns WHERE table_name=? AND column_name=?`, l.tablename, l.geomFieldname).Scan(&z, &m); err != nil {
+			return deny("GeoPackage geometry dimension metadata is unavailable")
+		}
+		if z != 0 || m != 0 {
+			return deny("writes require an XY-only GeoPackage geometry column")
+		}
+	}
 	cols, pkCols, err := tableColumnsAndPK(db, l.tablename)
 	if err != nil {
 		return deny(fmt.Sprintf("layer %q: %v", l.name, err))
@@ -225,9 +248,9 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 			Precision:  l.mosConfig.Precision,
 			UnitFactor: l.mosConfig.UnitFactor,
 		},
-		columns:    colDesc,
-		writable:   make(map[string]string),
-		domain:     "gpkg:" + filepath,
+		columns:  colDesc,
+		writable: make(map[string]string),
+		domain:   "gpkg:" + filepath,
 	}
 	// Public writable properties: every non-PK, non-geometry column.
 	// Bounds backing columns are excluded (derived data).
@@ -241,8 +264,12 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 	// Bounds backing columns are excluded (derived data). Iterate the
 	// table_xinfo descriptors (not table_info) so generated columns are
 	// seen and forced read-only.
+	public := map[string]bool{}
+	for _, field := range l.tagFieldnames {
+		public[field] = true
+	}
 	for c, d := range colDesc {
-		if c == m.idColumn || c == m.geomColumn || boundsCols[c] {
+		if c == m.idColumn || c == m.geomColumn || boundsCols[c] || (len(l.tagFieldnames) > 0 && !public[c]) {
 			continue
 		}
 		if d.IsGenerated {
@@ -336,18 +363,26 @@ func normalizeGeomType(g geom.Geometry) string {
 // BeginFeatureTx implements provider.MutationProvider.
 // CurrentRevision implements provider.RevisionReader (A03).
 func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
-	var rev int64
-	err := w.db.QueryRowContext(ctx, `SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, featureID).Scan(&rev)
+	l, ok := w.provider.layers[layer]
+	if !ok {
+		return "", nil
+	}
+	layer = l.tablename
+	var rev, incarnation int64
+	err := w.provider.db.QueryRowContext(ctx, `SELECT revision, incarnation FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, featureID).Scan(&rev, &incarnation)
 	if err != nil {
 		// R01/R09: distinguish missing row (revision 0) from
 		// storage errors (including missing table). Do not mask
 		// errors as "0".
 		if errors.Is(err, sql.ErrNoRows) {
-			return "0", nil
+			return "0.0", nil
+		}
+		if pa.IsMissingTable(err) {
+			return "0.0", nil
 		}
 		return "", err
 	}
-	return strconv.FormatInt(rev, 10), nil
+	return strconv.FormatInt(incarnation, 10) + "." + strconv.FormatInt(rev, 10), nil
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
@@ -432,14 +467,20 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
-	// A38: for DELETE, incarnation already bumped in t.delete(); skip revision bump.
-	if m.Op != provider.MutationDelete {
+	{
 		// A03: revision check + bump inside the data transaction.
-		bump, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "sqlite")
+		bump, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, mp.revisionCollection(), outcome.FeatureID, m.IfRevision, "sqlite")
 		if rerr != nil {
 			return provider.MutationOutcome{}, rerr
 		}
-		// A38: revision format is "incarnation.revision".
+		if m.Op == provider.MutationDelete {
+			if err := pa.BumpIncarnationOnDelete(ctx, t.tx, mp.revisionCollection(), outcome.FeatureID, "sqlite"); err != nil {
+				return provider.MutationOutcome{}, err
+			}
+			bump.NewInc++
+			bump.New = 0
+		}
+		// Revision is incarnation.revision.
 		outcome.Revision = formatIncarnationRevision(bump.NewInc, bump.New)
 		outcome.RevisionBefore = formatIncarnationRevision(bump.OldInc, bump.Old)
 	}
@@ -477,10 +518,10 @@ func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) 
 // index (when present). Runs inside the transaction, before commit.
 func (t *featureTx) maintainGPKGMetadata(ctx context.Context) error {
 	for _, mod := range t.modified {
-		if err := t.touchContents(ctx, mod.table); err != nil {
+		if err := t.maintainRTree(ctx, mod); err != nil {
 			return err
 		}
-		if err := t.maintainRTree(ctx, mod); err != nil {
+		if err := t.touchContents(ctx, mod); err != nil {
 			return err
 		}
 	}
@@ -498,7 +539,8 @@ func isNoSuchTable(err error) bool {
 
 // touchContents bumps gpkg_contents.last_change for a feature table.
 // Tables without a gpkg_contents row (plain SQLite tables) are skipped.
-func (t *featureTx) touchContents(ctx context.Context, table string) error {
+func (t *featureTx) touchContents(ctx context.Context, mod *tableModification) error {
+	table := mod.table
 	var n int
 	if err := t.tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM gpkg_contents WHERE table_name = ?`, table).Scan(&n); err != nil {
@@ -512,8 +554,16 @@ func (t *featureTx) touchContents(ctx context.Context, table string) error {
 	if n == 0 {
 		return nil
 	}
-	_, err := t.tx.ExecContext(ctx,
-		`UPDATE gpkg_contents SET last_change = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE table_name = ?`, table)
+	extent := "min_x=NULL,max_x=NULL,min_y=NULL,max_y=NULL"
+	rtree := "rtree_" + mod.table + "_" + mod.geomCol
+	var hasRTree int
+	if err := t.tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, rtree).Scan(&hasRTree); err != nil {
+		return err
+	}
+	if hasRTree > 0 {
+		extent = fmt.Sprintf("min_x=(SELECT MIN(minx) FROM %s),max_x=(SELECT MAX(maxx) FROM %s),min_y=(SELECT MIN(miny) FROM %s),max_y=(SELECT MAX(maxy) FROM %s)", quoteIdent(rtree), quoteIdent(rtree), quoteIdent(rtree), quoteIdent(rtree))
+	}
+	_, err := t.tx.ExecContext(ctx, "UPDATE gpkg_contents SET last_change=strftime('%Y-%m-%dT%H:%M:%fZ','now'),"+extent+" WHERE table_name=?", table)
 	return err
 }
 
@@ -661,3 +711,5 @@ func formatIncarnationRevision(inc, rev int64) string {
 	}
 	return strconv.FormatInt(inc, 10) + "." + strconv.FormatInt(rev, 10)
 }
+
+func (m *writeMapping) revisionCollection() string { return m.table }

@@ -416,7 +416,13 @@ func (p *Provider) warnOnce(key string, format string, args ...interface{}) {
 
 // Close will close the Provider's database connection
 func (p *Provider) Close() error {
-	return p.db.Close()
+	p.writerMu.Lock()
+	defer p.writerMu.Unlock()
+	var writeErr error
+	if p.cachedWriter != nil && p.cachedWriter.db != nil {
+		writeErr = p.cachedWriter.db.Close()
+	}
+	return errors.Join(p.db.Close(), writeErr)
 }
 
 func geomNameToGeom(name string) (geom.Geometry, error) {

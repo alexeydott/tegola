@@ -1,3 +1,5 @@
+//go:build cgo
+
 package gpkg
 
 import (
@@ -8,12 +10,26 @@ import (
 
 	"github.com/alexeydott/tegola/feature/audit"
 	"github.com/alexeydott/tegola/provider"
+	pa "github.com/alexeydott/tegola/provider/audit"
 )
 
 // ensureAuditTables creates tegola_audit and tegola_outbox if not exist.
 // Called at transaction begin (idempotent).
 func ensureAuditTables(ctx context.Context, tx *sql.Tx) error {
-	stmts := []string{
+	var hasVersion int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tegola_schema_version'`).Scan(&hasVersion); err != nil {
+		return err
+	}
+	if hasVersion > 0 {
+		var version sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM tegola_schema_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version.Valid && (version.Int64 < 1 || version.Int64 > pa.CurrentSchemaVersion) {
+			return fmt.Errorf("unsupported service schema version %d", version.Int64)
+		}
+	}
+	stmts := []string{pa.RevisionSQLiteDDL,
 		`CREATE TABLE IF NOT EXISTS tegola_audit (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			ts TEXT NOT NULL,
@@ -40,6 +56,15 @@ func ensureAuditTables(ctx context.Context, tx *sql.Tx) error {
 	for _, s := range stmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
 			return fmt.Errorf("audit table setup: %w", err)
+		}
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('tegola_revisions') WHERE name='incarnation'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE tegola_revisions ADD COLUMN incarnation INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -75,9 +100,9 @@ func auditEntryFor(collection string, op provider.MutationOp, outcome provider.M
 	case provider.MutationInsert:
 		revAfter = outcome.Revision
 	case provider.MutationDelete:
-		revBefore = outcome.Revision
+		revBefore = outcome.RevisionBefore
 	default:
-		revBefore = outcome.Revision
+		revBefore = outcome.RevisionBefore
 		revAfter = outcome.Revision
 	}
 	return audit.Entry{

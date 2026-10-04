@@ -13,21 +13,22 @@ import (
 )
 
 func TestFeatureRuntimeAssemblyResetAndIsolation(t *testing.T) {
-	firstAPI, secondAPI := &server.FeatureAPI{}, &server.FeatureAPI{}
+	firstAPI := &FeatureRuntime{API: &server.FeatureAPI{}, WFS: &server.WFSHandler{}}
+	secondAPI := &FeatureRuntime{API: &server.FeatureAPI{}, WFS: &server.WFSHandler{}}
 	sentinel := errors.New("initialization failed")
 	firstRoot, firstServe := &cobra.Command{}, &cobra.Command{}
 	secondRoot, secondServe := &cobra.Command{}, &cobra.Command{}
-	var firstSeen, secondSeen *server.FeatureAPI
+	var firstSeen, secondSeen *FeatureRuntime
 	nextAPI, nextError := firstAPI, error(nil)
-	bindFeatureRuntime(firstRoot, firstServe, func(*cobra.Command, []string) (*server.FeatureAPI, error) {
+	bindFeatureRuntime(firstRoot, firstServe, func(*cobra.Command, []string) (*FeatureRuntime, error) {
 		return nextAPI, nextError
-	}, func(_ *cobra.Command, _ []string, api *server.FeatureAPI) error {
+	}, func(_ *cobra.Command, _ []string, api *FeatureRuntime) error {
 		firstSeen = api
 		return nil
 	})
-	bindFeatureRuntime(secondRoot, secondServe, func(*cobra.Command, []string) (*server.FeatureAPI, error) {
+	bindFeatureRuntime(secondRoot, secondServe, func(*cobra.Command, []string) (*FeatureRuntime, error) {
 		return secondAPI, nil
-	}, func(_ *cobra.Command, _ []string, api *server.FeatureAPI) error {
+	}, func(_ *cobra.Command, _ []string, api *FeatureRuntime) error {
 		secondSeen = api
 		return nil
 	})

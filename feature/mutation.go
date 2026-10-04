@@ -1,8 +1,8 @@
 package feature
 
 import (
-	"strconv"
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/alexeydott/tegola/provider"
@@ -17,6 +17,8 @@ type MutationCoordinator struct {
 	PolicyFor func(collection string) Policy
 	// SchemaFor resolves the schema descriptor for a collection.
 	SchemaFor func(collection string) (*SchemaDescriptor, error)
+	// SchemaForContext is preferred for request cancellation and deadlines.
+	SchemaForContext func(context.Context, string) (*SchemaDescriptor, error)
 	// ProviderFor resolves the MutationProvider and provider layer name
 	// for a collection.
 	ProviderFor func(collection string) (provider.MutationProvider, string, error)
@@ -59,6 +61,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 			Reason: "no mutations",
 		}
 	}
+	mutations = append([]provider.Mutation(nil), mutations...)
 	// A02: Policy, provider resolution (pinned), and structural validation
 	// happen in a single pass before Begin. The provider instance is pinned
 	// at resolution time; the security context (principal) is bound to the
@@ -67,6 +70,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		mp         provider.MutationProvider
 		layer      string
 		collection string // original public collection name (for audit)
+		policy     Policy
 	}
 	bounds := make([]bound, len(mutations))
 	domain := ""
@@ -78,10 +82,24 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 			return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: err.Error()}
 		}
 		policy := c.PolicyFor(origCollection)
+		if policy == nil {
+			policy = DenyAllPolicy{}
+		}
 		if d := policy.CheckCollection(ctx, principal, action, origCollection); !d.Allow {
 			return empty, provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrDenied, Reason: "collection policy denied: " + d.Reason}
 		}
-		schema, err := c.SchemaFor(origCollection)
+		if scope, ok := policy.(CollectionOnlyPolicy); !ok || !scope.CollectionOnly() {
+			return empty, provider.CommitReceipt{}, &provider.MutationError{
+				Kind:   provider.MutationErrUnsupportedCapability,
+				Reason: "row-dependent authorization requires transactional pre-image and post-image support",
+			}
+		}
+		var schema *SchemaDescriptor
+		if c.SchemaForContext != nil {
+			schema, err = c.SchemaForContext(ctx, origCollection)
+		} else {
+			schema, err = c.SchemaFor(origCollection)
+		}
 		if err != nil {
 			return empty, provider.CommitReceipt{}, err
 		}
@@ -117,7 +135,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		}
 		// A02: pin the binding; keep original collection for audit.
 		m.Collection = layer
-		bounds[i] = bound{mp: mp, layer: layer, collection: origCollection}
+		bounds[i] = bound{mp: mp, layer: layer, collection: origCollection, policy: policy}
 	}
 	// W13: pass actor for audit. RequestID from context if available.
 	requestID, _ := ctx.Value("requestID").(string)
@@ -150,7 +168,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		var action PolicyAction
 		var key PhysicalFeatureKey
 		if i < len(bounds) {
-			policy = c.PolicyFor(bounds[i].collection)
+			policy = bounds[i].policy
 			action, _ = policyActionFor(mutations[i].Op.String())
 			key = PhysicalFeatureKey{
 				Domain:   domain,
@@ -194,7 +212,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	if receipt.Status == provider.CommitCommitted {
 		committed = true
 	}
-	if err != nil {
+	if err != nil && !committed {
 		return empty, receipt, err
 	}
 	// A43: enrich the durable receipt.
@@ -202,15 +220,8 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	receipt.Actor = principal.ID
 	cols := make([]string, 0, len(mutations))
 	seen := map[string]bool{}
-	for _, m := range mutations {
-		// Use the original collection name from bounds for the receipt.
-		coll := m.Collection
-		for _, b := range bounds {
-			if b.layer == m.Collection {
-				coll = b.collection
-				break
-			}
-		}
+	for _, binding := range bounds {
+		coll := binding.collection
 		if !seen[coll] {
 			seen[coll] = true
 			cols = append(cols, coll)
@@ -221,7 +232,7 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	if c.OnCommit != nil {
 		c.OnCommit(cols)
 	}
-	return outcomes, receipt, nil
+	return outcomes, receipt, err
 }
 
 // validateMutationInput runs schema validation before Begin: unknown

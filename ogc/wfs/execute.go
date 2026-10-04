@@ -3,11 +3,13 @@ package wfs
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 
-	"github.com/alexeydott/geom"
 	"github.com/alexeydott/geom/encoding/wkb"
 	"github.com/alexeydott/tegola/feature"
+	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/ogc/wfs/gml"
 	"github.com/alexeydott/tegola/provider"
 )
@@ -59,7 +61,7 @@ func insertActionToMutation(v Version, schema *feature.SchemaDescriptor, act Tra
 	}
 	if act.FeatureXML != "" {
 		// A07: axis order determined from srsName in the GML, not WFS version.
-		g, err := gml.ParseGeometry(act.FeatureXML, "")
+		g, srid, err := gml.ParseGeometryWithSRID(act.FeatureXML, "")
 		if err != nil {
 			return m, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid GML geometry: %v", err)}
 		}
@@ -68,9 +70,8 @@ func insertActionToMutation(v Version, schema *feature.SchemaDescriptor, act Tra
 			return m, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKB encode: %v", err)}
 		}
 		m.GeometryWKB = raw
-		m.GeometrySRID = 4326
+		m.GeometrySRID = srid
 	}
-	_ = geom.Point{}
 	return m, nil
 }
 
@@ -80,11 +81,12 @@ func updateActionToMutations(v Version, schema *feature.SchemaDescriptor, act Tr
 	}
 	props := map[string]provider.MutationValue{}
 	var geomWKB []byte
+	var geomSRID uint64
 	for name, literal := range act.Properties {
 		if name == schema.Geometry.Name {
 			// Geometry replacement: <Value> carries raw GML.
 			// A07: axis order from srsName in the GML.
-			g, err := gml.ParseGeometry(literal, "")
+			g, srid, err := gml.ParseGeometryWithSRID(literal, "")
 			if err != nil {
 				return nil, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid GML geometry: %v", err)}
 			}
@@ -93,6 +95,7 @@ func updateActionToMutations(v Version, schema *feature.SchemaDescriptor, act Tr
 				return nil, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKB encode: %v", err)}
 			}
 			geomWKB = raw
+			geomSRID = srid
 			continue
 		}
 		desc, ok := schema.Property(name)
@@ -113,7 +116,7 @@ func updateActionToMutations(v Version, schema *feature.SchemaDescriptor, act Tr
 			FeatureID:    id,
 			Properties:   props,
 			GeometryWKB:  geomWKB,
-			GeometrySRID: 4326,
+			GeometrySRID: geomSRID,
 		})
 	}
 	return out, nil
@@ -137,6 +140,9 @@ func deleteActionToMutations(act TransactionAction) ([]provider.Mutation, error)
 // literalToMutationValue converts an XML text literal to a neutral value
 // using the schema type. Empty text is the empty value, not null.
 func literalToMutationValue(t feature.LogicalType, literal string) (provider.MutationValue, error) {
+	if t != feature.TypeString {
+		literal = strings.TrimSpace(literal)
+	}
 	switch t {
 	case feature.TypeInteger:
 		n, err := strconv.ParseInt(literal, 10, 64)
@@ -145,7 +151,7 @@ func literalToMutationValue(t feature.LogicalType, literal string) (provider.Mut
 		}
 		return provider.MutationValue{Kind: provider.MutationValueInteger, Integer: n}, nil
 	case feature.TypeDecimal:
-		if _, err := strconv.ParseFloat(literal, 64); err != nil {
+		if n, err := strconv.ParseFloat(literal, 64); err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 			return provider.MutationValue{}, fmt.Errorf("not a number: %q", literal)
 		}
 		return provider.MutationValue{Kind: provider.MutationValueDecimal, Decimal: literal}, nil
@@ -191,11 +197,14 @@ func ExecuteTransaction(ctx context.Context, coord *feature.MutationCoordinator,
 		}
 	}
 	outcomes, receipt, err := coord.ExecuteAll(ctx, principal, mutations)
-	if err != nil {
+	if err != nil && receipt.Status != provider.CommitCommitted {
 		return nil, err
 	}
 	if receipt.Status != provider.CommitCommitted {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "commit outcome unknown"}
+	}
+	if err != nil {
+		log.Error("WFS transaction committed with auxiliary failure", "transaction", receipt.TransactionID, "error", err)
 	}
 	results := make([]TransactionResult, 0, len(outcomes))
 	for i, o := range outcomes {

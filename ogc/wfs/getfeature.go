@@ -3,6 +3,8 @@ package wfs
 import (
 	"context"
 	"fmt"
+	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,7 +22,7 @@ type GetFeatureRequest struct {
 	TypeName    string
 	MaxFeatures uint
 	// BBox is an optional spatial filter in lon,lat order (CRS84).
-	BBox *[4]float64
+	BBox       *[4]float64
 	FeatureIDs []uint64
 	// OutputFormat: only "application/gml+xml" variants are supported.
 	OutputFormat string
@@ -41,6 +43,7 @@ type GetFeatureRequest struct {
 type SortCriterion struct {
 	Property   string
 	Descending bool
+	numeric    bool
 }
 
 // ParseGetFeatureKVP parses the KVP subset for GetFeature.
@@ -57,6 +60,18 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 		return sq.ToGetFeature(q)
 	}
 	req := &GetFeatureRequest{Version: v, MaxFeatures: 1000}
+	if q["srsname"] != "" {
+		return nil, []Exception{{Code: ExceptionOperationNotSupported, Locator: "srsName", Text: "explicit output CRS selection is not supported"}}
+	}
+	selectors := 0
+	for _, key := range []string{"filter", "bbox", "featureid", "resourceid"} {
+		if q[key] != "" {
+			selectors++
+		}
+	}
+	if selectors > 1 {
+		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "filter", Text: "filter, bbox and feature IDs are mutually exclusive"}}
+	}
 	// A26: parse the FILTER parameter (FES 2.0 XML) if present.
 	if f := q["filter"]; f != "" {
 		flt, err := ParseFESFilter([]byte(f))
@@ -109,17 +124,24 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 		var b [4]float64
 		for i, p := range parts {
 			f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
-			if err != nil {
+			if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "invalid bbox ordinate"}}
 			}
 			b[i] = f
 		}
+		if b[0] > b[2] || b[1] > b[3] {
+			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "bbox minimum exceeds maximum"}}
+		}
 		req.BBox = &b
 	}
-	if fids := q["featureid"]; fids != "" {
+	fids := q["featureid"]
+	if fids == "" {
+		fids = q["resourceid"]
+	}
+	if fids != "" {
 		for _, fid := range strings.Split(fids, ",") {
-			_, id, err := feature.DecodeWFSFID(strings.TrimSpace(fid))
-			if err != nil {
+			collection, id, err := feature.DecodeWFSFID(strings.TrimSpace(fid))
+			if err != nil || collection != req.TypeName {
 				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "featureId", Text: fmt.Sprintf("invalid feature ID %q", fid)}}
 			}
 			req.FeatureIDs = append(req.FeatureIDs, id)
@@ -154,6 +176,9 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 			}
 			crit := SortCriterion{}
 			parts := strings.Fields(term)
+			if len(parts) > 2 {
+				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "sortBy", Text: "invalid sort criterion"}}
+			}
 			prop := parts[0]
 			if i := strings.Index(prop, ":"); i >= 0 {
 				prop = prop[i+1:]
@@ -177,14 +202,27 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 
 // ExecuteGetFeature runs the request and renders a GML FeatureCollection.
 func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetFeatureRequest) (string, []Exception) {
+	// Keep schema-derived sort metadata local to this execution.
+	request := *req
+	request.SortBy = append([]SortCriterion(nil), req.SortBy...)
+	req = &request
 	// Collection must be published.
 	if _, err := service.Collection(req.TypeName); err != nil {
 		return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "typeName", Text: fmt.Sprintf("unknown type %q", req.TypeName)}}
 	}
-	// A28: fetch StartIndex+MaxFeatures to allow skipping (provider OFFSET planned).
-	fq := provider.FeatureQuery{Limit: req.MaxFeatures + req.StartIndex}
+	const maxScan = 100000
+	if req.MaxFeatures > maxScan {
+		return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "count", Text: "count exceeds 100000"}}
+	}
+	fq := provider.FeatureQuery{Limit: req.MaxFeatures, Offset: uint64(req.StartIndex)}
 	if fq.Limit == 0 {
 		fq.Limit = 1
+	}
+	// Providers currently expose ID ordering only. Custom sorting scans a bounded
+	// complete match set, then sorts before applying the requested page.
+	if len(req.SortBy) > 0 {
+		fq.Limit = maxScan + 1
+		fq.Offset = 0
 	}
 	if req.BBox != nil {
 		b := req.BBox
@@ -202,6 +240,13 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 	if err != nil {
 		return "", []Exception{{Code: ExceptionNoApplicableCode, Text: "schema unavailable"}}
 	}
+	view := &FeatureSchemaView{GeometryName: schema.Geometry.Name}
+	for _, p := range schema.Properties {
+		view.Properties = append(view.Properties, SchemaPropView{Name: p.Name})
+	}
+	if err := ValidateSchemaView(req.TypeName, view); err != nil {
+		return "", []Exception{{Code: ExceptionOperationNotSupported, Locator: "typeName", Text: "Collection schema contains unsupported WFS XML names"}}
+	}
 	var gv gml.Version
 	if req.Version == V110 {
 		gv = gml.V311
@@ -217,8 +262,12 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 			}
 		}
 	}
-	for _, sc := range req.SortBy {
-		if _, ok := schema.Property(sc.Property); !ok {
+	for i, sc := range req.SortBy {
+		desc, ok := schema.Property(sc.Property)
+		if ok {
+			req.SortBy[i].numeric = desc.Type == feature.TypeInteger || desc.Type == feature.TypeDecimal
+		}
+		if !ok {
 			return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "sortBy", Text: fmt.Sprintf("unknown sort property %q", sc.Property)}}
 		}
 	}
@@ -233,6 +282,7 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		const maxHitsScan = 100000
 		hitsQ := fq
 		hitsQ.Limit = maxHitsScan + 1
+		hitsQ.Offset = 0
 		count := 0
 		_, err = service.QueryCollection(ctx, req.TypeName, hitsQ, func(f features.Feature) error {
 			count++
@@ -244,7 +294,11 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		if count > maxHitsScan {
 			return "", []Exception{{Code: ExceptionOperationNotSupported, Text: fmt.Sprintf("hits count exceeds bounded limit %d; native COUNT not yet implemented", maxHitsScan)}}
 		}
-		return featureCollectionEnvelope(req.Version, "", count), nil
+		returned := 0
+		if req.Version == V110 {
+			returned = count
+		}
+		return featureCollectionEnvelope(req.Version, "", strconv.Itoa(count), returned), nil
 	}
 	// Buffer for sorting; streams directly when no sortBy.
 	var buffered []gml.Feature
@@ -256,7 +310,7 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		gf := gml.Feature{
 			ID:           fid,
 			TypeName:     req.TypeName,
-			GeometryName: "geometry",
+			GeometryName: schema.Geometry.Name,
 			Properties:   map[string]interface{}{},
 		}
 		// A30: use typed geometry directly when available, bypassing
@@ -270,6 +324,17 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 			}
 			gf.Geometry = g
 		}
+		if len(req.PropertyNames) > 0 {
+			includeGeometry := false
+			for _, pn := range req.PropertyNames {
+				if pn == schema.Geometry.Name {
+					includeGeometry = true
+				}
+			}
+			if !includeGeometry {
+				gf.Geometry = nil
+			}
+		}
 		// Projection: only requested properties.
 		props := f.Properties
 		if len(req.PropertyNames) > 0 {
@@ -281,11 +346,7 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 			}
 		}
 		for k, v := range props {
-			// A23: nil -> omit (not "<nil>" string).
-			// A30: keep typed value; GML encoder formats via formatGMLValue.
-			if v == nil {
-				continue
-			}
+			// Keep typed values and SQL NULL for the GML encoder.
 			gf.Properties[k] = v
 		}
 		// Keep sort keys alongside for post-query sorting.
@@ -305,64 +366,79 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		return nil
 	}
 	count := 0
-	skipped := uint(0)
-	_, err = service.QueryCollection(ctx, req.TypeName, fq, func(f features.Feature) error {
-		count++
-		// A28: skip first StartIndex features (provider OFFSET planned).
-		if skipped < req.StartIndex {
-			skipped++
+	result, err := service.QueryCollection(ctx, req.TypeName, fq, func(f features.Feature) error {
+		if req.MaxFeatures == 0 {
 			return nil
 		}
+		count++
 		return encodeOne(f)
 	})
 	if err != nil {
 		return "", []Exception{{Code: ExceptionNoApplicableCode, Text: fmt.Sprintf("query failed: %v", err)}}
 	}
 	if len(req.SortBy) > 0 {
+		if len(buffered) > maxScan {
+			return "", []Exception{{Code: ExceptionOperationNotSupported, Text: "sort exceeds bounded scan limit"}}
+		}
 		sortFeatures(buffered, req.SortBy)
-		for _, gf := range buffered {
+		start := min(uint(len(buffered)), req.StartIndex)
+		end := min(uint(len(buffered)), start+req.MaxFeatures)
+		count = int(end - start)
+		for _, gf := range buffered[start:end] {
 			gf.SortKeys = nil
 			if err := enc.EncodeFeature(gf); err != nil {
 				return "", []Exception{{Code: ExceptionNoApplicableCode, Text: fmt.Sprintf("encode failed: %v", err)}}
 			}
 		}
 	}
-	return featureCollectionEnvelope(req.Version, enc.String(), count), nil
+	matched := "unknown"
+	if result.NumberMatched != nil {
+		matched = strconv.FormatUint(*result.NumberMatched, 10)
+	}
+	if len(req.SortBy) > 0 && req.MaxFeatures > 0 {
+		matched = strconv.Itoa(len(buffered))
+	}
+	return featureCollectionEnvelope(req.Version, enc.String(), matched, count), nil
 }
 
 // sortFeatures orders buffered GML features by the sort criteria.
 // Numeric strings compare numerically; otherwise lexicographically.
 func sortFeatures(fs []gml.Feature, criteria []SortCriterion) {
-	less := func(a, b string) bool {
-		af, aerr := strconv.ParseFloat(a, 64)
-		bf, berr := strconv.ParseFloat(b, 64)
-		if aerr == nil && berr == nil {
-			return af < bf
+	compare := func(a, b string, numeric bool) int {
+		if numeric {
+			av, aok := new(big.Rat).SetString(a)
+			bv, bok := new(big.Rat).SetString(b)
+			if aok && bok {
+				return av.Cmp(bv)
+			}
 		}
-		return a < b
+		return strings.Compare(a, b)
 	}
+
 	sort.SliceStable(fs, func(i, j int) bool {
 		for k, sc := range criteria {
 			a, b := fs[i].SortKeys[k], fs[j].SortKeys[k]
-			if a == b {
+			cmp := compare(a, b, sc.numeric)
+			if cmp == 0 {
 				continue
 			}
 			if sc.Descending {
-				return less(b, a)
+				return cmp > 0
 			}
-			return less(a, b)
+			return cmp < 0
 		}
 		return false
 	})
 }
 
-func featureCollectionEnvelope(v Version, members string, count int) string {
+func featureCollectionEnvelope(v Version, members string, matched string, count int) string {
 	var sb strings.Builder
 	sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	if v == V110 {
+
 		sb.WriteString(`<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs" xmlns:gml="http://www.opengis.net/gml" xmlns:ogc="http://www.opengis.net/ogc" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/wfs http://schemas.opengis.net/wfs/1.1.0/wfs.xsd" numberOfFeatures="` + strconv.Itoa(count) + `">` + "\n")
 	} else {
-		sb.WriteString(`<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/wfs/2.0 http://schemas.opengis.net/wfs/2.0/wfs.xsd" numberMatched="` + strconv.Itoa(count) + `" numberReturned="` + strconv.Itoa(count) + `">` + "\n")
+		sb.WriteString(`<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/wfs/2.0 http://schemas.opengis.net/wfs/2.0/wfs.xsd" numberMatched="` + matched + `" numberReturned="` + strconv.Itoa(count) + `">` + "\n")
 	}
 	sb.WriteString(members)
 	sb.WriteString("</wfs:FeatureCollection>\n")

@@ -27,6 +27,9 @@ func providerSchemaToFeature(collectionID string, psd provider.SchemaDescriptor)
 	if psd.Revision != "" {
 		sd.Revision = feature.RevisionStrategy{Column: psd.Revision}
 	}
+	if psd.Geometry.Dimension != "" {
+		sd.Geometry.Dimension = feature.GeometryDimension(strings.ToUpper(psd.Geometry.Dimension))
+	}
 	for _, c := range psd.Columns {
 		if c.Name == psd.IDColumn || c.Name == psd.Geometry.Name {
 			continue
@@ -37,6 +40,8 @@ func providerSchemaToFeature(collectionID string, psd provider.SchemaDescriptor)
 			Type:       sqliteTypeToLogical(c.Type),
 			Nullable:   c.Nullable,
 			HasDefault: c.IsDefault,
+			ReadOnly:   c.IsGenerated || c.Name == psd.Revision,
+			Required:   !c.Nullable && !c.IsDefault && !c.IsGenerated && c.Name != psd.Revision,
 		})
 	}
 	return sd

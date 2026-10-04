@@ -52,7 +52,6 @@ func checkRevisionCAS(ctx context.Context, tx *sql.Tx, collection string, featur
 	return nil
 }
 
-
 type featureTx struct {
 	writer *Writer
 	tx     *sql.Tx
@@ -83,15 +82,22 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 		return provider.MutationOutcome{}, err
 	}
 	// A03: revision check + bump inside the data transaction.
-	bump, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "mysql")
+	bump, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, mp.revisionCollection(), outcome.FeatureID, m.IfRevision, "mysql")
 	if rerr != nil {
 		return provider.MutationOutcome{}, rerr
 	}
-	if bump.New >= 0 {
-			// A38: revision format is "incarnation.revision".
-			outcome.Revision = strconv.FormatInt(bump.NewInc, 10) + "." + strconv.FormatInt(bump.New, 10)
-			outcome.RevisionBefore = strconv.FormatInt(bump.OldInc, 10) + "." + strconv.FormatInt(bump.Old, 10)
+	if m.Op == provider.MutationDelete {
+		if err := pa.BumpIncarnationOnDelete(ctx, t.tx, mp.revisionCollection(), outcome.FeatureID, "mysql"); err != nil {
+			return provider.MutationOutcome{}, err
 		}
+		bump.NewInc++
+		bump.New = 0
+	}
+	if bump.New >= 0 {
+		// A38: revision format is "incarnation.revision".
+		outcome.Revision = strconv.FormatInt(bump.NewInc, 10) + "." + strconv.FormatInt(bump.New, 10)
+		outcome.RevisionBefore = strconv.FormatInt(bump.OldInc, 10) + "." + strconv.FormatInt(bump.Old, 10)
+	}
 	// W13: audit in same transaction
 	if aerr := t.recordAudit(ctx, m, outcome); aerr != nil {
 		return provider.MutationOutcome{}, aerr
@@ -183,12 +189,19 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 		}
 		// R03: parameterized, no Go quoting (ANSI_QUOTES safe).
 		return GeometryAssignment{
-			ExprTemplate: "ST_GeomFromText(?, ?)",
+			ExprTemplate: nativeGeometryConstructor(mp),
 			ExprArgs:     []interface{}{sb.String(), mp.geomSRID},
 		}, nil
 	default:
 		return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("unsupported geometry format %q", mp.geomFormat)}
 	}
+}
+
+func nativeGeometryConstructor(mp *writeMapping) string {
+	if mp.geomFormat == "mysql" {
+		return "ST_GeomFromText(?, ?, 'axis-order=long-lat')"
+	}
+	return "ST_GeomFromText(?, ?)"
 }
 
 func checkGeometryType(g geom.Geometry, want string) error {
@@ -420,6 +433,17 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		sets = append(sets, quoteIdent(col)+" = ?")
 		args = append(args, v)
 	}
+	for pub, col := range mp.writable {
+		if _, ok := m.Properties[pub]; ok {
+			continue
+		}
+		value := "NULL"
+		if mp.columns[col].IsDefault {
+			value = "DEFAULT"
+		}
+		sets = append(sets, quoteIdent(col)+" = "+value)
+	}
+
 	if m.GeometryWKB != nil {
 		ga, err := encodeStorageGeometry(mp, m.GeometryWKB, m.GeometrySRID)
 		if err != nil {
@@ -441,7 +465,7 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
 	}
 	// A03: in-tx CAS check.
-	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
 		return provider.MutationOutcome{}, err
 	}
 	args = append(args, m.FeatureID)
@@ -450,15 +474,14 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, mapSQLError(err)
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return provider.MutationOutcome{}, mapSQLError(err)
 	}
-	// A38: increment entity incarnation on DELETE (tombstone).
-	if ierr := pa.BumpIncarnationOnDelete(ctx, t.tx, m.Collection, m.FeatureID, "mysql"); ierr != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("incarnation bump: %v", ierr)}
+	if n > 1 {
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "replace affected multiple rows"}
 	}
-	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: int(n)}, nil
+	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
@@ -521,7 +544,7 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 // Distinguishes not-found from no-op UPDATE (RowsAffected==0 ambiguous).
 func (t *featureTx) existsInTx(ctx context.Context, mp *writeMapping, featureID uint64) (bool, error) {
 	var one int
-	q := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = ? LIMIT 1", quoteIdent(mp.table), quoteIdent(mp.idColumn))
+	q := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = ? LIMIT 1 FOR UPDATE", quoteIdent(mp.table), quoteIdent(mp.idColumn))
 	err := t.tx.QueryRowContext(ctx, q, featureID).Scan(&one)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -534,7 +557,7 @@ func (t *featureTx) existsInTx(ctx context.Context, mp *writeMapping, featureID 
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
 	// A03: in-tx CAS check.
-	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
 		return provider.MutationOutcome{}, err
 	}
 	q := fmt.Sprintf("DELETE FROM %s WHERE %s = ?", quoteIdent(mp.table), quoteIdent(mp.idColumn))

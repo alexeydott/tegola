@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -91,10 +92,19 @@ func NewFeatureAPI(service *features.Service, cfg FeatureAPIConfig) (*FeatureAPI
 	if len(collections) == 0 {
 		return nil, fmt.Errorf("features: publication has no collections")
 	}
+	published := make(map[string]bool, len(collections))
 	for _, collection := range collections {
 		if err := config.ValidateFeatureCollectionID(collection.ID); err != nil {
 			return nil, err
 		}
+		published[collection.ID] = true
+	}
+	if err := cfg.Write.Validate(published); err != nil {
+		return nil, err
+	}
+	cfg.Write = cfg.Write.Resolved()
+	if err := validateWriteAdmission(service, cfg.Write, cfg.QueryTimeout); err != nil {
+		return nil, err
 	}
 	if cfg.Title == "" {
 		cfg.Title = "Tegola Feature API"
@@ -103,16 +113,68 @@ func NewFeatureAPI(service *features.Service, cfg FeatureAPIConfig) (*FeatureAPI
 }
 
 func validateRouterOptions(options RouterOptions) error {
-	if options.Features == nil {
+	if options.Features == nil && options.WFS == nil {
 		return nil
-	}
-	if _, err := NewFeatureAPI(options.Features.service, options.Features.cfg); err != nil {
-		return err
 	}
 	if err := validateFeatureURIPrefix(URIPrefix); err != nil {
 		return err
 	}
-	return validateFeatureViewerPath(options.Features.cfg.BasePath)
+	if options.Features != nil {
+		if _, err := NewFeatureAPI(options.Features.service, options.Features.cfg); err != nil {
+			return err
+		}
+		if err := validateFeatureViewerPath(options.Features.cfg.BasePath); err != nil {
+			return err
+		}
+	}
+	if options.WFS != nil {
+		h := options.WFS
+		if h.Service == nil {
+			return fmt.Errorf("wfs: nil publication service")
+		}
+		cfg := h.Config.Resolved()
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		if err := validateFeatureViewerPath(string(cfg.BasePath)); err != nil {
+			return err
+		}
+		published := make(map[string]bool)
+		for _, c := range h.Service.Collections() {
+			published[c.ID] = true
+		}
+		if err := h.WriteConfig.Validate(published); err != nil {
+			return err
+		}
+		if err := validateWriteAdmission(h.Service, h.WriteConfig, 30*time.Second); err != nil {
+			return err
+		}
+		if options.Features != nil {
+			wfsPath, apiPath := string(cfg.BasePath), options.Features.cfg.BasePath
+			if wfsPath == apiPath || strings.HasPrefix(wfsPath, apiPath+"/") || strings.HasPrefix(apiPath, wfsPath+"/") {
+				return fmt.Errorf("wfs: WFS and feature API paths must not overlap")
+			}
+		}
+	}
+	return nil
+}
+
+func validateWriteAdmission(service *features.Service, cfg config.FeaturesWriteConfig, timeout time.Duration) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	for _, c := range cfg.Collections {
+		p, layer, err := service.MutationProviderFor(string(c.ID))
+		if err != nil {
+			return err
+		}
+		if _, err := p.DescribeWritable(ctx, layer); err != nil {
+			return fmt.Errorf("write admission for collection %q: %w", c.ID, err)
+		}
+	}
+	return nil
 }
 
 func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.Group, observer observability.APIObserver) {

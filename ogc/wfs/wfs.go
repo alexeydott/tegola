@@ -7,6 +7,7 @@ package wfs
 import (
 	"encoding/xml"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -34,7 +35,8 @@ func Negotiate(requested string, accepted []string) (Version, error) {
 		return "", fmt.Errorf("unsupported WFS version %q", requested)
 	}
 	if len(accepted) > 0 {
-		for _, v := range SupportedVersions {
+		for i := len(SupportedVersions) - 1; i >= 0; i-- {
+			v := SupportedVersions[i]
 			for _, a := range accepted {
 				if string(v) == strings.TrimSpace(a) {
 					return v, nil
@@ -52,8 +54,8 @@ type ExceptionCode string
 const (
 	ExceptionInvalidParameterValue ExceptionCode = "InvalidParameterValue"
 	ExceptionMissingParameterValue ExceptionCode = "MissingParameterValue"
-	ExceptionOperationNotSupported  ExceptionCode = "OperationNotSupported"
-	ExceptionNoApplicableCode       ExceptionCode = "NoApplicableCode"
+	ExceptionOperationNotSupported ExceptionCode = "OperationNotSupported"
+	ExceptionNoApplicableCode      ExceptionCode = "NoApplicableCode"
 )
 
 // Exception is one OWS exception.
@@ -92,6 +94,33 @@ func xmlEscape(s string) string {
 	return b.String()
 }
 
+// decodeDocument rejects trailing XML roots instead of silently executing only
+// the first request in a malformed document.
+func decodeDocument(body []byte, out interface{}) error {
+	dec := xml.NewDecoder(strings.NewReader(string(body)))
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch t := tok.(type) {
+		case xml.CharData:
+			if strings.TrimSpace(string(t)) != "" {
+				return fmt.Errorf("unexpected trailing text")
+			}
+		case xml.Comment:
+		default:
+			return fmt.Errorf("unexpected trailing XML content")
+		}
+	}
+}
+
 // ParseVersionedRequest detects the WFS version from an XML document
 // root element namespace.
 func ParseVersionedRequest(body []byte) (Version, string, error) {
@@ -100,7 +129,7 @@ func ParseVersionedRequest(body []byte) (Version, string, error) {
 		Version string `xml:"version,attr"`
 	}
 	var r root
-	if err := xml.Unmarshal(body, &r); err != nil {
+	if err := decodeDocument(body, &r); err != nil {
 		return "", "", fmt.Errorf("invalid XML: %w", err)
 	}
 	local := r.XMLName.Local
@@ -112,6 +141,9 @@ func ParseVersionedRequest(body []byte) (Version, string, error) {
 		}
 		return "", "", fmt.Errorf("unsupported WFS 1.x version %q", r.Version)
 	case "http://www.opengis.net/wfs/2.0":
+		if r.Version == "2.0.0" {
+			return V200, local, nil
+		}
 		if r.Version == "" || r.Version == "2.0.0" || r.Version == "2.0.2" {
 			return V202, local, nil
 		}

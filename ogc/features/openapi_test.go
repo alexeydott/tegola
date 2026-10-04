@@ -238,3 +238,40 @@ func TestOpenAPIRejectsInvalidOptionsAndPaths(t *testing.T) {
 		t.Fatal("path injection accepted")
 	}
 }
+
+func TestOpenAPIWriteContracts(t *testing.T) {
+	options := openAPITestOptions()
+	options.Write = OpenAPIWriteConfig{Enabled: true, Collections: map[string][]string{"core": {"create", "update", "delete"}}}
+	doc, err := openAPITestService(t).OpenAPI(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := doc["paths"].(map[string]any)
+	items := paths["/collections/core/items"].(map[string]any)
+	post := items["post"].(map[string]any)
+	body := post["requestBody"].(map[string]any)["content"].(map[string]any)["application/geo+json"].(map[string]any)["schema"].(map[string]any)
+	if body["$ref"] != "#/components/schemas/FeatureInput" {
+		t.Fatal("create requires response Feature with server ID")
+	}
+	schemas := doc["components"].(map[string]any)["schemas"].(map[string]any)
+	required := schemas["FeatureInput"].(map[string]any)["required"].([]string)
+	for _, name := range required {
+		if name == "id" {
+			t.Fatal("create must not require generated ID")
+		}
+	}
+	item := paths["/collections/core/items/{feature}"].(map[string]any)
+	patch := item["patch"].(map[string]any)
+	content := patch["requestBody"].(map[string]any)["content"].(map[string]any)
+	if content["application/json-patch+json"] == nil || content["application/merge-patch+json"] == nil {
+		t.Fatal("missing supported patch media")
+	}
+	options.Write.Collections["core"] = []string{"update"}
+	doc, err = openAPITestService(t).OpenAPI(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc["paths"].(map[string]any)["/collections/core/schema"] == nil {
+		t.Fatal("update-only collection needs mutation schema")
+	}
+}

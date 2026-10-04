@@ -40,6 +40,9 @@ func buildInsertMutation(schema *feature.SchemaDescriptor, collection string, gf
 // (if nullable), use the column default (if HasDefault), or cause a
 // validation error (if required). System fields (PK) are never touched.
 func buildReplaceMutation(schema *feature.SchemaDescriptor, collection string, featureID uint64, gf *geoJSONFeature) (provider.Mutation, error) {
+	if !gf.HasGeometry && !gf.GeometryNull {
+		return provider.Mutation{}, fmt.Errorf("replace requires geometry (object or null)")
+	}
 	m, err := buildInsertMutation(schema, collection, gf)
 	if err != nil {
 		return provider.Mutation{}, err
@@ -57,7 +60,7 @@ func buildReplaceMutation(schema *feature.SchemaDescriptor, collection string, f
 		if prop.Nullable {
 			m.Properties[name] = provider.MutationValue{Null: true}
 		} else if prop.HasDefault {
-			// Skip: database will apply the default.
+			// The provider resets omitted defaulted columns during Replace.
 			continue
 		} else if prop.Required {
 			return provider.Mutation{}, &provider.MutationError{
@@ -65,9 +68,7 @@ func buildReplaceMutation(schema *feature.SchemaDescriptor, collection string, f
 				Reason: fmt.Sprintf("replace: required property %q is missing", name),
 			}
 		}
-		// Optional non-nullable without default: skip (leave unchanged).
-		// This is a deliberate deviation from strict PUT; the provider
-		// UPDATE will only touch the provided + nullable-absent fields.
+		// The provider also validates omitted columns against native metadata.
 	}
 	m.Op = provider.MutationReplace
 	m.FeatureID = featureID
@@ -79,78 +80,31 @@ func buildReplaceMutation(schema *feature.SchemaDescriptor, collection string, f
 // patch removes the JSON member; the schema decides whether that maps to
 // SQL NULL (nullable) or is a validation error (required).
 func buildPatchMutation(schema *feature.SchemaDescriptor, collection string, featureID uint64, current features.Feature, patch map[string]interface{}) (provider.Mutation, error) {
-	// Merge patch applies to the GeoJSON representation as a whole.
-	currentDoc := map[string]interface{}{
+	if patch == nil {
+		return provider.Mutation{}, fmt.Errorf("patch must be an object")
+	}
+	merged := applyMergePatch(patchFeatureDocument(current), patch)
+	return buildMutationFromMerged(schema, collection, featureID, current, merged)
+}
+
+func patchFeatureDocument(current features.Feature) map[string]interface{} {
+	doc := map[string]interface{}{
+		"type":       "Feature",
+		"id":         current.ID,
 		"properties": copyProps(current.Properties),
+		"geometry":   nil,
 	}
 	if len(current.Geometry) > 0 && string(current.Geometry) != "null" {
-		currentDoc["geometry"] = jsonRawToMap(current.Geometry)
+		doc["geometry"] = jsonRawToMap(current.Geometry)
 	}
-	merged := applyMergePatch(currentDoc, patch)
-	mergedProps, _ := merged["properties"].(map[string]interface{})
-	if mergedProps == nil {
-		mergedProps = map[string]interface{}{}
-	}
-	// Diff against current: only changed members become Update values;
-	// removed members become explicit null (schema validates).
-	changed := map[string]interface{}{}
-	for k, v := range mergedProps {
-		cv, ok := current.Properties[k]
-		if !ok || !jsonEqual(cv, v) {
-			changed[k] = v
-		}
-	}
-	for k := range current.Properties {
-		if _, ok := mergedProps[k]; !ok {
-			changed[k] = nil // removed by patch -> explicit null
-		}
-	}
-	props, err := mutationInputToProvider(schema, changed)
-	if err != nil {
-		return provider.Mutation{}, err
-	}
-	m := provider.Mutation{
-		Op:         provider.MutationUpdate,
-		Collection: collection,
-		FeatureID:  featureID,
-		Properties: props,
-	}
-	// Geometry change via patch: parse the merged geometry if it differs.
-	if mg, ok := merged["geometry"]; ok {
-		if mg == nil {
-			m.GeometryAbsent = true
-		} else if gm, ok := mg.(map[string]interface{}); ok {
-			g, err := parseGeoJSONGeometry(gm)
-			if err != nil {
-				return provider.Mutation{}, err
-			}
-			wkbBytes, err := geometryToWKB(g)
-			if err != nil {
-				return provider.Mutation{}, err
-			}
-			// Only send geometry when it actually changed.
-			if !geometryEqual(current.Geometry, wkbBytes) {
-				m.GeometryWKB = wkbBytes
-				m.GeometrySRID = 4326
-			}
-		}
-	}
-	if len(m.Properties) == 0 && m.GeometryWKB == nil && !m.GeometryAbsent {
-		return provider.Mutation{}, fmt.Errorf("patch changes nothing")
-	}
-	return m, nil
+	return doc
 }
 
 // buildJSONPatchMutation applies an RFC 6902 JSON Patch to the current
 // feature representation and builds an Update from the diff.
 // A21: full JSON Patch support with atomic application.
 func buildJSONPatchMutation(schema *feature.SchemaDescriptor, collection string, featureID uint64, current features.Feature, ops []JSONPatchOp) (provider.Mutation, error) {
-	currentDoc := map[string]interface{}{
-		"properties": copyProps(current.Properties),
-	}
-	if len(current.Geometry) > 0 && string(current.Geometry) != "null" {
-		currentDoc["geometry"] = jsonRawToMap(current.Geometry)
-	}
+	currentDoc := patchFeatureDocument(current)
 	merged, err := applyJSONPatch(currentDoc, ops)
 	if err != nil {
 		return provider.Mutation{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("JSON Patch failed: %v", err)}
@@ -162,9 +116,21 @@ func buildJSONPatchMutation(schema *feature.SchemaDescriptor, collection string,
 
 // buildMutationFromMerged builds an Update mutation from a merged document.
 func buildMutationFromMerged(schema *feature.SchemaDescriptor, collection string, featureID uint64, current features.Feature, merged map[string]interface{}) (provider.Mutation, error) {
-	mergedProps, _ := merged["properties"].(map[string]interface{})
-	if mergedProps == nil {
-		mergedProps = map[string]interface{}{}
+	if merged["type"] != "Feature" || !jsonEqual(merged["id"], current.ID) {
+		return provider.Mutation{}, fmt.Errorf("feature type and id are immutable")
+	}
+	for name := range merged {
+		if name != "type" && name != "id" && name != "geometry" && name != "properties" {
+			return provider.Mutation{}, fmt.Errorf("unsupported feature member %q", name)
+		}
+	}
+	mergedProps := map[string]interface{}{}
+	if value := merged["properties"]; value != nil {
+		var ok bool
+		mergedProps, ok = value.(map[string]interface{})
+		if !ok {
+			return provider.Mutation{}, fmt.Errorf("properties must be an object or null")
+		}
 	}
 	changed := map[string]interface{}{}
 	for k, v := range mergedProps {
@@ -188,27 +154,31 @@ func buildMutationFromMerged(schema *feature.SchemaDescriptor, collection string
 		FeatureID:  featureID,
 		Properties: props,
 	}
-	if mg, ok := merged["geometry"]; ok {
-		if mg == nil {
+	mg := merged["geometry"]
+	if mg == nil {
+		if len(current.Geometry) > 0 && string(current.Geometry) != "null" {
 			m.GeometryAbsent = true
-		} else if gm, ok := mg.(map[string]interface{}); ok {
-			g, err := parseGeoJSONGeometry(gm)
-			if err != nil {
-				return provider.Mutation{}, err
-			}
-			wkbBytes, err := geometryToWKB(g)
-			if err != nil {
-				return provider.Mutation{}, err
-			}
-			if !geometryEqual(current.Geometry, wkbBytes) {
-				m.GeometryWKB = wkbBytes
-				m.GeometrySRID = 4326
-			}
+		}
+	} else {
+		gm, ok := mg.(map[string]interface{})
+		if !ok {
+			return provider.Mutation{}, fmt.Errorf("geometry must be an object or null")
+		}
+		g, err := parseGeoJSONGeometry(gm)
+		if err != nil {
+			return provider.Mutation{}, err
+		}
+		wkbBytes, err := geometryToWKB(g)
+		if err != nil {
+			return provider.Mutation{}, err
+		}
+		if !geometryEqual(current.Geometry, wkbBytes) {
+			m.GeometryWKB = wkbBytes
+			m.GeometrySRID = 4326
 		}
 	}
 	return m, nil
 }
-
 
 func copyProps(in map[string]any) map[string]interface{} {
 	out := make(map[string]interface{}, len(in))

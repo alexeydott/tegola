@@ -12,19 +12,20 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dimfeld/httptreemux"
 	"github.com/alexeydott/tegola/config"
 	"github.com/alexeydott/tegola/feature"
+	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/alexeydott/tegola/ogc/wfs"
 	"github.com/alexeydott/tegola/provider"
+	"github.com/dimfeld/httptreemux"
 )
 
 const (
-	mediaGeoJSON      = "application/geo+json"
-	mediaMergePatch   = "application/merge-patch+json"
-	mediaJSONPatch    = "application/json-patch+json"
-	maxMutationBody   = 4 << 20 // 4 MiB per mutation document
+	mediaGeoJSON    = "application/geo+json"
+	mediaMergePatch = "application/merge-patch+json"
+	mediaJSONPatch  = "application/json-patch+json"
+	maxMutationBody = 4 << 20 // 4 MiB per mutation document
 )
 
 // writePolicy is the config-backed Policy: mutations are allowed only
@@ -54,6 +55,8 @@ func (p writePolicy) CheckCollection(_ context.Context, principal feature.Princi
 	return feature.PolicyDecision{Reason: "operation not allowed for collection"}
 }
 
+func (p writePolicy) CollectionOnly() bool { return true }
+
 func (p writePolicy) CheckRow(_ context.Context, _ feature.Principal, _ feature.PolicyAction, _ feature.PhysicalFeatureKey) feature.PolicyDecision {
 	return feature.PolicyDecision{Allow: true}
 }
@@ -75,8 +78,8 @@ func (api *FeatureAPI) mutationCoordinator() *feature.MutationCoordinator {
 		PolicyFor: func(collection string) feature.Policy {
 			return writePolicy{cfg: api.cfg.Write}
 		},
-		SchemaFor: func(collection string) (*feature.SchemaDescriptor, error) {
-			return api.service.SchemaDescriptorFor(context.Background(), collection)
+		SchemaForContext: func(ctx context.Context, collection string) (*feature.SchemaDescriptor, error) {
+			return api.service.SchemaDescriptorFor(ctx, collection)
 		},
 		ProviderFor: func(collection string) (provider.MutationProvider, string, error) {
 			return api.service.MutationProviderFor(collection)
@@ -101,8 +104,8 @@ func (api *FeatureAPI) mutationCoordinator() *feature.MutationCoordinator {
 			if wfs.IsLocked(collection, parsePKUint64(key.PK)) {
 				// Check if lockId was validated (stored in context by HTTP layer).
 				if _, ok := ctx.Value("wfsLockValidated").(bool); !ok {
-				return fmt.Errorf("feature %d is locked", parsePKUint64(key.PK))
-			}
+					return fmt.Errorf("feature %d is locked", parsePKUint64(key.PK))
+				}
 			}
 			return nil
 		},
@@ -154,7 +157,13 @@ func (api *FeatureAPI) registerMutations(group *httptreemux.Group) {
 		return
 	}
 	mk := func(h http.HandlerFunc) http.Handler {
-		return HeadersHandler(featureNoStoreHandler(h))
+		return HeadersHandler(api.protocolHandler(featureNoStoreHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if crs := r.Header.Get("Content-Crs"); crs != "" && crs != "<http://www.opengis.net/def/crs/OGC/1.3/CRS84>" && crs != "http://www.opengis.net/def/crs/OGC/1.3/CRS84" {
+				api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Mutation input must use CRS84")
+				return
+			}
+			h.ServeHTTP(w, r)
+		}))))
 	}
 	base := api.cfg.BasePath
 	group.UsingContext().Handler(http.MethodPost, base+"/collections/:collection/items", mk(api.serveCreateItem))
@@ -172,13 +181,16 @@ func (api *FeatureAPI) serveItemsOptions(w http.ResponseWriter, r *http.Request)
 	api.writeOptions(w, api.allowedMethods(collection, false), false)
 }
 
-
 // checkWFSLock enforces WFS LockFeature leases on REST mutations (BUG-4 fix).
 // Returns true if the request may proceed.
 // checkWFSLock enforces WFS LockFeature leases on REST mutations.
 // Returns (allowed, lockValidated): lockValidated is true if the request
 // presented a valid lockId for a locked feature.
 func (api *FeatureAPI) checkWFSLock(w http.ResponseWriter, r *http.Request, collection string, featureID uint64) (bool, bool) {
+	if r.URL.Query().Get("lockId") != "" || r.Header.Get("Lock-Id") != "" {
+		api.writeError(w, r, http.StatusBadRequest, "OperationNotSupported", "Lock tokens are not supported by this write profile")
+		return false, false
+	}
 	if wfs.IsLocked(collection, featureID) {
 		// Check if client provided a valid lockId
 		lockID := r.URL.Query().Get("lockId")
@@ -264,6 +276,9 @@ func (api *FeatureAPI) checkPrecondition(r *http.Request, collection string, fea
 	if !etagMatches(match, current) {
 		return "", &preconditionFailedError{current: current}
 	}
+	if revisionFromETag(current) == "" {
+		return "", &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "conditional writes require provider revisions"}
+	}
 	return current, nil
 }
 
@@ -298,10 +313,7 @@ func etagMatches(header, current string) bool {
 // equal state. Falls back to the representation hash when the provider
 // does not track revisions.
 func (api *FeatureAPI) currentETag(r *http.Request, collection string, featureID uint64) (string, error) {
-	if rev := api.currentRevision(r.Context(), collection, featureID); rev != "" {
-		return `"` + rev + `"`, nil
-	}
-	f, err := api.service.QueryFeature(r.Context(), collection, featureID)
+	f, rev, err := api.queryFeatureRevision(r.Context(), collection, featureID, features.QueryOptions{})
 	if err != nil {
 		return "", err
 	}
@@ -310,27 +322,43 @@ func (api *FeatureAPI) currentETag(r *http.Request, collection string, featureID
 	if err != nil {
 		return "", err
 	}
-	return strongETag(raw), nil
+	return revisionETag(raw, rev), nil
 }
 
 // currentRevision returns the provider-tracked revision for a feature,
 // or "" when unavailable.
-func (api *FeatureAPI) currentRevision(ctx context.Context, collection string, featureID uint64) string {
+func (api *FeatureAPI) currentRevision(ctx context.Context, collection string, featureID uint64) (string, error) {
+	if !api.cfg.Write.Enabled {
+		return "", nil
+	}
+	writable := false
+	for _, c := range api.cfg.Write.Collections {
+		if string(c.ID) == collection {
+			writable = true
+			break
+		}
+	}
+	if !writable {
+		return "", nil
+	}
 	// R01: use the provider layer name (not the public collection) for
 	// the revision lookup, matching what Apply stores.
 	p, layer, err := api.service.MutationProviderFor(collection)
 	if err != nil {
-		return ""
+		if errors.Is(err, provider.ErrUnsupported) {
+			return "", nil
+		}
+		return "", err
 	}
 	rr, ok := p.(provider.RevisionReader)
 	if !ok {
-		return ""
+		return "", nil
 	}
 	rev, err := rr.CurrentRevision(ctx, layer, featureID)
-	if err != nil || rev == "" {
-		return ""
+	if err != nil {
+		return "", fmt.Errorf("read feature revision: %w", err)
 	}
-	return rev
+	return rev, nil
 }
 
 // revisionFromETag extracts the revision from a revision-based ETag.
@@ -339,32 +367,36 @@ func (api *FeatureAPI) currentRevision(ctx context.Context, collection string, f
 // Returns "" for hash-based or malformed ETags.
 // Returns the full "incarnation.revision" string for CAS comparison.
 func revisionFromETag(etag string) string {
-	etag = strings.Trim(etag, `"`)
-	if etag == "" {
+	if len(etag) < 2 || etag[0] != '"' || etag[len(etag)-1] != '"' {
 		return ""
 	}
-	// A38: allow "incarnation.revision" format.
-	parts := strings.Split(etag, ".")
-	if len(parts) == 2 {
-		for _, p := range parts {
-			if p == "" {
+	parts := strings.Split(etag[1:len(etag)-1], ".")
+	if len(parts) == 3 {
+		if len(parts[2]) != 64 {
+			return ""
+		}
+		for _, c := range parts[2] {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 				return ""
 			}
-			for _, c := range p {
-				if c < '0' || c > '9' {
-					return ""
-				}
-			}
 		}
-		return etag // return full "inc.rev" for CAS
+		parts = parts[:2]
 	}
-	// Legacy: plain revision number (incarnation 0).
-	for _, c := range etag {
-		if c < '0' || c > '9' {
+	if len(parts) != 1 && len(parts) != 2 {
+		return ""
+	}
+	for _, p := range parts {
+		if !decimalDigits(p) {
+			return ""
+		}
+		if _, err := strconv.ParseUint(p, 10, 64); err != nil {
 			return ""
 		}
 	}
-	return "0." + etag // normalize to new format
+	if len(parts) == 1 {
+		return "0." + parts[0]
+	}
+	return strings.Join(parts, ".")
 }
 
 // serveCreateItem implements POST /collections/{id}/items (Part 4 Create).
@@ -399,8 +431,7 @@ func (api *FeatureAPI) serveCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), m)
-	if err != nil {
-		api.writeMutationError(w, r, err)
+	if api.mutationReceiptError(w, r, receipt, err) {
 		return
 	}
 	if receipt.Status != provider.CommitCommitted {
@@ -409,14 +440,14 @@ func (api *FeatureAPI) serveCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	// Return the persisted representation (server defaults/triggers may
 	// have changed the data): re-read the canonical row.
-	created, err := api.service.QueryFeature(r.Context(), collection, outcome.FeatureID)
-	if err != nil {
-		api.writeQueryError(w, r, err)
-		return
-	}
 	loc := api.itemLocation(r, collection, outcome.FeatureID)
 	w.Header().Set("Location", loc)
-	api.writeMutationRepresentation(w, r, http.StatusCreated, api.itemResponse(r, collection, outcome.FeatureID, created), outcome.Revision)
+	created, revision, err := api.queryFeatureRevision(r.Context(), collection, outcome.FeatureID, features.QueryOptions{})
+	if err != nil {
+		api.writeCommittedWithoutRepresentation(w, r, http.StatusCreated, receipt, err)
+		return
+	}
+	api.writeMutationRepresentation(w, r, http.StatusCreated, api.itemResponse(r, collection, outcome.FeatureID, created), revision, receipt)
 }
 
 // serveReplaceItem implements PUT /collections/{id}/items/{fid}.
@@ -474,20 +505,19 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), m)
-	if err != nil {
-		api.writeMutationError(w, r, err)
+	if api.mutationReceiptError(w, r, receipt, err) {
 		return
 	}
 	if receipt.Status != provider.CommitCommitted {
 		api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
 		return
 	}
-	updated, err := api.service.QueryFeature(r.Context(), collection, outcome.FeatureID)
+	updated, revision, err := api.queryFeatureRevision(r.Context(), collection, outcome.FeatureID, features.QueryOptions{})
 	if err != nil {
-		api.writeQueryError(w, r, err)
+		api.writeCommittedWithoutRepresentation(w, r, http.StatusNoContent, receipt, err)
 		return
 	}
-	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated), outcome.Revision)
+	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated), revision, receipt)
 }
 
 // servePatchItem implements PATCH with application/merge-patch+json (RFC 7396).
@@ -534,12 +564,27 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid request body")
 		return
 	}
+	if err := rejectDuplicateKeys(body); err != nil {
+		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid patch JSON")
+		return
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
-	current, err := api.service.QueryFeature(r.Context(), collection, featureID)
+	current, readRevision, err := api.queryFeatureRevision(r.Context(), collection, featureID, features.QueryOptions{})
 	if err != nil {
 		api.writeQueryError(w, r, err)
 		return
 	}
+	if ifRevision != "" && ifRevision != readRevision {
+		api.writePreconditionError(w, r, &preconditionFailedError{})
+		return
+	}
+	if readRevision == "" {
+		api.writeMutationError(w, r, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "PATCH requires provider revisions"})
+		return
+	}
+	// PATCH is read-modify-write even when the client omits If-Match.
+	// Pin the exact row read so concurrent edits cannot be overwritten.
+	ifRevision = readRevision
 	schema, err := api.service.SchemaDescriptorFor(r.Context(), collection)
 	if err != nil {
 		api.writeQueryError(w, r, err)
@@ -570,20 +615,19 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), m)
-	if err != nil {
-		api.writeMutationError(w, r, err)
+	if api.mutationReceiptError(w, r, receipt, err) {
 		return
 	}
 	if receipt.Status != provider.CommitCommitted {
 		api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
 		return
 	}
-	updated, err := api.service.QueryFeature(r.Context(), collection, outcome.FeatureID)
+	updated, revision, err := api.queryFeatureRevision(r.Context(), collection, outcome.FeatureID, features.QueryOptions{})
 	if err != nil {
-		api.writeQueryError(w, r, err)
+		api.writeCommittedWithoutRepresentation(w, r, http.StatusNoContent, receipt, err)
 		return
 	}
-	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated), outcome.Revision)
+	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated), revision, receipt)
 }
 
 // serveDeleteItem implements DELETE /collections/{id}/items/{fid}.
@@ -621,8 +665,7 @@ func (api *FeatureAPI) serveDeleteItem(w http.ResponseWriter, r *http.Request) {
 		FeatureID:  featureID,
 		IfRevision: ifRevision,
 	})
-	if err != nil {
-		api.writeMutationError(w, r, err)
+	if api.mutationReceiptError(w, r, receipt, err) {
 		return
 	}
 	if receipt.Status != provider.CommitCommitted {
@@ -645,26 +688,22 @@ func (api *FeatureAPI) itemResponse(r *http.Request, collection string, featureI
 	}{Feature: f, Links: links}
 }
 
-// writeMutationRepresentation writes a mutation response. The ETag is
-// always the strong validator of the exact response bytes.
-// writeMutationRepresentation writes a mutation response. When revision
-// is non-empty (R01), the ETag is revision-based for CAS consistency;
-// otherwise it falls back to the representation hash.
-func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *http.Request, status int, value any, revision string) {
+// writeMutationRepresentation preserves confirmed success if readback encoding
+// fails. The validator binds both the revision and exact representation bytes.
+func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *http.Request, status int, value any, revision string, receipt provider.CommitReceipt) {
 	raw, err := json.Marshal(value)
-	if err != nil {
-		api.writeError(w, r, http.StatusInternalServerError, "InternalError", "Response encoding failed")
-		return
+	if err == nil && int64(len(raw)) > api.cfg.MaxResponseBytes {
+		err = errFeatureResponseTooLarge
 	}
-	if int64(len(raw)) > api.cfg.MaxResponseBytes {
-		api.writeError(w, r, http.StatusBadRequest, "ResponseTooLarge", "Response exceeds publication limit")
+	if err != nil {
+		if status != http.StatusCreated {
+			status = http.StatusNoContent
+		}
+		api.writeCommittedWithoutRepresentation(w, r, status, receipt, err)
 		return
 	}
 	featureProtocolHeaders(w.Header())
-	etag := strongETag(raw)
-	if revision != "" {
-		etag = `"` + revision + `"`
-	}
+	etag := revisionETag(raw, revision)
 	w.Header().Set("ETag", etag)
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Location")
@@ -676,7 +715,7 @@ func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *htt
 	}
 	if _, err := w.Write(raw); err != nil {
 		// Headers already sent; log only.
-		fmt.Printf("mutation response write failed: %v\n", err)
+		log.Error("mutation response write failed", "transaction", receipt.TransactionID, "error", err)
 	}
 }
 
@@ -687,6 +726,24 @@ func (api *FeatureAPI) itemLocation(r *http.Request, collection string, featureI
 func isGeoJSONContentType(ct string) bool {
 	ct = strings.TrimSpace(strings.Split(ct, ";")[0])
 	return ct == mediaGeoJSON || ct == "application/vnd.geo+json"
+}
+
+// mutationReceiptError preserves commit truth even when an auxiliary step fails.
+func (api *FeatureAPI) mutationReceiptError(w http.ResponseWriter, r *http.Request, receipt provider.CommitReceipt, err error) bool {
+	if receipt.TransactionID != "" || receipt.Status == provider.CommitCommitted {
+		status := map[provider.CommitStatus]string{provider.CommitUnknown: "unknown", provider.CommitCommitted: "committed", provider.CommitNotCommitted: "not-committed"}[receipt.Status]
+		w.Header().Set("Tegola-Commit-Status", status)
+		mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Tegola-Commit-Status")
+	}
+	if receipt.TransactionID != "" {
+		w.Header().Set("Tegola-Transaction-ID", receipt.TransactionID)
+		mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Tegola-Transaction-ID")
+	}
+	if err != nil && receipt.Status != provider.CommitCommitted {
+		api.writeMutationError(w, r, err)
+		return true
+	}
+	return false
 }
 
 // writeMutationError maps the mutation error taxonomy to HTTP.
@@ -746,7 +803,7 @@ func (api *FeatureAPI) writePreconditionError(w http.ResponseWriter, r *http.Req
 // JSON Schema for feature creation/replacement on this collection.
 func (api *FeatureAPI) serveCollectionSchema(w http.ResponseWriter, r *http.Request) {
 	collection := httptreemux.ContextParams(r.Context())["collection"]
-	if !api.cfg.Write.Enabled || !api.cfg.Write.AllowsOperation(collection, "create") {
+	if !api.writeEnabledFor(collection) {
 		api.writeError(w, r, http.StatusNotFound, "NotFound", "Schema not available for this collection")
 		return
 	}

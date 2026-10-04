@@ -1,8 +1,10 @@
+//go:build cgo
+
 package gpkg
 
 import (
-	"database/sql"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -98,11 +100,29 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 		if err := wkt.Encode(&sb, g); err != nil {
 			return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKT encode: %v", err)}
 		}
+		stored, err := wkt.DecodeString(sb.String())
+		if err != nil {
+			return nil, "", noBounds, fmt.Errorf("decode stored WKT: %w", err)
+		}
+		bounds, err = geometryBounds(stored)
+		if err != nil {
+			return nil, "", noBounds, fmt.Errorf("stored WKT bounds: %w", err)
+		}
 		return nil, sb.String(), bounds, nil
 	case "mos":
 		enc, err := mos.Encode(g, mp.mosOpts)
 		if err != nil {
 			return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("MOS encode: %v", err)}
+		}
+		// MOS quantization changes coordinates. Index the bytes actually
+		// persisted so a boundary query cannot miss the rounded geometry.
+		stored, err := mos.Decode(enc, mp.mosOpts)
+		if err != nil {
+			return nil, "", noBounds, fmt.Errorf("decode stored MOS: %w", err)
+		}
+		bounds, err = geometryBounds(stored)
+		if err != nil {
+			return nil, "", noBounds, fmt.Errorf("stored MOS bounds: %w", err)
 		}
 		return enc, "", bounds, nil
 	default:
@@ -380,15 +400,20 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		set = append(set, quoteIdent(col)+" = ?")
 		args = append(args, v)
 	}
-	// Replace semantics: every writable property is set; absent ones go
-	// to NULL/default. Geometry is replaced when provided.
+	// Omitted columns use their storage default, or NULL when there is none.
 	for pub, col := range mp.writable {
 		if _, ok := m.Properties[pub]; ok {
 			continue
 		}
-		set = append(set, quoteIdent(col)+" = ?")
-		args = append(args, nil)
+		expression := "NULL"
+		if mp.columns[col].IsDefault {
+			if err := t.tx.QueryRowContext(ctx, `SELECT dflt_value FROM pragma_table_xinfo(?) WHERE name=?`, mp.table, col).Scan(&expression); err != nil {
+				return provider.MutationOutcome{}, err
+			}
+		}
+		set = append(set, quoteIdent(col)+" = "+expression)
 	}
+
 	var geomBounds *[4]float64
 	geomTouched := false
 	if m.GeometryWKB != nil || m.GeometryAbsent {
@@ -441,7 +466,7 @@ func (t *featureTx) existsInTx(ctx context.Context, mp *writeMapping, featureID 
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
 	// A03: fail-fast CAS check inside the native transaction.
-	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
 		return provider.MutationOutcome{}, err
 	}
 	// R04: verify existence to distinguish not-found from no-op.
@@ -516,7 +541,7 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
 	// A03: fail-fast CAS check inside the native transaction.
-	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
 		return provider.MutationOutcome{}, err
 	}
 	_, found, err := t.selectRow(ctx, mp, m.FeatureID)
@@ -538,10 +563,7 @@ func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mut
 	if n != 1 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "delete affected unexpected row count"}
 	}
-	// A38: increment entity incarnation on DELETE (tombstone).
-	if ierr := pa.BumpIncarnationOnDelete(ctx, t.tx, m.Collection, m.FeatureID, "sqlite"); ierr != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("incarnation bump: %v", ierr)}
-	}
+
 	t.recordMod(mp, m.FeatureID, nil, true)
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
@@ -588,7 +610,7 @@ func checkRevisionCAS(ctx context.Context, tx *sql.Tx, collection string, featur
 
 func (t *featureTx) checkRevision(ctx context.Context, mp *writeMapping, m provider.Mutation) error {
 	// A03: delegate to the in-transaction CAS check.
-	return checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision)
+	return checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision)
 }
 
 // mapSQLError classifies storage errors without leaking internals.

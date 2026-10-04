@@ -21,6 +21,9 @@ jobs:
         go generate ./...
         popd
 
+    - name: Test editor value and patch contracts
+      run: node --test ui/src/globals/editor.test.mjs
+
     - name: Upload embedded UI artifact
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
@@ -102,6 +105,10 @@ jobs:
         # construction test in provider/mysql connects with host=localhost,
         # database=test, user=u, password=p.
         RUN_MYSQL_TESTS: yes
+
+        # Mutation regression suites use only the disposable compose databases.
+        TEGOLA_REVIEW_MYSQL_DSN: u:p@tcp(localhost:3306)/test
+        TEGOLA_REVIEW_POSTGIS_DSN: postgres://postgres:postgres@localhost:5432/tegola?sslmode=disable
 
         # HANA tests: only run when the connection string is provided as a repo secret.
         # The credentials were hardcoded in upstream CI (go-spatial/tegola#893) and must

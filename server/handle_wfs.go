@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/alexeydott/tegola/config"
 	"github.com/alexeydott/tegola/feature"
+	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/alexeydott/tegola/ogc/wfs"
 	"github.com/alexeydott/tegola/provider"
@@ -42,8 +44,8 @@ func (h *WFSHandler) coordinator() *feature.MutationCoordinator {
 		PolicyFor: func(collection string) feature.Policy {
 			return writePolicy{cfg: h.WriteConfig}
 		},
-		SchemaFor: func(collection string) (*feature.SchemaDescriptor, error) {
-			return h.Service.SchemaDescriptorFor(context.Background(), collection)
+		SchemaForContext: func(ctx context.Context, collection string) (*feature.SchemaDescriptor, error) {
+			return h.Service.SchemaDescriptorFor(ctx, collection)
 		},
 		ProviderFor: func(collection string) (provider.MutationProvider, string, error) {
 			return h.Service.MutationProviderFor(collection)
@@ -58,6 +60,14 @@ func (h *WFSHandler) coordinator() *feature.MutationCoordinator {
 }
 
 func (h *WFSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if len(r.URL.RawQuery) > 65536 {
+		h.writeException(w, r, wfs.V202, http.StatusRequestURITooLong, []wfs.Exception{{Code: wfs.ExceptionInvalidParameterValue, Text: "query exceeds publication limit"}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		h.serveKVP(w, r)
@@ -68,6 +78,33 @@ func (h *WFSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			{Code: wfs.ExceptionOperationNotSupported, Text: "method not supported"},
 		})
 	}
+}
+
+func (h *WFSHandler) negotiateVersion(requested string, accepted []string) (wfs.Version, error) {
+	configured := h.Config.Resolved().Versions
+	if requested != "" {
+		for _, version := range configured {
+			if requested == version {
+				return wfs.Negotiate(requested, nil)
+			}
+		}
+		return "", fmt.Errorf("WFS version %q is not enabled", requested)
+	}
+	if len(accepted) == 0 {
+		return wfs.Negotiate("", configured)
+	}
+	var mutual []string
+	for _, client := range accepted {
+		for _, version := range configured {
+			if strings.TrimSpace(client) == version {
+				mutual = append(mutual, version)
+			}
+		}
+	}
+	if len(mutual) == 0 {
+		return "", fmt.Errorf("no enabled WFS version in acceptversions")
+	}
+	return wfs.Negotiate("", mutual)
 }
 
 // kvpGet returns the query value for a case-insensitive key (A25).
@@ -83,7 +120,20 @@ func kvpGet(q map[string][]string, key string) string {
 }
 
 func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{{Code: wfs.ExceptionInvalidParameterValue, Text: "invalid query parameters"}})
+		return
+	}
+	seen := map[string]bool{}
+	for name, values := range q {
+		key := strings.ToLower(name)
+		if seen[key] || len(values) != 1 {
+			h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{{Code: wfs.ExceptionInvalidParameterValue, Locator: name, Text: "duplicate query parameter"}})
+			return
+		}
+		seen[key] = true
+	}
 	service := strings.ToUpper(kvpGet(q, "service"))
 	if service != "" && service != "WFS" {
 		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
@@ -99,10 +149,10 @@ func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var accepted []string
-	if av := q.Get("acceptversions"); av != "" {
+	if av := kvpGet(q, "acceptversions"); av != "" {
 		accepted = strings.Split(av, ",")
 	}
-	v, err := wfs.Negotiate(kvpGet(q, "version"), accepted)
+	v, err := h.negotiateVersion(kvpGet(q, "version"), accepted)
 	if err != nil {
 		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionInvalidParameterValue, Locator: "version", Text: err.Error()},
@@ -137,6 +187,12 @@ func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		view := wfsSchemaView(schema)
+		if err := wfs.ValidateSchemaView(typeName, view); err != nil {
+			h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+				{Code: wfs.ExceptionOperationNotSupported, Locator: "typeName", Text: "Collection schema contains unsupported WFS XML names"},
+			})
+			return
+		}
 		h.writeXML(w, r, http.StatusOK, wfs.DescribeFeatureType(v, typeName, view))
 	case "getfeature":
 		req, errs := wfs.ParseGetFeatureKVP(v, params)
@@ -187,8 +243,10 @@ func (h *WFSHandler) serveKVP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.writeXML(w, r, http.StatusOK, body)
-	case "lockfeature":
-		h.serveLockFeature(w, r, v, params)
+	case "lockfeature", "getfeaturewithlock":
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Text: "physical transaction locks are not supported by this profile"},
+		})
 	default:
 		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionOperationNotSupported, Locator: "request", Text: fmt.Sprintf("unsupported request %q", request)},
@@ -215,6 +273,14 @@ func (h *WFSHandler) serveXML(w http.ResponseWriter, r *http.Request) {
 		h.writeException(w, r, wfs.V202, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionInvalidParameterValue, Text: err.Error()},
 		})
+		return
+	}
+	if _, err := h.negotiateVersion(string(v), nil); err != nil {
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{{Code: wfs.ExceptionInvalidParameterValue, Locator: "version", Text: err.Error()}})
+		return
+	}
+	if queryVersion := kvpGet(r.URL.Query(), "version"); queryVersion != "" && queryVersion != string(v) {
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{{Code: wfs.ExceptionInvalidParameterValue, Locator: "version", Text: "query version conflicts with XML version"}})
 		return
 	}
 	switch strings.ToLower(op) {
@@ -249,6 +315,12 @@ func (h *WFSHandler) serveTransaction(w http.ResponseWriter, r *http.Request, v 
 	if err != nil {
 		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
 			{Code: wfs.ExceptionInvalidParameterValue, Text: err.Error()},
+		})
+		return
+	}
+	if lockID != "" {
+		h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
+			{Code: wfs.ExceptionOperationNotSupported, Text: "lock tokens are not supported by this profile"},
 		})
 		return
 	}
@@ -303,23 +375,33 @@ func (h *WFSHandler) serveTransaction(w http.ResponseWriter, r *http.Request, v 
 }
 
 func (h *WFSHandler) writeTransactionError(w http.ResponseWriter, r *http.Request, v wfs.Version, err error) {
+	log.Error("WFS transaction failed", "error", err)
+	code := wfs.ExceptionNoApplicableCode
+	status := http.StatusInternalServerError
+	message := "Transaction failed"
 	if me, ok := provider.AsMutationError(err); ok {
-		code := wfs.ExceptionNoApplicableCode
-		status := http.StatusBadRequest
 		switch me.Kind {
+		case provider.MutationErrMalformedInput, provider.MutationErrSchemaViolation:
+			code, status, message = wfs.ExceptionInvalidParameterValue, http.StatusBadRequest, "Invalid transaction input"
 		case provider.MutationErrDenied:
-			status = http.StatusForbidden
+			status, message = http.StatusForbidden, "Operation denied"
 		case provider.MutationErrNotFound:
-			code = wfs.ExceptionInvalidParameterValue
+			code, status, message = wfs.ExceptionInvalidParameterValue, http.StatusNotFound, "Feature not found"
+		case provider.MutationErrPreconditionFailed:
+			status, message = http.StatusPreconditionFailed, "Precondition failed"
+		case provider.MutationErrLockConflict:
+			status, message = http.StatusConflict, "Lock conflict"
+		case provider.MutationErrUnsupportedCapability:
+			code, status, message = wfs.ExceptionOperationNotSupported, http.StatusBadRequest, "Unsupported transaction capability"
+		case provider.MutationErrQuotaExceeded:
+			status, message = http.StatusRequestEntityTooLarge, "Transaction quota exceeded"
 		case provider.MutationErrDomainMismatch:
-			// Cross-domain rejected before any change.
+			code, status, message = wfs.ExceptionInvalidParameterValue, http.StatusBadRequest, "Transaction domain mismatch"
+		case provider.MutationErrCommitUnknown:
+			message = "Commit outcome unknown"
 		}
-		h.writeException(w, r, v, status, []wfs.Exception{{Code: code, Text: "transaction failed: " + me.Reason}})
-		return
 	}
-	h.writeException(w, r, v, http.StatusBadRequest, []wfs.Exception{
-		{Code: wfs.ExceptionNoApplicableCode, Text: "transaction failed: " + err.Error()},
-	})
+	h.writeException(w, r, v, status, []wfs.Exception{{Code: code, Text: message}})
 }
 
 func (h *WFSHandler) writeOps() map[string][]string {

@@ -72,9 +72,6 @@ type Atlas struct {
 	sync.RWMutex
 	// hold maps
 	maps map[string]Map
-	// A36: per-map mutation epochs for cache invalidation.
-	// No global state: each Atlas instance tracks its own.
-	epochs map[string]uint64
 	// holds a reference to the cache backend
 	cacher cache.Interface
 
@@ -142,13 +139,12 @@ func (a *Atlas) SeedMapTile(ctx context.Context, m Map, z, x, y uint) error {
 		return err
 	}
 
-	// cache key (A36: per-Atlas epoch invalidates on mutation)
+	// cache key
 	key := cache.Key{
 		MapName: m.Name,
 		Z:       z,
 		X:       x,
 		Y:       y,
-		Epoch:   a.getMapEpoch(m.Name),
 	}
 
 	return a.cacher.Set(ctx, &key, b)
@@ -223,33 +219,6 @@ func (a *Atlas) AddMap(m Map) {
 	}
 
 	a.maps[m.Name] = m
-}
-
-// A36: BumpMapEpoch increments the mutation epoch for a map.
-// Each Atlas instance tracks its own epochs (no global state).
-// Tile cache keys include the epoch, so mutations invalidate cached tiles.
-func (a *Atlas) BumpMapEpoch(mapName string) uint64 {
-	if a == nil {
-		defaultAtlas.BumpMapEpoch(mapName)
-		return defaultAtlas.getMapEpoch(mapName)
-	}
-	a.Lock()
-	defer a.Unlock()
-	if a.epochs == nil {
-		a.epochs = map[string]uint64{}
-	}
-	a.epochs[mapName]++
-	return a.epochs[mapName]
-}
-
-// getMapEpoch returns the current epoch for a map (0 if never bumped).
-func (a *Atlas) getMapEpoch(mapName string) uint64 {
-	a.RLock()
-	defer a.RUnlock()
-	if a.epochs == nil {
-		return 0
-	}
-	return a.epochs[mapName]
 }
 
 // GetCache returns the registered cache if one is registered, otherwise nil

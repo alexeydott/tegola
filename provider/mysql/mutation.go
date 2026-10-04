@@ -1,18 +1,18 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"errors"
-	"context"
 	"fmt"
 	"math/rand"
-	"time"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/alexeydott/tegola/mos"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/alexeydott/tegola/mos"
 	"strconv"
 
 	"github.com/alexeydott/tegola/provider"
@@ -73,7 +73,16 @@ func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.Sch
 		},
 	}
 	for _, col := range m.columns {
-		sd.Columns = append(sd.Columns, col)
+		_, writable := m.writable[col.Name]
+		published := writable || col.Name == m.idColumn || col.Name == m.geomColumn
+		for _, name := range m.readOnly {
+			if name == col.Name {
+				published = true
+			}
+		}
+		if published {
+			sd.Columns = append(sd.Columns, col)
+		}
 	}
 	return sd, nil
 }
@@ -154,21 +163,26 @@ func (w *Writer) mapping(ctx context.Context, layer string) (*writeMapping, erro
 
 // CurrentRevision implements provider.RevisionReader (A03).
 func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
-	var rev int64
-	err := w.provider.db.QueryRowContext(ctx, `SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, featureID).Scan(&rev)
+	l, ok := w.provider.layers[layer]
+	if !ok {
+		return "", nil
+	}
+	layer = l.tablename
+	var rev, incarnation int64
+	err := w.provider.db.QueryRowContext(ctx, `SELECT revision, incarnation FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, featureID).Scan(&rev, &incarnation)
 	if err != nil {
 		// R01/R09: distinguish missing row (revision 0) from missing
 		// table (revisions not migrated -> "", nil for hash fallback)
 		// and real storage errors.
 		if errors.Is(err, sql.ErrNoRows) {
-			return "0", nil
+			return "0.0", nil
 		}
 		if pa.IsMissingTable(err) {
-			return "", nil
+			return "0.0", nil
 		}
 		return "", err
 	}
-	return strconv.FormatInt(rev, 10), nil
+	return strconv.FormatInt(incarnation, 10) + "." + strconv.FormatInt(rev, 10), nil
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
@@ -179,6 +193,9 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 		if merr := pa.Migrate(ctx, w.provider.db, "mysql"); merr != nil {
 			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("schema migration: %v", merr)}
 		}
+	}
+	if err := pa.CheckSchemaVersion(ctx, w.provider.db, "mysql"); err != nil {
+		return nil, err
 	}
 	// A01: verify table engines (InnoDB required for transactions).
 	if err := pa.CheckTableEngine(ctx, w.provider.db, "mysql"); err != nil {
@@ -205,8 +222,15 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	if l.tablename == "" {
 		return deny(fmt.Sprintf("layer %q has no table mapping", l.name))
 	}
+	var engine string
+	if err := p.db.QueryRowContext(ctx, `SELECT ENGINE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?`, p.Database, l.tablename).Scan(&engine); err != nil {
+		return deny("cannot inspect table engine")
+	}
+	if engine != "InnoDB" {
+		return deny("writes require an InnoDB table")
+	}
 	// Columns and PK via information_schema.
-	q := `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
+	q := `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, EXTRA FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
 	rows, err := p.db.QueryContext(ctx, q, p.Database, l.tablename)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
@@ -216,11 +240,12 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	cols := map[string]provider.ColumnDescriptor{}
 	var order []string
 	for rows.Next() {
-		var name, dtype, key string
-		if err := rows.Scan(&name, &dtype, &key); err != nil {
+		var name, dtype, key, nullable, extra string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&name, &dtype, &key, &nullable, &defaultValue, &extra); err != nil {
 			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
 		}
-		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype}
+		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype, Nullable: nullable == "YES", IsDefault: defaultValue.Valid, IsGenerated: strings.Contains(extra, "GENERATED") || strings.Contains(extra, "auto_increment")}
 		order = append(order, name)
 		if key == "PRI" {
 			pkCols = append(pkCols, name)
@@ -229,8 +254,16 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	if err := rows.Err(); err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
+	for _, field := range l.bboxFields {
+		if _, exists := cols[field]; field != "" && exists {
+			return deny("writes to layers with derived bounds columns are not supported")
+		}
+	}
 	if len(pkCols) != 1 {
 		return deny(fmt.Sprintf("layer %q: write requires a single-column primary key", l.name))
+	}
+	if l.idFieldname != "" && l.idFieldname != pkCols[0] {
+		return deny("id field must match primary key")
 	}
 	// Integer PK check.
 	var pkType string
@@ -276,9 +309,27 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		writable: make(map[string]string),
 		domain:   p.domainID(),
 	}
+	public := map[string]bool{}
+	if l.feature != nil {
+		for _, field := range l.feature.projection {
+			if field.source != field.output {
+				return deny("aliased properties are not writable")
+			}
+			public[field.source] = true
+		}
+	} else {
+		for _, field := range l.tagFieldnames {
+			public[field] = true
+		}
+	}
+	restrict := l.feature != nil || len(l.tagFieldnames) > 0
 	_ = order
-	for name := range cols {
-		if name == m.idColumn || name == m.geomColumn {
+	for name, column := range cols {
+		if name == m.idColumn || name == m.geomColumn || (restrict && !public[name]) {
+			continue
+		}
+		if column.IsGenerated {
+			m.readOnly = append(m.readOnly, name)
 			continue
 		}
 		m.writable[name] = name
@@ -315,3 +366,5 @@ func splitStmts(ddl string) []string {
 	}
 	return out
 }
+
+func (m *writeMapping) revisionCollection() string { return m.table }

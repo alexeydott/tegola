@@ -7,15 +7,17 @@ package wfs
 //   - Comparison: PropertyIsEqualTo, PropertyIsNotEqualTo,
 //     PropertyIsLessThan, PropertyIsGreaterThan,
 //     PropertyIsLessThanOrEqualTo, PropertyIsGreaterThanOrEqualTo,
-//     PropertyIsLike, PropertyIsNull, PropertyIsBetween
+//     PropertyIsBetween
 //   - Logical: And, Or, Not
-//   - Identifier: ResourceId (feature ID filter)
+// Identifier selection is supplied separately through featureId/resourceId KVP.
 //
 // Unsupported constructs return a descriptive error (not silently ignored).
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/alexeydott/tegola/provider"
@@ -23,6 +25,9 @@ import (
 
 // ParseFESFilter parses an OGC FES 2.0 <Filter> XML fragment.
 func ParseFESFilter(body []byte) (provider.FilterExpression, error) {
+	if err := validateFESStructure(body); err != nil {
+		return provider.FilterExpression{}, err
+	}
 	var doc fesFilter
 	if err := xml.Unmarshal(body, &doc); err != nil {
 		return provider.FilterExpression{}, fmt.Errorf("fes: invalid Filter XML: %w", err)
@@ -44,16 +49,6 @@ type fesInner struct {
 	Content []byte     `xml:",innerxml"`
 	Attrs   []xml.Attr `xml:",attr"`
 	// For nested parsing, we re-parse Content.
-}
-
-
-// fesMustLiteral is like fesLiteral but panics on error (construction-time).
-func fesMustLiteral(text string) provider.FilterLiteral {
-	l, err := fesLiteral(text)
-	if err != nil {
-		panic(err)
-	}
-	return l
 }
 
 // fesLiteral creates a FilterLiteral, inferring number vs string.
@@ -85,21 +80,8 @@ func fesNodeToFilter(inner fesInner) (provider.FilterNode, error) {
 		return fesCompare(provider.FilterGreater, inner.Content)
 	case "PropertyIsGreaterThanOrEqualTo":
 		return fesCompare(provider.FilterGreaterEqual, inner.Content)
-	case "PropertyIsLike":
-		return fesLike(inner)
-	case "PropertyIsNull":
-		return fesIsNull(inner.Content)
 	case "PropertyIsBetween":
 		return fesBetween(inner.Content)
-	case "ResourceId", "FeatureId":
-		return fesResourceID(inner)
-	case "Filter":
-		// Nested <Filter> — unwrap.
-		var nested fesFilter
-		if err := xml.Unmarshal(inner.Content, &nested); err != nil {
-			return provider.FilterNode{}, fmt.Errorf("fes: nested Filter: %w", err)
-		}
-		return fesNodeToFilter(nested.Inner)
 	default:
 		return provider.FilterNode{}, fmt.Errorf("fes: unsupported filter operator %q", local)
 	}
@@ -160,14 +142,18 @@ func fesNot(content []byte) (provider.FilterNode, error) {
 func fesValueRef(content []byte) (prop, lit string, err error) {
 	wrapped := "<root>" + string(content) + "</root>"
 	var root struct {
-		ValueRef string `xml:"ValueReference"`
-		Literal  string `xml:"Literal"`
+		ValueRef     string `xml:"ValueReference"`
+		PropertyName string `xml:"PropertyName"`
+		Literal      string `xml:"Literal"`
 	}
 	if err := xml.Unmarshal([]byte(wrapped), &root); err != nil {
 		return "", "", fmt.Errorf("fes: parse comparison: %w", err)
 	}
+	if root.ValueRef == "" {
+		root.ValueRef = root.PropertyName
+	}
 	prop = strings.TrimSpace(root.ValueRef)
-	lit = strings.TrimSpace(root.Literal)
+	lit = root.Literal
 	if prop == "" {
 		return "", "", fmt.Errorf("fes: comparison missing ValueReference")
 	}
@@ -179,91 +165,160 @@ func fesCompare(op provider.FilterCompareOperator, content []byte) (provider.Fil
 	if err != nil {
 		return provider.FilterNode{}, err
 	}
+	literal, err := fesLiteral(lit)
+	if err != nil {
+		return provider.FilterNode{}, err
+	}
 	return provider.FilterNode{
 		Kind:     provider.FilterCompare,
 		Operator: op,
 		Property: prop,
-		Literal:  fesMustLiteral(lit),
-	}, nil
-}
-
-func fesLike(inner fesInner) (provider.FilterNode, error) {
-	// PropertyIsLike is not in the base FilterCompare operators.
-	// We map it to a Like operator if available, else error.
-	// For now, return unsupported (explicit, not silent).
-	return provider.FilterNode{}, fmt.Errorf("fes: PropertyIsLike not yet supported (use PropertyIsEqualTo)")
-}
-
-func fesIsNull(content []byte) (provider.FilterNode, error) {
-	wrapped := "<root>" + string(content) + "</root>"
-	var root struct {
-		ValueRef string `xml:"ValueReference"`
-	}
-	if err := xml.Unmarshal([]byte(wrapped), &root); err != nil {
-		return provider.FilterNode{}, fmt.Errorf("fes: parse IsNull: %w", err)
-	}
-	prop := strings.TrimSpace(root.ValueRef)
-	if prop == "" {
-		return provider.FilterNode{}, fmt.Errorf("fes: PropertyIsNull missing ValueReference")
-	}
-	// Represent as EqualTo empty? No — use a dedicated IsNull if available.
-	// For now, map to a comparison with a null literal marker.
-	return provider.FilterNode{
-		Kind:     provider.FilterCompare,
-		Operator: provider.FilterEqual,
-		Property: prop,
-		Literal:  fesMustLiteral("\x00NULL\x00"),
+		Literal:  literal,
 	}, nil
 }
 
 func fesBetween(content []byte) (provider.FilterNode, error) {
 	wrapped := "<root>" + string(content) + "</root>"
 	var root struct {
-		ValueRef string `xml:"ValueReference"`
-		Lower    string `xml:"LowerBoundary>Literal"`
-		Upper    string `xml:"UpperBoundary>Literal"`
+		ValueRef     string `xml:"ValueReference"`
+		PropertyName string `xml:"PropertyName"`
+		Lower        string `xml:"LowerBoundary>Literal"`
+		Upper        string `xml:"UpperBoundary>Literal"`
 	}
 	if err := xml.Unmarshal([]byte(wrapped), &root); err != nil {
 		return provider.FilterNode{}, fmt.Errorf("fes: parse Between: %w", err)
+	}
+	if root.ValueRef == "" {
+		root.ValueRef = root.PropertyName
 	}
 	prop := strings.TrimSpace(root.ValueRef)
 	if prop == "" {
 		return provider.FilterNode{}, fmt.Errorf("fes: PropertyIsBetween missing ValueReference")
 	}
+	lower, err := fesLiteral(root.Lower)
+	if err != nil {
+		return provider.FilterNode{}, err
+	}
+	upper, err := fesLiteral(root.Upper)
+	if err != nil {
+		return provider.FilterNode{}, err
+	}
 	// Between(a, lo, hi) = (a >= lo) AND (a <= hi)
 	lo := provider.FilterNode{
 		Kind: provider.FilterCompare, Operator: provider.FilterGreaterEqual,
-		Property: prop, Literal: fesMustLiteral(strings.TrimSpace(root.Lower)),
+		Property: prop, Literal: lower,
 	}
 	hi := provider.FilterNode{
 		Kind: provider.FilterCompare, Operator: provider.FilterLessEqual,
-		Property: prop, Literal: fesMustLiteral(strings.TrimSpace(root.Upper)),
+		Property: prop, Literal: upper,
 	}
 	return provider.FilterNode{Kind: provider.FilterAnd, Children: []provider.FilterNode{lo, hi}}, nil
 }
 
-func fesResourceID(inner fesInner) (provider.FilterNode, error) {
-	// ResourceId with rid="...". Extract the ID.
-	var rid string
-	for _, a := range inner.Attrs {
-		if a.Name.Local == "rid" {
-			rid = a.Value
+// Validate the complete document before the narrow expression decoder runs.
+// encoding/xml otherwise silently ignores unknown attributes and extra children.
+type fesElement struct {
+	XMLName  xml.Name
+	Attrs    []xml.Attr   `xml:",any,attr"`
+	Text     string       `xml:",chardata"`
+	Children []fesElement `xml:",any"`
+}
+
+func validateFESStructure(body []byte) error {
+	if len(body) > provider.MaxFilterBytes {
+		return fmt.Errorf("fes: filter exceeds byte limit")
+	}
+	d := xml.NewDecoder(bytes.NewReader(body))
+	var root fesElement
+	if err := d.Decode(&root); err != nil {
+		return fmt.Errorf("fes: invalid XML: %w", err)
+	}
+	for {
+		tok, err := d.Token()
+		if err == io.EOF {
 			break
 		}
+		if err != nil {
+			return err
+		}
+		if text, ok := tok.(xml.CharData); !ok || strings.TrimSpace(string(text)) != "" {
+			return fmt.Errorf("fes: trailing XML content")
+		}
 	}
-	if rid == "" {
-		// Try inner text.
-		rid = strings.TrimSpace(string(inner.Content))
+	if root.XMLName.Local != "Filter" || len(root.Children) != 1 {
+		return fmt.Errorf("fes: Filter requires exactly one predicate")
 	}
-	if rid == "" {
-		return provider.FilterNode{}, fmt.Errorf("fes: ResourceId missing rid")
+	nodes := 0
+	var check func(fesElement, int) error
+	check = func(n fesElement, depth int) error {
+		nodes++
+		if depth > provider.MaxFilterDepth || nodes > provider.MaxFilterNodes {
+			return fmt.Errorf("fes: filter complexity limit exceeded")
+		}
+		ns := n.XMLName.Space
+		if ns != "" && ns != "http://www.opengis.net/fes/2.0" && ns != "http://www.opengis.net/ogc" {
+			return fmt.Errorf("fes: unsupported namespace %q", ns)
+		}
+		for _, a := range n.Attrs {
+			if a.Name.Space != "xmlns" && a.Name.Local != "xmlns" {
+				return fmt.Errorf("fes: unsupported attribute %q", a.Name.Local)
+			}
+		}
+		name := n.XMLName.Local
+		names := func(want ...string) bool {
+			if len(n.Children) != len(want) {
+				return false
+			}
+			for i, c := range n.Children {
+				if c.XMLName.Local != want[i] {
+					return false
+				}
+			}
+			return true
+		}
+		valid := false
+		switch name {
+		case "Filter":
+			valid = depth == 0 && len(n.Children) == 1
+		case "And", "Or":
+			valid = len(n.Children) >= 2
+		case "Not":
+			valid = len(n.Children) == 1
+		case "PropertyIsEqualTo", "PropertyIsNotEqualTo", "PropertyIsLessThan", "PropertyIsLessThanOrEqualTo", "PropertyIsGreaterThan", "PropertyIsGreaterThanOrEqualTo":
+			valid = names("ValueReference", "Literal") || names("PropertyName", "Literal")
+		case "PropertyIsBetween":
+			valid = names("ValueReference", "LowerBoundary", "UpperBoundary") || names("PropertyName", "LowerBoundary", "UpperBoundary")
+		case "LowerBoundary", "UpperBoundary":
+			valid = names("Literal")
+		case "ValueReference", "PropertyName":
+			valid = len(n.Children) == 0 && strings.TrimSpace(n.Text) != ""
+		case "Literal":
+			valid = len(n.Children) == 0
+			if _, err := fesLiteral(n.Text); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("fes: unsupported filter operator %q", name)
+		}
+		if !valid {
+			return fmt.Errorf("fes: invalid operands for %s", name)
+		}
+		if len(n.Children) > 0 && strings.TrimSpace(n.Text) != "" {
+			return fmt.Errorf("fes: unexpected text in %s", name)
+		}
+		for _, c := range n.Children {
+			// Operand elements cannot act as predicates in a logical expression.
+			if name == "Filter" || name == "And" || name == "Or" || name == "Not" {
+				switch c.XMLName.Local {
+				case "Literal", "ValueReference", "PropertyName", "LowerBoundary", "UpperBoundary":
+					return fmt.Errorf("fes: expected predicate")
+				}
+			}
+			if err := check(c, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	// The rid is a WFS FID; the caller resolves it to a numeric ID.
-	// We return a special node; the WFS layer converts it.
-	return provider.FilterNode{
-		Kind:     provider.FilterCompare,
-		Operator: provider.FilterEqual,
-		Property: "$fid",
-		Literal:  fesMustLiteral(rid),
-	}, nil
+	return check(root, 0)
 }

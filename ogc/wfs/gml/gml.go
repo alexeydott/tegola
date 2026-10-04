@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/alexeydott/geom"
 )
@@ -32,6 +33,9 @@ func (v Version) namespace() string {
 // stored lon,lat order.
 func (v Version) srsName(srid uint64) string {
 	if srid == 4326 {
+		if v == V311 {
+			return "http://www.opengis.net/gml/srs/epsg.xml#4326"
+		}
 		return "urn:ogc:def:crs:EPSG::4326"
 	}
 	return fmt.Sprintf("urn:ogc:def:crs:EPSG::%d", srid)
@@ -167,8 +171,20 @@ type Feature struct {
 
 // EncodeFeature writes one GML feature member.
 func (e *Encoder) EncodeFeature(f Feature) error {
-	e.sb.WriteString("<gml:featureMember>")
-	e.sb.WriteString("<" + f.TypeName + ` gml:id="` + xmlEscape(f.ID) + `">`)
+	if !ValidNCName(f.TypeName) || !ValidNCName(f.GeometryName) {
+		return fmt.Errorf("unsupported WFS XML feature or geometry name")
+	}
+	for name := range f.Properties {
+		if !ValidNCName(name) || name == f.GeometryName {
+			return fmt.Errorf("unsupported WFS XML property name %q", name)
+		}
+	}
+	member := "gml:featureMember"
+	if e.Version == V321 {
+		member = "wfs:member"
+	}
+	e.sb.WriteString("<" + member + ">")
+	e.sb.WriteString("<" + f.TypeName + ` xmlns="` + xmlEscape("http://example.com/tegola/"+f.TypeName) + `" gml:id="` + xmlEscape(f.ID) + `">`)
 	if f.Geometry != nil {
 		e.sb.WriteString("<" + f.GeometryName + ">")
 		if err := e.EncodeGeometry(f.Geometry); err != nil {
@@ -177,13 +193,34 @@ func (e *Encoder) EncodeFeature(f Feature) error {
 		e.sb.WriteString("</" + f.GeometryName + ">")
 	}
 	for _, name := range sortedKeys(f.Properties) {
+		if f.Properties[name] == nil {
+			e.sb.WriteString("<" + name + ` xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>`)
+			continue
+		}
 		e.sb.WriteString("<" + name + ">")
 		e.sb.WriteString(xmlEscape(formatGMLValue(f.Properties[name])))
 		e.sb.WriteString("</" + name + ">")
 	}
 	e.sb.WriteString("</" + f.TypeName + ">")
-	e.sb.WriteString("</gml:featureMember>")
+	e.sb.WriteString("</" + member + ">")
 	return nil
+}
+
+// ValidNCName admits XML names used by the supported simple-feature profile.
+func ValidNCName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if r == '_' || unicode.IsLetter(r) {
+			continue
+		}
+		if i > 0 && (unicode.IsDigit(r) || r == '-' || r == '.' || unicode.IsMark(r)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (e *Encoder) String() string { return e.sb.String() }

@@ -17,6 +17,15 @@ const CurrentSchemaVersion = 2
 // This must be called at startup before write admission, not inside
 // data transactions.
 func Migrate(ctx context.Context, db *sql.DB, dialect string) error {
+	var version sql.NullInt64
+	err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM tegola_schema_version`).Scan(&version)
+	if err != nil && !IsMissingTable(err) {
+		return fmt.Errorf("audit: cannot inspect schema version: %w", err)
+	}
+	if version.Valid && (version.Int64 < 1 || version.Int64 > CurrentSchemaVersion) {
+		return fmt.Errorf("audit: unsupported service schema version %d", version.Int64)
+	}
+
 	var ddl string
 	switch dialect {
 	case "sqlite", "gpkg":
@@ -28,8 +37,13 @@ func Migrate(ctx context.Context, db *sql.DB, dialect string) error {
 	default:
 		return fmt.Errorf("audit: unknown dialect %q for migration", dialect)
 	}
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		return fmt.Errorf("audit: migration DDL failed: %w", err)
+	for _, statement := range strings.Split(ddl, ";") {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("audit: migration DDL failed: %w", err)
+		}
 	}
 	// A01/A38: add incarnation column to existing tables (v1 -> v2).
 	// CREATE TABLE IF NOT EXISTS does not alter existing tables.
@@ -71,7 +85,14 @@ func addIncarnationColumn(ctx context.Context, db *sql.DB, dialect string) error
 	var alter string
 	switch dialect {
 	case "mysql":
-		alter = `ALTER TABLE tegola_revisions ADD COLUMN IF NOT EXISTS incarnation BIGINT NOT NULL DEFAULT 0`
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tegola_revisions' AND COLUMN_NAME='incarnation'`).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		alter = `ALTER TABLE tegola_revisions ADD COLUMN incarnation BIGINT NOT NULL DEFAULT 0`
 	case "postgres", "pgx":
 		alter = `ALTER TABLE tegola_revisions ADD COLUMN IF NOT EXISTS incarnation BIGINT NOT NULL DEFAULT 0`
 	default: // sqlite, gpkg
@@ -103,14 +124,14 @@ func CheckTableEngine(ctx context.Context, db *sql.DB, dialect string) error {
 	if dialect != "mysql" {
 		return nil
 	}
-	for _, tbl := range []string{"tegola_revisions", "tegola_outbox", "tegola_audit_log"} {
+	for _, tbl := range []string{"tegola_revisions", "tegola_outbox", "tegola_audit"} {
 		var engine string
 		err := db.QueryRowContext(ctx,
 			`SELECT ENGINE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
 			tbl).Scan(&engine)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				continue // table not created yet, Migrate will create it
+				return fmt.Errorf("audit: required table %s missing", tbl)
 			}
 			return fmt.Errorf("audit: engine check failed for %s: %w", tbl, err)
 		}
@@ -125,21 +146,12 @@ func CheckTableEngine(ctx context.Context, db *sql.DB, dialect string) error {
 // Returns an error if the schema is missing or outdated. Call before write
 // admission; do not probe inside a PostgreSQL data transaction.
 func CheckSchemaVersion(ctx context.Context, db *sql.DB, dialect string) error {
-	var v int
-	var q string
-	switch dialect {
-	case "postgres", "pgx":
-		q = `SELECT version FROM tegola_schema_version WHERE version = $1`
-	default:
-		q = `SELECT version FROM tegola_schema_version WHERE version = ?`
-	}
-	err := db.QueryRowContext(ctx, q, CurrentSchemaVersion).Scan(&v)
-	if err != nil {
-		if IsMissingTable(err) || err == sql.ErrNoRows {
-			return fmt.Errorf("audit: service schema not migrated (run Migrate): %w", err)
-		}
+	var v sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM tegola_schema_version`).Scan(&v); err != nil {
 		return fmt.Errorf("audit: schema version check failed: %w", err)
+	}
+	if !v.Valid || v.Int64 != CurrentSchemaVersion {
+		return fmt.Errorf("audit: service schema version %v does not match %d", v, CurrentSchemaVersion)
 	}
 	return nil
 }
-

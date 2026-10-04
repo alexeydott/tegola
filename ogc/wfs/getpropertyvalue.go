@@ -2,167 +2,100 @@ package wfs
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
-	"strconv"
 	"strings"
+	"time"
 
-	"github.com/alexeydott/geom"
-	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/tegola/ogc/features"
+	"github.com/alexeydott/tegola/ogc/wfs/gml"
 	"github.com/alexeydott/tegola/provider"
 )
 
-// GetPropertyValueRequest is a WFS 2.0 GetPropertyValue request.
+// GetPropertyValueRequest selects one simple property using GetFeature query semantics.
 type GetPropertyValueRequest struct {
-	Version Version
-	TypeName string
-	// ValueReference is the property to return (local name, no namespace).
+	Version        Version
+	TypeName       string
 	ValueReference string
-	MaxFeatures uint
-	BBox *[4]float64
-	FeatureIDs []uint64
-	ResultType string
+	MaxFeatures    uint
+	BBox           *[4]float64
+	FeatureIDs     []uint64
+	ResultType     string
+	StartIndex     uint
+	SortBy         []SortCriterion
+	Filter         *provider.FilterExpression
 }
 
-// ParseGetPropertyValueKVP parses the KVP subset for GetPropertyValue.
 func ParseGetPropertyValueKVP(v Version, q map[string]string) (*GetPropertyValueRequest, []Exception) {
-	if v == V110 {
+	if v != V200 {
 		return nil, []Exception{{Code: ExceptionOperationNotSupported, Text: "GetPropertyValue requires WFS 2.0"}}
 	}
-	req := &GetPropertyValueRequest{Version: v, MaxFeatures: 1000, ResultType: "results"}
-	typeName := q["typename"]
-	if typeName == "" {
-		typeName = q["typenames"]
-	}
-	if typeName == "" {
-		return nil, []Exception{{Code: ExceptionMissingParameterValue, Locator: "typeName", Text: "typeName is required"}}
-	}
-	if strings.Contains(typeName, ",") {
-		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "typeName", Text: "multiple type names not supported"}}
-	}
-	req.TypeName = strings.TrimSpace(typeName)
-	vr := q["valuereference"]
+	vr := strings.TrimSpace(q["valuereference"])
 	if vr == "" {
 		return nil, []Exception{{Code: ExceptionMissingParameterValue, Locator: "valueReference", Text: "valueReference is required"}}
 	}
-	// Strip namespace prefix.
-	if i := strings.Index(vr, ":"); i >= 0 {
-		vr = vr[i+1:]
+	// A single QName is supported; never silently discard XPath predicates or steps.
+	parts := strings.Split(vr, ":")
+	if len(parts) > 2 || !gml.ValidNCName(parts[0]) || (len(parts) == 2 && !gml.ValidNCName(parts[1])) {
+		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: "valueReference must be a simple property name"}}
 	}
-	// Strip trailing /text() or similar XPath steps (not supported).
-	if i := strings.Index(vr, "/"); i >= 0 {
-		vr = vr[:i]
+	vr = parts[len(parts)-1]
+	if q["propertyname"] != "" {
+		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "propertyName", Text: "use valueReference for property selection"}}
 	}
-	req.ValueReference = strings.TrimSpace(vr)
-	if req.ValueReference == "" {
-		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: "invalid valueReference"}}
+	query, ex := ParseGetFeatureKVP(v, q)
+	if len(ex) > 0 {
+		return nil, ex
 	}
-	if mf := q["count"]; mf != "" {
-		n, err := strconv.ParseUint(mf, 10, 32)
-		if err != nil {
-			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "count", Text: "invalid count"}}
-		}
-		req.MaxFeatures = uint(n)
-	}
-	if rt := strings.ToLower(q["resulttype"]); rt != "" {
-		if rt != "results" && rt != "hits" {
-			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "resultType", Text: fmt.Sprintf("unsupported resultType %q", q["resulttype"])}}
-		}
-		req.ResultType = rt
-	}
-	if bbox := q["bbox"]; bbox != "" {
-		parts := strings.Split(bbox, ",")
-		if len(parts) != 4 {
-			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "bbox needs 4 ordinates"}}
-		}
-		var b [4]float64
-		for i, p := range parts {
-			f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
-			if err != nil {
-				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "invalid bbox ordinate"}}
-			}
-			b[i] = f
-		}
-		req.BBox = &b
-	}
-	if fids := q["featureid"]; fids != "" {
-		for _, fid := range strings.Split(fids, ",") {
-			_, id, err := feature.DecodeWFSFID(strings.TrimSpace(fid))
-			if err != nil {
-				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "featureId", Text: fmt.Sprintf("invalid feature ID %q", fid)}}
-			}
-			req.FeatureIDs = append(req.FeatureIDs, id)
-		}
-	}
-	return req, nil
+	return &GetPropertyValueRequest{Version: v, TypeName: query.TypeName, ValueReference: vr, MaxFeatures: query.MaxFeatures, BBox: query.BBox, FeatureIDs: query.FeatureIDs, ResultType: query.ResultType, StartIndex: query.StartIndex, SortBy: query.SortBy, Filter: query.Filter}, nil
 }
 
-// ExecuteGetPropertyValue runs the request and renders a wfs:ValueCollection.
+// ExecuteGetPropertyValue projects the same validated, sorted and paged query as
+// GetFeature. Extracting its encoded property preserves scalar and GML geometry
+// representations, including xsi:nil, without a second query implementation.
 func ExecuteGetPropertyValue(ctx context.Context, service *features.Service, req *GetPropertyValueRequest) (string, []Exception) {
-	if _, err := service.Collection(req.TypeName); err != nil {
-		return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "typeName", Text: fmt.Sprintf("unknown type %q", req.TypeName)}}
+	if req.Version != V200 {
+		return "", []Exception{{Code: ExceptionOperationNotSupported, Text: "GetPropertyValue requires WFS 2.0"}}
 	}
-	schema, err := service.SchemaDescriptorFor(ctx, req.TypeName)
-	if err != nil {
-		return "", []Exception{{Code: ExceptionNoApplicableCode, Text: "schema unavailable"}}
+	if !gml.ValidNCName(req.ValueReference) {
+		return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: "invalid property name"}}
 	}
-	// Validate the value reference against the schema.
-	propName := req.ValueReference
-	if _, ok := schema.Property(propName); !ok {
-		// Allow the geometry property by its configured name.
-		if propName != schema.Geometry.Name {
-			return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: fmt.Sprintf("unknown property %q", propName)}}
+	query := &GetFeatureRequest{Version: V200, TypeName: req.TypeName, MaxFeatures: req.MaxFeatures, BBox: req.BBox, FeatureIDs: req.FeatureIDs, ResultType: req.ResultType, StartIndex: req.StartIndex, SortBy: req.SortBy, Filter: req.Filter, PropertyNames: []string{req.ValueReference}}
+	out, ex := ExecuteGetFeature(ctx, service, query)
+	if len(ex) > 0 {
+		for i := range ex {
+			if ex[i].Locator == "propertyName" {
+				ex[i].Locator = "valueReference"
+			}
 		}
+		return "", ex
 	}
-	fq := provider.FeatureQuery{Limit: req.MaxFeatures}
-	if fq.Limit == 0 {
-		fq.Limit = 1
+	var collection struct {
+		Matched  string `xml:"numberMatched,attr"`
+		Returned string `xml:"numberReturned,attr"`
+		Members  []struct {
+			Feature struct {
+				Inner string `xml:",innerxml"`
+			} `xml:",any"`
+		} `xml:"member"`
 	}
-	if req.BBox != nil {
-		b := req.BBox
-		fq.Bounds = []geom.Extent{*geom.NewExtent([2]float64{b[0], b[1]}, [2]float64{b[2], b[3]})}
-		fq.BoundsSRID = 4326
+	if err := xml.Unmarshal([]byte(out), &collection); err != nil {
+		return "", []Exception{{Code: ExceptionNoApplicableCode, Text: "cannot encode property collection"}}
 	}
-	if len(req.FeatureIDs) > 0 {
-		fq.IDs = req.FeatureIDs
-	}
-	count := 0
 	var sb strings.Builder
-	if req.ResultType == "results" {
-		sb.WriteString(`<wfs:ValueCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2"`)
-		sb.WriteString(fmt.Sprintf(` numberMatched="unknown" numberReturned="0" timeStamp="%s">`, xmlTime()))
-	}
-	_, err = service.QueryCollection(ctx, req.TypeName, fq, func(f features.Feature) error {
-		count++
-		if req.ResultType == "hits" {
-			return nil
+	fmt.Fprintf(&sb, `<wfs:ValueCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" numberMatched="%s" numberReturned="%s" timeStamp="%s">`, xmlEscape(collection.Matched), xmlEscape(collection.Returned), xmlTime())
+	for _, m := range collection.Members {
+		fmt.Fprintf(&sb, `<wfs:member xmlns="%s">`, xmlEscape("http://example.com/tegola/"+req.TypeName))
+		if strings.TrimSpace(m.Feature.Inner) == "" {
+			// A null geometry or absent selected nullable value has no encoded element.
+			fmt.Fprintf(&sb, `<%s xsi:nil="true"/>`, req.ValueReference)
+		} else {
+			sb.WriteString(m.Feature.Inner)
 		}
-		var val string
-		if propName == schema.Geometry.Name {
-			val = string(f.Geometry)
-		} else if v, ok := f.Properties[propName]; ok {
-			val = fmt.Sprintf("%v", v)
-		}
-		sb.WriteString(`<wfs:member>`)
-		sb.WriteString(fmt.Sprintf(`<%s>%s</%s>`, xmlEscape(propName), xmlEscape(val), xmlEscape(propName)))
 		sb.WriteString(`</wfs:member>`)
-		return nil
-	})
-	if err != nil {
-		return "", []Exception{{Code: ExceptionNoApplicableCode, Text: fmt.Sprintf("query failed: %v", err)}}
 	}
-	if req.ResultType == "hits" {
-		return fmt.Sprintf(`<wfs:ValueCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" numberMatched="%d" numberReturned="0"/>`, count), nil
-	}
-	// Patch numberReturned.
-	out := sb.String()
-	out = strings.Replace(out, `numberReturned="0"`, fmt.Sprintf(`numberReturned="%d"`, count), 1)
-	out += `</wfs:ValueCollection>`
-	return out, nil
+	sb.WriteString(`</wfs:ValueCollection>`)
+	return sb.String(), nil
 }
 
-func xmlTime() string {
-	// Fixed format; actual timestamp omitted for determinism in tests.
-	// Production callers may replace with time.Now().UTC().Format(time.RFC3339).
-	return "1970-01-01T00:00:00Z"
-}
+func xmlTime() string { return time.Now().UTC().Format(time.RFC3339) }

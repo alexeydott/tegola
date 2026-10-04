@@ -31,6 +31,9 @@ func (w WFSConfig) Resolved() WFSConfig {
 		w.Versions = []string{"1.1.0", "2.0.0"}
 	}
 	w.Versions = append([]string(nil), w.Versions...)
+	for i := range w.Versions {
+		w.Versions[i] = strings.TrimSpace(w.Versions[i])
+	}
 	return w
 }
 
@@ -59,7 +62,7 @@ func (w WFSConfig) Validate() error {
 // Everything is read-only unless a collection is listed here AND its
 // provider layer passes write admission at startup.
 type FeaturesWriteConfig struct {
-	Enabled     bool                  `toml:"enabled"`
+	Enabled     bool                    `toml:"enabled"`
 	Collections []WriteCollectionConfig `toml:"collections"`
 	// RequireIfMatch, when true, rejects PUT/PATCH/DELETE without an
 	// If-Match header with 428 Precondition Required. Disabled by
@@ -76,7 +79,9 @@ type FeaturesWriteConfig struct {
 
 // IsProductionAuth reports whether production auth mode is active.
 func (c FeaturesWriteConfig) IsProductionAuth() bool {
-	return c.AuthMode == "" || c.AuthMode == "production"
+	// Only an explicit development profile can relax authorization, including
+	// for embedded callers that have not yet run configuration validation.
+	return c.AuthMode != "dev"
 }
 
 // WriteCollectionConfig allows mutation operations on one published

@@ -3,6 +3,7 @@ package wfs
 import (
 	"encoding/xml"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/alexeydott/tegola/feature"
@@ -32,10 +33,10 @@ type wfsTransaction struct {
 }
 
 type wfsActionInner struct {
-	XMLName xml.Name
-	Handle  string `xml:"handle,attr"`
+	XMLName  xml.Name
+	Handle   string `xml:"handle,attr"`
 	TypeName string `xml:"typeName,attr"`
-	Inner   string `xml:",innerxml"`
+	Inner    string `xml:",innerxml"`
 }
 
 // ParseTransaction parses a WFS Transaction document (1.1 or 2.0).
@@ -44,11 +45,27 @@ type wfsActionInner struct {
 // releaseAction ("ALL" default), and error.
 func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, string, error) {
 	var doc wfsTransaction
-	if err := xml.Unmarshal(body, &doc); err != nil {
+	if err := decodeDocument(body, &doc); err != nil {
 		return nil, "", "ALL", fmt.Errorf("invalid Transaction XML: %w", err)
+	}
+	if doc.Version != "" && doc.Version != string(v) {
+		return nil, "", "ALL", fmt.Errorf("Transaction version does not match request")
+	}
+	expectedNS := "http://www.opengis.net/wfs/2.0"
+	if v == V110 {
+		expectedNS = "http://www.opengis.net/wfs"
+	}
+	if doc.XMLName.Space != "" && doc.XMLName.Space != expectedNS {
+		return nil, "", "ALL", fmt.Errorf("Transaction namespace does not match version")
+	}
+	if doc.ReleaseAction != "" && doc.ReleaseAction != "ALL" {
+		return nil, "", "ALL", fmt.Errorf("only releaseAction ALL is supported")
 	}
 	var actions []TransactionAction
 	for _, a := range doc.Actions {
+		if a.XMLName.Space != "" && a.XMLName.Space != expectedNS {
+			return nil, "", "ALL", fmt.Errorf("invalid transaction action namespace")
+		}
 		local := a.XMLName.Local
 		act := TransactionAction{Handle: a.Handle}
 		switch local {
@@ -66,8 +83,7 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, stri
 			}
 			act.Op = provider.MutationReplace
 		default:
-			// Filter elements etc. at top level are ignored here.
-			continue
+			return nil, "", "ALL", fmt.Errorf("unsupported transaction action <%s>", local)
 		}
 		if act.Op == provider.MutationUpdate || act.Op == provider.MutationDelete {
 			props, ids, err := parseActionFilter(a.Inner, act.TypeName)
@@ -85,19 +101,13 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, stri
 			if len(features) == 0 {
 				return nil, "", "ALL", fmt.Errorf("%s: no features in Insert", local)
 			}
-			// First feature goes to act; rest become additional actions.
-			act.TypeName = features[0].TypeName
-			act.Properties = features[0].Properties
-			act.FeatureXML = features[0].GeomXML
-			for _, f := range features[1:] {
-				extra := TransactionAction{
-					Op:         provider.MutationInsert,
-					TypeName:   f.TypeName,
-					Properties: f.Properties,
-					FeatureXML: f.GeomXML,
-				}
-				actions = append(actions, extra)
+			for _, f := range features {
+				actions = append(actions, TransactionAction{
+					Op: provider.MutationInsert, TypeName: f.TypeName, Handle: a.Handle,
+					Properties: f.Properties, FeatureXML: f.GeomXML,
+				})
 			}
+			continue
 		} else {
 			// Replace: extract feature element AND filter IDs.
 			// Structure: <Replace><Feature>...</Feature><Filter>...</Filter></Replace>
@@ -155,19 +165,29 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 	var curProp, curValue string
 	var curValueXML strings.Builder
 	inValue, inRef := false, false
+	valueSeen := false
 	valueDepth := 0
 	depth := 0
 	inFilter := false
+	filterSeen := false
 	filterDepth := 0
 	for {
 		tok, err := dec.Token()
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return nil, nil, err
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
 			depth++
 			local := t.Name.Local
+			for _, at := range t.Attr {
+				if at.Name.Local == "nil" && at.Value != "false" && at.Value != "0" {
+					return nil, nil, fmt.Errorf("explicit XML nil is not supported")
+				}
+			}
 			if inValue && valueDepth == 0 && local != "Value" {
 				valueDepth = 1
 				writeStartElement(&curValueXML, t)
@@ -179,6 +199,10 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 				continue
 			}
 			if local == "Filter" && !inFilter {
+				if filterSeen || depth != 1 {
+					return nil, nil, fmt.Errorf("expected a single top-level Filter")
+				}
+				filterSeen = true
 				inFilter = true
 				filterDepth = depth
 				continue
@@ -187,8 +211,16 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 				// A26: inside Filter, only ResourceId/FeatureId allowed.
 				switch local {
 				case "ResourceId", "FeatureId":
+					if depth != filterDepth+1 {
+						return nil, nil, fmt.Errorf("nested feature identifiers are not supported")
+					}
+					foundID := false
 					for _, at := range t.Attr {
 						if at.Name.Local == "fid" || at.Name.Local == "rid" {
+							if foundID {
+								return nil, nil, fmt.Errorf("duplicate feature identifier")
+							}
+							foundID = true
 							// R11: verify FID belongs to the action's typeName.
 							// A ResourceId like "other.1" must not target "sites.1".
 							fidColl, id, err := feature.DecodeWFSFID(at.Value)
@@ -201,6 +233,9 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 							ids = append(ids, id)
 						}
 					}
+					if !foundID {
+						return nil, nil, fmt.Errorf("missing feature identifier")
+					}
 				default:
 					return nil, nil, fmt.Errorf("unsupported filter predicate <%s>: only ResourceId/FeatureId filters are supported", local)
 				}
@@ -208,15 +243,21 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 			}
 			switch local {
 			case "Property":
-			curProp, curValue = "", ""
+				curProp, curValue = "", ""
+				valueSeen = false
 			case "Name", "ValueReference":
-			inRef = true
+				inRef = true
 			case "Value":
-			inValue = true
+				if valueSeen {
+					return nil, nil, fmt.Errorf("duplicate Property Value")
+				}
+				valueSeen = true
+				inValue = true
 			}
 		case xml.EndElement:
 			if valueDepth > 0 {
 				valueDepth--
+				depth--
 				curValueXML.WriteString("</" + t.Name.Local + ">")
 				if valueDepth == 0 {
 					curValue = curValueXML.String()
@@ -230,8 +271,17 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 			depth--
 			switch t.Name.Local {
 			case "Property":
+				if !valueSeen {
+					return nil, nil, fmt.Errorf("null Property without Value is not supported")
+				}
 				if curProp != "" {
-					props[curProp] = curValue
+					name := stripPrefix(strings.TrimSpace(curProp))
+					if _, exists := props[name]; exists {
+						return nil, nil, fmt.Errorf("duplicate property %q", name)
+					}
+					props[name] = curValue
+				} else {
+					return nil, nil, fmt.Errorf("Property has no Name or ValueReference")
 				}
 			case "Name", "ValueReference":
 				inRef = false
@@ -243,14 +293,11 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 				curValueXML.WriteString(xmlEscape(string(t)))
 				continue
 			}
-			text := strings.TrimSpace(string(t))
-			if text == "" {
-				continue
-			}
+			text := string(t)
 			if inRef {
-				curProp = stripPrefix(text)
+				curProp += text
 			} else if inValue {
-				curValue = text
+				curValue += text
 			}
 		}
 	}
@@ -283,8 +330,11 @@ func parseFeatureElements(inner string) ([]parsedFeature, error) {
 	inFeature := false
 	for {
 		tok, err := dec.Token()
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return nil, err
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -326,54 +376,85 @@ func parseFeatureElement(inner string) (string, map[string]string, string, error
 	var typeName, geomXML, curElem string
 	var buf strings.Builder
 	inGeom := false
+	propertyIsGeom := false
 	geomDepth := 0
 	depth := 0
 	for {
 		tok, err := dec.Token()
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return "", nil, "", err
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
 			depth++
+			for _, at := range t.Attr {
+				if at.Name.Local == "srsDimension" && at.Value != "2" {
+					return "", nil, "", fmt.Errorf("only XY geometry is supported")
+				}
+				if at.Name.Local == "nil" && at.Value != "false" && at.Value != "0" {
+					return "", nil, "", fmt.Errorf("explicit XML nil is not supported")
+				}
+			}
 			if depth == 1 {
 				// Skip Filter elements; typeName is the feature element.
 				// BUG-1 fix: don't overwrite typeName with "Filter".
 				local := stripPrefix(t.Name.Local)
+				if local == "Filter" {
+					if err := dec.Skip(); err != nil {
+						return "", nil, "", err
+					}
+					depth--
+					continue
+				}
+				if typeName != "" {
+					return "", nil, "", fmt.Errorf("Replace requires exactly one feature")
+				}
 				if local != "Filter" && typeName == "" {
 					typeName = local
 				}
 				continue
 			}
 			if depth == 2 {
+				propertyIsGeom = false
 				curElem = stripPrefix(t.Name.Local)
+				if _, exists := props[curElem]; exists {
+					return "", nil, "", fmt.Errorf("duplicate property %q", curElem)
+				}
+				props[curElem] = ""
 				// Heuristic: an element containing GML namespace children
 				// or a known GML geometry name is the geometry.
 				if isGMLGeometryElement(t.Name.Local) {
+					if geomXML != "" {
+						return "", nil, "", fmt.Errorf("multiple geometry properties")
+					}
+					delete(props, curElem)
+					propertyIsGeom = true
 					inGeom, geomDepth = true, depth
 					buf.Reset()
-					buf.WriteString("<" + t.Name.Local)
-					for _, at := range t.Attr {
-						buf.WriteString(fmt.Sprintf(` %s="%s"`, at.Name.Local, at.Value))
-					}
-					buf.WriteString(">")
+					writeStartElement(&buf, t)
 					continue
 				}
 			}
 			// OL style: <geometryProperty><gml:Point>… — GML wrapped in a
 			// property element at depth 2, geometry element at depth 3.
 			if depth == 3 && !inGeom && isGMLGeometryElement(t.Name.Local) {
+				if geomXML != "" {
+					return "", nil, "", fmt.Errorf("multiple geometry properties")
+				}
+				delete(props, curElem)
+				propertyIsGeom = true
 				inGeom, geomDepth = true, depth
 				buf.Reset()
-				buf.WriteString("<" + t.Name.Local)
-				for _, at := range t.Attr {
-					buf.WriteString(fmt.Sprintf(` %s="%s"`, at.Name.Local, at.Value))
-				}
-				buf.WriteString(">")
+				writeStartElement(&buf, t)
 				continue
 			}
 			if inGeom {
-				buf.WriteString("<" + t.Name.Local + ">")
+				writeStartElement(&buf, t)
+			} else if depth > 2 {
+				return "", nil, "", fmt.Errorf("complex property %q is not supported", curElem)
 			}
 		case xml.EndElement:
 			if inGeom {
@@ -387,11 +468,13 @@ func parseFeatureElement(inner string) (string, map[string]string, string, error
 			}
 			depth--
 		case xml.CharData:
-			text := strings.TrimSpace(string(t))
+			text := string(t)
 			if inGeom {
-				buf.WriteString(text)
-			} else if depth == 2 && curElem != "" && text != "" {
-				props[curElem] = text
+				buf.WriteString(xmlEscape(text))
+			} else if depth == 2 && propertyIsGeom && strings.TrimSpace(text) != "" {
+				return "", nil, "", fmt.Errorf("unexpected text around geometry")
+			} else if depth == 2 && !propertyIsGeom && curElem != "" && text != "" {
+				props[curElem] += text
 			}
 		}
 	}
@@ -443,24 +526,32 @@ func TransactionResponse(v Version, results []TransactionResult) string {
 	sb.WriteString(`  <wfs:TransactionSummary>`)
 	sb.WriteString(fmt.Sprintf(`<wfs:totalInserted>%d</wfs:totalInserted>`, ins))
 	sb.WriteString(fmt.Sprintf(`<wfs:totalUpdated>%d</wfs:totalUpdated>`, upd))
-	sb.WriteString(fmt.Sprintf(`<wfs:totalDeleted>%d</wfs:totalDeleted>`, del))
 	if v != V110 {
 		sb.WriteString(fmt.Sprintf(`<wfs:totalReplaced>%d</wfs:totalReplaced>`, rep))
 	}
+	sb.WriteString(fmt.Sprintf(`<wfs:totalDeleted>%d</wfs:totalDeleted>`, del))
 	sb.WriteString(`</wfs:TransactionSummary>` + "\n")
 	// A24: version-specific IDs. 1.1 uses ogc:FeatureId; 2.0 uses
 	// fes:ResourceId only (ogc namespace not declared in 2.0 root).
+	insertResultsOpen := false
 	for _, r := range results {
 		if r.Op == provider.MutationInsert && r.FeatureID != 0 {
 			fid, _ := feature.EncodeWFSFID(r.TypeName, r.FeatureID)
-			sb.WriteString(`  <wfs:InsertResults><wfs:Feature>`)
+			if !insertResultsOpen {
+				sb.WriteString(`  <wfs:InsertResults>`)
+				insertResultsOpen = true
+			}
+			sb.WriteString(`<wfs:Feature>`)
 			if v == V110 {
 				sb.WriteString(`<ogc:FeatureId fid="` + xmlEscape(fid) + `"/>`)
 			} else {
 				sb.WriteString(`<fes:ResourceId rid="` + xmlEscape(fid) + `"/>`)
 			}
-			sb.WriteString(`</wfs:Feature></wfs:InsertResults>` + "\n")
+			sb.WriteString(`</wfs:Feature>`)
 		}
+	}
+	if insertResultsOpen {
+		sb.WriteString(`</wfs:InsertResults>` + "\n")
 	}
 	sb.WriteString(`</wfs:TransactionResponse>` + "\n")
 	return sb.String()

@@ -11,7 +11,10 @@ package server
 // is unchanged.
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -24,6 +27,53 @@ type JSONPatchOp struct {
 	Value any    `json:"value,omitempty"`
 }
 
+// UnmarshalJSON distinguishes omitted required members from explicit null.
+func (op *JSONPatchOp) UnmarshalJSON(raw []byte) error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		return err
+	}
+	for _, name := range []string{"op", "path"} {
+		if value, ok := members[name]; !ok || bytes.Equal(value, []byte("null")) {
+			return fmt.Errorf("JSON Patch requires %s", name)
+		}
+	}
+	type plain JSONPatchOp
+	var decoded plain
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&decoded); err != nil {
+		return err
+	}
+	switch decoded.Op {
+	case "add", "replace", "test":
+		if _, ok := members["value"]; !ok {
+			return fmt.Errorf("%s requires value", decoded.Op)
+		}
+	case "copy", "move":
+		if value, ok := members["from"]; !ok || bytes.Equal(value, []byte("null")) {
+			return fmt.Errorf("%s requires from", decoded.Op)
+		}
+	case "remove":
+	default:
+		return fmt.Errorf("unsupported operation %q", decoded.Op)
+	}
+	*op = JSONPatchOp(decoded)
+	return nil
+}
+
+func patchArrayIndex(value string) (int, error) {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
+		return 0, fmt.Errorf("invalid array index %q", value)
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("invalid array index %q", value)
+		}
+	}
+	return strconv.Atoi(value)
+}
+
 func parseJSONPointer(ptr string) ([]string, error) {
 	if ptr == "" {
 		return nil, nil // whole document
@@ -33,6 +83,14 @@ func parseJSONPointer(ptr string) ([]string, error) {
 	}
 	parts := strings.Split(ptr[1:], "/")
 	for i, p := range parts {
+		for j := 0; j < len(p); j++ {
+			if p[j] == '~' {
+				if j+1 == len(p) || (p[j+1] != '0' && p[j+1] != '1') {
+					return nil, fmt.Errorf("invalid JSON pointer escape")
+				}
+				j++
+			}
+		}
 		parts[i] = strings.ReplaceAll(strings.ReplaceAll(p, "~1", "/"), "~0", "~")
 	}
 	return parts, nil
@@ -101,7 +159,7 @@ func getAtPath(node any, parts []string) (any, error) {
 			}
 			cur = v
 		case []any:
-			idx, err := strconv.Atoi(p)
+			idx, err := patchArrayIndex(p)
 			if err != nil || idx < 0 || idx >= len(c) {
 				return nil, fmt.Errorf("invalid array index %q", p)
 			}
@@ -138,7 +196,7 @@ func setAtPath(node any, parts []string, value any) (any, error) {
 		n[key] = updated
 		return n, nil
 	case []any:
-		idx, err := strconv.Atoi(key)
+		idx, err := patchArrayIndex(key)
 		if err != nil || idx < 0 || idx >= len(n) {
 			return nil, fmt.Errorf("invalid array index %q", key)
 		}
@@ -185,7 +243,7 @@ func addAtPath(node any, parts []string, value any) (any, error) {
 			if key == "-" {
 				return append(n, deepCopyValue(value)), nil
 			}
-			idx, err := strconv.Atoi(key)
+			idx, err := patchArrayIndex(key)
 			if err != nil || idx < 0 || idx > len(n) {
 				return nil, fmt.Errorf("invalid array index %q", key)
 			}
@@ -195,7 +253,7 @@ func addAtPath(node any, parts []string, value any) (any, error) {
 			out = append(out, n[idx:]...)
 			return out, nil
 		}
-		idx, err := strconv.Atoi(key)
+		idx, err := patchArrayIndex(key)
 		if err != nil || idx < 0 || idx >= len(n) {
 			return nil, fmt.Errorf("invalid array index %q", key)
 		}
@@ -237,7 +295,7 @@ func removeAtPath(node any, parts []string) (any, error) {
 		n[key] = updated
 		return n, nil
 	case []any:
-		idx, err := strconv.Atoi(key)
+		idx, err := patchArrayIndex(key)
 		if err != nil || idx < 0 || idx >= len(n) {
 			return nil, fmt.Errorf("invalid array index %q", key)
 		}
@@ -399,8 +457,84 @@ func patchTestRoot(root map[string]any, path string, value any) error {
 		}
 	}
 	// A21: JSON semantic equality (existing jsonEqual uses JSON marshaling).
-	if !jsonEqual(target, value) {
+	if !patchValuesEqual(target, value) {
 		return fmt.Errorf("test failed: value mismatch at %q", path)
 	}
 	return nil
+}
+
+// JSON Patch compares numbers by mathematical value, independently of spelling.
+func patchValuesEqual(a, b any) bool {
+	decode := func(value any) (any, error) {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var result any
+		err = dec.Decode(&result)
+		return result, err
+	}
+	a, err := decode(a)
+	if err != nil {
+		return false
+	}
+	b, err = decode(b)
+	if err != nil {
+		return false
+	}
+	return patchDecodedEqual(a, b)
+}
+
+func patchDecodedEqual(a, b any) bool {
+	switch av := a.(type) {
+	case json.Number:
+		bv, ok := b.(json.Number)
+		if !ok {
+			return false
+		}
+		ar, aok := patchNumber(av)
+		br, bok := patchNumber(bv)
+		return aok && bok && ar.Cmp(br) == 0
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for key, value := range av {
+			other, ok := bv[key]
+			if !ok || !patchDecodedEqual(value, other) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !patchDecodedEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return a == b
+	}
+}
+
+func patchNumber(value json.Number) (*big.Rat, bool) {
+	text := value.String()
+	if len(text) > 1024 {
+		return nil, false
+	}
+	if i := strings.IndexAny(text, "eE"); i >= 0 {
+		exponent, err := strconv.Atoi(text[i+1:])
+		if err != nil || exponent < -4096 || exponent > 4096 {
+			return nil, false
+		}
+	}
+	return new(big.Rat).SetString(text)
 }

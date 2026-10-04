@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -262,7 +263,6 @@ func TestPart4WriteDisabled(t *testing.T) {
 	}
 }
 
-
 func TestPart4DuplicateKeysRejected(t *testing.T) {
 	service, _ := part4Service(t)
 	router := part4Router(t, part4API(t, service))
@@ -332,7 +332,7 @@ func TestPart4ETagRoundTrip(t *testing.T) {
 	// ETag must be the strong validator of the exact GET bytes.
 	rec = doRequest(t, router, http.MethodGet, getPath, "", nil)
 	body := rec.Body.Bytes()
-	if got, want := rec.Header().Get("ETag"), strongETag(body); got != want {
+	if got, want := rec.Header().Get("ETag"), revisionETag(body, revisionFromETag(rec.Header().Get("ETag"))); got != want {
 		t.Fatalf("GET ETag = %s, want strong validator of exact bytes %s", got, want)
 	}
 }
@@ -458,5 +458,42 @@ func TestPart4RequireIfMatch428(t *testing.T) {
 	rec = doRequest(t, router, http.MethodDelete, getPath, "", nil)
 	if rec.Code != http.StatusPreconditionRequired {
 		t.Fatalf("DELETE without If-Match status = %d, want 428", rec.Code)
+	}
+}
+
+func TestReviewPatchHTTPPreservesStateOnMalformedInput(t *testing.T) {
+	service, _ := part4Service(t)
+	router := part4Router(t, part4API(t, service))
+	created := doRequest(t, router, http.MethodPost, "/features/collections/sites/items", `{"type":"Feature","geometry":{"type":"Point","coordinates":[10,20]},"properties":{"name":"before","seats":42}}`, map[string]string{"Content-Type": mediaGeoJSON})
+	if created.Code != 201 {
+		t.Fatalf("create %d: %s", created.Code, created.Body.String())
+	}
+	locationURL, err := url.Parse(created.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	location := locationURL.RequestURI()
+	for _, body := range []string{`{"properties":{"name":"bad","name":"worse"}}`, `{"properties":{"name":"bad"}} {}`, `{"geometry":3,"properties":{"name":"bad"}}`, `{"id":999,"properties":{"name":"bad"}}`, `{"properties":3}`} {
+		patched := doRequest(t, router, http.MethodPatch, location, body, map[string]string{"Content-Type": mediaMergePatch})
+		if patched.Code != 400 {
+			t.Fatalf("patch %s = %d: %s", body, patched.Code, patched.Body.String())
+		}
+		read := doRequest(t, router, http.MethodGet, location, "", nil)
+		if !strings.Contains(read.Body.String(), `"name":"before"`) || !strings.Contains(read.Body.String(), `"coordinates":[10,20]`) {
+			t.Fatalf("invalid patch changed data: %s", read.Body.String())
+		}
+	}
+	clear := doRequest(t, router, http.MethodPatch, location, `{"geometry":null}`, map[string]string{"Content-Type": mediaMergePatch})
+	if clear.Code != 200 || !strings.Contains(clear.Body.String(), `"geometry":null`) {
+		t.Fatalf("clear %d: %s", clear.Code, clear.Body.String())
+	}
+}
+
+func TestReviewMutationRejectsUnsupportedCRS(t *testing.T) {
+	service, _ := part4Service(t)
+	router := part4Router(t, part4API(t, service))
+	rec := doRequest(t, router, http.MethodPost, "/features/collections/sites/items", `{"type":"Feature","geometry":{"type":"Point","coordinates":[10,20]},"properties":{"name":"bad"}}`, map[string]string{"Content-Type": mediaGeoJSON, "Content-Crs": "<http://www.opengis.net/def/crs/EPSG/0/3857>"})
+	if rec.Code != 400 {
+		t.Fatalf("unsupported CRS accepted: %d %s", rec.Code, rec.Body.String())
 	}
 }

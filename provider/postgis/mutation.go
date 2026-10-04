@@ -1,19 +1,19 @@
 package postgis
 
 import (
+	"context"
 	"database/sql"
 	"errors"
-	"context"
 	"fmt"
 	"math/rand"
-	"time"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/alexeydott/tegola/mos"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/alexeydott/tegola/mos"
 	"strconv"
 
 	"github.com/alexeydott/tegola/provider"
@@ -75,7 +75,16 @@ func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.Sch
 		},
 	}
 	for _, col := range m.columns {
-		sd.Columns = append(sd.Columns, col)
+		_, writable := m.writable[col.Name]
+		published := writable || col.Name == m.idColumn || col.Name == m.geomColumn
+		for _, name := range m.readOnly {
+			if name == col.Name {
+				published = true
+			}
+		}
+		if published {
+			sd.Columns = append(sd.Columns, col)
+		}
 	}
 	return sd, nil
 }
@@ -178,21 +187,30 @@ func (w *Writer) mappingCached(layer string) (*writeMapping, error) {
 
 // CurrentRevision implements provider.RevisionReader (A03).
 func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
-	var rev int64
-	err := w.provider.pool.QueryRow(ctx, `SELECT revision FROM tegola_revisions WHERE collection = $1 AND feature_id = $2`, layer, featureID).Scan(&rev)
+	l, ok := w.provider.layers[layer]
+	if !ok {
+		return "", nil
+	}
+	schema, table := "public", l.tablename
+	if i := strings.LastIndex(table, "."); i >= 0 {
+		schema, table = table[:i], table[i+1:]
+	}
+	layer = quoteIdent(schema) + "." + quoteIdent(table)
+	var rev, incarnation int64
+	err := w.provider.pool.QueryRow(ctx, `SELECT revision, incarnation FROM tegola_revisions WHERE collection = $1 AND feature_id = $2`, layer, featureID).Scan(&rev, &incarnation)
 	if err != nil {
 		// R01/R09: distinguish missing row (revision 0) from missing
 		// table (revisions not migrated -> "", nil for hash fallback)
 		// and real storage errors.
 		if errors.Is(err, sql.ErrNoRows) {
-			return "0", nil
+			return "0.0", nil
 		}
 		if pa.IsMissingTable(err) {
-			return "", nil
+			return "0.0", nil
 		}
 		return "", err
 	}
-	return strconv.FormatInt(rev, 10), nil
+	return strconv.FormatInt(incarnation, 10) + "." + strconv.FormatInt(rev, 10), nil
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
@@ -225,9 +243,12 @@ func (w *Writer) checkServiceSchema(ctx context.Context) error {
 	}
 	defer conn.Release()
 	var v int
-	err = conn.QueryRow(ctx, `SELECT version FROM tegola_schema_version WHERE version = $1`, pa.CurrentSchemaVersion).Scan(&v)
+	err = conn.QueryRow(ctx, `SELECT COALESCE(MAX(version),0) FROM tegola_schema_version`).Scan(&v)
 	if err != nil {
 		return fmt.Errorf("not migrated (run provider/audit Migrate): %w", err)
+	}
+	if v != pa.CurrentSchemaVersion {
+		return fmt.Errorf("unsupported service schema version %d", v)
 	}
 	return nil
 }
@@ -260,7 +281,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	if i := strings.LastIndex(table, "."); i >= 0 {
 		schema, table = table[:i], table[i+1:]
 	}
-	q := `SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`
+	q := `SELECT column_name, data_type, is_nullable, column_default, is_generated, is_identity FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`
 	rows, err := p.pool.Query(ctx, q, schema, table)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
@@ -268,14 +289,20 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	defer rows.Close()
 	cols := map[string]provider.ColumnDescriptor{}
 	for rows.Next() {
-		var name, dtype string
-		if err := rows.Scan(&name, &dtype); err != nil {
+		var name, dtype, nullable, generated, identity string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&name, &dtype, &nullable, &defaultValue, &generated, &identity); err != nil {
 			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
 		}
-		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype}
+		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype, Nullable: nullable == "YES", IsDefault: defaultValue.Valid, IsGenerated: generated == "ALWAYS" || identity == "YES"}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+	}
+	for _, field := range l.bboxFields {
+		if _, exists := cols[field]; field != "" && exists {
+			return deny("writes to layers with derived bounds columns are not supported")
+		}
 	}
 	// A08: PK via pg_constraint. Must be exactly one column; composite
 	// PKs are rejected at admission (not silently truncated to first col).
@@ -353,26 +380,21 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		writable: make(map[string]string),
 		domain:   p.domainID(),
 	}
-	// A16: exclude generated/identity columns from writable.
-	genRows, err := p.pool.Query(ctx, `
-		SELECT column_name FROM information_schema.columns
-		WHERE table_schema = $1 AND table_name = $2
-		AND (is_generated = 'ALWAYS' OR is_identity = 'YES')`, schema, table)
-	generated := map[string]bool{}
-	if err == nil {
-		for genRows.Next() {
-			var c string
-			if err := genRows.Scan(&c); err == nil {
-				generated[c] = true
+	public := map[string]bool{}
+	if l.feature != nil {
+		for _, field := range l.feature.projections {
+			if field.output != field.column.name {
+				return deny("aliased properties are not writable")
 			}
+			public[field.column.name] = true
 		}
-		genRows.Close()
 	}
-	for name := range cols {
-		if name == m.idColumn || name == m.geomColumn {
+	for name, column := range cols {
+		if name == m.idColumn || name == m.geomColumn || (l.feature != nil && !public[name]) {
 			continue
 		}
-		if generated[name] {
+		if column.IsGenerated {
+			m.readOnly = append(m.readOnly, name)
 			continue
 		}
 		m.writable[name] = name
@@ -445,13 +467,20 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 		return provider.MutationOutcome{}, err
 	}
 	// A03: revision check + bump inside the data transaction.
-	bump, rerr := checkAndBumpRevision(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision)
+	bump, rerr := checkAndBumpRevision(ctx, t.tx, mp.revisionCollection(), outcome.FeatureID, m.IfRevision)
 	if rerr != nil {
 		return provider.MutationOutcome{}, rerr
 	}
+	if m.Op == provider.MutationDelete {
+		if _, err := t.tx.Exec(ctx, `UPDATE tegola_revisions SET incarnation=incarnation+1,revision=0 WHERE collection=$1 AND feature_id=$2`, mp.revisionCollection(), outcome.FeatureID); err != nil {
+			return provider.MutationOutcome{}, err
+		}
+		bump.NewInc++
+		bump.New = 0
+	}
 	if bump.New >= 0 {
-		outcome.Revision = strconv.FormatInt(bump.New, 10)
-		outcome.RevisionBefore = strconv.FormatInt(bump.Old, 10)
+		outcome.Revision = fmt.Sprintf("%d.%d", bump.NewInc, bump.New)
+		outcome.RevisionBefore = fmt.Sprintf("%d.%d", bump.OldInc, bump.Old)
 	}
 	// W13: audit in same transaction
 	if aerr := pa.RecordPgxTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, t.txID); aerr != nil {
@@ -476,58 +505,37 @@ func (t *featureTx) Rollback(ctx context.Context) error {
 // precondition is validated against the revision row locked FOR UPDATE
 // inside the data transaction, then the revision is bumped atomically.
 // pgRevisionBump carries old and new revisions (R12).
-type pgRevisionBump struct {
-	Old int64
-	New int64
-}
+type pgRevisionBump = pa.RevisionBump
 
 func checkAndBumpRevision(ctx context.Context, tx pgx.Tx, collection string, featureID uint64, want string) (pgRevisionBump, error) {
-	var cur int64
-	err := tx.QueryRow(ctx, `SELECT revision FROM tegola_revisions WHERE collection = $1 AND feature_id = $2 FOR UPDATE`, collection, featureID).Scan(&cur)
-	found := true
-	if err != nil {
-		if err.Error() == "no rows in result set" {
-			found = false
-		} else if isMissingTableErr(err) {
-			// Table not migrated: skip if no precondition, else fail.
-			if want != "" {
-				return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "revision precondition requires tegola_revisions table (run migration)"}
-			}
-			return pgRevisionBump{Old: -1, New: -1}, nil
-		} else {
-			return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "revision read: " + err.Error()}
-		}
+	// Materialize revision zero before locking so concurrent first writes serialize.
+	if _, err := tx.Exec(ctx, `INSERT INTO tegola_revisions(collection,feature_id,revision,incarnation) VALUES($1,$2,0,0) ON CONFLICT DO NOTHING`, collection, featureID); err != nil {
+		return pgRevisionBump{}, err
+	}
+	var cur, inc int64
+	if err := tx.QueryRow(ctx, `SELECT revision,incarnation FROM tegola_revisions WHERE collection=$1 AND feature_id=$2 FOR UPDATE`, collection, featureID).Scan(&cur, &inc); err != nil {
+		return pgRevisionBump{}, err
 	}
 	if want != "" {
-		var wantNum int64
-		if _, err := fmt.Sscanf(want, "%d", &wantNum); err != nil {
-			return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "invalid If-Revision " + want}
+		wi, wr, err := pa.ParseRevision(want)
+		if err != nil {
+			return pgRevisionBump{}, err
 		}
-		var curNum int64
-		if found {
-			curNum = cur
-		}
-		if wantNum != curNum {
-			return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: have %d, want %d", curNum, wantNum)}
+		if wi != inc || wr != cur {
+			return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: "revision mismatch"}
 		}
 	}
-	newRev := cur + 1
-	if !found {
-		newRev = 1
+	if _, err := tx.Exec(ctx, `UPDATE tegola_revisions SET revision=revision+1 WHERE collection=$1 AND feature_id=$2`, collection, featureID); err != nil {
+		return pgRevisionBump{}, err
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO tegola_revisions (collection, feature_id, revision) VALUES ($1, $2, $3)
-		 ON CONFLICT (collection, feature_id) DO UPDATE SET revision = EXCLUDED.revision`,
-		collection, featureID, newRev); err != nil {
-		if isMissingTableErr(err) {
-			return pgRevisionBump{Old: -1, New: -1}, nil
-		}
-		return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "revision bump: " + err.Error()}
-	}
-	return pgRevisionBump{Old: cur, New: newRev}, nil
+	return pgRevisionBump{Old: cur, New: cur + 1, OldInc: inc, NewInc: inc}, nil
 }
 
 func isMissingTableErr(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "does not exist") || strings.Contains(msg, "no such table")
+}
+
+func (m *writeMapping) revisionCollection() string {
+	return quoteIdent(m.schema) + "." + quoteIdent(m.table)
 }

@@ -97,3 +97,13 @@ func policyActionFor(opName string) (PolicyAction, error) {
 		return ActionRead, fmt.Errorf("unknown mutation op %q", opName)
 	}
 }
+
+// CollectionOnlyPolicy explicitly declares that authorization does not depend
+// on row contents. Row-dependent policies require transactional image reads,
+// which the current mutation provider contract does not offer.
+type CollectionOnlyPolicy interface {
+	Policy
+	CollectionOnly() bool
+}
+
+func (AllowAllPolicy) CollectionOnly() bool { return true }

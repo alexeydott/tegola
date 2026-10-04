@@ -95,7 +95,7 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 		api.writeQueryError(w, r, err)
 		return
 	}
-	feature, err := api.service.QueryFeatureWithOptions(r.Context(), id, featureID, features.QueryOptions{OutputCRS: queryParameters.Get("crs")})
+	feature, revision, err := api.queryFeatureRevision(r.Context(), id, featureID, features.QueryOptions{OutputCRS: queryParameters.Get("crs")})
 	if err != nil {
 		api.writeQueryError(w, r, err)
 		return
@@ -120,10 +120,7 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 	// R01: prefer the revision-based ETag for CAS consistency with
 	// If-Match on mutations; fall back to the representation hash when
 	// no revision is available (e.g. read-only providers).
-	etag := strongETag(raw)
-	if rev := api.currentRevision(r.Context(), id, featureID); rev != "" {
-		etag = `"` + rev + `"`
-	}
+	etag := revisionETag(raw, revision)
 	w.Header().Set("ETag", etag)
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
 	w.Header().Set("Content-Type", media)

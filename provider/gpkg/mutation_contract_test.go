@@ -395,7 +395,7 @@ func TestMutationGeneratedColumnReadOnly(t *testing.T) {
 				"geometry_fieldname": "geom",
 				"geometry_format":    "wkb",
 				"srid":               4326,
-				"fields":             []string{"lots"},
+				"fields":             []string{"lots", "double_lots"},
 			},
 		},
 	}

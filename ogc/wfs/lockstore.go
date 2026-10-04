@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -102,11 +103,18 @@ func NewSQLLockStore(ctx context.Context, db *sql.DB, dialect string) (LockStore
 	switch dialect {
 	case "mysql":
 		ddl = MySQLLockStoreDDL
-	default: // sqlite, postgres
+	case "sqlite":
 		ddl = SQLLockStoreDDL
+	default:
+		return nil, fmt.Errorf("wfs: unsupported lock store dialect %q", dialect)
 	}
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		return nil, fmt.Errorf("wfs: lock store schema: %w", err)
+	for _, statement := range strings.Split(ddl, ";") {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return nil, fmt.Errorf("wfs: lock store schema: %w", err)
+		}
 	}
 	return &sqlLockStore{db: db, dialect: dialect}, nil
 }
@@ -140,7 +148,12 @@ func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint6
 	nowNano := now.UnixNano()
 	expNano := exp.UnixNano()
 
-	// Delete expired leases (cascade deletes members).
+	// SQLite foreign key enforcement is connection-specific, so explicitly
+	// remove members before their leases as well as declaring the FK.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tegola_lock_members WHERE lock_id IN
+		(SELECT lock_id FROM tegola_lock_leases WHERE expires_at < ?)`, nowNano); err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tegola_lock_leases WHERE expires_at < ?`, nowNano); err != nil {
 		return nil, err
 	}
@@ -188,8 +201,18 @@ func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint6
 }
 
 func (s *sqlLockStore) Release(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM tegola_lock_leases WHERE lock_id = ?`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM tegola_lock_members WHERE lock_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM tegola_lock_leases WHERE lock_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *sqlLockStore) Check(ctx context.Context, lockID, typeName string, featureID uint64) *Exception {
@@ -221,7 +244,7 @@ func (s *sqlLockStore) IsLocked(ctx context.Context, typeName string, featureID 
 		 JOIN tegola_lock_leases l ON l.lock_id = m.lock_id
 		 WHERE m.type_name = ? AND m.feature_id = ? AND l.expires_at >= ? LIMIT 1`,
 		normalizeTypeName(typeName), featureID, now).Scan(&id)
-	return err == nil
+	return err != sql.ErrNoRows
 }
 
 // --- In-memory store (default, single process) ---

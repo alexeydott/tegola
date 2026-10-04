@@ -17,7 +17,7 @@ import (
 
 // geoJSONFeature is the parsed mutation input.
 type geoJSONFeature struct {
-	Geometry   geom.Geometry
+	Geometry    geom.Geometry
 	HasGeometry bool
 	// GeometryNull is explicit JSON null geometry.
 	GeometryNull bool
@@ -42,6 +42,9 @@ func parseGeoJSONFeature(body []byte) (*geoJSONFeature, error) {
 	}
 	if t, _ := raw["type"].(string); t != "Feature" {
 		return nil, fmt.Errorf("expected a GeoJSON Feature")
+	}
+	if _, ok := raw["crs"]; ok {
+		return nil, fmt.Errorf("GeoJSON crs member is not supported; input must use CRS84")
 	}
 	out := &geoJSONFeature{Properties: map[string]interface{}{}}
 	if gv, ok := raw["geometry"]; ok {
@@ -78,7 +81,7 @@ func parseGeoJSONGeometry(gm map[string]interface{}) (geom.Geometry, error) {
 		c, err := toCoord(coords)
 		return geom.Point(c), err
 	case "MultiPoint":
-		l, err := toLineString(coords)
+		l, err := toPositions(coords)
 		return geom.MultiPoint(l), err
 	case "LineString":
 		return toLineString(coords)
@@ -126,13 +129,20 @@ func toFloat(v interface{}) (float64, error) {
 }
 
 func toLineString(v interface{}) (geom.LineString, error) {
+	points, err := toPositions(v)
+	if err != nil {
+		return nil, err
+	}
+	if len(points) < 2 {
+		return nil, fmt.Errorf("linestring needs at least 2 points, got %d", len(points))
+	}
+	return points, nil
+}
+
+func toPositions(v interface{}) (geom.LineString, error) {
 	arr, ok := v.([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("invalid linestring")
-	}
-	// A19: LineString needs at least 2 points.
-	if len(arr) < 2 {
-		return nil, fmt.Errorf("linestring needs at least 2 points, got %d", len(arr))
+		return nil, fmt.Errorf("invalid coordinate sequence")
 	}
 	out := make(geom.LineString, 0, len(arr))
 	for _, c := range arr {
@@ -395,6 +405,9 @@ func geometryEqual(current json.RawMessage, wkbBytes []byte) bool {
 // any object that repeats a key. encoding/json silently keeps the last
 // value; for mutation input that split-brain is a correctness hazard.
 func rejectDuplicateKeys(body []byte) error {
+	if !json.Valid(body) {
+		return fmt.Errorf("expected one complete JSON document")
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	// One frame per open container: keys seen (nil for arrays) and whether
 	// the next string token is a key (objects only).

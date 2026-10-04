@@ -2,6 +2,7 @@ package wfs
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/alexeydott/tegola/feature"
@@ -103,24 +104,43 @@ func init() {
 			if id == "" {
 				return nil, []Exception{{Code: ExceptionMissingParameterValue, Locator: "id", Text: "id is required"}}
 			}
-			// The id may be a full WFS FID or a bare numeric ID.
+
+			typeName = strings.TrimSpace(typeName)
 			var fid uint64
-			if _, parsed, err := parseFeatureID(id); err == nil {
+			if strings.Contains(id, ".") {
+				collection, parsed, err := parseFeatureID(id)
+				if err != nil || collection != typeName {
+					return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "id", Text: "ID does not identify this collection"}}
+				}
 				fid = parsed
 			} else {
-				// Try bare integer.
-				var n uint64
-				if _, err := fmt.Sscanf(id, "%d", &n); err != nil {
-					return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "id", Text: fmt.Sprintf("invalid id %q", id)}}
+				parsed, err := strconv.ParseUint(id, 10, 64)
+				if err != nil || strconv.FormatUint(parsed, 10) != id {
+					return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "id", Text: "invalid feature ID"}}
 				}
-				fid = n
+				fid = parsed
 			}
-			return &GetFeatureRequest{
-				TypeName:   strings.TrimSpace(typeName),
-				FeatureIDs: []uint64{fid},
-				MaxFeatures: 1,
-				ResultType: "results",
-			}, nil
+			for _, key := range []string{"featureid", "resourceid", "filter", "bbox"} {
+				if params[key] != "" {
+					return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: key, Text: "stored query cannot combine selectors"}}
+				}
+			}
+			query := make(map[string]string, len(params))
+			for k, v := range params {
+				if k != "storedquery_id" {
+					query[k] = v
+				}
+			}
+			query["typename"] = typeName
+			encoded, err := feature.EncodeWFSFID(typeName, fid)
+			if err != nil {
+				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "id", Text: "invalid feature ID"}}
+			}
+			query["featureid"] = encoded
+			if query["count"] == "" && query["maxfeatures"] == "" {
+				query["count"] = "1"
+			}
+			return ParseGetFeatureKVP(V200, query)
 		},
 	})
 }

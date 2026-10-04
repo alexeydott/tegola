@@ -100,24 +100,13 @@ func NewRouterWithOptions(a *atlas.Atlas, options RouterOptions) (*Router, error
 		if requestObserver, ok := observer.(observability.FeatureRequestObserver); ok {
 			bound.requestObserver = requestObserver
 		}
-		// A36: wire cache invalidation (no global state).
-		// Bump Atlas map epochs on successful mutation.
-		bound.OnMutate = func(collections []string) {
-			for _, m := range a.AllMaps() {
-				a.BumpMapEpoch(m.Name)
-			}
-		}
 		options.Features = &bound
 	}
 	if options.WFS != nil {
-		// A36: wire WFS-T cache invalidation.
-		wfsBound := *options.WFS
-		wfsBound.OnMutate = func(collections []string) {
-			for _, m := range a.AllMaps() {
-				a.BumpMapEpoch(m.Name)
-			}
-		}
-		options.WFS = &wfsBound
+		bound := *options.WFS
+		bound.Config = bound.Config.Resolved()
+		bound.WriteConfig = bound.WriteConfig.Resolved()
+		options.WFS = &bound
 	}
 	router := &Router{TreeMux: assembleRouter(a, options)}
 	if options.Features != nil {
@@ -153,11 +142,22 @@ func assembleRouter(a *atlas.Atlas, options RouterOptions) *httptreemux.TreeMux 
 		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/capabilities/:map_name", o, HeadersHandler(HandleMapCapabilities{})))
 
 	// map tiles
-	hMapLayerZXY := HandleMapLayerZXY{Atlas: a}
+	writesEnabled := options.Features != nil && options.Features.cfg.Write.Enabled ||
+		options.WFS != nil && options.WFS.WriteConfig.Enabled
+	hMapLayerZXY := HandleMapLayerZXY{Atlas: a, disableCache: writesEnabled}
+	var tileHandler http.Handler = hMapLayerZXY
+	if writesEnabled {
+		// Until durable invalidation is implemented, neither persisted tiles nor
+		// browser caches may hide committed feature mutations.
+		log.Debug("[FIX] tile caching disabled for writable feature runtime")
+		tileHandler = mutableTileNoStore(GZipHandler(tileHandler))
+	} else {
+		tileHandler = TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, tileHandler)))
+	}
 	group.UsingContext().
-		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:z/:x/:y", o, HeadersHandler(TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, hMapLayerZXY))))))
+		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:z/:x/:y", o, HeadersHandler(tileHandler)))
 	group.UsingContext().
-		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:layer_name/:z/:x/:y", o, HeadersHandler(TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, hMapLayerZXY))))))
+		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:layer_name/:z/:x/:y", o, HeadersHandler(tileHandler)))
 
 	// map style
 	group.UsingContext().

@@ -149,9 +149,6 @@ type Key struct {
 	Z         uint
 	X         uint
 	Y         uint
-	// A36: Epoch invalidates cache on mutation. Zero means "no epoch"
-	// (backward compatible with existing keys).
-	Epoch uint64
 }
 
 func (k Key) String() string {
@@ -159,22 +156,13 @@ func (k Key) String() string {
 	// join with forward slashes regardless of the OS separator (P6-33).
 	// empty MapName/LayerName collapse away, which is load-bearing for
 	// synthetic (map-less) keys (P5-17).
-	base := path.Join(
+	return path.Join(
 		k.MapName,
 		k.LayerName,
 		strconv.FormatUint(uint64(k.Z), 10),
 		strconv.FormatUint(uint64(k.X), 10),
 		strconv.FormatUint(uint64(k.Y), 10))
-	// A36: epoch prefixes the key when non-zero.
-	if k.Epoch != 0 {
-		return path.Join("e"+strconv.FormatUint(k.Epoch, 10), base)
-	}
-	return base
 }
-
-// A36: Epoch is per-Atlas instance (see atlas.Atlas.BumpMapEpoch).
-// No global state: each Atlas tracks its own map epochs.
-// Key.Epoch=0 means "no epoch" and keeps backward-compatible key format.
 
 // InitFunc initialize a cache given a config map.
 // The InitFunc should validate the config map, and report any errors.

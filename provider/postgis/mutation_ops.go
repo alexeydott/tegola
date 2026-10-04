@@ -328,6 +328,17 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		sets = append(sets, quoteIdent(col)+" = "+ph(len(args)+1))
 		args = append(args, v)
 	}
+	for pub, col := range mp.writable {
+		if _, ok := m.Properties[pub]; ok {
+			continue
+		}
+		value := "NULL"
+		if mp.columns[col].IsDefault {
+			value = "DEFAULT"
+		}
+		sets = append(sets, quoteIdent(col)+" = "+value)
+	}
+
 	if m.GeometryWKB != nil {
 		h, a, err := t.geomArg(mp, m, args)
 		if err != nil {
@@ -371,19 +382,13 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		}
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
-	// A38: increment entity incarnation on DELETE (tombstone).
-	if _, ierr := t.tx.Exec(ctx,
-		`INSERT INTO tegola_revisions (collection, feature_id, revision, incarnation) VALUES ($1, $2, 0, 1)
-		 ON CONFLICT (collection, feature_id) DO UPDATE SET incarnation = tegola_revisions.incarnation + 1, revision = 0`,
-		m.Collection, m.FeatureID); ierr != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("incarnation bump: %v", ierr)}
-	}
+
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
 	// A03: in-transaction CAS check before the data mutation.
-	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
 		return provider.MutationOutcome{}, err
 	}
 	var sets []string
@@ -448,7 +453,7 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
 	// A03: in-transaction CAS check before the data mutation.
-	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+	if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
 		return provider.MutationOutcome{}, err
 	}
 	tbl := quoteIdent(mp.schema) + "." + quoteIdent(mp.table)

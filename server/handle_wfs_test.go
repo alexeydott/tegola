@@ -5,17 +5,17 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
-	"encoding/xml"
 	"strings"
 	"testing"
 
 	"github.com/alexeydott/geom"
-	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/geom/encoding/wkb"
+	"github.com/alexeydott/tegola/feature"
 
 	"github.com/alexeydott/tegola/config"
 	"github.com/alexeydott/tegola/dict"
@@ -484,62 +484,18 @@ func TestWFSStoredQueries(t *testing.T) {
 	}
 }
 
-func TestWFSLockFeature(t *testing.T) {
+func TestWFSLockFeatureUnsupported(t *testing.T) {
 	service := wfsService(t)
 	h, router := wfsHandler(t, service)
-	// Enable write for lock test.
 	h.WriteConfig.Enabled = true
-	mp, _, _ := service.MutationProviderFor("wfs_sites")
-	tx, _ := mp.BeginFeatureTx(context.Background(), provider.TxOptions{})
-	out, _ := tx.Apply(context.Background(), provider.Mutation{
-		Op:          provider.MutationInsert,
-		Collection:  "wfs_sites",
-		Properties:  map[string]provider.MutationValue{"name": wfsStrVal("locked")},
-		GeometryWKB: wfsWKBPoint(t, 7, 8),
-	})
-	_, _ = tx.Commit(context.Background())
-	fid := "wfs_sites." + strconv.FormatUint(out.FeatureID, 10)
-
-	// Lock the feature.
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request=LockFeature&version=1.1.0&typeName=wfs_sites&featureId="+fid, nil))
-	if rec.Code != 200 {
-		t.Fatalf("LockFeature status = %d, body: %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "LockId") {
-		t.Fatalf("no LockId in response: %s", body)
-	}
-	lockID := extractLockID(t, body)
-
-	// Transaction without lockId on locked feature -> 403.
-	updateXML := `<wfs:Transaction version="1.1.0" service="WFS" xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc">
-  <wfs:Update typeName="wfs_sites">
-    <wfs:Property><wfs:Name>name</wfs:Name><wfs:Value>hacked</wfs:Value></wfs:Property>
-    <ogc:Filter><ogc:FeatureId fid="` + fid + `"/></ogc:Filter>
-  </wfs:Update>
-</wfs:Transaction>`
-	rec = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/wfs", strings.NewReader(updateXML))
-	req.Header.Set("Content-Type", "application/xml")
-	router.ServeHTTP(rec, req)
-	if rec.Code != 403 {
-		t.Fatalf("locked update without lockId status = %d, want 403", rec.Code)
-	}
-
-	// Transaction with lockId -> 200.
-	updateXML = `<wfs:Transaction version="1.1.0" service="WFS" lockId="` + lockID + `" xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc">
-  <wfs:Update typeName="wfs_sites">
-    <wfs:Property><wfs:Name>name</wfs:Name><wfs:Value>unlocked</wfs:Value></wfs:Property>
-    <ogc:Filter><ogc:FeatureId fid="` + fid + `"/></ogc:Filter>
-  </wfs:Update>
-</wfs:Transaction>`
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/wfs", strings.NewReader(updateXML))
-	req.Header.Set("Content-Type", "application/xml")
-	router.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("locked update with lockId status = %d, body: %s", rec.Code, rec.Body.String())
+	for _, version := range []string{"1.1.0", "2.0.0"} {
+		for _, operation := range []string{"LockFeature", "GetFeatureWithLock"} {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?service=WFS&request="+operation+"&version="+version+"&typeName=wfs_sites&featureId=wfs_sites.1", nil))
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "OperationNotSupported") {
+				t.Fatalf("%s %s status=%d body=%s", operation, version, rec.Code, rec.Body.String())
+			}
+		}
 	}
 }
 
@@ -552,4 +508,31 @@ func extractLockID(t *testing.T, body string) string {
 	i += len("<wfs:LockId>")
 	j := strings.Index(body[i:], "</wfs:LockId>")
 	return body[i : i+j]
+}
+
+func TestWFSRejectsAmbiguousKVPAndDisabledVersion(t *testing.T) {
+	service := wfsService(t)
+	h, _ := wfsHandler(t, service)
+	h.Config.Versions = []string{"1.1.0"}
+	for _, query := range []string{
+		"service=WFS&request=GetCapabilities&request=GetFeature",
+		"service=WFS&request=GetCapabilities&REQUEST=GetFeature",
+		"service=WFS&request=GetCapabilities&version=2.0.0",
+		"service=WFS&request=GetCapabilities&acceptversions=2.0.0",
+		"service=WFS&request=GetCapabilities&bad=%xx",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?"+query, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("query %s status=%d body=%s", query, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("WFS errors must not cache")
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/wfs?SERVICE=WFS&REQUEST=GetCapabilities&ACCEPTVERSIONS=2.0.0,1.1.0", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `version="1.1.0"`) {
+		t.Fatalf("case-insensitive negotiation %d %s", rec.Code, rec.Body.String())
+	}
 }

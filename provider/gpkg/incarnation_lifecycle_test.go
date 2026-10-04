@@ -84,6 +84,10 @@ func TestIncarnationLifecycle(t *testing.T) {
 	if rev3 != "1.1" {
 		t.Fatalf("want revision 1.1 (incarnation 1), got %q", rev3)
 	}
+	current, err := w.(provider.RevisionReader).CurrentRevision(ctx, "parcels", out3.FeatureID)
+	if err != nil || current != rev3 {
+		t.Fatalf("read revision must match mutation revision: got %q, %v; want %q", current, err, rev3)
+	}
 
 	// 4. Stale If-Match (old incarnation 0.1) → 412.
 	tx4, err := w.BeginFeatureTx(ctx, provider.TxOptions{})

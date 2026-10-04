@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -211,7 +212,8 @@ func (k MutationErrorKind) String() string {
 
 // AsMutationError extracts the *MutationError from err, if present.
 func AsMutationError(err error) (*MutationError, bool) {
-	if me, ok := err.(*MutationError); ok {
+	var me *MutationError
+	if errors.As(err, &me) {
 		return me, true
 	}
 	return nil, false
