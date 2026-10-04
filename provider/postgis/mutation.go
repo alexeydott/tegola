@@ -411,11 +411,12 @@ func computeSchemaFingerprint(cols map[string]provider.ColumnDescriptor, pk stri
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	// hash.Hash.Write never returns an error.
 	h := sha256.New()
 	for _, n := range names {
-		fmt.Fprintf(h, "%s:%s;", n, cols[n].Type)
+		_, _ = fmt.Fprintf(h, "%s:%s;", n, cols[n].Type)
 	}
-	fmt.Fprintf(h, "pk=%s", pk)
+	_, _ = fmt.Fprintf(h, "pk=%s", pk)
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 

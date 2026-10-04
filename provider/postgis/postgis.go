@@ -90,7 +90,7 @@ var (
 	isSelectQuery = regexp.MustCompile(`(?i)^((\s*)(--.*\n)?)*select`)
 
 	// reference to all instantiated providers
-	providers []Provider
+	providers []*Provider
 )
 
 // Provider provides the postgis data provider.
@@ -173,7 +173,7 @@ func (p *Provider) Layer(name string) (Layer, bool) {
 }
 
 // Layers returns meta data about the various layers which are configured with the provider
-func (p Provider) Layers() ([]provider.LayerInfo, error) {
+func (p *Provider) Layers() ([]provider.LayerInfo, error) {
 	ls := []provider.LayerInfo{}
 
 	for i := range p.layers {
@@ -225,7 +225,7 @@ func decodeGeometryValue(v any, format string, mosCfg codec.MOSConfig) (geom.Geo
 	}
 }
 
-func (p Provider) TileFeatures(
+func (p *Provider) TileFeatures(
 	ctx context.Context,
 	layer string,
 	tile provider.Tile,
@@ -802,7 +802,7 @@ func mosProbeSQL(l *Layer) string {
 
 // inspectMOSLayerGeomType samples the first rows of the layer's SQL and
 // derives the geometry type from the first decodable MOS geometry.
-func (p Provider) inspectMOSLayerGeomType(l *Layer) error {
+func (p *Provider) inspectMOSLayerGeomType(l *Layer) error {
 	probeSQL := mosProbeSQL(l)
 
 	ctx, cancel := codec.NewInspectionContext()
@@ -870,7 +870,7 @@ func inspectMOSGeomTypeRows(l *Layer, probeSQL string, rows pgx.Rows) error {
 
 // LayerFields returns a map of field names to their types for a given layer.
 // It executes a sample query (LIMIT 0) to get column information without fetching data.
-func (p Provider) LayerFields(ctx context.Context, layerName string) (map[string]any, error) {
+func (p *Provider) LayerFields(ctx context.Context, layerName string) (map[string]any, error) {
 	plyr, ok := p.Layer(layerName)
 	if !ok {
 		return nil, ErrLayerNotFound{layerName}
@@ -932,7 +932,7 @@ func postgresTypeToString(oid uint32) string {
 	}
 }
 
-func (p Provider) MVTForLayers(
+func (p *Provider) MVTForLayers(
 	ctx context.Context,
 	tile provider.Tile,
 	params provider.Params,
@@ -1032,7 +1032,7 @@ func (p *Provider) Close() { p.pool.Close() }
 // setLayerGeomType sets the geomType field on the layer to one of point,
 // linestring, polygon, multipoint, multilinestring, multipolygon or
 // geometrycollection
-func (p Provider) setLayerGeomType(l *Layer, geomType string) error {
+func (p *Provider) setLayerGeomType(l *Layer, geomType string) error {
 	switch strings.ToLower(geomType) {
 	case "point":
 		l.geomType = geom.Point{}
@@ -1063,7 +1063,7 @@ func (p Provider) setLayerGeomType(l *Layer, geomType string) error {
 // codec.InspectionSampleLimit rows. SystemInfo rows are skipped, never
 // applied: SQL-sample detection carries no projection contract. The actual
 // result-column names are returned so the caller can persist them (A09).
-func (p Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string, codec.SQLGeometryContract, error) {
+func (p *Provider) probeMOSCustomSQLContract(l *Layer, probeSQL string) ([]string, codec.SQLGeometryContract, error) {
 	if probeSQL == "" {
 		return nil, codec.SQLGeometryContract{}, fmt.Errorf("missing probing SQL")
 	}
@@ -1142,7 +1142,7 @@ func probeSQLContractRows(l *Layer, rows pgx.Rows) ([]string, codec.SQLGeometryC
 
 // inspectLayerGeomType sets the geomType field on the layer by running the SQL
 // and reading the geom type in the result set
-func (p Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.Map) error {
+func (p *Provider) inspectLayerGeomType(pname string, l *Layer, maps []provider.Map) error {
 	// Raw geometry formats (wkb/wkt/mos) carry non-PostGIS values in the
 	// geometry column, so ST_GeometryType-based inspection cannot work.
 	// For MOS the type is derived after decoding the first real geometry.
@@ -1855,7 +1855,7 @@ func CreateProvider(
 	}
 
 	// track the provider so we can clean it up later
-	providers = append(providers, p)
+	providers = append(providers, &p)
 
 	return &p, nil
 }
@@ -1870,5 +1870,5 @@ func Cleanup() {
 		providers[i].Close()
 	}
 
-	providers = make([]Provider, 0)
+	providers = nil
 }

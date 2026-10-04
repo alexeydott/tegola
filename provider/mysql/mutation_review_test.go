@@ -22,7 +22,11 @@ func TestReviewMySQLNativeMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	t.Run("migration", func(t *testing.T) {
@@ -67,7 +71,7 @@ func TestReviewMySQLNativeMutation(t *testing.T) {
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
-		defer tx.Rollback(ctx)
+		defer func() { _ = tx.Rollback(ctx) }()
 		out, err := tx.Apply(ctx, m)
 		if err != nil {
 			return out, err
@@ -147,10 +151,14 @@ func TestReviewMySQLNativeMutation(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO tegola_schema_version VALUES(3,'2026-10-04')"); err != nil {
 			t.Fatal(err)
 		}
-		defer db.ExecContext(ctx, "DELETE FROM tegola_schema_version WHERE version=3")
+		defer func() {
+			if _, err := db.ExecContext(ctx, "DELETE FROM tegola_schema_version WHERE version=3"); err != nil {
+				t.Errorf("remove future schema fixture: %v", err)
+			}
+		}()
 		tx, err := w.BeginFeatureTx(ctx, provider.TxOptions{})
 		if err == nil {
-			tx.Rollback(ctx)
+			_ = tx.Rollback(ctx)
 			t.Fatal("future schema accepted")
 		}
 	})

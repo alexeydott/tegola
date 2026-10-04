@@ -895,7 +895,7 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 
 	// track the provider so we can clean it up later
 	providersMu.Lock()
-	providers = append(providers, p)
+	providers = append(providers, &p)
 	providersMu.Unlock()
 	keepDB = true
 

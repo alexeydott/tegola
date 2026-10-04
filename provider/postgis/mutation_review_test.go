@@ -47,7 +47,7 @@ func TestReviewPostGISNativeMutation(t *testing.T) {
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
-		defer tx.Rollback(ctx)
+		defer func() { _ = tx.Rollback(ctx) }()
 		out, err := tx.Apply(ctx, m)
 		if err != nil {
 			return out, err
@@ -130,10 +130,14 @@ func TestReviewPostGISNativeMutation(t *testing.T) {
 		if _, err := pool.Exec(ctx, "INSERT INTO tegola_schema_version VALUES(3,'2026-10-04')"); err != nil {
 			t.Fatal(err)
 		}
-		defer pool.Exec(ctx, "DELETE FROM tegola_schema_version WHERE version=3")
+		defer func() {
+			if _, err := pool.Exec(ctx, "DELETE FROM tegola_schema_version WHERE version=3"); err != nil {
+				t.Errorf("remove future schema fixture: %v", err)
+			}
+		}()
 		tx, err := w.BeginFeatureTx(ctx, provider.TxOptions{})
 		if err == nil {
-			tx.Rollback(ctx)
+			_ = tx.Rollback(ctx)
 			t.Fatal("future schema accepted")
 		}
 	})

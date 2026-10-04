@@ -143,7 +143,9 @@ func (s *sqlLockStore) Acquire(ctx context.Context, typeName string, ids []uint6
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	// Cleanup must preserve the operation/commit error; after Commit the
+	// rollback returns sql.ErrTxDone.
+	defer func() { _ = tx.Rollback() }()
 
 	nowNano := now.UnixNano()
 	expNano := exp.UnixNano()
@@ -205,7 +207,9 @@ func (s *sqlLockStore) Release(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	// Cleanup must preserve the operation/commit error; after Commit the
+	// rollback returns sql.ErrTxDone.
+	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, `DELETE FROM tegola_lock_members WHERE lock_id = ?`, id); err != nil {
 		return err
 	}

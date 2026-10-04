@@ -90,22 +90,11 @@ func (api *FeatureAPI) mutationCoordinator() *feature.MutationCoordinator {
 				api.OnMutate(collections)
 			}
 		},
-		// A09: atomic lock guard inside the transaction. Re-checks the
-		// WFS lock under the tx; the HTTP-layer check is TOCTOU.
-		LockCheck: func(ctx context.Context, collection string, key feature.PhysicalFeatureKey) error {
-			// The lockId was validated at the HTTP layer; here we just
-			// ensure the feature is not locked by someone else. If the
-			// HTTP layer allowed it (valid lockId or not locked), the
-			// in-tx check must not block. We check if it's locked at all;
-			// the lockId validation already happened.
-			// Note: a full implementation would pass the lockId through
-			// the context. For now, we fail closed if locked without
-			// a validated lockId in context.
+		// Existing internal leases still deny mutation. Public lock acquisition
+		// and lock tokens remain unsupported until physical guards exist.
+		LockCheck: func(_ context.Context, collection string, key feature.PhysicalFeatureKey) error {
 			if wfs.IsLocked(collection, parsePKUint64(key.PK)) {
-				// Check if lockId was validated (stored in context by HTTP layer).
-				if _, ok := ctx.Value("wfsLockValidated").(bool); !ok {
-					return fmt.Errorf("feature %d is locked", parsePKUint64(key.PK))
-				}
+				return fmt.Errorf("feature %d is locked", parsePKUint64(key.PK))
 			}
 			return nil
 		},
@@ -181,33 +170,17 @@ func (api *FeatureAPI) serveItemsOptions(w http.ResponseWriter, r *http.Request)
 	api.writeOptions(w, api.allowedMethods(collection, false), false)
 }
 
-// checkWFSLock enforces WFS LockFeature leases on REST mutations (BUG-4 fix).
-// Returns true if the request may proceed.
-// checkWFSLock enforces WFS LockFeature leases on REST mutations.
-// Returns (allowed, lockValidated): lockValidated is true if the request
-// presented a valid lockId for a locked feature.
-func (api *FeatureAPI) checkWFSLock(w http.ResponseWriter, r *http.Request, collection string, featureID uint64) (bool, bool) {
+// checkWFSLock denies legacy internal leases and unsupported public tokens.
+func (api *FeatureAPI) checkWFSLock(w http.ResponseWriter, r *http.Request, collection string, featureID uint64) bool {
 	if r.URL.Query().Get("lockId") != "" || r.Header.Get("Lock-Id") != "" {
 		api.writeError(w, r, http.StatusBadRequest, "OperationNotSupported", "Lock tokens are not supported by this write profile")
-		return false, false
+		return false
 	}
 	if wfs.IsLocked(collection, featureID) {
-		// Check if client provided a valid lockId
-		lockID := r.URL.Query().Get("lockId")
-		if lockID == "" {
-			lockID = r.Header.Get("Lock-Id")
-		}
-		if lockID == "" {
-			api.writeError(w, r, http.StatusForbidden, "Locked", fmt.Sprintf("feature %d is locked; provide lockId", featureID))
-			return false, false
-		}
-		if exc := wfs.CheckLock(lockID, collection, featureID); exc != nil {
-			api.writeError(w, r, http.StatusForbidden, "Locked", exc.Text)
-			return false, false
-		}
-		return true, true
+		api.writeError(w, r, http.StatusForbidden, "Locked", "Feature is locked")
+		return false
 	}
-	return true, false
+	return true
 }
 
 func (api *FeatureAPI) serveItemOptions(w http.ResponseWriter, r *http.Request) {
@@ -463,13 +436,8 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// A09: enforce WFS locks on PUT (was missing)
-	allowed, lockValidated := api.checkWFSLock(w, r, collection, featureID)
-	if !allowed {
+	if !api.checkWFSLock(w, r, collection, featureID) {
 		return
-	}
-	// A09: propagate lock validation to the in-tx atomic guard.
-	if lockValidated {
-		r = r.WithContext(context.WithValue(r.Context(), "wfsLockValidated", true))
 	}
 	if ct := r.Header.Get("Content-Type"); !isGeoJSONContentType(ct) {
 		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/geo+json")
@@ -536,13 +504,8 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// BUG-4: enforce WFS locks on REST
-	allowed, lockValidated := api.checkWFSLock(w, r, collection, featureID)
-	if !allowed {
+	if !api.checkWFSLock(w, r, collection, featureID) {
 		return
-	}
-	// A09: propagate lock validation to the in-tx atomic guard.
-	if lockValidated {
-		r = r.WithContext(context.WithValue(r.Context(), "wfsLockValidated", true))
 	}
 	ct := r.Header.Get("Content-Type")
 	isMergePatch := ct == mediaMergePatch || strings.HasPrefix(ct, mediaMergePatch+";")
@@ -643,13 +606,8 @@ func (api *FeatureAPI) serveDeleteItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// BUG-4: enforce WFS locks on REST
-	allowed, lockValidated := api.checkWFSLock(w, r, collection, featureID)
-	if !allowed {
+	if !api.checkWFSLock(w, r, collection, featureID) {
 		return
-	}
-	// A09: propagate lock validation to the in-tx atomic guard.
-	if lockValidated {
-		r = r.WithContext(context.WithValue(r.Context(), "wfsLockValidated", true))
 	}
 	// A03: capture the matched ETag; its revision becomes the in-tx precondition.
 	matchedETag, err := api.checkPrecondition(r, collection, featureID)

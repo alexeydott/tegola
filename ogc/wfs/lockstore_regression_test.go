@@ -17,7 +17,11 @@ func TestSQLLockStoreFailsClosedAndReleasesMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close fixture database: %v", err)
+		}
+	})
 	ctx := context.Background()
 	s, err := NewSQLLockStore(ctx, db, "sqlite")
 	if err != nil {
@@ -34,7 +38,9 @@ func TestSQLLockStoreFailsClosedAndReleasesMembers(t *testing.T) {
 	if err != nil || l == nil {
 		t.Fatalf("reacquire: %v %v", l, err)
 	}
-	db.Close()
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database for failure probe: %v", err)
+	}
 	if !s.IsLocked(ctx, "sites", 3) {
 		t.Fatal("database failure allows unlocked mutation")
 	}

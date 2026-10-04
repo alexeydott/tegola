@@ -288,6 +288,7 @@ func checkIntegerPK(db *sql.DB, table, pk string) error {
 		return &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("table %q: %v", table, err)}
 	}
 	defer func() { _ = rows.Close() }()
+	found := false
 	for rows.Next() {
 		var cid int
 		var name, ctype string
@@ -305,8 +306,14 @@ func checkIntegerPK(db *sql.DB, table, pk string) error {
 					Reason: fmt.Sprintf("table %q: write requires INTEGER PRIMARY KEY, got %q", table, ctype),
 				}
 			}
-			return nil
+			found = true
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if found {
+		return nil
 	}
 	return &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("table %q: pk column %q not found", table, pk)}
 }

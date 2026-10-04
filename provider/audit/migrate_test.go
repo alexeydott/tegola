@@ -14,7 +14,11 @@ func TestMigrationUpgradePreservesRevisionAndRejectsFuture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	}()
 	db.SetMaxOpenConns(1)
 	for _, q := range []string{`CREATE TABLE tegola_revisions(collection TEXT,feature_id INTEGER,revision INTEGER,PRIMARY KEY(collection,feature_id))`, `INSERT INTO tegola_revisions VALUES('features',7,12)`, `CREATE TABLE tegola_schema_version(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)`, `INSERT INTO tegola_schema_version VALUES(1,'old')`} {
 		if _, err = db.Exec(q); err != nil {

@@ -17,7 +17,11 @@ func TestReviewGPKGPublicFieldsAndAliasCAS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	}()
 	if _, err = db.Exec("ALTER TABLE parcels ADD COLUMN secret TEXT DEFAULT 'private'"); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +36,7 @@ func TestReviewGPKGPublicFieldsAndAliasCAS(t *testing.T) {
 		if err != nil {
 			return provider.MutationOutcome{}, err
 		}
-		defer tx.Rollback(ctx)
+		defer func() { _ = tx.Rollback(ctx) }()
 		out, err := tx.Apply(ctx, m)
 		if err != nil {
 			return out, err
