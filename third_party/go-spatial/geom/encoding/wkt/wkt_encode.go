@@ -32,13 +32,14 @@ func NewDefaultEncoder(w io.Writer) Encoder {
 // strict causes the encoder to return errors if the geometries have empty
 // sub geometries where not allowed by the wkt spec. When Strict
 // false, empty geometries are ignored.
-//		Point: can be empty
-//		MultiPoint: can have empty points
-//		LineString: cannot have empty points
-//		MultiLineString: can have empty line strings non-empty line strings cannot have empty points
-//		Polygon: cannot have empty line strings, non-empty line strings cannot have empty points
-//		MultiPolygon: can have empty polygons, polygons cannot have empty linestrings, line strings cannot have empty points
-//		Collection: can have empty geometries
+//
+//	Point: can be empty
+//	MultiPoint: can have empty points
+//	LineString: cannot have empty points
+//	MultiLineString: can have empty line strings non-empty line strings cannot have empty points
+//	Polygon: cannot have empty line strings, non-empty line strings cannot have empty points
+//	MultiPolygon: can have empty polygons, polygons cannot have empty linestrings, line strings cannot have empty points
+//	Collection: can have empty geometries
 //
 // The precision and fmt are passed into strconv.FormatFloat
 // https://golang.org/pkg/strconv/#FormatFloat

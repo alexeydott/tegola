@@ -276,7 +276,8 @@ func encodeFeatureWithCRS(ctx context.Context, source *provider.Feature, collect
 	if err := ctx.Err(); err != nil {
 		return Feature{}, err
 	}
-	return Feature{Type: "Feature", ID: source.ID, Geometry: encoded, Properties: properties}, nil
+	// A30: carry the typed geometry to bypass GeoJSON intermediate in WFS.
+	return Feature{Type: "Feature", ID: source.ID, Geometry: encoded, Properties: properties, GeometryTyped: geometry}, nil
 }
 
 func transformGeometry(ctx context.Context, geometry geom.Geometry, srid uint64) (geom.Geometry, error) {

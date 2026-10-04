@@ -32,21 +32,7 @@ func (api *FeatureAPI) writeJSON(w http.ResponseWriter, r *http.Request, status 
 	api.writeRepresentation(w, r, status, media, value, nil)
 }
 func (api *FeatureAPI) writeRepresentation(w http.ResponseWriter, r *http.Request, status int, media string, value any, links []featureLink) {
-	output := &featureBoundedWriter{ctx: r.Context(), maximum: api.cfg.MaxResponseBytes}
-	var err error
-	if status >= 200 && status < 300 && featureSelectedFormat(r) == "html" {
-		err = renderFeatureHTMLTo(r.Context(), output, featureHTMLDocument{Title: api.cfg.Title, Description: api.cfg.Description, Value: value, Links: links})
-		media = "text/html; charset=utf-8"
-	} else {
-		var raw []byte
-		raw, err = json.Marshal(value)
-		if err == nil {
-			_, err = output.Write(raw)
-		}
-	}
-	if err == nil {
-		err = r.Context().Err()
-	}
+	raw, media, err := api.renderRepresentation(r, status, media, value, links)
 	if err != nil {
 		w.Header().Del("Content-Crs")
 		code, description := "InternalError", "Response encoding failed"
@@ -65,19 +51,43 @@ func (api *FeatureAPI) writeRepresentation(w http.ResponseWriter, r *http.Reques
 		} else {
 			log.Error("feature response encoding failed", "error", err)
 		}
-		output.Buffer.Reset()
-		output.Buffer.WriteString(`{"code":"` + code + `","description":"` + description + `"}`)
+		raw = []byte(`{"code":"` + code + `","description":"` + description + `"}`)
 	}
 	featureProtocolHeaders(w.Header())
 	w.Header().Set("Content-Type", media)
-	w.Header().Set("Content-Length", strconv.Itoa(output.Len()))
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return
 	}
-	if _, err := w.Write(output.Bytes()); err != nil {
+	if _, err := w.Write(raw); err != nil {
 		log.Error("feature response write failed", "error", err)
 	}
+}
+
+// renderRepresentation serializes a feature response exactly as
+// writeRepresentation would send it, returning the bytes for callers
+// that need a strong ETag bound to the exact representation.
+func (api *FeatureAPI) renderRepresentation(r *http.Request, status int, media string, value any, links []featureLink) ([]byte, string, error) {
+	output := &featureBoundedWriter{ctx: r.Context(), maximum: api.cfg.MaxResponseBytes}
+	var err error
+	if status >= 200 && status < 300 && featureSelectedFormat(r) == "html" {
+		err = renderFeatureHTMLTo(r.Context(), output, featureHTMLDocument{Title: api.cfg.Title, Description: api.cfg.Description, Value: value, Links: links})
+		media = "text/html; charset=utf-8"
+	} else {
+		var raw []byte
+		raw, err = json.Marshal(value)
+		if err == nil {
+			_, err = output.Write(raw)
+		}
+	}
+	if err == nil {
+		err = r.Context().Err()
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return output.Bytes(), media, nil
 }
 func (api *FeatureAPI) writeError(w http.ResponseWriter, r *http.Request, status int, code, description string) {
 	w.Header().Del("Content-Crs")

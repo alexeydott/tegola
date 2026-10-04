@@ -37,6 +37,8 @@ func mergeFeatureHeader(h http.Header, key, token string) {
 }
 func featureProtocolHeaders(h http.Header) {
 	h.Set("Cache-Control", "no-store")
+	// ETag is deleted here; Part 4 handlers set a strong validator after
+	// this call when the response carries one.
 	h.Del("ETag")
 	h.Del("Last-Modified")
 	h.Del("Content-Encoding")

@@ -351,6 +351,26 @@ panic returns fixed generic JSON 500, without partially committed data or panic
 details; HEAD has the same error headers and no body. Ordinary returned context
 cancellation remains 408. The standard `http.ErrAbortHandler` sentinel propagates.
 
+## WFS and feature mutations
+
+When explicitly enabled, `/wfs` serves the configured WFS versions, and
+`/features/collections/{collection}/items` accepts POST. Individual items accept
+configured PUT/PATCH/DELETE operations. PATCH accepts Merge Patch and the
+implemented JSON Patch subset. `/collections/{collection}/schema` under the
+Feature API base path describes mutation input; Queryables describes filtering,
+not write admission. Consult the live OpenAPI document for installed methods.
+
+Use the ETag from the same source-feature response as the editing draft, and
+send it with If-Match. A conflict returns 412; a missing required precondition
+returns 428. ETags include revision/incarnation and a representation digest;
+treat them as opaque strings. A confirmed commit whose representation cannot be
+read back returns a minimal success with `Tegola-Commit-Status: committed`.
+Do not repeat the mutation to obtain its representation. Unknown outcomes also
+require source reconciliation before any retry.
+
+The [write scope](wfs-scope-limitations.md) documents unsupported locks,
+cache policy, external-writer limitations and the bounded embedded editor.
+
 ## See Also
 
 - [Configuration](configuration.md) — server and cache settings

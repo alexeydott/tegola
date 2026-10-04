@@ -4,20 +4,22 @@
 //
 // Format (all values little-endian, coordinates are quantized int32 pairs):
 //
-//	Header (10 bytes, mirrors the packed geometry prefix of THeaderObject):
+//	Header (12 bytes, the packed Delphi THeaderObject as written by
+//	TMapObjectStructureBase.PutToBufInternal):
 //	  0: oType             byte   (0=polygon, 1=polyline, 2=point, 3=text, 4=image)
 //	  1: oTypeModification byte
-//	  2: AddFlag           uint16
+//	  2: AddFlag           uint16  (0)
 //	  4: subObjectsCount   uint16
 //	  6: pointsCount       int32  (total across all subobjects)
+//	 10: ofl               uint16  (object flags)
 //
 //	Then subObjectsCount x uint32 point counts (one per subobject).
 //	Then pointsCount x (int32 x, int32 y) — all subobjects' points
 //	contiguously, in subobject order.
 //
-//	Some older Tegola fixtures used a 12-byte extension with a uint16 ofl
-//	field at offset 10. The decoder accepts that form too, but native MapplGIS
-//	geometry blobs use the 10-byte prefix above.
+//	A 10-byte prefix (without the trailing ofl word) is also accepted on
+//	decode for older Tegola fixtures, but the native MapplGIS layout is the
+//	12-byte header above.
 //
 //	Everything after the points block (point icon params, labels, markers,
 //	multi-label texts, bezier control points) is non-geometric or optional
@@ -62,11 +64,11 @@ const (
 )
 
 const (
-	// headerSize is the native packed geometry prefix:
+	// headerSize is the legacy short form without the trailing ofl word:
 	// 1 + 1 + 2 + 2 + 4.
 	headerSize = 10
-	// extendedHeaderSize is the legacy Tegola fixture form that appends the
-	// optional uint16 flags field before the subobject counts.
+	// extendedHeaderSize is the native packed THeaderObject written by
+	// TMapObjectStructureBase.PutToBufInternal: 1 + 1 + 2 + 2 + 4 + 2.
 	extendedHeaderSize = 12
 )
 
@@ -107,17 +109,21 @@ func (o Options) unitFactor() float64 {
 
 // kPrecision converts the configured decimal precision into the multiplicative
 // precision factor used by MapplGIS (x / kPrecision + OffsetX).
+// Delphi GetKPrecision caps precision at MAX_PRECISION=10:
+// Result := IntPower(10, Max(MIN(aPrecision, MAX_PRECISION), 0)).
 func (o Options) kPrecision() (float64, error) {
 	if math.IsNaN(o.Precision) || math.IsInf(o.Precision, 0) ||
-		o.Precision < 0 || math.Trunc(o.Precision) != o.Precision ||
-		o.Precision > 308 {
+		math.Trunc(o.Precision) != o.Precision {
 		return 0, fmt.Errorf("mos: invalid precision %v", o.Precision)
 	}
-	k := math.Pow(10, o.Precision)
-	if math.IsNaN(k) || math.IsInf(k, 0) || k <= 0 {
-		return 0, fmt.Errorf("mos: invalid precision %v", o.Precision)
+	p := o.Precision
+	if p < 0 {
+		p = 0
 	}
-	return k, nil
+	if p > 10 {
+		p = 10
+	}
+	return math.Pow(10, p), nil
 }
 
 // DecodeHeader parses the native MOS blob header. Both the native 10-byte
@@ -222,40 +228,39 @@ func decodeHeaderAndOffset(buf []byte) (Header, int, error) {
 		return Header{}, 0, fmt.Errorf("mos: buffer too short (%v bytes) for MOS header", len(buf))
 	}
 
-	base, err := parseHeader(buf, headerSize)
+	base, err := parseHeader(buf, extendedHeaderSize)
 	if err != nil {
 		return Header{}, 0, err
 	}
 
-	// Prefer the native form when both layouts happen to validate. For a
-	// native 10-byte blob, the bytes at offset 10 are the first subobject
-	// count; treating them as flags can otherwise misclassify small
-	// coordinates when the blob has a long attribute tail.
-	baseErr := validateGeometryPrefix(buf, base, headerSize)
-	if baseErr == nil {
-		return base, headerSize, nil
+	// Prefer the native 12-byte form (packed THeaderObject as written by
+	// TMapObjectStructureBase.PutToBufInternal). For a native 12-byte blob,
+	// the bytes at offset 10 are the ofl flags word; treating them as the
+	// first subobject count of a 10-byte blob misclassifies the layout, so
+	// the 10-byte form is only a fallback for older fixtures.
+	nativeErr := validateGeometryPrefix(buf, base, extendedHeaderSize)
+	if nativeErr == nil {
+		return base, extendedHeaderSize, nil
 	}
 
-	// Older Tegola fixtures used the optional flags extension. For those
-	// blobs the native candidate above fails because it interprets the flags
-	// word as the first subobject count.
-	var extendedErr error
-	if len(buf) >= extendedHeaderSize {
-		extended, parseErr := parseHeader(buf, extendedHeaderSize)
+	// Older Tegola fixtures used the short 10-byte prefix without ofl.
+	var shortErr error
+	if len(buf) >= headerSize {
+		short, parseErr := parseHeader(buf, headerSize)
 		if parseErr == nil {
-			extendedErr = validateGeometryPrefix(buf, extended, extendedHeaderSize)
-			if extendedErr == nil {
-				return extended, extendedHeaderSize, nil
+			shortErr = validateGeometryPrefix(buf, short, headerSize)
+			if shortErr == nil {
+				return short, headerSize, nil
 			}
 		} else {
-			extendedErr = parseErr
+			shortErr = parseErr
 		}
 	}
 
-	if extendedErr != nil {
-		return Header{}, 0, fmt.Errorf("mos: invalid geometry prefix: native: %v; extended: %v", baseErr, extendedErr)
+	if shortErr != nil {
+		return Header{}, 0, fmt.Errorf("mos: invalid geometry prefix: native: %v; short: %v", nativeErr, shortErr)
 	}
-	return Header{}, 0, fmt.Errorf("mos: invalid geometry prefix: %v", baseErr)
+	return Header{}, 0, fmt.Errorf("mos: invalid geometry prefix: %v", nativeErr)
 }
 
 func parseHeader(buf []byte, size int) (Header, error) {

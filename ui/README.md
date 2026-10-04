@@ -24,6 +24,18 @@ npm run dev
 npm run build
 ```
 
+Attribute editor regression checks use the Node test runner:
+
+```shell
+node --test src/globals/editor.test.mjs
+```
+
+The embedded editor uses the mutation schema and conditional source-feature
+JSON Patch. Its bounded precision, geometry and recovery profile is documented
+in [write scope](../docs/wfs-scope-limitations.md). A production asset build is
+not browser/native-database acceptance; verify the built server on a disposable
+source fixture as described in [provider evidence](../docs/provider-matrix.md).
+
 ## Building for inclusion in tegola
 
 Build the locked assets from the `ui` folder before compiling Tegola:

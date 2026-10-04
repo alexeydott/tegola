@@ -6,4 +6,3 @@ package tools
 // GitHub Actions workflow (see .github/workflows/on_pr_push.yml). It is
 // intentionally NOT listed in go.mod require to keep the main module graph
 // clean; this file previously imported it to pin it as a tools dependency.
-

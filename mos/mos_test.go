@@ -448,7 +448,8 @@ func TestDecodeErrors(t *testing.T) {
 			buf := (&blobBuilder{oType: TypePolyline, counts: []uint32{3}, points: [][2]int32{{1, 1}, {2, 2}, {3, 3}}}).build()
 			return buf[:len(buf)-4] // cut the last y
 		}(), Options{}},
-		{"negative precision", (&blobBuilder{oType: TypePoint, counts: []uint32{1}, points: [][2]int32{{1, 1}}}).build(), Options{Precision: -1}},
+		// Delphi GetKPrecision clamps: MIN(aPrecision,10) then MAX(...,0).
+		// Negative and >10 precisions are clamped, not errors.
 		{"fractional precision", (&blobBuilder{oType: TypePoint, counts: []uint32{1}, points: [][2]int32{{1, 1}}}).build(), Options{Precision: 1.5}},
 		{"infinite precision", (&blobBuilder{oType: TypePoint, counts: []uint32{1}, points: [][2]int32{{1, 1}}}).build(), Options{Precision: math.Inf(1)}},
 	}
@@ -484,5 +485,39 @@ func TestDecodeHeader(t *testing.T) {
 
 	if _, err := DecodeHeader([]byte{1}); err == nil {
 		t.Error("expected error for short header, got nil")
+	}
+}
+
+func TestKPrecisionClamp(t *testing.T) {
+	// Delphi GetKPrecision: IntPower(10, Max(MIN(aPrecision,10), 0))
+	type tc struct {
+		precision float64
+		want      float64
+	}
+	cases := []tc{
+		{-5, 1},
+		{0, 1},
+		{2, 100},
+		{10, 1e10},
+		{15, 1e10},
+		{308, 1e10},
+	}
+	for i := range cases {
+		opts := Options{Precision: cases[i].precision}
+		got, err := opts.kPrecision()
+		if err != nil {
+			t.Errorf("precision %v: unexpected error %v", cases[i].precision, err)
+			continue
+		}
+		if got != cases[i].want {
+			t.Errorf("precision %v: got %v, want %v", cases[i].precision, got, cases[i].want)
+		}
+	}
+	bad := []float64{1.5, math.NaN(), math.Inf(1), math.Inf(-1)}
+	for i := range bad {
+		opts := Options{Precision: bad[i]}
+		if _, err := opts.kPrecision(); err == nil {
+			t.Errorf("precision %v: expected error, got nil", bad[i])
+		}
 	}
 }

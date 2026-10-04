@@ -8,7 +8,6 @@
 // The program, will iterate through the source directory figuring out which
 // tags are used, and for a subset of those tags generate a few files that will
 // make use of those tags to fill in a Tags array.
-//
 package main
 
 import (
@@ -151,7 +150,7 @@ NextPackagePath:
 		}
 	}
 	tags := make([]string, 0, len(tagsMap))
-	for tag, _ := range tagsMap {
+	for tag := range tagsMap {
 		tags = append(tags, tag)
 	}
 	sort.Strings(tags)

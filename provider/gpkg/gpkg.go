@@ -186,6 +186,11 @@ type Provider struct {
 	// warned tracks warn-once keys (unexpected column types, late
 	// system-info rows) so a warning is emitted once instead of per row.
 	warned map[string]struct{}
+	// writerMu guards the cached mutation Writer. One Writer (and one
+	// write sqlite pool) per Provider: creating a fresh Writer per
+	// transaction would leak sql.DB pools.
+	writerMu     sync.Mutex
+	cachedWriter *Writer
 }
 
 // ErrUnknownLayer denotes a layer name that is not registered on the provider.
@@ -411,7 +416,13 @@ func (p *Provider) warnOnce(key string, format string, args ...interface{}) {
 
 // Close will close the Provider's database connection
 func (p *Provider) Close() error {
-	return p.db.Close()
+	p.writerMu.Lock()
+	defer p.writerMu.Unlock()
+	var writeErr error
+	if p.cachedWriter != nil && p.cachedWriter.db != nil {
+		writeErr = p.cachedWriter.db.Close()
+	}
+	return errors.Join(p.db.Close(), writeErr)
 }
 
 func geomNameToGeom(name string) (geom.Geometry, error) {

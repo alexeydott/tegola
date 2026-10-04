@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Add opt-in WFS read/transaction adapters and a draft-derived Feature API write profile for admitted PostGIS, MySQL/MariaDB and GeoPackage layers. Writes use schema validation, transactional revisions and conditional requests. LockFeature remains unavailable; enabling writes bypasses tile caches. No full WFS/Part 4 conformance or unrestricted production acceptance is claimed. See [write scope and operating limits](docs/wfs-scope-limitations.md).
+- Add a source-feature attribute editor with mutation-schema forms, conditional JSON Patch, local undo/redo and preserved conflict drafts. Existing geometry is retained; unsafe numeric editing and unknown write outcomes stop further writes. Geometry drawing and lossless large-number editing require external clients.
+
 - Integrate PR #1 OGC Features fixes for GeoPackage Queryables, polar bbox predicates and limit errors; preserve exact integer/REAL filter comparisons and reject non-finite scalar values.
 
 - Accept MySQL identifier aliases with or without `AS` in direct startup geometry samples, avoiding unnecessary derived-table materialization. Preserve the three-valid-MOS early stop and the 16-row inspection window.

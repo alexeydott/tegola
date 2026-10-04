@@ -19,6 +19,10 @@ type Feature struct {
 	ID         uint64          `json:"id"`
 	Geometry   json.RawMessage `json:"geometry"`
 	Properties map[string]any  `json:"properties"`
+	// A30: GeometryTyped carries the typed geometry, bypassing the GeoJSON
+	// intermediate when set. The WFS GML encoder uses this directly instead
+	// of parsing Geometry. Not serialized to JSON.
+	GeometryTyped geom.Geometry `json:"-"`
 }
 
 // FeatureCollection is a bounded page; HasMore is service metadata, not GeoJSON.

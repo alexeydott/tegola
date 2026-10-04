@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alexeydott/tegola/config"
+	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/tegola/observability"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/dimfeld/httptreemux"
@@ -22,6 +24,31 @@ type FeatureAPIConfig struct {
 	MaxLimit         uint
 	Title            string
 	Description      string
+	// Write gates Part 4 mutations. Zero value disables all writes.
+	Write config.FeaturesWriteConfig
+	// Authenticator resolves the request principal for mutation policy
+	// checks. Nil means anonymous-only: every mutation runs as
+	// feature.Principal{Anonymous: true}. Deployments that expose writes
+	// beyond a trusted network MUST plug in an authenticator; the
+	// reference policy grants collection operations to any principal
+	// the config allows.
+	Authenticator Authenticator
+}
+
+// Authenticator resolves the mutation principal for a request.
+// Implementations must be safe for concurrent use.
+type Authenticator interface {
+	// Principal returns the actor for policy checks. Returning an
+	// anonymous principal is allowed; the policy decides what it may do.
+	Principal(r *http.Request) feature.Principal
+}
+
+// principal resolves the mutation principal for a request.
+func (api *FeatureAPI) principal(r *http.Request) feature.Principal {
+	if api.cfg.Authenticator != nil {
+		return api.cfg.Authenticator.Principal(r)
+	}
+	return feature.Principal{Anonymous: true}
 }
 
 // FeatureAPI wraps a resolved service. Build it with NewFeatureAPI before routing.
@@ -30,10 +57,16 @@ type FeatureAPI struct {
 	service         *features.Service
 	cfg             FeatureAPIConfig
 	uriPrefix       string
+	// A36: called after successful mutation with mutated collections.
+	// Set by router to bump Atlas cache epochs (no global state).
+	OnMutate func(collections []string)
 }
 
 // RouterOptions enables explicit feature publication; nil Features preserves legacy behavior.
-type RouterOptions struct{ Features *FeatureAPI }
+type RouterOptions struct {
+	Features *FeatureAPI
+	WFS      *WFSHandler
+}
 
 // NewFeatureAPI validates settings and public IDs independently of TOML callers.
 func NewFeatureAPI(service *features.Service, cfg FeatureAPIConfig) (*FeatureAPI, error) {
@@ -59,10 +92,19 @@ func NewFeatureAPI(service *features.Service, cfg FeatureAPIConfig) (*FeatureAPI
 	if len(collections) == 0 {
 		return nil, fmt.Errorf("features: publication has no collections")
 	}
+	published := make(map[string]bool, len(collections))
 	for _, collection := range collections {
 		if err := config.ValidateFeatureCollectionID(collection.ID); err != nil {
 			return nil, err
 		}
+		published[collection.ID] = true
+	}
+	if err := cfg.Write.Validate(published); err != nil {
+		return nil, err
+	}
+	cfg.Write = cfg.Write.Resolved()
+	if err := validateWriteAdmission(service, cfg.Write, cfg.QueryTimeout); err != nil {
+		return nil, err
 	}
 	if cfg.Title == "" {
 		cfg.Title = "Tegola Feature API"
@@ -71,16 +113,68 @@ func NewFeatureAPI(service *features.Service, cfg FeatureAPIConfig) (*FeatureAPI
 }
 
 func validateRouterOptions(options RouterOptions) error {
-	if options.Features == nil {
+	if options.Features == nil && options.WFS == nil {
 		return nil
-	}
-	if _, err := NewFeatureAPI(options.Features.service, options.Features.cfg); err != nil {
-		return err
 	}
 	if err := validateFeatureURIPrefix(URIPrefix); err != nil {
 		return err
 	}
-	return validateFeatureViewerPath(options.Features.cfg.BasePath)
+	if options.Features != nil {
+		if _, err := NewFeatureAPI(options.Features.service, options.Features.cfg); err != nil {
+			return err
+		}
+		if err := validateFeatureViewerPath(options.Features.cfg.BasePath); err != nil {
+			return err
+		}
+	}
+	if options.WFS != nil {
+		h := options.WFS
+		if h.Service == nil {
+			return fmt.Errorf("wfs: nil publication service")
+		}
+		cfg := h.Config.Resolved()
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		if err := validateFeatureViewerPath(string(cfg.BasePath)); err != nil {
+			return err
+		}
+		published := make(map[string]bool)
+		for _, c := range h.Service.Collections() {
+			published[c.ID] = true
+		}
+		if err := h.WriteConfig.Validate(published); err != nil {
+			return err
+		}
+		if err := validateWriteAdmission(h.Service, h.WriteConfig, 30*time.Second); err != nil {
+			return err
+		}
+		if options.Features != nil {
+			wfsPath, apiPath := string(cfg.BasePath), options.Features.cfg.BasePath
+			if wfsPath == apiPath || strings.HasPrefix(wfsPath, apiPath+"/") || strings.HasPrefix(apiPath, wfsPath+"/") {
+				return fmt.Errorf("wfs: WFS and feature API paths must not overlap")
+			}
+		}
+	}
+	return nil
+}
+
+func validateWriteAdmission(service *features.Service, cfg config.FeaturesWriteConfig, timeout time.Duration) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	for _, c := range cfg.Collections {
+		p, layer, err := service.MutationProviderFor(string(c.ID))
+		if err != nil {
+			return err
+		}
+		if _, err := p.DescribeWritable(ctx, layer); err != nil {
+			return fmt.Errorf("write admission for collection %q: %w", c.ID, err)
+		}
+	}
+	return nil
 }
 
 func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.Group, observer observability.APIObserver) {
@@ -124,6 +218,10 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 			group.UsingContext().Handler(observability.InstrumentAPIHandler(http.MethodHead, path, observer, handler))
 		}
 	}
+	// Part 4 mutation routes (POST/PUT/PATCH/DELETE/OPTIONS). Registered
+	// only when [features.write] is enabled; per-collection and
+	// per-operation checks happen per request.
+	bound.registerMutations(group)
 	oldOptions := router.OptionsHandler
 	router.OptionsHandler = func(w http.ResponseWriter, r *http.Request, params map[string]string) {
 		oldOptions(w, r, params)
@@ -140,9 +238,22 @@ func (api *FeatureAPI) register(router *httptreemux.TreeMux, group *httptreemux.
 		}
 		setHeaders(w)
 		featureProtocolHeaders(w.Header())
-		w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+		w.Header().Set("Allow", strings.Join(bound.allowForPath(r.URL.Path), ", "))
 		bound.writeError(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "Method not supported")
 	}
+}
+
+// allowForPath computes the Allow header for a feature API path,
+// including write methods where configured.
+func (api *FeatureAPI) allowForPath(path string) []string {
+	rel := strings.TrimPrefix(path, api.cfg.BasePath)
+	rel = strings.TrimPrefix(rel, "/")
+	parts := strings.Split(rel, "/")
+	if len(parts) >= 3 && parts[0] == "collections" && parts[2] == "items" {
+		collection := parts[1]
+		return api.allowedMethods(collection, len(parts) > 3)
+	}
+	return []string{http.MethodGet, http.MethodHead, http.MethodOptions}
 }
 
 func featureNoStoreHandler(next http.Handler) http.Handler {

@@ -254,6 +254,9 @@ type Provider struct {
 	geometryFormat string
 	// detected server flavor ("mysql" or "mariadb"), used by the auto format
 	serverFlavor string
+	// writerMu guards cachedWriter.
+	writerMu     sync.Mutex
+	cachedWriter *Writer
 }
 
 func (p *Provider) Layers() ([]provider.LayerInfo, error) {
@@ -701,7 +704,7 @@ func wktPolygon(ext *geom.Extent) string {
 }
 
 // reference to all instantiated providers
-var providers []Provider
+var providers []*Provider
 var providersMu sync.Mutex
 
 // Cleanup will close all database connections and destroy all previously instantiated Provider instances
@@ -719,5 +722,5 @@ func Cleanup() {
 		}
 	}
 
-	providers = make([]Provider, 0)
+	providers = nil
 }

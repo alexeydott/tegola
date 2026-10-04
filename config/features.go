@@ -21,6 +21,9 @@ type FeaturesConfig struct {
 	Title            env.String                `toml:"title"`
 	Description      env.String                `toml:"description"`
 	Collections      []FeatureCollectionConfig `toml:"collections"`
+	// Write gates Part 4 and WFS-T mutations. Disabled by default;
+	// everything stays read-only unless explicitly listed here.
+	Write FeaturesWriteConfig `toml:"write"`
 }
 
 type FeatureCollectionConfig struct {
@@ -52,6 +55,7 @@ func (f FeaturesConfig) Resolved() FeaturesConfig {
 	f.MaxResponseBytes, f.QueryTimeoutMS = &responseBytes, &timeoutMS
 	f.DefaultLimit, f.MaxLimit = &defaultLimit, &maxLimit
 	f.Collections = append([]FeatureCollectionConfig(nil), f.Collections...)
+	f.Write = f.Write.Resolved()
 	return f
 }
 
@@ -90,6 +94,9 @@ func (f FeaturesConfig) Validate() error {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(layer) == "" {
 			return fmt.Errorf("features: collection %q has an empty source binding", id)
 		}
+	}
+	if err := f.Write.Validate(ids); err != nil {
+		return err
 	}
 	return nil
 }

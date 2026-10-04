@@ -67,12 +67,19 @@ func rootCmdValidatePersistent(cmd *cobra.Command, _ []string) (err error) {
 	}
 }
 
+// FeatureRuntime bundles the optional publication surfaces built from
+// one config: the OGC API Features adapter and the WFS adapter.
+type FeatureRuntime struct {
+	API *server.FeatureAPI
+	WFS *server.WFSHandler
+}
+
 func initConfig(configFile string, cacheRequired bool, logLevel string) error {
 	_, err := initConfigRuntime(configFile, cacheRequired, logLevel)
 	return err
 }
 
-func initConfigRuntime(configFile string, cacheRequired bool, logLevel string) (api *server.FeatureAPI, err error) {
+func initConfigRuntime(configFile string, cacheRequired bool, logLevel string) (rt *FeatureRuntime, err error) {
 	// Parse the provided log level; default to INFO if parsing fails.
 	lvl := log.ParseLogLevel(logLevel)
 
@@ -106,6 +113,7 @@ func initConfigRuntime(configFile string, cacheRequired bool, logLevel string) (
 	if err != nil {
 		return nil, fmt.Errorf("could not register features: %w", err)
 	}
+	var api *server.FeatureAPI
 	if service != nil {
 		settings := conf.Features.Resolved()
 		api, err = server.NewFeatureAPI(service, server.FeatureAPIConfig{
@@ -116,9 +124,26 @@ func initConfigRuntime(configFile string, cacheRequired bool, logLevel string) (
 			QueryTimeout:     time.Duration(*settings.QueryTimeoutMS) * time.Millisecond,
 			Title:            string(settings.Title),
 			Description:      string(settings.Description),
+			Write:            settings.Write,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("could not construct feature runtime: %w", err)
+		}
+	}
+
+	// WFS is a separate opt-in surface on top of the same service.
+	var wfsHandler *server.WFSHandler
+	if wfsSettings := conf.WFS.Resolved(); wfsSettings.Enabled {
+		if service == nil {
+			return nil, fmt.Errorf("wfs: enabled but no feature service is published")
+		}
+		if err := wfsSettings.Validate(); err != nil {
+			return nil, fmt.Errorf("wfs: %w", err)
+		}
+		wfsHandler = &server.WFSHandler{
+			Service:     service,
+			Config:      wfsSettings,
+			WriteConfig: conf.Features.Resolved().Write,
 		}
 	}
 
@@ -146,28 +171,28 @@ func initConfigRuntime(configFile string, cacheRequired bool, logLevel string) (
 		return nil, err
 	}
 	atlas.SetObservability(observer)
-	return api, nil
+	return &FeatureRuntime{API: api, WFS: wfsHandler}, nil
 }
 
 // bindFeatureRuntime keeps publication state inside one command assembly.
 // Clear it before initialization, including errors, so a reused command cannot
 // serve a runtime retained from an earlier successful initialization.
-func bindFeatureRuntime(root, serve *cobra.Command, initialize func(*cobra.Command, []string) (*server.FeatureAPI, error), run func(*cobra.Command, []string, *server.FeatureAPI) error) {
-	var runtime *server.FeatureAPI
+func bindFeatureRuntime(root, serve *cobra.Command, initialize func(*cobra.Command, []string) (*FeatureRuntime, error), run func(*cobra.Command, []string, *FeatureRuntime) error) {
+	var runtime *FeatureRuntime
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		runtime = nil
-		api, err := initialize(cmd, args)
+		rt, err := initialize(cmd, args)
 		if err != nil {
 			return err
 		}
-		runtime = api
+		runtime = rt
 		return nil
 	}
 	serve.Run = nil
 	serve.RunE = func(cmd *cobra.Command, args []string) error { return run(cmd, args, runtime) }
 }
 
-func initializeCommandRuntime(cmd *cobra.Command, _ []string) (*server.FeatureAPI, error) {
+func initializeCommandRuntime(cmd *cobra.Command, _ []string) (*FeatureRuntime, error) {
 	switch cmd.CalledAs() {
 	case "help", "version":
 		build.Commands = append(build.Commands, cmd.CalledAs())

@@ -102,6 +102,12 @@ func NewRouterWithOptions(a *atlas.Atlas, options RouterOptions) (*Router, error
 		}
 		options.Features = &bound
 	}
+	if options.WFS != nil {
+		bound := *options.WFS
+		bound.Config = bound.Config.Resolved()
+		bound.WriteConfig = bound.WriteConfig.Resolved()
+		options.WFS = &bound
+	}
 	router := &Router{TreeMux: assembleRouter(a, options)}
 	if options.Features != nil {
 		router.featureBasePath = strings.TrimSuffix(URIPrefix, "/") + options.Features.cfg.BasePath
@@ -136,11 +142,22 @@ func assembleRouter(a *atlas.Atlas, options RouterOptions) *httptreemux.TreeMux 
 		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/capabilities/:map_name", o, HeadersHandler(HandleMapCapabilities{})))
 
 	// map tiles
-	hMapLayerZXY := HandleMapLayerZXY{Atlas: a}
+	writesEnabled := options.Features != nil && options.Features.cfg.Write.Enabled ||
+		options.WFS != nil && options.WFS.WriteConfig.Enabled
+	hMapLayerZXY := HandleMapLayerZXY{Atlas: a, disableCache: writesEnabled}
+	var tileHandler http.Handler = hMapLayerZXY
+	if writesEnabled {
+		// Until durable invalidation is implemented, neither persisted tiles nor
+		// browser caches may hide committed feature mutations.
+		log.Debug("[FIX] tile caching disabled for writable feature runtime")
+		tileHandler = mutableTileNoStore(GZipHandler(tileHandler))
+	} else {
+		tileHandler = TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, tileHandler)))
+	}
 	group.UsingContext().
-		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:z/:x/:y", o, HeadersHandler(TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, hMapLayerZXY))))))
+		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:z/:x/:y", o, HeadersHandler(tileHandler)))
 	group.UsingContext().
-		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:layer_name/:z/:x/:y", o, HeadersHandler(TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, hMapLayerZXY))))))
+		Handler(observability.InstrumentAPIHandler(http.MethodGet, "/maps/:map_name/:layer_name/:z/:x/:y", o, HeadersHandler(tileHandler)))
 
 	// map style
 	group.UsingContext().
@@ -148,6 +165,15 @@ func assembleRouter(a *atlas.Atlas, options RouterOptions) *httptreemux.TreeMux 
 
 	if options.Features != nil {
 		options.Features.register(r, group, o)
+	}
+
+	if options.WFS != nil {
+		wfsBase := string(options.WFS.Config.BasePath)
+		if wfsBase == "" {
+			wfsBase = "/wfs"
+		}
+		group.UsingContext().Handler(http.MethodGet, wfsBase, HeadersHandler(options.WFS))
+		group.UsingContext().Handler(http.MethodPost, wfsBase, HeadersHandler(options.WFS))
 	}
 
 	// setup viewer routes, which can be excluded via build flags

@@ -260,8 +260,8 @@ func TestBinaryHeader(t *testing.T) {
 		"bad magic with envelope none": {
 			bytes: []byte{
 				0x50, 0x47, // Magic number, swapped
-				0x00, // Version
-				0x00, // Flags -- BigEndian, no envelope
+				0x00,                   // Version
+				0x00,                   // Flags -- BigEndian, no envelope
 				0xE6, 0x10, 0x00, 0x00, // srs_id
 			},
 			err: errors.New("invalid magic number"),
@@ -270,8 +270,8 @@ func TestBinaryHeader(t *testing.T) {
 		"bad version": {
 			bytes: []byte{
 				0x47, 0x50, // Magic number
-				0x01, // Version
-				0x00, // Flags -- BigEndian, no envelope
+				0x01,                   // Version
+				0x00,                   // Flags -- BigEndian, no envelope
 				0xE6, 0x10, 0x00, 0x00, // srs_id
 			},
 			err: errors.New("invalid version number: 1"),
@@ -280,8 +280,8 @@ func TestBinaryHeader(t *testing.T) {
 		"bad reserved flag bits": {
 			bytes: []byte{
 				0x47, 0x50, // Magic number
-				0x00, // Version
-				0x41, // Flags -- reserved bit 6 set, LittleEndian, no envelope
+				0x00,                   // Version
+				0x41,                   // Flags -- reserved bit 6 set, LittleEndian, no envelope
 				0xE6, 0x10, 0x00, 0x00, // srs_id
 			},
 			err: errors.New("reserved flag bits set: 0x41"),
@@ -291,8 +291,8 @@ func TestBinaryHeader(t *testing.T) {
 		"envelope none valid": {
 			bytes: []byte{
 				0x47, 0x50, // Magic number
-				0x00, // Version
-				0x01, // Flags -- LittleEndian, no envelope
+				0x00,                   // Version
+				0x01,                   // Flags -- LittleEndian, no envelope
 				0xE6, 0x10, 0x00, 0x00, // srs_id
 			},
 			version:      0,

@@ -4,26 +4,27 @@ import (
 	"fmt"
 )
 
-//const tolerance = 0.000001
+// const tolerance = 0.000001
 const tolerance = 0.000000001
 
 /*
 // Float64 compares two floats to see if they are within the given tolerance.
-func cmpFloat(f1, f2 float64) bool {
-	if math.IsInf(f1, 1) {
-		return math.IsInf(f2, 1)
+
+	func cmpFloat(f1, f2 float64) bool {
+		if math.IsInf(f1, 1) {
+			return math.IsInf(f2, 1)
+		}
+		if math.IsInf(f2, 1) {
+			return math.IsInf(f1, 1)
+		}
+		if math.IsInf(f1, -1) {
+			return math.IsInf(f2, -1)
+		}
+		if math.IsInf(f2, -1) {
+			return math.IsInf(f1, -1)
+		}
+		return math.Abs(f1-f2) < tolerance
 	}
-	if math.IsInf(f2, 1) {
-		return math.IsInf(f1, 1)
-	}
-	if math.IsInf(f1, -1) {
-		return math.IsInf(f2, -1)
-	}
-	if math.IsInf(f2, -1) {
-		return math.IsInf(f1, -1)
-	}
-	return math.Abs(f1-f2) < tolerance
-}
 */
 func pointEqual(p1, p2 [2]float64) bool { return cmpFloat(p1[0], p2[0]) && cmpFloat(p1[1], p2[1]) }
 

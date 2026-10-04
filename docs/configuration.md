@@ -235,6 +235,34 @@ For standard providers other than `mvt_postgis`, `TEGOLA_OPTIONS` accepts comma-
 - `DontSimplifyGeo` turns off simplification for all layers.
 - `SimplifyMaxZoom={{int}}` sets the maximum zoom at which simplification applies (14 by default).
 
+## Explicit WFS and write publication
+
+WFS and writes are opt-in. After configuring `[features]` and its source
+collections, a production write profile can include:
+
+```toml
+[wfs]
+enabled = true
+basepath = "/wfs"
+versions = ["1.1.0", "2.0.0"]
+
+[features.write]
+enabled = true
+auth_mode = "production"
+require_if_match = true
+
+[[features.write.collections]]
+id = "sites" # must already be a published feature collection
+operations = ["create", "replace", "update", "delete"]
+```
+
+Production requires an installed authenticator; anonymous writes are denied.
+`auth_mode = "dev"` deliberately permits anonymous writes and is only appropriate
+for a trusted disposable test deployment. The provider must separately admit
+the physical layer for writing. Enabling WFS alone never enables transactions.
+Read [write scope and operating limits](wfs-scope-limitations.md) before enabling
+this profile, including the cache policy required on all reader replicas.
+
 ## See Also
 
 - [API Reference](api.md) — HTTP endpoints and query parameters

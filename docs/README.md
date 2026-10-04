@@ -10,6 +10,9 @@ Current source tag: **`v0.21.0-fork.2`**. See the
 ## Guides
 
 * [API reference](api.md) — HTTP endpoints and tile operations.
+* [WFS and feature editing](wfs-scope-limitations.md) — write profile, embedded attribute editor, provider limits and operational requirements.
+* [Write provider evidence](provider-matrix.md) — native versions, covered scenarios and explicit NOT_RUN boundaries.
+* [Write operations and recovery](operational.md) — backups, restore, schema admission and uncertain commit outcomes.
 * [Queryables and filtering](filtering.md) — public scalar catalogs and the initial CQL2 text profile.
 * [Configuration](configuration.md) — TOML, providers, caches, and environment variables.
 * [Development and builds](development.md) — debugging, build flags, and source builds.

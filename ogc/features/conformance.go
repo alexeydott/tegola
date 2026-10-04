@@ -8,6 +8,9 @@ const (
 	ConformanceHTML    = "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/html"
 	ConformanceOpenAPI = "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/oas30"
 	ConformanceCRS     = "http://www.opengis.net/spec/ogcapi-features-2/1.0/conf/crs"
+	// Reserved vocabulary only: enabling writes does not establish this class.
+	// Independent conformance evidence is required before publication.
+	ConformancePart4 = "http://www.opengis.net/spec/ogcapi-features-4/1.0/conf/create-replace-delete"
 )
 
 // ConformanceClasses describes the shipped FeatureAPI HTTP implementation for

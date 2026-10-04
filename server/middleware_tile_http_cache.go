@@ -34,6 +34,16 @@ type tileHTTPResponseWriter struct {
 	wroteHeader bool
 }
 
+func mutableTileNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		out := &tileHTTPResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(out, r)
+		if !out.wroteHeader {
+			out.WriteHeader(http.StatusOK)
+		}
+	})
+}
+
 func (w *tileHTTPResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *tileHTTPResponseWriter) WriteHeader(status int) {

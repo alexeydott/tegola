@@ -95,19 +95,42 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 		api.writeQueryError(w, r, err)
 		return
 	}
-	feature, err := api.service.QueryFeatureWithOptions(r.Context(), id, featureID, features.QueryOptions{OutputCRS: queryParameters.Get("crs")})
+	feature, revision, err := api.queryFeatureRevision(r.Context(), id, featureID, features.QueryOptions{OutputCRS: queryParameters.Get("crs")})
 	if err != nil {
 		api.writeQueryError(w, r, err)
 		return
 	}
 	links := api.representationLinks(r, "/collections/"+id+"/items/"+strconv.FormatUint(featureID, 10), "application/geo+json", queryParameters)
 	links = append(links, api.formatLink(r, "/collections/"+id, "collection", "application/json", nil, featureSelectedFormat(r)))
-	response := struct {
-		features.Feature
-		Links []featureLink `json:"links"`
-	}{Feature: feature, Links: links}
+	response := api.itemResponse(r, id, featureID, feature)
 	w.Header().Set("Content-Crs", "<"+outputURI+">")
-	api.writeRepresentation(w, r, http.StatusOK, "application/geo+json", response, links)
+	// Strong ETag bound to the exact served bytes (including links), for
+	// use with If-Match on Part 4 mutations. Set after
+	// featureProtocolHeaders, which clears validators.
+	raw, media, err := api.renderRepresentation(r, http.StatusOK, "application/geo+json", response, links)
+	if err != nil {
+		if errors.Is(err, errFeatureResponseTooLarge) {
+			api.writeError(w, r, http.StatusBadRequest, "ResponseTooLarge", "Response exceeds publication limit")
+		} else {
+			api.writeQueryError(w, r, err)
+		}
+		return
+	}
+	featureProtocolHeaders(w.Header())
+	// R01: prefer the revision-based ETag for CAS consistency with
+	// If-Match on mutations; fall back to the representation hash when
+	// no revision is available (e.g. read-only providers).
+	etag := revisionETag(raw, revision)
+	w.Header().Set("ETag", etag)
+	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
+	w.Header().Set("Content-Type", media)
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		if _, err := w.Write(raw); err != nil {
+			log.Error("feature response write failed", "error", err)
+		}
+	}
 }
 
 func (api *FeatureAPI) pageLink(r *http.Request, suffix, relation string, parameters url.Values, offset uint64) featureLink {
