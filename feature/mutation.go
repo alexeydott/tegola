@@ -86,7 +86,12 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 		mutations[i].Collection = layer
 		bounds[i] = bound{mp: mp, layer: layer}
 	}
-	tx, err := bounds[0].mp.BeginFeatureTx(ctx, provider.TxOptions{})
+	// W13: pass actor for audit. RequestID from context if available.
+	requestID, _ := ctx.Value("requestID").(string)
+	tx, err := bounds[0].mp.BeginFeatureTx(ctx, provider.TxOptions{
+		Actor:     principal.ID,
+		RequestID: requestID,
+	})
 	if err != nil {
 		return empty, provider.CommitReceipt{}, err
 	}

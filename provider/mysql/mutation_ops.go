@@ -13,11 +13,14 @@ import (
 	"github.com/alexeydott/tegola/basic"
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
+	pa "github.com/alexeydott/tegola/provider/audit"
 )
 
 type featureTx struct {
 	writer *Writer
 	tx     *sql.Tx
+	actor  string
+	reqID  string
 }
 
 func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.MutationOutcome, error) {
@@ -25,18 +28,32 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
+	var outcome provider.MutationOutcome
 	switch m.Op {
 	case provider.MutationInsert:
-		return t.insert(ctx, mp, m)
+		outcome, err = t.insert(ctx, mp, m)
 	case provider.MutationReplace:
-		return t.replace(ctx, mp, m)
+		outcome, err = t.replace(ctx, mp, m)
 	case provider.MutationUpdate:
-		return t.update(ctx, mp, m)
+		outcome, err = t.update(ctx, mp, m)
 	case provider.MutationDelete:
-		return t.delete(ctx, mp, m)
+		outcome, err = t.delete(ctx, mp, m)
 	default:
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("unknown op %v", m.Op)}
 	}
+	if err != nil {
+		return provider.MutationOutcome{}, err
+	}
+	// W13: audit in same transaction
+	if aerr := t.recordAudit(ctx, m, outcome); aerr != nil {
+		return provider.MutationOutcome{}, aerr
+	}
+	return outcome, nil
+}
+
+// recordAudit writes W13 audit/outbox entries in the transaction.
+func (t *featureTx) recordAudit(ctx context.Context, m provider.Mutation, outcome provider.MutationOutcome) error {
+	return pa.RecordTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, "")
 }
 
 func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) {

@@ -334,7 +334,12 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	return &featureTx{writer: w, tx: tx}, nil
+	// W13: ensure audit tables exist
+	if err := ensureAuditTables(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return &featureTx{writer: w, tx: tx, actor: options.Actor, requestID: options.RequestID}, nil
 }
 
 // featureTx is one native SQLite transaction.
@@ -345,6 +350,9 @@ type featureTx struct {
 	// modified tracks tables touched by this transaction for GeoPackage
 	// metadata maintenance (gpkg_contents.last_change, RTree) at commit.
 	modified map[string]*tableModification
+	// W13 audit context
+	actor     string
+	requestID string
 }
 
 // tableModification records row-level changes for one table.
@@ -369,18 +377,28 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
+	var outcome provider.MutationOutcome
 	switch m.Op {
 	case provider.MutationInsert:
-		return t.insert(ctx, mp, m)
+		outcome, err = t.insert(ctx, mp, m)
 	case provider.MutationReplace:
-		return t.replace(ctx, mp, m)
+		outcome, err = t.replace(ctx, mp, m)
 	case provider.MutationUpdate:
-		return t.update(ctx, mp, m)
+		outcome, err = t.update(ctx, mp, m)
 	case provider.MutationDelete:
-		return t.delete(ctx, mp, m)
+		outcome, err = t.delete(ctx, mp, m)
 	default:
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "unknown op"}
 	}
+	if err != nil {
+		return provider.MutationOutcome{}, err
+	}
+	// W13: audit + outbox in the same transaction as the data
+	entry := auditEntryFor(m.Collection, m.Op, outcome, t.actor, t.requestID, "")
+	if aerr := recordAuditTx(ctx, t.tx, entry, outboxEventType(m.Op)); aerr != nil {
+		return provider.MutationOutcome{}, aerr
+	}
+	return outcome, nil
 }
 
 func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) {

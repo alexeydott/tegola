@@ -114,6 +114,10 @@ type TxOptions struct {
 	// ReadOnly, when true, begins a read-only transaction (for
 	// transaction-bound selection without writes).
 	ReadOnly bool
+	// Actor identifies the principal performing the mutation (for audit).
+	Actor string
+	// RequestID correlates the transaction with the HTTP request (for audit).
+	RequestID string
 }
 
 // FeatureTx is one native transaction. Apply executes transaction-bound

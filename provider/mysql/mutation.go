@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
+	pa "github.com/alexeydott/tegola/provider/audit"
 )
 
 // Writer implements provider.MutationProvider for MySQL/MariaDB.
@@ -128,7 +129,14 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
 	}
-	return &featureTx{writer: w, tx: tx}, nil
+	// W13: ensure audit tables (idempotent)
+	for _, stmt := range splitStmts(pa.MySQLDDL) {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			_ = tx.Rollback()
+			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("audit setup: %v", err)}
+		}
+	}
+	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID}, nil
 }
 
 func deny(reason string) (*writeMapping, error) {
@@ -240,4 +248,16 @@ func normalizeGeomType(g interface{}) string {
 
 func quoteIdent(s string) string {
 	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
+}
+
+// splitStmts splits DDL on semicolons.
+func splitStmts(ddl string) []string {
+	var out []string
+	for _, s := range strings.Split(ddl, ";") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

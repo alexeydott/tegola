@@ -8,6 +8,7 @@ import (
 
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
+	pa "github.com/alexeydott/tegola/provider/audit"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -128,7 +129,26 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
 	}
-	return &featureTx{writer: w, tx: tx}, nil
+	// W13: ensure audit tables (idempotent)
+	for _, stmt := range splitStmts(pa.PostgresDDL) {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			_ = tx.Rollback(ctx)
+			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("audit setup: %v", err)}
+		}
+	}
+	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID}, nil
+}
+
+// splitStmts splits DDL on semicolons.
+func splitStmts(ddl string) []string {
+	var out []string
+	for _, s := range strings.Split(ddl, ";") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func deny(reason string) (*writeMapping, error) {
@@ -249,6 +269,8 @@ func quoteIdent(s string) string {
 type featureTx struct {
 	writer *Writer
 	tx     pgx.Tx
+	actor  string
+	reqID  string
 }
 
 func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.MutationOutcome, error) {
@@ -256,18 +278,27 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
+	var outcome provider.MutationOutcome
 	switch m.Op {
 	case provider.MutationInsert:
-		return t.insert(ctx, mp, m)
+		outcome, err = t.insert(ctx, mp, m)
 	case provider.MutationReplace:
-		return t.replace(ctx, mp, m)
+		outcome, err = t.replace(ctx, mp, m)
 	case provider.MutationUpdate:
-		return t.update(ctx, mp, m)
+		outcome, err = t.update(ctx, mp, m)
 	case provider.MutationDelete:
-		return t.delete(ctx, mp, m)
+		outcome, err = t.delete(ctx, mp, m)
 	default:
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "unknown op"}
 	}
+	if err != nil {
+		return provider.MutationOutcome{}, err
+	}
+	// W13: audit in same transaction
+	if aerr := pa.RecordPgxTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, ""); aerr != nil {
+		return provider.MutationOutcome{}, aerr
+	}
+	return outcome, nil
 }
 
 func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) {
