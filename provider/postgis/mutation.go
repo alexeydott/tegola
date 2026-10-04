@@ -368,12 +368,13 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 		return provider.MutationOutcome{}, err
 	}
 	// A03: revision check + bump inside the data transaction.
-	newRev, rerr := checkAndBumpRevision(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision)
+	bump, rerr := checkAndBumpRevision(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision)
 	if rerr != nil {
 		return provider.MutationOutcome{}, rerr
 	}
-	if newRev >= 0 {
-		outcome.Revision = strconv.FormatInt(newRev, 10)
+	if bump.New >= 0 {
+		outcome.Revision = strconv.FormatInt(bump.New, 10)
+		outcome.RevisionBefore = strconv.FormatInt(bump.Old, 10)
 	}
 	// W13: audit in same transaction
 	if aerr := pa.RecordPgxTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, ""); aerr != nil {
@@ -397,7 +398,13 @@ func (t *featureTx) Rollback(ctx context.Context) error {
 // checkAndBumpRevision implements A03 for PostGIS: the IfRevision
 // precondition is validated against the revision row locked FOR UPDATE
 // inside the data transaction, then the revision is bumped atomically.
-func checkAndBumpRevision(ctx context.Context, tx pgx.Tx, collection string, featureID uint64, want string) (int64, error) {
+// pgRevisionBump carries old and new revisions (R12).
+type pgRevisionBump struct {
+	Old int64
+	New int64
+}
+
+func checkAndBumpRevision(ctx context.Context, tx pgx.Tx, collection string, featureID uint64, want string) (pgRevisionBump, error) {
 	var cur int64
 	err := tx.QueryRow(ctx, `SELECT revision FROM tegola_revisions WHERE collection = $1 AND feature_id = $2 FOR UPDATE`, collection, featureID).Scan(&cur)
 	found := true
@@ -407,24 +414,24 @@ func checkAndBumpRevision(ctx context.Context, tx pgx.Tx, collection string, fea
 		} else if isMissingTableErr(err) {
 			// Table not migrated: skip if no precondition, else fail.
 			if want != "" {
-				return 0, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "revision precondition requires tegola_revisions table (run migration)"}
+				return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "revision precondition requires tegola_revisions table (run migration)"}
 			}
-			return 0, nil
+			return pgRevisionBump{Old: -1, New: -1}, nil
 		} else {
-			return 0, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "revision read: " + err.Error()}
+			return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "revision read: " + err.Error()}
 		}
 	}
 	if want != "" {
 		var wantNum int64
 		if _, err := fmt.Sscanf(want, "%d", &wantNum); err != nil {
-			return 0, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "invalid If-Revision " + want}
+			return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "invalid If-Revision " + want}
 		}
 		var curNum int64
 		if found {
 			curNum = cur
 		}
 		if wantNum != curNum {
-			return 0, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: have %d, want %d", curNum, wantNum)}
+			return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: have %d, want %d", curNum, wantNum)}
 		}
 	}
 	newRev := cur + 1
@@ -436,11 +443,11 @@ func checkAndBumpRevision(ctx context.Context, tx pgx.Tx, collection string, fea
 		 ON CONFLICT (collection, feature_id) DO UPDATE SET revision = EXCLUDED.revision`,
 		collection, featureID, newRev); err != nil {
 		if isMissingTableErr(err) {
-			return 0, nil
+			return pgRevisionBump{Old: -1, New: -1}, nil
 		}
-		return 0, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "revision bump: " + err.Error()}
+		return pgRevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "revision bump: " + err.Error()}
 	}
-	return newRev, nil
+	return pgRevisionBump{Old: cur, New: newRev}, nil
 }
 
 func isMissingTableErr(err error) bool {

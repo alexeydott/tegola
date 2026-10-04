@@ -57,7 +57,13 @@ const (
 // want (the IfRevision precondition; "" skips the check), and bumps.
 //
 // Returns the new revision, or a *provider.MutationError.
-func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string, featureID uint64, want string, dialect string) (int64, error) {
+// RevisionBump carries old and new revisions (R12).
+type RevisionBump struct {
+	Old int64
+	New int64
+}
+
+func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string, featureID uint64, want string, dialect string) (RevisionBump, error) {
 	var cur int64
 	var found bool
 	// Lock the revision row within this transaction.
@@ -78,26 +84,26 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 		// given, we cannot enforce it -> fail explicitly (A03).
 		if IsMissingTable(err) {
 			if want != "" {
-				return 0, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "revision precondition requires tegola_revisions table (run migration)"}
+				return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "revision precondition requires tegola_revisions table (run migration)"}
 			}
 			// R01: table not migrated -> no revision tracking. Return -1
 			// so callers emit "" (hash ETag fallback), not "0".
-			return -1, nil
+			return RevisionBump{Old: -1, New: -1}, nil
 		}
-		return 0, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision read: %v", err)}
+		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision read: %v", err)}
 	}
 	if want != "" {
 		// want is the If-Match value; "0" means "no revision yet".
 		var wantNum int64
 		if _, err := fmt.Sscanf(want, "%d", &wantNum); err != nil {
-			return 0, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
+			return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("invalid If-Revision %q", want)}
 		}
 		var curNum int64
 		if found {
 			curNum = cur
 		}
 		if wantNum != curNum {
-			return 0, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: have %d, want %d", curNum, wantNum)}
+			return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: have %d, want %d", curNum, wantNum)}
 		}
 	}
 	newRev := cur + 1
@@ -116,12 +122,16 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 	}
 	if err != nil {
 		if IsMissingTable(err) {
-			// No revision table: skip bump, return 0 (no revision).
-			return 0, nil
+			// No revision table: skip bump.
+			return RevisionBump{Old: -1, New: -1}, nil
 		}
-		return 0, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision bump: %v", err)}
+		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision bump: %v", err)}
 	}
-	return newRev, nil
+	oldRev := cur
+	if !found {
+		oldRev = 0
+	}
+	return RevisionBump{Old: oldRev, New: newRev}, nil
 }
 
 // isMissingTable reports whether err is a "no such table" error.

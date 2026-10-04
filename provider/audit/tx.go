@@ -15,14 +15,16 @@ import (
 func RecordTx(ctx context.Context, tx *sql.Tx, collection string, op provider.MutationOp, outcome provider.MutationOutcome, actor, requestID, txID string) error {
 	ts := time.Now().UTC().Format("2006-01-02T15:04:05.999999999Z07:00")
 	opStr := op.String()
+	// R12: use explicit before/after revisions. For Delete, the tombstone
+	// has no new revision; for Insert, there is no old revision.
 	var revBefore, revAfter string
 	switch op {
 	case provider.MutationInsert:
 		revAfter = outcome.Revision
 	case provider.MutationDelete:
-		revBefore = outcome.Revision
+		revBefore = outcome.RevisionBefore
 	default:
-		revBefore, revAfter = outcome.Revision, outcome.Revision
+		revBefore, revAfter = outcome.RevisionBefore, outcome.Revision
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO tegola_audit (ts, actor, collection, operation, feature_id, revision_before, revision_after, transaction_id, request_id)
@@ -61,14 +63,15 @@ type PgxTx interface {
 func RecordPgxTx(ctx context.Context, tx PgxTx, collection string, op provider.MutationOp, outcome provider.MutationOutcome, actor, requestID, txID string) error {
 	ts := time.Now().UTC().Format(time.RFC3339Nano)
 	opStr := op.String()
+	// R12: use explicit before/after revisions.
 	var revBefore, revAfter string
 	switch op {
 	case provider.MutationInsert:
 		revAfter = outcome.Revision
 	case provider.MutationDelete:
-		revBefore = outcome.Revision
+		revBefore = outcome.RevisionBefore
 	default:
-		revBefore, revAfter = outcome.Revision, outcome.Revision
+		revBefore, revAfter = outcome.RevisionBefore, outcome.Revision
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO tegola_audit (ts, actor, collection, operation, feature_id, revision_before, revision_after, transaction_id, request_id)

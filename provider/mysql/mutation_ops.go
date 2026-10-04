@@ -46,12 +46,13 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 		return provider.MutationOutcome{}, err
 	}
 	// A03: revision check + bump inside the data transaction.
-	newRev, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "mysql")
+	bump, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "mysql")
 	if rerr != nil {
 		return provider.MutationOutcome{}, rerr
 	}
-	if newRev >= 0 {
-			outcome.Revision = strconv.FormatInt(newRev, 10)
+	if bump.New >= 0 {
+			outcome.Revision = strconv.FormatInt(bump.New, 10)
+			outcome.RevisionBefore = strconv.FormatInt(bump.Old, 10)
 		}
 	// W13: audit in same transaction
 	if aerr := t.recordAudit(ctx, m, outcome); aerr != nil {

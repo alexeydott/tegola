@@ -86,6 +86,8 @@ type MutationOutcome struct {
 	FeatureID uint64
 	// Revision is the post-write revision token.
 	Revision string
+	// RevisionBefore is the pre-write revision token (R12).
+	RevisionBefore string
 	// Affected is the number of stored rows affected (0 or 1 for the
 	// single-object profile).
 	Affected int

@@ -426,11 +426,12 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	// A03: revision check + bump inside the data transaction.
 	// IfRevision (from If-Match) is validated against the locked revision
 	// row; mismatch -> 412. The bump is atomic with the data change.
-	newRev, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "sqlite")
+	bump, rerr := pa.CheckAndBumpRevisionSQL(ctx, t.tx, m.Collection, outcome.FeatureID, m.IfRevision, "sqlite")
 	if rerr != nil {
 		return provider.MutationOutcome{}, rerr
 	}
-	outcome.Revision = formatRevision(newRev)
+	outcome.Revision = formatRevision(bump.New)
+	outcome.RevisionBefore = formatRevision(bump.Old)
 	// W13: audit + outbox in the same transaction as the data
 	entry := auditEntryFor(m.Collection, m.Op, outcome, t.actor, t.requestID, "")
 	if aerr := recordAuditTx(ctx, t.tx, entry, outboxEventType(m.Op)); aerr != nil {
