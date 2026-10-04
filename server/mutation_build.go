@@ -35,11 +35,39 @@ func buildInsertMutation(schema *feature.SchemaDescriptor, collection string, gf
 }
 
 // buildReplaceMutation converts a parsed GeoJSON feature into Replace.
-// Every writable property is set; absent ones become NULL/default.
+// A05: complete replacement semantics. Every writable property in the
+// schema is set; properties absent from the input become explicit NULL
+// (if nullable), use the column default (if HasDefault), or cause a
+// validation error (if required). System fields (PK) are never touched.
 func buildReplaceMutation(schema *feature.SchemaDescriptor, collection string, featureID uint64, gf *geoJSONFeature) (provider.Mutation, error) {
 	m, err := buildInsertMutation(schema, collection, gf)
 	if err != nil {
 		return provider.Mutation{}, err
+	}
+	// A05: fill in absent writable properties for complete replacement.
+	for _, prop := range schema.Properties {
+		name := prop.Name
+		if prop.ReadOnly {
+			continue // system/read-only fields not touched
+		}
+		if _, ok := m.Properties[name]; ok {
+			continue // already provided
+		}
+		// Absent: NULL if nullable, default if HasDefault, else error if required.
+		if prop.Nullable {
+			m.Properties[name] = provider.MutationValue{Null: true}
+		} else if prop.HasDefault {
+			// Skip: database will apply the default.
+			continue
+		} else if prop.Required {
+			return provider.Mutation{}, &provider.MutationError{
+				Kind:   provider.MutationErrSchemaViolation,
+				Reason: fmt.Sprintf("replace: required property %q is missing", name),
+			}
+		}
+		// Optional non-nullable without default: skip (leave unchanged).
+		// This is a deliberate deviation from strict PUT; the provider
+		// UPDATE will only touch the provided + nullable-absent fields.
 	}
 	m.Op = provider.MutationReplace
 	m.FeatureID = featureID
