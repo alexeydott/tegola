@@ -13,6 +13,16 @@ and what is explicitly out of scope (A39, A41, A42, A43).
 - Geometry formats: PostGIS native, WKB, WKT, MOS blob
 - CRS: 4326 ↔ 3857 transforms; axis order from srsName (A07)
 
+## Known architectural limitations
+
+### A30: GeoJSON intermediate model
+GetFeature currently decodes to `features.Feature` (GeoJSON geometry),
+then re-encodes to GML. Properties pass through `fmt.Sprintf`.
+A typed feature stream (shared geometry/value/schema snapshot for
+JSON and GML encoders) is planned but requires refactoring the
+GetFeature pipeline. Current behavior is correct but does extra
+JSON round-trips.
+
 ## Planned (not yet implemented)
 
 - JSON Patch (RFC 6902): returns 415; only Merge Patch (RFC 7396) supported (A21)
