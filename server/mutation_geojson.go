@@ -130,6 +130,10 @@ func toLineString(v interface{}) (geom.LineString, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid linestring")
 	}
+	// A19: LineString needs at least 2 points.
+	if len(arr) < 2 {
+		return nil, fmt.Errorf("linestring needs at least 2 points, got %d", len(arr))
+	}
 	out := make(geom.LineString, 0, len(arr))
 	for _, c := range arr {
 		cc, err := toCoord(c)
@@ -146,11 +150,21 @@ func toPolygon(v interface{}) (geom.Polygon, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid polygon")
 	}
+	if len(arr) == 0 {
+		return nil, fmt.Errorf("polygon needs at least one ring")
+	}
 	out := make(geom.Polygon, 0, len(arr))
-	for _, r := range arr {
+	for i, r := range arr {
 		ring, err := toLineString(r)
 		if err != nil {
 			return nil, err
+		}
+		// A19: validate ring cardinality and closure.
+		if len(ring) < 4 {
+			return nil, fmt.Errorf("polygon ring %d needs at least 4 points, got %d", i, len(ring))
+		}
+		if ring[0] != ring[len(ring)-1] {
+			return nil, fmt.Errorf("polygon ring %d not closed: first %v != last %v", i, ring[0], ring[len(ring)-1])
 		}
 		out = append(out, ring)
 	}
