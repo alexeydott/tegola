@@ -9,7 +9,6 @@ import (
 
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/alexeydott/tegola/ogc/wfs/gml"
-	"github.com/alexeydott/tegola/provider"
 )
 
 // GetPropertyValueRequest selects one simple property using GetFeature query semantics.
@@ -23,7 +22,7 @@ type GetPropertyValueRequest struct {
 	ResultType     string
 	StartIndex     uint
 	SortBy         []SortCriterion
-	Filter         *provider.FilterExpression
+	Filter         *FESFilter
 }
 
 func ParseGetPropertyValueKVP(v Version, q map[string]string) (*GetPropertyValueRequest, []Exception) {

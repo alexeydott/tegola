@@ -3,12 +3,14 @@ package postgis
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/alexeydott/tegola/provider"
 	pa "github.com/alexeydott/tegola/provider/audit"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -54,13 +56,16 @@ func followupPostGIS(t *testing.T) (*Writer, *pgxpool.Pool) {
 		"CREATE TABLE items(id BIGSERIAL PRIMARY KEY,geom BYTEA,name TEXT)",
 		"CREATE TABLE identity_items(id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,geom BYTEA,name TEXT)",
 		"CREATE TABLE manual_items(id BIGINT PRIMARY KEY,geom BYTEA,name TEXT)",
+		"CREATE TABLE constant_items(id BIGINT PRIMARY KEY DEFAULT 1,geom BYTEA,name TEXT)",
+		"CREATE TABLE serial_constant_items(id BIGSERIAL PRIMARY KEY,geom BYTEA,name TEXT)",
+		"ALTER TABLE serial_constant_items ALTER COLUMN id SET DEFAULT 1",
 	} {
 		if _, err = pool.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
 	p := &Provider{config: *pool.Config(), pool: &connectionPoolCollector{Pool: pool}, layers: map[string]Layer{}}
-	for _, table := range []string{"items", "identity_items", "manual_items"} {
+	for _, table := range []string{"items", "identity_items", "manual_items", "constant_items", "serial_constant_items"} {
 		p.layers[table] = Layer{name: table, tablename: schema + "." + table, idField: "id", geomField: "geom", geometryFormat: "wkb", srid: 4326}
 	}
 	return p.writer(), pool
@@ -68,12 +73,12 @@ func followupPostGIS(t *testing.T) (*Writer, *pgxpool.Pool) {
 
 func TestFollowupPostGISCreateAdmission(t *testing.T) {
 	w, pool := followupPostGIS(t)
-	for _, table := range []string{"items", "identity_items", "manual_items"} {
+	for _, table := range []string{"items", "identity_items", "manual_items", "constant_items", "serial_constant_items"} {
 		wd, err := w.DescribeWritable(context.Background(), table)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if (wd.CreateUnsupportedReason != "") != (table == "manual_items") {
+		if (wd.CreateUnsupportedReason != "") != (table == "manual_items" || table == "constant_items" || table == "serial_constant_items") {
 			t.Errorf("%s create admission=%q", table, wd.CreateUnsupportedReason)
 		}
 	}
@@ -90,6 +95,14 @@ func TestFollowupPostGISCreateAdmission(t *testing.T) {
 	if me, ok := provider.AsMutationError(err); !ok || me.Kind != provider.MutationErrUnsupportedCapability {
 		t.Fatalf("manual PK insert admission: %v", err)
 	}
+	if err = tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = w.BeginFeatureTx(ctx, provider.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	_, err = tx.Apply(ctx, provider.Mutation{Op: provider.MutationUpdate, Collection: "manual_items", FeatureID: 9, IfRevision: "0.0", Properties: map[string]provider.MutationValue{"name": {Kind: provider.MutationValueString, String: "updated"}}})
 	if err != nil {
 		t.Fatalf("manual PK update should remain supported: %v", err)
@@ -233,5 +246,161 @@ func TestFollowupPostGISRevisionLockOrder(t *testing.T) {
 				t.Errorf("overlap must resolve as stale revision, got %v", err)
 			}
 		})
+	}
+}
+
+func TestFollowupPostGISDeadlockNotCommitted(t *testing.T) {
+	w, pool := followupPostGIS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, "INSERT INTO items(id,name) VALUES(1,'original'),(2,'original')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.DescribeWritable(ctx, "items"); err != nil {
+		t.Fatal(err)
+	}
+	txs := make([]provider.FeatureTx, 2)
+	mutation := func(id uint64) provider.Mutation {
+		return provider.Mutation{Op: provider.MutationUpdate, Collection: "items", FeatureID: id,
+			Properties: map[string]provider.MutationValue{"name": {Kind: provider.MutationValueString, String: "changed"}}}
+	}
+	for i := range txs {
+		tx, err := w.BeginFeatureTx(ctx, provider.TxOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		txs[i] = tx
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		if _, err = tx.Apply(ctx, mutation(uint64(i+1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type result struct {
+		index int
+		err   error
+	}
+	done := make(chan result, 2)
+	for i, tx := range txs {
+		go func(i int, tx provider.FeatureTx) {
+			_, err := tx.Apply(ctx, mutation(uint64(2-i)))
+			done <- result{i, err}
+		}(i, tx)
+	}
+	var victim result
+	select {
+	case victim = <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	secondReceived := false
+	if victim.err == nil {
+		_ = txs[victim.index].Rollback(context.Background())
+		select {
+		case victim = <-done:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		secondReceived = true
+	}
+	if victim.err == nil {
+		t.Fatal("expected native deadlock victim")
+	}
+	if me, ok := provider.AsMutationError(victim.err); ok && me.Kind == provider.MutationErrCommitUnknown {
+		t.Errorf("precommit deadlock classified unknown: %v", victim.err)
+	}
+	receipt, err := txs[victim.index].Commit(ctx)
+	if err == nil || receipt.Status != provider.CommitNotCommitted || receipt.TransactionID == "" {
+		t.Errorf("deadlock commit receipt=%+v err=%v", receipt, err)
+	}
+	_ = txs[victim.index].Rollback(context.Background())
+	if !secondReceived {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	_ = txs[1-victim.index].Rollback(context.Background())
+	var changed, audits int
+	if err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE name<>'original'").Scan(&changed); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM tegola_audit").Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if changed != 0 || audits != 0 {
+		t.Errorf("failed transactions leaked data=%d audit=%d", changed, audits)
+	}
+}
+
+// commitAckLostTx injects a lost acknowledgement after a real native commit.
+// This is a deterministic driver-boundary fault, not a network wire-cut test.
+type commitAckLostTx struct{ pgx.Tx }
+
+func (tx commitAckLostTx) Commit(ctx context.Context) error {
+	if err := tx.Tx.Commit(ctx); err != nil {
+		return err
+	}
+	return io.ErrUnexpectedEOF
+}
+func TestFollowupPostGISCommittedAckLost(t *testing.T) {
+	w, pool := followupPostGIS(t)
+	ctx := context.Background()
+	if _, err := w.DescribeWritable(ctx, "items"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := w.BeginFeatureTx(ctx, provider.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Apply(ctx, provider.Mutation{Op: provider.MutationInsert, Collection: "items", Properties: map[string]provider.MutationValue{"name": {Kind: provider.MutationValueString, String: "durable"}}}); err != nil {
+		t.Fatal(err)
+	}
+	native := tx.(*featureTx)
+	native.tx = commitAckLostTx{native.tx}
+	receipt, err := tx.Commit(ctx)
+	if err == nil || receipt.Status != provider.CommitUnknown || receipt.TransactionID != native.txID {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	var rows, audits int
+	if err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE name='durable'").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM tegola_audit WHERE transaction_id=$1", receipt.TransactionID).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || audits != 1 {
+		t.Fatalf("durable rows=%d audits=%d", rows, audits)
+	}
+}
+
+func TestFollowupPostGISAbortedCommit(t *testing.T) {
+	w, pool := followupPostGIS(t)
+	ctx := context.Background()
+	if _, err := w.DescribeWritable(ctx, "items"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := w.BeginFeatureTx(ctx, provider.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Apply(ctx, provider.Mutation{Op: provider.MutationInsert, Collection: "items", Properties: map[string]provider.MutationValue{"name": {Kind: provider.MutationValueString, String: "aborted"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.(*featureTx).tx.Exec(ctx, "SELECT 1/0"); err == nil {
+		t.Fatal("expected native statement abort")
+	}
+	receipt, err := tx.Commit(ctx)
+	if err == nil || receipt.Status != provider.CommitNotCommitted || receipt.TransactionID == "" {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	var rows int
+	if err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM items").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("aborted transaction persisted %d rows", rows)
 	}
 }

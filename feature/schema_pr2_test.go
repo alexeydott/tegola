@@ -75,3 +75,24 @@ func TestPR2InvalidValuesRejectBeforeProviderResolution(t *testing.T) {
 		})
 	}
 }
+
+func TestPR3DateTimeAcceptsOnlyAnnouncedLeapSeconds(t *testing.T) {
+	schema := &SchemaDescriptor{Properties: []PropertyDescriptor{{Name: "instant", Type: TypeDateTime}}}
+	for _, value := range []string{
+		"2016-12-31T23:59:60Z", "2016-12-31T23:59:60.123456789012Z",
+		"2017-01-01T02:59:60+03:00", "2016-12-31T18:59:60-05:00",
+		"2016-12-31t23:59:60z", "2026-10-04t12:00:00z",
+	} {
+		if err := schema.ValidateInputValue("instant", TypedValue{Type: TypeDateTime, State: ValuePresent, String: value}); err != nil {
+			t.Errorf("valid RFC3339 rejected %q: %v", value, err)
+		}
+	}
+	for _, value := range []string{
+		"2017-12-31T23:59:60Z", "2016-12-31T22:59:60Z", "2017-01-01T03:59:60+03:00",
+		"2016-12-31T23:59:61Z", "2016-12-31T23:59:60,5Z", "2016-12-31T23:59:60+24:00",
+	} {
+		if err := schema.ValidateInputValue("instant", TypedValue{Type: TypeDateTime, State: ValuePresent, String: value}); err == nil {
+			t.Errorf("invalid RFC3339 accepted %q", value)
+		}
+	}
+}

@@ -97,7 +97,7 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 			// so callers emit "" (hash ETag fallback), not "0".
 			return RevisionBump{Old: -1, New: -1}, nil
 		}
-		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision read: %v", err)}
+		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("revision read: %v", err)}
 	}
 	if want != "" {
 		wantInc, wantRev, err := ParseRevision(want)
@@ -138,7 +138,7 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 			// No revision table: skip bump.
 			return RevisionBump{Old: -1, New: -1}, nil
 		}
-		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision bump: %v", err)}
+		return RevisionBump{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("revision bump: %v", err)}
 	}
 	oldRev := cur
 	oldInc := curInc

@@ -363,14 +363,25 @@ not write admission. Consult the live OpenAPI document for installed methods.
 Property defaults apply to omitted input, not to explicit null. Non-nullable
 attributes and geometry reject null during validation. Date-time properties
 require RFC3339 timestamps; their schema format is not merely a UI hint.
+Announced positive leap seconds use the same validation as query literals,
+including equivalent offsets; unannounced leap dates and second 61 are rejected.
 Create input does not require a client feature ID: the source must generate its
-primary key. An update-only collection does not acquire create capability merely
+primary key. PostGIS create admission requires an identity or sequence-generated
+key. The admitted sequence default is a plain `nextval(regclass literal)` with
+an actual sequence dependency; arbitrary expressions or `DEFAULT 1` are insufficient. An update-only collection does not acquire create capability merely
 because it has an integer key.
 
 Use the ETag from the same source-feature response as the editing draft, and
 send it with If-Match. A conflict returns 412; a missing required precondition
 returns 428. ETags include revision/incarnation and a representation digest;
-treat them as opaque strings. A confirmed commit whose representation cannot be
+treat them as opaque strings. Reuse the same output `crs` and format selection
+(`f` or Accept) for the mutation that supplied the draft's ETag. A validator from
+a different representation still returns 412 even if the revision is unchanged.
+Output CRS does not select mutation input CRS: GeoJSON input remains CRS84;
+another Content-Crs is rejected. Attribute-only patches preserve stored geometry.
+Invalid or duplicate output CRS selectors fail before mutation.
+
+A confirmed commit whose representation cannot be
 read back returns a minimal success with `Tegola-Commit-Status: committed`.
 Do not repeat the mutation to obtain its representation. Unknown outcomes also
 require source reconciliation before any retry.
@@ -400,11 +411,33 @@ needs its own declarations or an explicit request namespace binding; there is
 no implicit `app` binding inside XML. Do not reuse a different collection's
 namespace URI for a filter property.
 
+DescribeFeatureType marks non-nullable geometry as required (`minOccurs="1"`).
+Nullable geometry is optional (`minOccurs="0"`, `nillable="true"`), matching
+mutation validation for all supported WFS versions.
+
 GetPropertyValue supports the configured WFS 2.0.0 and 2.0.2 versions, not 1.1.0.
 Transaction responses retain the negotiated version instead of upgrading 2.0.0
 to 2.0.2. The KVP `BBOX` parameter remains supported, but an XML FES/Filter
 `BBOX` predicate is outside this parser's subset and is not advertised as a
 spatial filter operator. These distinct paths are not interchangeable.
+
+FES comparison literals are bound to the published Queryables schema before
+provider execution. String fields preserve exact lexical text, including `123`,
+`00123`, `1e3` and whitespace. Numeric fields retain exact numeric lexemes;
+boolean fields accept `true`/`false` and `1`/`0`. Dates and timestamps follow the
+provider queryable's admitted lexical profile. Invalid typed values and unknown
+properties fail before a query. This does not relax CQL2's own strict typing.
+Literal binding does not grant provider capability: the PostGIS source JSON
+profile currently rejects native DATE, TIMESTAMP, TIMESTAMPTZ and NUMERIC columns
+before querying. Date/time/exact-decimal binder tests therefore do not establish
+native PostGIS filtering or HTTP support for those types; no implicit cast is
+introduced to admit them.
+
+After transaction coordination, WFS responses expose `Tegola-Commit-Status`
+(`committed`, `not-committed` or `unknown`) and, when available,
+`Tegola-Transaction-Id`. Both are exposed through CORS. Error bodies remain OWS
+XML and do not expose private receipt details. Preserve correlation headers;
+an unknown outcome must not trigger automatic retry. See [recovery](operational.md).
 
 ## See Also
 

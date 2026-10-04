@@ -366,9 +366,10 @@ func (h *WFSHandler) serveTransaction(w http.ResponseWriter, r *http.Request, v 
 			return
 		}
 	}
-	results, err := wfs.ExecuteTransaction(r.Context(), h.coordinator(), func(c string) (*feature.SchemaDescriptor, error) {
+	results, receipt, err := wfs.ExecuteTransactionWithReceipt(r.Context(), h.coordinator(), func(c string) (*feature.SchemaDescriptor, error) {
 		return h.Service.SchemaDescriptorFor(r.Context(), c)
 	}, v, actions, h.principal(r))
+	writeMutationReceiptHeaders(w, receipt)
 	if err != nil {
 		h.writeTransactionError(w, r, v, err)
 		return

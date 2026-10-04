@@ -201,11 +201,11 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	}
 	// A01: verify table engines (InnoDB required for transactions).
 	if err := pa.CheckTableEngine(ctx, w.provider.db, "mysql"); err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("schema engine: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("schema engine: %v", err)}
 	}
 	tx, err := w.provider.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("begin: %v", err)}
 	}
 	// A34: generate a unique txID for audit/outbox correlation.
 	txID := fmt.Sprintf("%d-%d", time.Now().UTC().UnixNano(), rand.Int63())
@@ -235,7 +235,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	q := `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, EXTRA FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
 	rows, err := p.db.QueryContext(ctx, q, p.Database, l.tablename)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
 	defer rows.Close()
 	var pkCols []string
@@ -246,7 +246,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		var name, dtype, key, nullable, extra string
 		var defaultValue sql.NullString
 		if err := rows.Scan(&name, &dtype, &key, &nullable, &defaultValue, &extra); err != nil {
-			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+			return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 		}
 		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype, Nullable: nullable == "YES", IsDefault: defaultValue.Valid, IsGenerated: (strings.Contains(extra, "STORED GENERATED") || strings.Contains(extra, "VIRTUAL GENERATED")) || strings.Contains(extra, "auto_increment")}
 		order = append(order, name)
@@ -256,7 +256,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
 	for _, field := range l.bboxFields {
 		if _, exists := cols[field]; field != "" && exists {
@@ -274,7 +274,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	err = p.db.QueryRowContext(ctx, `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
 		p.Database, l.tablename, pkCols[0]).Scan(&pkType)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect pk: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect pk: %v", err)}
 	}
 	upper := strings.ToUpper(pkType)
 	isInt := false

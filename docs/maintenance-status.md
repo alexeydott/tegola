@@ -28,6 +28,12 @@ column and raw MOS results are recorded separately; neither establishes full
 WFS/Part 4 certification or production restore/fault acceptance. This source work
 does not move the historical `v0.21.0-fork.2` release tag.
 
+The additional seven-finding audit is mapped to bounded verification in the
+[evidence matrix](provider-matrix.md#attached-audit-follow-up). It adds
+schema-bound FES literals, representation-aware mutation validators and WFS
+receipt headers. Native deadlock and injected post-COMMIT acknowledgement tests
+strengthen transaction evidence without claiming wire-fault or restore acceptance.
+
 ## Markdown audit scope
 
 The audit enumerated all 199 Git-tracked `.md`/`.markdown` files, ignoring

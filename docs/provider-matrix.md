@@ -34,6 +34,52 @@ restricted DML-only runtime role after administrator preparation. The error-path
 receipt test commits an already closed native transaction; it verifies retained
 correlation, not a real connection loss during COMMIT or a lost acknowledgement.
 
+## Attached audit follow-up
+
+The seven findings in the follow-up audit are mapped below to scoped checks.
+These checks do not imply every scenario proposed by that audit was executed.
+
+| Finding | Implemented contract and verification |
+|---|---|
+| PR2-01 authentication | Stock CLI refuses production writes without an adapter; embedded authenticated write succeeds in the focused test. |
+| PR2-02 QName | Advertised names resolve using validated namespace bindings; foreign/unknown bindings fail; discovery and request tests pass. |
+| PR2-03 FES types | Queryables determine literal types. SQLite WKT and native PostGIS queries verify numeric-looking strings, booleans and large integers. PostGIS checks exact `123`/`00123`, true/false and `9007199254740993`, and explicit rejection of native NUMERIC/DATE/TIMESTAMPTZ. Date/time/decimal positive binding is covered only by focused catalog tests. |
+| PR2-04 transaction locks | Native MySQL/PostGIS tests verify revision-first ordering. Real deadlock victims cannot subsequently report successful commit; rolled-back data and audit rows remain absent. |
+| PR2-05 representation ETag | Native GeoPackage HTTP tests cover CRS84, EPSG:3857 and EPSG:4326 with JSON/HTML selection, matching mutation/readback validators, wrong-representation and stale rejection, and unchanged geometry bytes on attribute PATCH. |
+| PR2-06 public URLs | Capabilities tests cover mounted paths, configured HTTPS/public host and URL-root overrides for all supported versions. |
+| PR2-07 receipt correlation | Coordinator/WFS tests cover committed, known-not-committed and unknown outcomes, safe correlation headers, valid XML errors and post-commit callback panic. Native PostGIS commits data/audit, then an injected driver acknowledgement error returns unknown with the retained ID. |
+
+The PostGIS acknowledgement test injects a driver error after a real native
+COMMIT. It proves durable data/audit plus an unknown receipt under that fault;
+it is not a wire-level connection cut. The earlier closed-transaction receipt
+test remains a separate, narrower check. No public receipt lookup endpoint or
+cross-user receipt access test is claimed.
+
+Further online-review checks cover DescribeFeatureType geometry occurrence and
+nullability in all three WFS versions, plus mutation timestamps using the shared
+announced-positive-leap-second validator. These are focused schema/validation
+checks, not additional native database or conformance-suite runs. A separate
+native PostGIS regression rejects constant-default keys for create (including a
+serial column whose default was changed to a constant), while preserving update
+admission; identity/validated sequence defaults establish generated-key capability.
+
+FES date/time/exact-decimal binding is unit-level evidence subject to provider
+catalog admission. The current PostGIS source JSON path rejects native DATE
+(OID 1082), TIMESTAMP (1114), TIMESTAMPTZ (1184) and NUMERIC (1700) before querying.
+This review does not extend those source types or use casts to imply native
+PostGIS FES/HTTP support. Admitted string, boolean and integer query tests must
+be reported separately from rejection checks for unsupported native types.
+`TestNativePostGISTypedFES` in `ogc/wfs/fes_postgis_native_test.go` uses
+`TEGOLA_REVIEW_POSTGIS_DSN`; it executes the admitted filter through the real
+catalog/GetFeature/provider query and checks returned IDs. The native runner
+includes `./ogc/wfs`; missing credentials produce SKIP, not native PASS.
+
+Native GeoPackage failure-path regressions also pass: a metadata-trigger failure
+before COMMIT reports not-committed, and any failed Apply prevents a later partial
+commit. Feature, audit, outbox and revision tables remain unchanged in those
+cases. This does not add a GeoPackage transaction correlation ID or establish a
+lost-acknowledgement recovery profile for that writer.
+
 ## Reproduce the provider gates
 
 Use disposable databases: these tests create/modify fixture and service tables.
@@ -116,7 +162,7 @@ maintenance is implemented. A native GeoPackage RTree has separate supported
 maintenance and is not equivalent to a derived bbox-column profile. External
 writers that bypass revision management are outside conditional-write guarantees.
 
-This review did not run real connection-loss-during-COMMIT recovery, backup/restore
+This review did not run wire-level connection-loss-during-COMMIT recovery, backup/restore
 acceptance, an official WFS/Part 4 ETS, or distributed/CDN invalidation. Keep these
 as NOT_RUN requirements for any deployment that depends on them. See
 [write limits](wfs-scope-limitations.md) and [operational procedures](operational.md).

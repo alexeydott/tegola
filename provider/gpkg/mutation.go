@@ -425,6 +425,7 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 
 // featureTx is one native SQLite transaction.
 type featureTx struct {
+	failed error
 	writer *Writer
 	tx     *sql.Tx
 	done   bool
@@ -451,7 +452,18 @@ func (t *featureTx) mapping(ctx context.Context, layer string) (*writeMapping, e
 }
 
 // Apply implements provider.FeatureTx.
-func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.MutationOutcome, error) {
+func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (result provider.MutationOutcome, applyErr error) {
+	if t.failed != nil {
+		return result, t.failed
+	}
+	defer func() {
+		if applyErr != nil {
+			if _, classified := provider.AsMutationError(applyErr); !classified {
+				applyErr = &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: applyErr.Error()}
+			}
+			t.failed = applyErr
+		}
+	}()
 	if t.done {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "transaction already finished"}
 	}
@@ -505,10 +517,14 @@ func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) 
 		return provider.CommitReceipt{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "transaction already finished"}
 	}
 	t.done = true
+	if t.failed != nil {
+		_ = t.tx.Rollback()
+		return provider.CommitReceipt{Status: provider.CommitNotCommitted}, t.failed
+	}
 	if err := t.maintainGPKGMetadata(ctx); err != nil {
 		_ = t.tx.Rollback()
-		return provider.CommitReceipt{Status: provider.CommitUnknown}, &provider.MutationError{
-			Kind:   provider.MutationErrCommitUnknown,
+		return provider.CommitReceipt{Status: provider.CommitNotCommitted}, &provider.MutationError{
+			Kind:   provider.MutationErrExecutionFailed,
 			Reason: fmt.Sprintf("gpkg metadata maintenance failed: %v", err),
 		}
 	}

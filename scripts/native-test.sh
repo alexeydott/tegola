@@ -17,7 +17,7 @@ fi
 go version
 export TEGOLA_MOS_MYSQL_DSN="${TEGOLA_MOS_MYSQL_DSN:-${TEGOLA_REVIEW_MYSQL_DSN:-}}"
 printf '%s\n' 'Running provider and HTTP contracts (GeoPackage uses native SQLite).'
-go test ./provider/gpkg ./provider/mysql ./provider/postgis ./server -count=1
+go test ./provider/gpkg ./provider/mysql ./provider/postgis ./ogc/wfs ./server -count=1
 printf '%s\n' 'ENABLED: native GeoPackage fixture (bundled, unless TEGOLA_REVIEW_GPKG overrides it).'
 for profile in MYSQL POSTGIS; do
   variable="TEGOLA_REVIEW_${profile}_DSN"

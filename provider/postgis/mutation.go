@@ -185,7 +185,7 @@ func (w *Writer) mappingCached(layer string) (*writeMapping, error) {
 	if m, ok := w.mappings[layer]; ok {
 		return m, nil
 	}
-	return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("layer %q not admitted before tx (call DescribeWritable first)", layer)}
+	return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("layer %q not admitted before tx (call DescribeWritable first)", layer)}
 }
 
 // CurrentRevision implements provider.RevisionReader (A03).
@@ -221,13 +221,13 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	// No DDL or missing-table probes inside the tx (aborts in PostgreSQL).
 	// Run migrations manually via provider/audit Migrate before write traffic.
 	if err := w.checkServiceSchema(ctx); err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("service schema: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("service schema: %v", err)}
 	}
 	// Explicitly request read-write: the provider defaults
 	// default_transaction_read_only=TRUE for query workloads.
 	tx, err := w.provider.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadWrite})
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("begin: %v", err)}
 	}
 	// A01: No DDL in data transaction. Audit tables must be created via
 	// migration before write traffic (see provider/audit/sql.go).
@@ -287,7 +287,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	q := `SELECT column_name, data_type, is_nullable, column_default, is_generated, is_identity FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`
 	rows, err := p.pool.Query(ctx, q, schema, table)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
 	defer rows.Close()
 	cols := map[string]provider.ColumnDescriptor{}
@@ -295,12 +295,12 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		var name, dtype, nullable, generated, identity string
 		var defaultValue sql.NullString
 		if err := rows.Scan(&name, &dtype, &nullable, &defaultValue, &generated, &identity); err != nil {
-			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+			return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 		}
 		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype, Nullable: nullable == "YES", IsDefault: defaultValue.Valid, IsGenerated: generated == "ALWAYS" || identity == "YES"}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
 	for _, field := range l.bboxFields {
 		if _, exists := cols[field]; field != "" && exists {
@@ -315,14 +315,14 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		WHERE i.indrelid = $1::regclass AND i.indisprimary
 		ORDER BY array_position(i.indkey, a.attnum)`, schema+"."+table)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect pk: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect pk: %v", err)}
 	}
 	var pkCols []string
 	for pkRows.Next() {
 		var c string
 		if err := pkRows.Scan(&c); err != nil {
 			pkRows.Close()
-			return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect pk: %v", err)}
+			return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect pk: %v", err)}
 		}
 		pkCols = append(pkCols, c)
 	}
@@ -339,7 +339,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	err = p.pool.QueryRow(ctx, `SELECT data_type FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name=$3`,
 		schema, table, pkCol).Scan(&pkType)
 	if err != nil {
-		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("inspect pk: %v", err)}
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect pk: %v", err)}
 	}
 	pt := strings.ToLower(pkType)
 	isInt := pt == "integer" || pt == "bigint" || pt == "smallint" || strings.HasPrefix(pt, "int")
@@ -383,8 +383,27 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		writable: make(map[string]string),
 		domain:   p.domainID(),
 	}
-	if id := cols[pkCol]; !id.IsDefault && !id.IsGenerated {
-		m.createUnsupportedReason = "create requires a generated or default primary key"
+	// A default alone need not generate fresh IDs (for example DEFAULT 1).
+	// Admit identity or a plain nextval expression with a catalog dependency
+	// on an actual sequence; arbitrary default expressions fail closed.
+	var generatedPK bool
+	err = p.pool.QueryRow(ctx, `
+        SELECT a.attidentity <> '' OR COALESCE(
+            pg_get_expr(d.adbin, d.adrelid) ~ $3 AND EXISTS (
+                SELECT 1 FROM pg_depend dep
+                JOIN pg_class seq ON seq.oid = dep.refobjid AND seq.relkind = 'S'
+                WHERE dep.classid = 'pg_attrdef'::regclass AND dep.objid = d.oid
+                  AND dep.refclassid = 'pg_class'::regclass
+            ), false)
+        FROM pg_attribute a
+        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = $1::regclass AND a.attname = $2`,
+		quoteIdent(schema)+"."+quoteIdent(table), pkCol, `^nextval\('([^']|'')+'::regclass\)$`).Scan(&generatedPK)
+	if err != nil {
+		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect generated primary key: %v", err)}
+	}
+	if !generatedPK {
+		m.createUnsupportedReason = "create requires an identity or sequence-generated primary key"
 	}
 	public := map[string]bool{}
 	if l.feature != nil {
@@ -444,6 +463,7 @@ func quoteIdent(s string) string {
 }
 
 type featureTx struct {
+	failed error
 	writer *Writer
 	tx     pgx.Tx
 	actor  string
@@ -451,7 +471,18 @@ type featureTx struct {
 	txID   string // A34
 }
 
-func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.MutationOutcome, error) {
+func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (result provider.MutationOutcome, applyErr error) {
+	if t.failed != nil {
+		return result, t.failed
+	}
+	defer func() {
+		if applyErr != nil {
+			if _, classified := provider.AsMutationError(applyErr); !classified {
+				applyErr = &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: applyErr.Error()}
+			}
+			t.failed = applyErr
+		}
+	}()
 	// A12: use cached mapping; no pool queries inside tx.
 	mp, err := t.writer.mappingCached(m.Collection)
 	if err != nil {
@@ -502,7 +533,14 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 }
 
 func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) {
+	if t.failed != nil {
+		_ = t.tx.Rollback(ctx)
+		return provider.CommitReceipt{Status: provider.CommitNotCommitted, TransactionID: t.txID}, t.failed
+	}
 	if err := t.tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return provider.CommitReceipt{Status: provider.CommitNotCommitted, TransactionID: t.txID}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: "transaction was rolled back"}
+		}
 		return provider.CommitReceipt{Status: provider.CommitUnknown, TransactionID: t.txID}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("commit: %v", err)}
 	}
 	return provider.CommitReceipt{Status: provider.CommitCommitted, TransactionID: t.txID}, nil

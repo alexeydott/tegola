@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/alexeydott/tegola/provider"
 )
 
 // ValueState distinguishes the four states a property can be in:
@@ -247,12 +249,25 @@ func isCanonicalDecimal(s string) bool {
 	return digits > 0
 }
 
-var rfc3339Input = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$`)
+var rfc3339Input = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$`)
 
 func validRFC3339(value string) bool {
 	if !rfc3339Input.MatchString(value) {
 		return false
 	}
-	_, err := time.Parse(time.RFC3339Nano, value)
-	return err == nil
+	// RFC3339 permits lowercase separators. Keep the original mutation value;
+	// normalize only the validation copy, as the read query parser does.
+	normalized := value[:10] + "T" + value[11:]
+	if strings.HasSuffix(normalized, "z") {
+		normalized = normalized[:len(normalized)-1] + "Z"
+	}
+	leap := normalized[17:19] == "60"
+	if leap {
+		normalized = normalized[:17] + "59" + normalized[19:]
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, normalized)
+	if err != nil {
+		return false
+	}
+	return !leap || provider.IsPositiveLeapSecondPredecessor(parsed)
 }

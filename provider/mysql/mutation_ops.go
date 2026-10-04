@@ -46,6 +46,7 @@ func checkRevisionCAS(ctx context.Context, tx *sql.Tx, collection string, featur
 }
 
 type featureTx struct {
+	failed error
 	writer *Writer
 	tx     *sql.Tx
 	actor  string
@@ -53,7 +54,18 @@ type featureTx struct {
 	txID   string // A34: unique transaction ID for audit/outbox
 }
 
-func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.MutationOutcome, error) {
+func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (result provider.MutationOutcome, applyErr error) {
+	if t.failed != nil {
+		return result, t.failed
+	}
+	defer func() {
+		if applyErr != nil {
+			if _, classified := provider.AsMutationError(applyErr); !classified {
+				applyErr = &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: applyErr.Error()}
+			}
+			t.failed = applyErr
+		}
+	}()
 	mp, err := t.writer.mapping(ctx, m.Collection)
 	if err != nil {
 		return provider.MutationOutcome{}, err
@@ -109,6 +121,10 @@ func (t *featureTx) recordAudit(ctx context.Context, m provider.Mutation, outcom
 }
 
 func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) {
+	if t.failed != nil {
+		_ = t.tx.Rollback()
+		return provider.CommitReceipt{Status: provider.CommitNotCommitted, TransactionID: t.txID}, t.failed
+	}
 	if err := t.tx.Commit(); err != nil {
 		return provider.CommitReceipt{Status: provider.CommitUnknown, TransactionID: t.txID}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("commit: %v", err)}
 	}
@@ -351,7 +367,7 @@ func mapSQLError(err error) error {
 	if strings.Contains(msg, "Duplicate entry") {
 		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: msg}
 	}
-	return &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: msg}
+	return &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: msg}
 }
 
 func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
@@ -399,7 +415,7 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 	}
 	id, err := res.LastInsertId()
 	if err != nil || id <= 0 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "insert did not return a row id"}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: "insert did not return a row id"}
 	}
 	return provider.MutationOutcome{FeatureID: uint64(id), Affected: 1}, nil
 }
@@ -477,7 +493,7 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		return provider.MutationOutcome{}, mapSQLError(err)
 	}
 	if n > 1 {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: "replace affected multiple rows"}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: "replace affected multiple rows"}
 	}
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }

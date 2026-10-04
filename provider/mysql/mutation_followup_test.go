@@ -101,6 +101,14 @@ func TestFollowupMySQLCreateAdmission(t *testing.T) {
 	if me, ok := provider.AsMutationError(err); !ok || me.Kind != provider.MutationErrUnsupportedCapability {
 		t.Fatalf("manual PK insert admission: %v", err)
 	}
+	if err = tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = w.BeginFeatureTx(ctx, provider.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	_, err = tx.Apply(ctx, provider.Mutation{Op: provider.MutationUpdate, Collection: "manual_items", FeatureID: 9, IfRevision: "0.0", Properties: map[string]provider.MutationValue{"name": {Kind: provider.MutationValueString, String: "updated"}}})
 	if err != nil {
 		t.Fatalf("manual PK update should remain supported: %v", err)
@@ -324,5 +332,89 @@ func TestFollowupMySQLStartupWithRestrictedRuntimeRole(t *testing.T) {
 	}
 	if _, err = tx.Commit(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFollowupMySQLDeadlockNotCommitted(t *testing.T) {
+	w, db := followupMySQL(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, "INSERT INTO items(id,name) VALUES(1,'original'),(2,'original')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.DescribeWritable(ctx, "items"); err != nil {
+		t.Fatal(err)
+	}
+	txs := make([]provider.FeatureTx, 2)
+	mutation := func(id uint64) provider.Mutation {
+		return provider.Mutation{Op: provider.MutationUpdate, Collection: "items", FeatureID: id,
+			Properties: map[string]provider.MutationValue{"name": {Kind: provider.MutationValueString, String: "changed"}}}
+	}
+	for i := range txs {
+		tx, err := w.BeginFeatureTx(ctx, provider.TxOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		txs[i] = tx
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		if _, err = tx.Apply(ctx, mutation(uint64(i+1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type result struct {
+		index int
+		err   error
+	}
+	done := make(chan result, 2)
+	for i, tx := range txs {
+		go func(i int, tx provider.FeatureTx) {
+			_, err := tx.Apply(ctx, mutation(uint64(2-i)))
+			done <- result{i, err}
+		}(i, tx)
+	}
+	var victim result
+	select {
+	case victim = <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	secondReceived := false
+	if victim.err == nil {
+		_ = txs[victim.index].Rollback(context.Background())
+		select {
+		case victim = <-done:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		secondReceived = true
+	}
+	if victim.err == nil {
+		t.Fatal("expected native deadlock victim")
+	}
+	if me, ok := provider.AsMutationError(victim.err); ok && me.Kind == provider.MutationErrCommitUnknown {
+		t.Errorf("precommit deadlock classified unknown: %v", victim.err)
+	}
+	receipt, err := txs[victim.index].Commit(ctx)
+	if err == nil || receipt.Status != provider.CommitNotCommitted || receipt.TransactionID == "" {
+		t.Errorf("deadlock commit receipt=%+v err=%v", receipt, err)
+	}
+	_ = txs[victim.index].Rollback(context.Background())
+	if !secondReceived {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	_ = txs[1-victim.index].Rollback(context.Background())
+	var changed, audits int
+	if err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM items WHERE name<>'original'").Scan(&changed); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM tegola_audit").Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if changed != 0 || audits != 0 {
+		t.Errorf("failed transactions leaked data=%d audit=%d", changed, audits)
 	}
 }

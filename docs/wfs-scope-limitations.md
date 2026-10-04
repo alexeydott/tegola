@@ -81,9 +81,14 @@ implementation is not a declaration of full FES or WFS conformance.
 Mutation schemas preserve storage nullability, including the geometry column.
 An explicit null is rejected for a non-nullable column even when it has a server
 default; omission and null are different inputs. Date-time properties must use
-the accepted RFC3339 timestamp syntax. Invalid values fail validation before
+the accepted RFC3339 timestamp syntax, including announced positive leap seconds
+validated consistently with query literals. DescribeFeatureType reflects geometry
+nullability through both `minOccurs` and `nillable`. Invalid values fail validation before
 the provider transaction. Create requires a generated primary key; no client ID
-is implicitly substituted for a missing database default.
+is implicitly substituted for a missing database default. For PostGIS, only an
+identity or validated sequence-generated key establishes create capability;
+a constant or arbitrary default does not. Update/delete-only admission remains
+separate from this create restriction.
 
 Create and replacement require a geometry value when the storage geometry is
 non-nullable, including WFS input that omits the geometry property. A partial

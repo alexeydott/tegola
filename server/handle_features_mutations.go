@@ -146,13 +146,30 @@ func (api *FeatureAPI) registerMutations(group *httptreemux.Group) {
 		return
 	}
 	mk := func(h http.HandlerFunc) http.Handler {
-		return HeadersHandler(api.protocolHandler(featureNoStoreHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if crs := r.Header.Get("Content-Crs"); crs != "" && crs != "<http://www.opengis.net/def/crs/OGC/1.3/CRS84>" && crs != "http://www.opengis.net/def/crs/OGC/1.3/CRS84" {
+		mutation := api.negotiate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			crs := r.Header.Get("Content-Crs")
+			if crs != "" && crs != "<"+features.CRS84+">" && crs != features.CRS84 {
 				api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Mutation input must use CRS84")
 				return
 			}
+			collection := httptreemux.ContextParams(r.Context())["collection"]
+			_, outputURI, err := api.selectedItemQuery(r, collection)
+			if err != nil {
+				api.writeQueryError(w, r, err)
+				return
+			}
+			w.Header().Set("Content-Crs", "<"+outputURI+">")
 			h.ServeHTTP(w, r)
-		}))))
+		}), mediaGeoJSON)
+		dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+				mutation.ServeHTTP(w, r)
+			default:
+				h.ServeHTTP(w, r)
+			}
+		})
+		return HeadersHandler(api.protocolHandler(featureNoStoreHandler(dispatch)))
 	}
 	base := api.cfg.BasePath
 	group.UsingContext().Handler(http.MethodPost, base+"/collections/:collection/items", mk(api.serveCreateItem))
@@ -286,12 +303,11 @@ func etagMatches(header, current string) bool {
 // equal state. Falls back to the representation hash when the provider
 // does not track revisions.
 func (api *FeatureAPI) currentETag(r *http.Request, collection string, featureID uint64) (string, error) {
-	f, rev, err := api.queryFeatureRevision(r.Context(), collection, featureID, features.QueryOptions{})
+	f, rev, err := api.querySelectedFeatureRevision(r, collection, featureID)
 	if err != nil {
 		return "", err
 	}
-	response := api.itemResponse(r, collection, featureID, f)
-	raw, err := json.Marshal(response)
+	raw, _, err := api.renderItemRepresentation(r, collection, featureID, f)
 	if err != nil {
 		return "", err
 	}
@@ -415,7 +431,7 @@ func (api *FeatureAPI) serveCreateItem(w http.ResponseWriter, r *http.Request) {
 	// have changed the data): re-read the canonical row.
 	loc := api.itemLocation(r, collection, outcome.FeatureID)
 	w.Header().Set("Location", loc)
-	created, revision, err := api.queryFeatureRevision(r.Context(), collection, outcome.FeatureID, features.QueryOptions{})
+	created, revision, err := api.querySelectedFeatureRevision(r, collection, outcome.FeatureID)
 	if err != nil {
 		api.writeCommittedWithoutRepresentation(w, r, http.StatusCreated, receipt, err)
 		return
@@ -480,7 +496,7 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
 		return
 	}
-	updated, revision, err := api.queryFeatureRevision(r.Context(), collection, outcome.FeatureID, features.QueryOptions{})
+	updated, revision, err := api.querySelectedFeatureRevision(r, collection, outcome.FeatureID)
 	if err != nil {
 		api.writeCommittedWithoutRepresentation(w, r, http.StatusNoContent, receipt, err)
 		return
@@ -585,7 +601,7 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusInternalServerError, "CommitUnknown", "Commit outcome unknown")
 		return
 	}
-	updated, revision, err := api.queryFeatureRevision(r.Context(), collection, outcome.FeatureID, features.QueryOptions{})
+	updated, revision, err := api.querySelectedFeatureRevision(r, collection, outcome.FeatureID)
 	if err != nil {
 		api.writeCommittedWithoutRepresentation(w, r, http.StatusNoContent, receipt, err)
 		return
@@ -636,23 +652,26 @@ func (api *FeatureAPI) serveDeleteItem(w http.ResponseWriter, r *http.Request) {
 // itemResponse builds the single-item response shape (Feature + links)
 // used by GET item and by mutation responses, so ETags are comparable
 // across all of them.
-func (api *FeatureAPI) itemResponse(r *http.Request, collection string, featureID uint64, f features.Feature) any {
+type featureItemResponse struct {
+	features.Feature
+	Links []featureLink `json:"links"`
+}
+
+func (api *FeatureAPI) itemResponse(r *http.Request, collection string, featureID uint64, f features.Feature) featureItemResponse {
 	queryParameters, _ := url.ParseQuery(r.URL.RawQuery)
 	links := api.representationLinks(r, "/collections/"+collection+"/items/"+strconv.FormatUint(featureID, 10), "application/geo+json", queryParameters)
 	links = append(links, api.formatLink(r, "/collections/"+collection, "collection", "application/json", nil, featureSelectedFormat(r)))
-	return struct {
-		features.Feature
-		Links []featureLink `json:"links"`
-	}{Feature: f, Links: links}
+	return featureItemResponse{Feature: f, Links: links}
 }
 
 // writeMutationRepresentation preserves confirmed success if readback encoding
 // fails. The validator binds both the revision and exact representation bytes.
 func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *http.Request, status int, value any, revision string, receipt provider.CommitReceipt) {
-	raw, err := json.Marshal(value)
-	if err == nil && int64(len(raw)) > api.cfg.MaxResponseBytes {
-		err = errFeatureResponseTooLarge
+	links := []featureLink{}
+	if item, ok := value.(featureItemResponse); ok {
+		links = item.Links
 	}
+	raw, media, err := api.renderRepresentation(r, status, mediaGeoJSON, value, links)
 	if err != nil {
 		if status != http.StatusCreated {
 			status = http.StatusNoContent
@@ -665,7 +684,7 @@ func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *htt
 	w.Header().Set("ETag", etag)
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Location")
-	w.Header().Set("Content-Type", mediaGeoJSON)
+	w.Header().Set("Content-Type", media)
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
@@ -688,15 +707,7 @@ func isGeoJSONContentType(ct string) bool {
 
 // mutationReceiptError preserves commit truth even when an auxiliary step fails.
 func (api *FeatureAPI) mutationReceiptError(w http.ResponseWriter, r *http.Request, receipt provider.CommitReceipt, err error) bool {
-	if receipt.TransactionID != "" || receipt.Status == provider.CommitCommitted {
-		status := map[provider.CommitStatus]string{provider.CommitUnknown: "unknown", provider.CommitCommitted: "committed", provider.CommitNotCommitted: "not-committed"}[receipt.Status]
-		w.Header().Set("Tegola-Commit-Status", status)
-		mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Tegola-Commit-Status")
-	}
-	if receipt.TransactionID != "" {
-		w.Header().Set("Tegola-Transaction-ID", receipt.TransactionID)
-		mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Tegola-Transaction-ID")
-	}
+	writeMutationReceiptHeaders(w, receipt)
 	if err != nil && receipt.Status != provider.CommitCommitted {
 		api.writeMutationError(w, r, err)
 		return true

@@ -36,7 +36,7 @@ type GetFeatureRequest struct {
 	// StartIndex is the 0-based offset for paging (A28).
 	StartIndex uint
 	// Filter is an optional FES filter expression (A26).
-	Filter *provider.FilterExpression
+	Filter *FESFilter
 }
 
 // SortCriterion is one sortBy term.
@@ -251,7 +251,15 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 	}
 	// A26: apply the FES filter if present.
 	if req.Filter != nil {
-		fq.Filter = req.Filter
+		catalog, err := service.Queryables(req.TypeName)
+		if err != nil {
+			return "", []Exception{{Code: ExceptionOperationNotSupported, Locator: "filter", Text: "queryables unavailable"}}
+		}
+		filter, err := req.Filter.Resolve(catalog)
+		if err != nil {
+			return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "filter", Text: err.Error()}}
+		}
+		fq.Filter = &filter
 	}
 	schema, err := service.SchemaDescriptorFor(ctx, req.TypeName)
 	if err != nil {

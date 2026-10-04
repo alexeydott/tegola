@@ -107,11 +107,13 @@ func DescribeFeatureType(v Version, collectionID string, schema *FeatureSchemaVi
 		geometryType = "MultiSurfacePropertyType"
 	}
 	geometryNillable := ""
+	geometryMinOccurs := "1"
 	if schema.GeometryNullable {
 		geometryNillable = ` nillable="true"`
+		geometryMinOccurs = "0"
 	}
 	sb.WriteString(`      <xsd:element name="` + xmlEscape(schema.GeometryName) + `" type="gml:` +
-		xmlEscape(geometryType) + `" minOccurs="0" maxOccurs="1"` + geometryNillable + `/>` + "\n")
+		xmlEscape(geometryType) + `" minOccurs="` + geometryMinOccurs + `" maxOccurs="1"` + geometryNillable + `/>` + "\n")
 	props := append([]SchemaPropView(nil), schema.Properties...)
 	sort.Slice(props, func(i, j int) bool { return props[i].Name < props[j].Name })
 	for _, p := range props {

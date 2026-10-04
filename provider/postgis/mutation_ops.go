@@ -294,7 +294,7 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) RETURNING %s", tbl, strings.Join(cols, ", "), strings.Join(holders, ", "), quoteIdent(mp.idColumn))
 	var id uint64
 	if err := t.tx.QueryRow(ctx, q, args...).Scan(&id); err != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("insert: %v", err)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("insert: %v", err)}
 	}
 	return provider.MutationOutcome{FeatureID: id, Affected: 1}, nil
 }
@@ -368,14 +368,14 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	args = append(args, m.FeatureID)
 	tag, err := t.tx.Exec(ctx, q, args...)
 	if err != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("replace: %v", err)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("replace: %v", err)}
 	}
 	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
 	if n := tag.RowsAffected(); n != 1 {
 		if n == 0 {
 			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
 		}
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
 
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
@@ -430,14 +430,14 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 	args = append(args, m.FeatureID)
 	tag, err := t.tx.Exec(ctx, q, args...)
 	if err != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update: %v", err)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("update: %v", err)}
 	}
 	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
 	if n := tag.RowsAffected(); n != 1 {
 		if n == 0 {
 			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
 		}
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }
@@ -447,14 +447,14 @@ func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mut
 	q := fmt.Sprintf("DELETE FROM %s WHERE %s = $1", tbl, quoteIdent(mp.idColumn))
 	tag, err := t.tx.Exec(ctx, q, m.FeatureID)
 	if err != nil {
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("delete: %v", err)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("delete: %v", err)}
 	}
 	// A08: single-column PK guarantees at most 1 row; >1 is corruption.
 	if n := tag.RowsAffected(); n != 1 {
 		if n == 0 {
 			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: fmt.Sprintf("feature %d not found", m.FeatureID)}
 		}
-		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
+		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("update affected %d rows, want 1", n)}
 	}
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
 }

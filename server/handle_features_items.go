@@ -67,17 +67,6 @@ func (api *FeatureAPI) serveItems(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
-	queryParameters, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid query parameter")
-		return
-	}
-	for key, values := range queryParameters {
-		if key != "crs" || len(values) != 1 || values[0] == "" {
-			api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid query parameter")
-			return
-		}
-	}
 	parameters := httptreemux.ContextParams(r.Context())
 	id := parameters["collection"]
 	rawID := parameters["feature"]
@@ -90,24 +79,21 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature ID")
 		return
 	}
-	outputURI, err := api.resolveFeatureCRS(id, queryParameters, nil)
+	options, outputURI, err := api.selectedItemQuery(r, id)
 	if err != nil {
 		api.writeQueryError(w, r, err)
 		return
 	}
-	feature, revision, err := api.queryFeatureRevision(r.Context(), id, featureID, features.QueryOptions{OutputCRS: queryParameters.Get("crs")})
+	feature, revision, err := api.queryFeatureRevision(r.Context(), id, featureID, options)
 	if err != nil {
 		api.writeQueryError(w, r, err)
 		return
 	}
-	links := api.representationLinks(r, "/collections/"+id+"/items/"+strconv.FormatUint(featureID, 10), "application/geo+json", queryParameters)
-	links = append(links, api.formatLink(r, "/collections/"+id, "collection", "application/json", nil, featureSelectedFormat(r)))
-	response := api.itemResponse(r, id, featureID, feature)
 	w.Header().Set("Content-Crs", "<"+outputURI+">")
 	// Strong ETag bound to the exact served bytes (including links), for
 	// use with If-Match on Part 4 mutations. Set after
 	// featureProtocolHeaders, which clears validators.
-	raw, media, err := api.renderRepresentation(r, http.StatusOK, "application/geo+json", response, links)
+	raw, media, err := api.renderItemRepresentation(r, id, featureID, feature)
 	if err != nil {
 		if errors.Is(err, errFeatureResponseTooLarge) {
 			api.writeError(w, r, http.StatusBadRequest, "ResponseTooLarge", "Response exceeds publication limit")
