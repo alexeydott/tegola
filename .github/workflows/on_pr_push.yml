@@ -63,7 +63,9 @@ jobs:
         echo ${GITHUB_WORKSPACE}
 
     - name: Setup test environment
-      run: docker compose up -d
+      run: |
+        docker compose up -d --wait redis postgis mysql
+        docker compose run --rm migration
 
     - name: Postgres Debug
       env:
@@ -91,11 +93,11 @@ jobs:
 
         # PostGIS tests (services are started via docker compose)
         RUN_POSTGIS_TESTS: yes
-        PGURI: postgres://postgres:postgres@localhost:5432/tegola
+        PGURI: postgres://postgres:postgres@localhost:5432/tegola?sslmode=disable
         # tegola_no_access is created by testdata/postgis/migration.sh and
         # must keep its restricted grants: this URI exercises the
         # no-permission regression from go-spatial/tegola#538.
-        PGURI_NO_ACCESS: postgres://tegola_no_access:postgres@localhost:5432/tegola
+        PGURI_NO_ACCESS: postgres://tegola_no_access:postgres@localhost:5432/tegola?sslmode=disable
         PGSSLMODE: disable
         PGSSLKEY: ""
         PGSSLCERT: ""
@@ -105,6 +107,7 @@ jobs:
         # construction test in provider/mysql connects with host=localhost,
         # database=test, user=u, password=p.
         RUN_MYSQL_TESTS: yes
+        MYSQL_FEATURE_TEST_DSN: u:p@tcp(localhost:3306)/test
 
         # Mutation regression suites use only the disposable compose databases.
         TEGOLA_REVIEW_MYSQL_DSN: u:p@tcp(localhost:3306)/test
@@ -127,6 +130,7 @@ jobs:
         $(go env GOPATH)/bin/goveralls -coverprofile=profile.cov -service=github
 
     - name: Tear down test environment
+      if: always()
       run: docker compose down
 
   module-modes:

@@ -38,7 +38,7 @@ services:
     image: mysql:8.4
     container_name: mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -50,6 +50,8 @@ services:
       MYSQL_DATABASE: test
       MYSQL_USER: u
       MYSQL_PASSWORD: p
+    volumes:
+    - ./testdata/mysql/ci-grants.sql:/docker-entrypoint-initdb.d/ci-grants.sql:ro
     ports:
     - 3306:3306
 
