@@ -204,11 +204,15 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 	}
 	// resultType=hits: count only, no feature encoding.
 	// W27: numberMatched must be the global matching count, not the page
-	// count. Do not apply MaxFeatures limit here; use max int32 as the
-	// effective "no limit" (provider requires Limit > 0).
+	// count.
+	// A29: bounded hits. Full scan is capped at maxHitsScan to avoid
+	// runaway queries; native COUNT is planned (requires provider
+	// interface change). If the cap is hit, return 400 instead of a
+	// misleading partial count.
 	if req.ResultType == "hits" {
+		const maxHitsScan = 100000
 		hitsQ := fq
-		hitsQ.Limit = 1<<31 - 1
+		hitsQ.Limit = maxHitsScan + 1
 		count := 0
 		_, err = service.QueryCollection(ctx, req.TypeName, hitsQ, func(f features.Feature) error {
 			count++
@@ -216,6 +220,9 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		})
 		if err != nil {
 			return "", []Exception{{Code: ExceptionNoApplicableCode, Text: fmt.Sprintf("query failed: %v", err)}}
+		}
+		if count > maxHitsScan {
+			return "", []Exception{{Code: ExceptionOperationNotSupported, Text: fmt.Sprintf("hits count exceeds bounded limit %d; native COUNT not yet implemented", maxHitsScan)}}
 		}
 		return featureCollectionEnvelope(req.Version, "", count), nil
 	}
