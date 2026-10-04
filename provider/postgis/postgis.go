@@ -1,6 +1,7 @@
 package postgis
 
 import (
+	"sync"
 	"context"
 	"errors"
 	"fmt"
@@ -108,6 +109,10 @@ type Provider struct {
 	// we are going to assign those during runtime, instead of at registration
 	// time; so we will only return these collectors on the first call.
 	collectorsRegistered bool
+
+	// R08: cached mutation writer (with mutex).
+	writerMu     sync.Mutex
+	cachedWriter *Writer
 
 	// Collectors for Query times
 	mvtProviderQueryHistogramSeconds *prometheus.HistogramVec

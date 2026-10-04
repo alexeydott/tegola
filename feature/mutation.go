@@ -33,6 +33,15 @@ func (c *MutationCoordinator) Execute(ctx context.Context, principal Principal, 
 // ExecuteAll runs all mutations in one native transaction, in order.
 // Later actions see earlier changes. A request spanning two independent
 // domains is rejected before any change (ADR-0012).
+// sameProvider reports whether two MutationProviders are the same instance.
+// R08: pointer equality prevents layer-name confusion across different
+// provider instances that share a domain hash.
+func sameProvider(a, b provider.MutationProvider) bool {
+	// Use reflection-free pointer comparison via interface equality.
+	// This works when both are the same concrete pointer type.
+	return a == b
+}
+
 func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principal, mutations []provider.Mutation) ([]provider.MutationOutcome, provider.CommitReceipt, error) {
 	var empty []provider.MutationOutcome
 	if len(mutations) == 0 {
@@ -82,6 +91,16 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 			return empty, provider.CommitReceipt{}, &provider.MutationError{
 				Kind:   provider.MutationErrDomainMismatch,
 				Reason: "transaction spans multiple domains",
+			}
+		}
+		// R08: the tx is opened via bounds[0].mp; all mutations must
+		// resolve to the SAME provider instance, not just the same
+		// domain hash. Different instances may map the same layer name
+		// to different tables/roles.
+		if i > 0 && !sameProvider(bounds[0].mp, mp) {
+			return empty, provider.CommitReceipt{}, &provider.MutationError{
+				Kind:   provider.MutationErrDomainMismatch,
+				Reason: "transaction spans multiple provider instances",
 			}
 		}
 		mutations[i].Collection = layer

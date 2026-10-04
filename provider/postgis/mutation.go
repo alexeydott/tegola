@@ -94,9 +94,13 @@ func (p *Provider) domainID() string {
 }
 
 func (p *Provider) writer() *Writer {
-	// Provider has no writerMu; guard with a package-level approach via pool.
-	// Use a simple mutex on Writer creation (idempotent).
-	return &Writer{provider: p, mappings: make(map[string]*writeMapping)}
+	// R08: cache the writer so mappings persist across calls.
+	p.writerMu.Lock()
+	defer p.writerMu.Unlock()
+	if p.cachedWriter == nil {
+		p.cachedWriter = &Writer{provider: p, mappings: make(map[string]*writeMapping)}
+	}
+	return p.cachedWriter
 }
 
 type writeMapping struct {
