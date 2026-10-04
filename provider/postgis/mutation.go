@@ -5,6 +5,7 @@ import (
 	"errors"
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -118,6 +119,8 @@ type writeMapping struct {
 	domain     string
 	// A32: bounds columns (minx,maxx,miny,maxy); empty if not configured.
 	bboxFields [4]string
+	// A38: schema fingerprint for incarnation (hash of columns+PK).
+	schemaFingerprint string
 }
 
 func (w *Writer) DescribeWritable(ctx context.Context, layer string) (provider.WriteDescriptor, error) {
@@ -370,7 +373,24 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		}
 		m.writable[name] = name
 	}
+	// A38: compute schema fingerprint.
+	m.schemaFingerprint = computeSchemaFingerprint(cols, pkCol)
 	return m, nil
+}
+
+// computeSchemaFingerprint hashes the sorted column definitions.
+func computeSchemaFingerprint(cols map[string]provider.ColumnDescriptor, pk string) string {
+	names := make([]string, 0, len(cols))
+	for n := range cols {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, n := range names {
+		fmt.Fprintf(h, "%s:%s;", n, cols[n].Type)
+	}
+	fmt.Fprintf(h, "pk=%s", pk)
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func normalizeGeomType(g interface{}) string {
