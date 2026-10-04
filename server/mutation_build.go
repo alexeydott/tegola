@@ -113,6 +113,75 @@ func buildPatchMutation(schema *feature.SchemaDescriptor, collection string, fea
 	return m, nil
 }
 
+// buildJSONPatchMutation applies an RFC 6902 JSON Patch to the current
+// feature representation and builds an Update from the diff.
+// A21: full JSON Patch support with atomic application.
+func buildJSONPatchMutation(schema *feature.SchemaDescriptor, collection string, featureID uint64, current features.Feature, ops []JSONPatchOp) (provider.Mutation, error) {
+	currentDoc := map[string]interface{}{
+		"properties": copyProps(current.Properties),
+	}
+	if len(current.Geometry) > 0 && string(current.Geometry) != "null" {
+		currentDoc["geometry"] = jsonRawToMap(current.Geometry)
+	}
+	merged, err := applyJSONPatch(currentDoc, ops)
+	if err != nil {
+		return provider.Mutation{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("JSON Patch failed: %v", err)}
+	}
+	// Reuse the diff logic from merge patch by converting merged back.
+	// For simplicity, build the mutation from merged directly.
+	return buildMutationFromMerged(schema, collection, featureID, current, merged)
+}
+
+// buildMutationFromMerged builds an Update mutation from a merged document.
+func buildMutationFromMerged(schema *feature.SchemaDescriptor, collection string, featureID uint64, current features.Feature, merged map[string]interface{}) (provider.Mutation, error) {
+	mergedProps, _ := merged["properties"].(map[string]interface{})
+	if mergedProps == nil {
+		mergedProps = map[string]interface{}{}
+	}
+	changed := map[string]interface{}{}
+	for k, v := range mergedProps {
+		cv, ok := current.Properties[k]
+		if !ok || !jsonEqual(cv, v) {
+			changed[k] = v
+		}
+	}
+	for k := range current.Properties {
+		if _, ok := mergedProps[k]; !ok {
+			changed[k] = nil
+		}
+	}
+	props, err := mutationInputToProvider(schema, changed)
+	if err != nil {
+		return provider.Mutation{}, err
+	}
+	m := provider.Mutation{
+		Op:         provider.MutationUpdate,
+		Collection: collection,
+		FeatureID:  featureID,
+		Properties: props,
+	}
+	if mg, ok := merged["geometry"]; ok {
+		if mg == nil {
+			m.GeometryAbsent = true
+		} else if gm, ok := mg.(map[string]interface{}); ok {
+			g, err := parseGeoJSONGeometry(gm)
+			if err != nil {
+				return provider.Mutation{}, err
+			}
+			wkbBytes, err := geometryToWKB(g)
+			if err != nil {
+				return provider.Mutation{}, err
+			}
+			if !geometryEqual(current.Geometry, wkbBytes) {
+				m.GeometryWKB = wkbBytes
+				m.GeometrySRID = 4326
+			}
+		}
+	}
+	return m, nil
+}
+
+
 func copyProps(in map[string]any) map[string]interface{} {
 	out := make(map[string]interface{}, len(in))
 	for k, v := range in {

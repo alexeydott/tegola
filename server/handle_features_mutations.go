@@ -23,6 +23,7 @@ import (
 const (
 	mediaGeoJSON      = "application/geo+json"
 	mediaMergePatch   = "application/merge-patch+json"
+	mediaJSONPatch    = "application/json-patch+json"
 	maxMutationBody   = 4 << 20 // 4 MiB per mutation document
 )
 
@@ -180,7 +181,7 @@ func (api *FeatureAPI) writeOptions(w http.ResponseWriter, methods []string, acc
 	w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-Match, Content-Crs, Authorization")
 	if acceptPatch {
-		w.Header().Set("Accept-Patch", mediaMergePatch)
+		w.Header().Set("Accept-Patch", mediaMergePatch+", "+mediaJSONPatch)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -455,8 +456,11 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 	if !api.checkWFSLock(w, r, collection, featureID) {
 		return
 	}
-	if ct := r.Header.Get("Content-Type"); ct != mediaMergePatch && !strings.HasPrefix(ct, mediaMergePatch+";") {
-		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/merge-patch+json")
+	ct := r.Header.Get("Content-Type")
+	isMergePatch := ct == mediaMergePatch || strings.HasPrefix(ct, mediaMergePatch+";")
+	isJSONPatch := ct == mediaJSONPatch || strings.HasPrefix(ct, mediaJSONPatch+";")
+	if !isMergePatch && !isJSONPatch {
+		api.writeError(w, r, http.StatusUnsupportedMediaType, "InvalidParameter", "Content-Type must be application/merge-patch+json or application/json-patch+json")
 		return
 	}
 	// A03: capture the matched ETag; its revision becomes the in-tx precondition.
@@ -473,12 +477,6 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var patch map[string]interface{}
-	if err := dec.Decode(&patch); err != nil {
-		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid merge patch")
-		return
-	}
 	current, err := api.service.QueryFeature(r.Context(), collection, featureID)
 	if err != nil {
 		api.writeQueryError(w, r, err)
@@ -489,7 +487,25 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		api.writeQueryError(w, r, err)
 		return
 	}
-	m, err := buildPatchMutation(schema, collection, featureID, current, patch)
+	// A21: dispatch on Content-Type.
+	var m provider.Mutation
+	if isJSONPatch {
+		dec.UseNumber()
+		var ops []JSONPatchOp
+		if err := dec.Decode(&ops); err != nil {
+			api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid JSON patch")
+			return
+		}
+		m, err = buildJSONPatchMutation(schema, collection, featureID, current, ops)
+	} else {
+		dec.UseNumber()
+		var patch map[string]interface{}
+		if err := dec.Decode(&patch); err != nil {
+			api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid merge patch")
+			return
+		}
+		m, err = buildPatchMutation(schema, collection, featureID, current, patch)
+	}
 	m.IfRevision = ifRevision
 	if err != nil {
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid patch")

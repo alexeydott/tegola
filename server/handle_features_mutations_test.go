@@ -239,7 +239,7 @@ func TestPart4OPTIONS(t *testing.T) {
 			t.Fatalf("Allow = %q, want %s", allow, m)
 		}
 	}
-	if ap := rec.Header().Get("Accept-Patch"); ap != "application/merge-patch+json" {
+	if ap := rec.Header().Get("Accept-Patch"); ap != "application/merge-patch+json, application/json-patch+json" {
 		t.Fatalf("Accept-Patch = %q", ap)
 	}
 }
