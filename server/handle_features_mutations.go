@@ -430,7 +430,10 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated), outcome.Revision)
 }
 
-// servePatchItem implements PATCH with application/merge-patch+json.
+// servePatchItem implements PATCH with application/merge-patch+json (RFC 7396).
+// A21: JSON Patch (RFC 6902, application/json-patch+json) is not implemented;
+// the handler returns 415 for other media types. Full JSON Patch is planned
+// as W55.
 func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 	collection := httptreemux.ContextParams(r.Context())["collection"]
 	if !api.cfg.Write.AllowsOperation(collection, "update") {

@@ -261,6 +261,9 @@ func jsonValueToMutation(t feature.LogicalType, raw interface{}) (provider.Mutat
 
 // applyMergePatch implements RFC 7396 JSON Merge Patch on the target
 // document. null removes a member; arrays are replaced wholesale.
+// A20: RFC 7396 JSON Merge Patch. Null in patch means delete.
+// When patch value is a map but target is not, the patch map is
+// processed (nulls removed) rather than copied verbatim.
 func applyMergePatch(target map[string]interface{}, patch map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(target))
 	for k, v := range target {
@@ -274,8 +277,11 @@ func applyMergePatch(target map[string]interface{}, patch map[string]interface{}
 		if pm, ok := pv.(map[string]interface{}); ok {
 			if tm, ok := out[k].(map[string]interface{}); ok {
 				out[k] = applyMergePatch(tm, pm)
-				continue
+			} else {
+				// A20: target not a map; process patch map to strip nulls.
+				out[k] = applyMergePatch(map[string]interface{}{}, pm)
 			}
+			continue
 		}
 		out[k] = pv
 	}
