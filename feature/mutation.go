@@ -3,6 +3,7 @@ package feature
 import (
 	"strconv"
 	"context"
+	"time"
 
 	"github.com/alexeydott/tegola/provider"
 )
@@ -118,7 +119,11 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	committed := false
 	defer func() {
 		if !committed {
-			_ = tx.Rollback(ctx)
+			// A37: rollback with bounded cleanup context, not the
+			// possibly-cancelled request ctx.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(cleanupCtx)
 		}
 	}()
 	if err := ctx.Err(); err != nil {

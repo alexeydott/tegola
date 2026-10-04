@@ -402,8 +402,9 @@ type tableModification struct {
 	geomChanged map[uint64]*[4]float64
 }
 
-func (t *featureTx) mapping(layer string) (*writeMapping, error) {
-	return t.writer.mapping(context.Background(), layer)
+func (t *featureTx) mapping(ctx context.Context, layer string) (*writeMapping, error) {
+	// A37: use request context, not Background.
+	return t.writer.mapping(ctx, layer)
 }
 
 // Apply implements provider.FeatureTx.
@@ -411,7 +412,7 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if t.done {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "transaction already finished"}
 	}
-	mp, err := t.mapping(m.Collection)
+	mp, err := t.mapping(ctx, m.Collection)
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
