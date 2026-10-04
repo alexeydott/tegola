@@ -117,7 +117,14 @@ func (api *FeatureAPI) serveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	featureProtocolHeaders(w.Header())
-	w.Header().Set("ETag", strongETag(raw))
+	// R01: prefer the revision-based ETag for CAS consistency with
+	// If-Match on mutations; fall back to the representation hash when
+	// no revision is available (e.g. read-only providers).
+	etag := strongETag(raw)
+	if rev := api.currentRevision(r.Context(), id, featureID); rev != "" {
+		etag = `"` + rev + `"`
+	}
+	w.Header().Set("ETag", etag)
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
 	w.Header().Set("Content-Type", media)
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))

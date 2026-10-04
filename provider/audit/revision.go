@@ -76,11 +76,13 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 		// Table missing: revision tracking not migrated. If no precondition
 		// was requested, skip silently (backward compat). If IfRevision was
 		// given, we cannot enforce it -> fail explicitly (A03).
-		if isMissingTable(err) {
+		if IsMissingTable(err) {
 			if want != "" {
 				return 0, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "revision precondition requires tegola_revisions table (run migration)"}
 			}
-			return 0, nil
+			// R01: table not migrated -> no revision tracking. Return -1
+			// so callers emit "" (hash ETag fallback), not "0".
+			return -1, nil
 		}
 		return 0, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision read: %v", err)}
 	}
@@ -113,7 +115,7 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 			collection, featureID, newRev)
 	}
 	if err != nil {
-		if isMissingTable(err) {
+		if IsMissingTable(err) {
 			// No revision table: skip bump, return 0 (no revision).
 			return 0, nil
 		}
@@ -123,7 +125,8 @@ func CheckAndBumpRevisionSQL(ctx context.Context, tx *sql.Tx, collection string,
 }
 
 // isMissingTable reports whether err is a "no such table" error.
-func isMissingTable(err error) bool {
+// IsMissingTable reports whether err indicates a missing revisions table.
+func IsMissingTable(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "no such table") ||
 		strings.Contains(msg, "doesn't exist") ||

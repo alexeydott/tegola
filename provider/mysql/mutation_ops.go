@@ -50,7 +50,9 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if rerr != nil {
 		return provider.MutationOutcome{}, rerr
 	}
-	outcome.Revision = strconv.FormatInt(newRev, 10)
+	if newRev >= 0 {
+			outcome.Revision = strconv.FormatInt(newRev, 10)
+		}
 	// W13: audit in same transaction
 	if aerr := t.recordAudit(ctx, m, outcome); aerr != nil {
 		return provider.MutationOutcome{}, aerr

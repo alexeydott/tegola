@@ -1,6 +1,8 @@
 package postgis
 
 import (
+	"database/sql"
+	"errors"
 	"context"
 	"fmt"
 	"strings"
@@ -25,6 +27,16 @@ type Writer struct {
 
 func (p *Provider) MutationWriter() provider.MutationProvider {
 	return p.writer()
+}
+
+// CurrentRevision implements provider.RevisionReader via the writer (R01).
+// Returns "", nil when the writer has no write DB (read-only provider).
+func (p *Provider) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
+	w, ok := p.MutationWriter().(*Writer)
+	if !ok || w.provider.pool == nil {
+		return "", nil
+	}
+	return w.CurrentRevision(ctx, layer, featureID)
 }
 
 func (p *Provider) DescribeWritable(ctx context.Context, layer string) (provider.WriteDescriptor, error) {
@@ -147,7 +159,16 @@ func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID ui
 	var rev int64
 	err := w.provider.pool.QueryRow(ctx, `SELECT revision FROM tegola_revisions WHERE collection = $1 AND feature_id = $2`, layer, featureID).Scan(&rev)
 	if err != nil {
-		return "0", nil
+		// R01/R09: distinguish missing row (revision 0) from missing
+		// table (revisions not migrated -> "", nil for hash fallback)
+		// and real storage errors.
+		if errors.Is(err, sql.ErrNoRows) {
+			return "0", nil
+		}
+		if pa.IsMissingTable(err) {
+			return "", nil
+		}
+		return "", err
 	}
 	return strconv.FormatInt(rev, 10), nil
 }
@@ -324,7 +345,9 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 	if rerr != nil {
 		return provider.MutationOutcome{}, rerr
 	}
-	outcome.Revision = strconv.FormatInt(newRev, 10)
+	if newRev >= 0 {
+		outcome.Revision = strconv.FormatInt(newRev, 10)
+	}
 	// W13: audit in same transaction
 	if aerr := pa.RecordPgxTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, ""); aerr != nil {
 		return provider.MutationOutcome{}, aerr

@@ -1,6 +1,7 @@
 package gpkg
 
 import (
+	"errors"
 	"context"
 	"database/sql"
 	"fmt"
@@ -38,6 +39,16 @@ type Writer struct {
 // stays on its read-only handle.
 func (p *Provider) MutationWriter() provider.MutationProvider {
 	return p.writer()
+}
+
+// CurrentRevision implements provider.RevisionReader via the writer (R01).
+// Returns "", nil when the writer has no write DB (read-only provider).
+func (p *Provider) CurrentRevision(ctx context.Context, layer string, featureID uint64) (string, error) {
+	w, ok := p.MutationWriter().(*Writer)
+	if !ok || w.db == nil {
+		return "", nil
+	}
+	return w.CurrentRevision(ctx, layer, featureID)
 }
 
 // DescribeWritable implements provider.MutationProvider via the writer.
@@ -326,8 +337,13 @@ func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID ui
 	var rev int64
 	err := w.db.QueryRowContext(ctx, `SELECT revision FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, featureID).Scan(&rev)
 	if err != nil {
-		// Table missing or no row: revision 0.
-		return "0", nil
+		// R01/R09: distinguish missing row (revision 0) from
+		// storage errors (including missing table). Do not mask
+		// errors as "0".
+		if errors.Is(err, sql.ErrNoRows) {
+			return "0", nil
+		}
+		return "", err
 	}
 	return strconv.FormatInt(rev, 10), nil
 }
@@ -601,5 +617,9 @@ func writablePublicNames(mp *writeMapping) []string {
 
 // formatRevision renders a revision counter for ETag/If-Match use.
 func formatRevision(n int64) string {
+	// R01: negative means revisions not migrated -> no revision ETag.
+	if n < 0 {
+		return ""
+	}
 	return strconv.FormatInt(n, 10)
 }

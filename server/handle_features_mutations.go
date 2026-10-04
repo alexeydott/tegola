@@ -280,7 +280,9 @@ func (api *FeatureAPI) currentETag(r *http.Request, collection string, featureID
 // currentRevision returns the provider-tracked revision for a feature,
 // or "" when unavailable.
 func (api *FeatureAPI) currentRevision(ctx context.Context, collection string, featureID uint64) string {
-	p, _, err := api.service.MutationProviderFor(collection)
+	// R01: use the provider layer name (not the public collection) for
+	// the revision lookup, matching what Apply stores.
+	p, layer, err := api.service.MutationProviderFor(collection)
 	if err != nil {
 		return ""
 	}
@@ -288,7 +290,7 @@ func (api *FeatureAPI) currentRevision(ctx context.Context, collection string, f
 	if !ok {
 		return ""
 	}
-	rev, err := rr.CurrentRevision(ctx, collection, featureID)
+	rev, err := rr.CurrentRevision(ctx, layer, featureID)
 	if err != nil || rev == "" {
 		return ""
 	}
@@ -359,7 +361,7 @@ func (api *FeatureAPI) serveCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	loc := api.itemLocation(r, collection, outcome.FeatureID)
 	w.Header().Set("Location", loc)
-	api.writeMutationRepresentation(w, r, http.StatusCreated, api.itemResponse(r, collection, outcome.FeatureID, created))
+	api.writeMutationRepresentation(w, r, http.StatusCreated, api.itemResponse(r, collection, outcome.FeatureID, created), outcome.Revision)
 }
 
 // serveReplaceItem implements PUT /collections/{id}/items/{fid}.
@@ -425,7 +427,7 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		api.writeQueryError(w, r, err)
 		return
 	}
-	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated))
+	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated), outcome.Revision)
 }
 
 // servePatchItem implements PATCH with application/merge-patch+json.
@@ -498,7 +500,7 @@ func (api *FeatureAPI) servePatchItem(w http.ResponseWriter, r *http.Request) {
 		api.writeQueryError(w, r, err)
 		return
 	}
-	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated))
+	api.writeMutationRepresentation(w, r, http.StatusOK, api.itemResponse(r, collection, updated.ID, updated), outcome.Revision)
 }
 
 // serveDeleteItem implements DELETE /collections/{id}/items/{fid}.
@@ -557,7 +559,10 @@ func (api *FeatureAPI) itemResponse(r *http.Request, collection string, featureI
 
 // writeMutationRepresentation writes a mutation response. The ETag is
 // always the strong validator of the exact response bytes.
-func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *http.Request, status int, value any) {
+// writeMutationRepresentation writes a mutation response. When revision
+// is non-empty (R01), the ETag is revision-based for CAS consistency;
+// otherwise it falls back to the representation hash.
+func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *http.Request, status int, value any, revision string) {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		api.writeError(w, r, http.StatusInternalServerError, "InternalError", "Response encoding failed")
@@ -568,7 +573,11 @@ func (api *FeatureAPI) writeMutationRepresentation(w http.ResponseWriter, r *htt
 		return
 	}
 	featureProtocolHeaders(w.Header())
-	w.Header().Set("ETag", strongETag(raw))
+	etag := strongETag(raw)
+	if revision != "" {
+		etag = `"` + revision + `"`
+	}
+	w.Header().Set("ETag", etag)
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "ETag")
 	mergeFeatureHeader(w.Header(), "Access-Control-Expose-Headers", "Location")
 	w.Header().Set("Content-Type", mediaGeoJSON)

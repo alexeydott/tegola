@@ -109,6 +109,15 @@ func (w FeaturesWriteConfig) Resolved() FeaturesWriteConfig {
 // admission, never opens a fake mutable endpoint.
 func (w FeaturesWriteConfig) Validate(published map[string]bool) error {
 	w = w.Resolved()
+	// R02: strict auth_mode validation. Only exact "dev" or "production"
+	// (or empty = production) are allowed. Typos like "prodution" or
+	// "Production" must fail at startup, not silently disable protection.
+	switch w.AuthMode {
+	case "", "production", "dev":
+		// ok
+	default:
+		return fmt.Errorf("features.write: unknown auth_mode %q (must be \"dev\" or \"production\")", w.AuthMode)
+	}
 	seen := make(map[string]bool, len(w.Collections))
 	for _, c := range w.Collections {
 		id := string(c.ID)
