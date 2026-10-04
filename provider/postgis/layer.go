@@ -13,6 +13,8 @@ type Layer struct {
 	name string
 	// The SQL to use when querying PostGIS for this layer
 	sql string
+	// tablename is the configured table name (empty for custom SQL layers)
+	tablename string
 	// The ID field name, this will default to 'gid' if not set to something other then empty string.
 	idField string
 	// The Geometery field name, this will default to 'geom' if not set to something other then empty string.

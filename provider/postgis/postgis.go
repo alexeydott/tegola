@@ -1544,6 +1544,7 @@ func CreateProvider(
 		lsrid := lcrs.SRID
 
 		l := Layer{
+			tablename: tblName,
 			name:      lName,
 			idField:   idfld,
 			geomField: geomfld,

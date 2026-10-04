@@ -30,6 +30,36 @@ func (p *Provider) BeginFeatureTx(ctx context.Context, options provider.TxOption
 	return p.MutationWriter().BeginFeatureTx(ctx, options)
 }
 
+// DescribeSchema implements provider.SchemaProvider via the writer.
+func (p *Provider) DescribeSchema(ctx context.Context, layer string) (provider.SchemaDescriptor, error) {
+	w, ok := p.MutationWriter().(*Writer)
+	if !ok {
+		return provider.SchemaDescriptor{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "schema not available"}
+	}
+	return w.DescribeSchema(ctx, layer)
+}
+
+func (w *Writer) DescribeSchema(ctx context.Context, layer string) (provider.SchemaDescriptor, error) {
+	m, err := w.mapping(ctx, layer)
+	if err != nil {
+		return provider.SchemaDescriptor{}, err
+	}
+	sd := provider.SchemaDescriptor{
+		Layer:    layer,
+		Table:    m.table,
+		IDColumn: m.idColumn,
+		Geometry: provider.GeometryColumnDescriptor{
+			Name: m.geomColumn,
+			Type: m.geomType,
+			SRID: m.geomSRID,
+		},
+	}
+	for _, col := range m.columns {
+		sd.Columns = append(sd.Columns, col)
+	}
+	return sd, nil
+}
+
 func (p *Provider) writer() *Writer {
 	// Provider has no writerMu; guard with a package-level approach via pool.
 	// Use a simple mutex on Writer creation (idempotent).
@@ -92,7 +122,9 @@ func (w *Writer) mapping(ctx context.Context, layer string) (*writeMapping, erro
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
-	tx, err := w.provider.pool.Begin(ctx)
+	// Explicitly request read-write: the provider defaults
+	// default_transaction_read_only=TRUE for query workloads.
+	tx, err := w.provider.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadWrite})
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
 	}
@@ -104,17 +136,14 @@ func deny(reason string) (*writeMapping, error) {
 }
 
 func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, error) {
-	if l.sql != "" {
+	// Only tablename layers are writable; user-provided custom SQL is read-only.
+	// (l.sql may contain auto-generated SQL for tablename layers; the
+	// authoritative signal is the configured tablename.)
+	if l.tablename == "" {
 		return deny(fmt.Sprintf("layer %q uses custom SQL and is read-only", l.name))
 	}
 	// Table name may be schema-qualified.
-	schema, table := "public", ""
-	parts := strings.Split(l.name, ".")
-	_ = parts
-	// Layer doesn't carry tablename directly in this struct; use name lookup.
-	// PostGIS layers are keyed by name; tablename comes from config.
-	// We inspect via information_schema.
-	table = l.name
+	schema, table := "public", l.tablename
 	if i := strings.LastIndex(table, "."); i >= 0 {
 		schema, table = table[:i], table[i+1:]
 	}
