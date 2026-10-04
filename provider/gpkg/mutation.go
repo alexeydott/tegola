@@ -30,6 +30,8 @@ type Writer struct {
 	provider *Provider
 	mu       sync.Mutex
 	db       *sql.DB
+	dbOnce   sync.Once
+	dbErr    error
 	// mappings caches admission results per layer.
 	mappings map[string]*writeMapping
 }
@@ -349,17 +351,23 @@ func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID ui
 }
 
 func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions) (provider.FeatureTx, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.db == nil {
+	// A13: db init via Once (no mutex held during BeginTx).
+	w.dbOnce.Do(func() {
 		db, err := sql.Open(featureSQLiteDriver, sqliteWritableDSN(w.provider.Filepath))
 		if err != nil {
-			return nil, fmt.Errorf("begin tx: open: %w", err)
+			w.dbErr = fmt.Errorf("begin tx: open: %w", err)
+			return
 		}
 		db.SetMaxOpenConns(1)
 		w.db = db
+	})
+	if w.dbErr != nil {
+		return nil, w.dbErr
 	}
-	tx, err := w.db.BeginTx(ctx, nil)
+	db := w.db
+
+	// BeginTx without holding w.mu (mapping needs it in Apply).
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
