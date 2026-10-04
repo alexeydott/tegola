@@ -5,6 +5,8 @@ import (
 	"errors"
 	"context"
 	"fmt"
+	"math/rand"
+	"time"
 	"strings"
 	"sync"
 
@@ -186,7 +188,9 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("begin: %v", err)}
 	}
-	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID}, nil
+	// A34: generate a unique txID for audit/outbox correlation.
+	txID := fmt.Sprintf("%d-%d", time.Now().UTC().UnixNano(), rand.Int63())
+	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID, txID: txID}, nil
 }
 
 func deny(reason string) (*writeMapping, error) {

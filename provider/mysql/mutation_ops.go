@@ -58,6 +58,7 @@ type featureTx struct {
 	tx     *sql.Tx
 	actor  string
 	reqID  string
+	txID   string // A34: unique transaction ID for audit/outbox
 }
 
 func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.MutationOutcome, error) {
@@ -100,7 +101,7 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 
 // recordAudit writes W13 audit/outbox entries in the transaction.
 func (t *featureTx) recordAudit(ctx context.Context, m provider.Mutation, outcome provider.MutationOutcome) error {
-	return pa.RecordTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, "")
+	return pa.RecordTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, t.txID)
 }
 
 func (t *featureTx) Commit(ctx context.Context) (provider.CommitReceipt, error) {

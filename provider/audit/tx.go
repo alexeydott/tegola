@@ -44,10 +44,13 @@ func RecordTx(ctx context.Context, tx *sql.Tx, collection string, op provider.Mu
 	case provider.MutationDelete:
 		eventType = "feature.deleted"
 	}
+	// A34: meaningful outbox payload (not empty {}).
+	payload := fmt.Sprintf(`{"feature_id":%d,"revision_before":%q,"revision_after":%q,"tx_id":%q,"request_id":%q}`,
+		outcome.FeatureID, revBefore, revAfter, txID, requestID)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO tegola_outbox (ts, event_type, collection, feature_id, payload, dispatched)
 		 VALUES (?, ?, ?, ?, ?, 0)`,
-		ts, eventType, collection, outcome.FeatureID, "{}",
+		ts, eventType, collection, outcome.FeatureID, payload,
 	); err != nil {
 		return fmt.Errorf("outbox: %w", err)
 	}
@@ -91,10 +94,13 @@ func RecordPgxTx(ctx context.Context, tx PgxTx, collection string, op provider.M
 	case provider.MutationDelete:
 		eventType = "feature.deleted"
 	}
+	// A34: meaningful outbox payload.
+	payload := fmt.Sprintf(`{"feature_id":%d,"revision_before":%q,"revision_after":%q,"tx_id":%q,"request_id":%q}`,
+		outcome.FeatureID, revBefore, revAfter, txID, requestID)
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO tegola_outbox (ts, event_type, collection, feature_id, payload, dispatched)
 		 VALUES ($1, $2, $3, $4, $5, FALSE)`,
-		ts, eventType, collection, outcome.FeatureID, "{}",
+		ts, eventType, collection, outcome.FeatureID, payload,
 	); err != nil {
 		return fmt.Errorf("outbox: %w", err)
 	}

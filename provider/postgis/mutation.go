@@ -5,6 +5,8 @@ import (
 	"errors"
 	"context"
 	"fmt"
+	"math/rand"
+	"time"
 	"sort"
 	"strings"
 	"sync"
@@ -208,7 +210,9 @@ func (w *Writer) BeginFeatureTx(ctx context.Context, options provider.TxOptions)
 	}
 	// A01: No DDL in data transaction. Audit tables must be created via
 	// migration before write traffic (see provider/audit/sql.go).
-	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID}, nil
+	// A34: unique txID for audit/outbox.
+	txID := fmt.Sprintf("%d-%d", time.Now().UTC().UnixNano(), rand.Int63())
+	return &featureTx{writer: w, tx: tx, actor: options.Actor, reqID: options.RequestID, txID: txID}, nil
 }
 
 // checkServiceSchema verifies the tegola service schema version.
@@ -415,6 +419,7 @@ type featureTx struct {
 	tx     pgx.Tx
 	actor  string
 	reqID  string
+	txID   string // A34
 }
 
 func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.MutationOutcome, error) {
@@ -449,7 +454,7 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (provider.Mu
 		outcome.RevisionBefore = strconv.FormatInt(bump.Old, 10)
 	}
 	// W13: audit in same transaction
-	if aerr := pa.RecordPgxTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, ""); aerr != nil {
+	if aerr := pa.RecordPgxTx(ctx, t.tx, m.Collection, m.Op, outcome, t.actor, t.reqID, t.txID); aerr != nil {
 		return provider.MutationOutcome{}, aerr
 	}
 	return outcome, nil
