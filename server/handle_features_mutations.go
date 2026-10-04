@@ -672,28 +672,43 @@ func (api *FeatureAPI) serveCollectionSchema(w http.ResponseWriter, r *http.Requ
 		"title":   collection + " feature",
 		"type":    "object",
 	}
+	// A17: properties go under properties.properties; required is nested
+	// there, not at root. Geometry is a root Feature member, not a
+	// property. Nullable fields allow null type.
 	props := map[string]any{}
 	required := []string{}
 	for _, p := range sd.Properties {
 		if p.ReadOnly {
 			continue
 		}
+		// A17: skip geometry if it appears in properties (it's a root member).
+		if p.Name == "geometry" {
+			continue
+		}
 		prop := map[string]any{}
+		var typ string
 		switch p.Type {
 		case feature.TypeInteger:
-			prop["type"] = "integer"
+			typ = "integer"
 		case feature.TypeDecimal:
-			prop["type"] = "number"
+			typ = "number"
 		case feature.TypeString:
-			prop["type"] = "string"
+			typ = "string"
 			if p.MaxLength > 0 {
 				prop["maxLength"] = p.MaxLength
 			}
 		case feature.TypeBoolean:
-			prop["type"] = "boolean"
+			typ = "boolean"
 		case feature.TypeDateTime:
-			prop["type"] = "string"
+			typ = "string"
 			prop["format"] = "date-time"
+		}
+		if typ != "" {
+			if p.Nullable {
+				prop["type"] = []any{typ, "null"}
+			} else {
+				prop["type"] = typ
+			}
 		}
 		if len(p.AllowedValues) > 0 {
 			prop["enum"] = p.AllowedValues
@@ -703,20 +718,22 @@ func (api *FeatureAPI) serveCollectionSchema(w http.ResponseWriter, r *http.Requ
 			required = append(required, p.Name)
 		}
 	}
-	// Geometry: GeoJSON geometry object or null.
-	props["geometry"] = map[string]any{
+	// Geometry: GeoJSON geometry object or null (root Feature member).
+	geomSchema := map[string]any{
 		"oneOf": []any{
 			map[string]any{"type": "object"},
 			map[string]any{"type": "null"},
 		},
 	}
+	propsSchema := map[string]any{"type": "object", "properties": props}
+	if len(required) > 0 {
+		propsSchema["required"] = required
+	}
 	schema["properties"] = map[string]any{
 		"type":       map[string]any{"const": "Feature"},
-		"geometry":   props["geometry"],
-		"properties": map[string]any{"type": "object", "properties": props},
+		"geometry":   geomSchema,
+		"properties": propsSchema,
 	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
+	schema["required"] = []string{"type", "geometry", "properties"}
 	api.writeJSON(w, r, http.StatusOK, "application/schema+json", schema)
 }
