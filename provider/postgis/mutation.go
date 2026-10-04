@@ -342,8 +342,26 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		writable: make(map[string]string),
 		domain:   p.domainID(),
 	}
+	// A16: exclude generated/identity columns from writable.
+	genRows, err := p.pool.Query(ctx, `
+		SELECT column_name FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2
+		AND (is_generated = 'ALWAYS' OR is_identity = 'YES')`, schema, table)
+	generated := map[string]bool{}
+	if err == nil {
+		for genRows.Next() {
+			var c string
+			if err := genRows.Scan(&c); err == nil {
+				generated[c] = true
+			}
+		}
+		genRows.Close()
+	}
 	for name := range cols {
 		if name == m.idColumn || name == m.geomColumn {
+			continue
+		}
+		if generated[name] {
 			continue
 		}
 		m.writable[name] = name
