@@ -17,7 +17,6 @@ import (
 	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/tegola/ogc/features"
 	"github.com/alexeydott/tegola/ogc/wfs"
-	"github.com/alexeydott/tegola/cache"
 	"github.com/alexeydott/tegola/provider"
 )
 
@@ -75,9 +74,11 @@ func (api *FeatureAPI) mutationCoordinator() *feature.MutationCoordinator {
 		ProviderFor: func(collection string) (provider.MutationProvider, string, error) {
 			return api.service.MutationProviderFor(collection)
 		},
-		// A36: bump cache epoch after successful mutation.
+		// A36: notify cache invalidation (no global state).
 		OnCommit: func(collections []string) {
-			cache.BumpEpoch()
+			if api.OnMutate != nil {
+				api.OnMutate(collections)
+			}
 		},
 	}
 }

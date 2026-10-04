@@ -100,7 +100,24 @@ func NewRouterWithOptions(a *atlas.Atlas, options RouterOptions) (*Router, error
 		if requestObserver, ok := observer.(observability.FeatureRequestObserver); ok {
 			bound.requestObserver = requestObserver
 		}
+		// A36: wire cache invalidation (no global state).
+		// Bump Atlas map epochs on successful mutation.
+		bound.OnMutate = func(collections []string) {
+			for _, m := range a.AllMaps() {
+				a.BumpMapEpoch(m.Name)
+			}
+		}
 		options.Features = &bound
+	}
+	if options.WFS != nil {
+		// A36: wire WFS-T cache invalidation.
+		wfsBound := *options.WFS
+		wfsBound.OnMutate = func(collections []string) {
+			for _, m := range a.AllMaps() {
+				a.BumpMapEpoch(m.Name)
+			}
+		}
+		options.WFS = &wfsBound
 	}
 	router := &Router{TreeMux: assembleRouter(a, options)}
 	if options.Features != nil {

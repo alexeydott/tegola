@@ -56,6 +56,9 @@ type FeatureAPI struct {
 	service         *features.Service
 	cfg             FeatureAPIConfig
 	uriPrefix       string
+	// A36: called after successful mutation with mutated collections.
+	// Set by router to bump Atlas cache epochs (no global state).
+	OnMutate func(collections []string)
 }
 
 // RouterOptions enables explicit feature publication; nil Features preserves legacy behavior.

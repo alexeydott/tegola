@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"sync"
 	"context"
 	"fmt"
 	"path"
@@ -173,29 +172,9 @@ func (k Key) String() string {
 	return base
 }
 
-// A36: global mutation epoch for cache invalidation. Bumped after every
-// successful mutation; included in tile cache keys. Conservative
-// (invalidates all maps) but correct. Per-map epochs are a future
-// optimization.
-var globalEpoch = struct {
-	sync.RWMutex
-	v uint64
-}{}
-
-// BumpEpoch increments the global mutation epoch. Call after successful commit.
-func BumpEpoch() uint64 {
-	globalEpoch.Lock()
-	defer globalEpoch.Unlock()
-	globalEpoch.v++
-	return globalEpoch.v
-}
-
-// Epoch returns the current global mutation epoch (0 if no mutations yet).
-func Epoch() uint64 {
-	globalEpoch.RLock()
-	defer globalEpoch.RUnlock()
-	return globalEpoch.v
-}
+// A36: Epoch is per-Atlas instance (see atlas.Atlas.BumpMapEpoch).
+// No global state: each Atlas tracks its own map epochs.
+// Key.Epoch=0 means "no epoch" and keeps backward-compatible key format.
 
 // InitFunc initialize a cache given a config map.
 // The InitFunc should validate the config map, and report any errors.
