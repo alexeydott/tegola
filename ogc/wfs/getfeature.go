@@ -31,6 +31,8 @@ type GetFeatureRequest struct {
 	PropertyNames []string
 	// SortBy is a list of "property [ASC|DESC]" sort criteria.
 	SortBy []SortCriterion
+	// StartIndex is the 0-based offset for paging (A28).
+	StartIndex uint
 }
 
 // SortCriterion is one sortBy term.
@@ -85,6 +87,14 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "maxFeatures", Text: "invalid maxFeatures"}}
 		}
 		req.MaxFeatures = uint(n)
+	}
+	// A28: parse startIndex for paging.
+	if si := q["startindex"]; si != "" {
+		n, err := strconv.ParseUint(si, 10, 32)
+		if err != nil {
+			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "startIndex", Text: "invalid startIndex"}}
+		}
+		req.StartIndex = uint(n)
 	}
 	if bbox := q["bbox"]; bbox != "" {
 		parts := strings.Split(bbox, ",")
@@ -166,7 +176,8 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 	if _, err := service.Collection(req.TypeName); err != nil {
 		return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "typeName", Text: fmt.Sprintf("unknown type %q", req.TypeName)}}
 	}
-	fq := provider.FeatureQuery{Limit: req.MaxFeatures}
+	// A28: fetch StartIndex+MaxFeatures to allow skipping (provider OFFSET planned).
+	fq := provider.FeatureQuery{Limit: req.MaxFeatures + req.StartIndex}
 	if fq.Limit == 0 {
 		fq.Limit = 1
 	}
@@ -280,8 +291,14 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		return nil
 	}
 	count := 0
+	skipped := uint(0)
 	_, err = service.QueryCollection(ctx, req.TypeName, fq, func(f features.Feature) error {
 		count++
+		// A28: skip first StartIndex features (provider OFFSET planned).
+		if skipped < req.StartIndex {
+			skipped++
+			return nil
+		}
 		return encodeOne(f)
 	})
 	if err != nil {
