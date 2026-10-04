@@ -2,7 +2,9 @@ package postgis
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/alexeydott/geom"
@@ -11,10 +13,38 @@ import (
 	"github.com/alexeydott/proj"
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
+	"github.com/jackc/pgx/v5"
 )
 
 // ph returns the $n placeholder for arg index i (1-based).
 func ph(i int) string { return fmt.Sprintf("$%d", i) }
+
+// A03: checkRevisionCAS verifies IfRevision against the current revision
+// inside the native transaction, BEFORE the data mutation. Uses
+// SELECT FOR UPDATE to lock the revision row (mirrors the MySQL helper).
+// Empty ifRevision skips the check; "0" requires no existing revision row.
+func checkRevisionCAS(ctx context.Context, tx pgx.Tx, collection string, featureID uint64, ifRevision string) error {
+	if ifRevision == "" {
+		return nil
+	}
+	var curRev int64
+	err := tx.QueryRow(ctx,
+		`SELECT revision FROM tegola_revisions WHERE collection = $1 AND feature_id = $2 FOR UPDATE`,
+		collection, featureID).Scan(&curRev)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			if ifRevision != "0" {
+				return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got 0", ifRevision)}
+			}
+			return nil
+		}
+		return &provider.MutationError{Kind: provider.MutationErrCommitUnknown, Reason: fmt.Sprintf("revision check: %v", err)}
+	}
+	if strconv.FormatInt(curRev, 10) != ifRevision {
+		return &provider.MutationError{Kind: provider.MutationErrPreconditionFailed, Reason: fmt.Sprintf("revision mismatch: expected %s, got %d", ifRevision, curRev)}
+	}
+	return nil
+}
 
 func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) (enc []byte, encStr string, useSTGeom bool, err error) {
 	g, err := wkb.DecodeBytes(wkbBytes)
@@ -336,6 +366,10 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 }
 
 func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	// A03: in-transaction CAS check before the data mutation.
+	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+		return provider.MutationOutcome{}, err
+	}
 	var sets []string
 	var args []interface{}
 	for pub, mv := range m.Properties {
@@ -397,6 +431,10 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 }
 
 func (t *featureTx) delete(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
+	// A03: in-transaction CAS check before the data mutation.
+	if err := checkRevisionCAS(ctx, t.tx, m.Collection, m.FeatureID, m.IfRevision); err != nil {
+		return provider.MutationOutcome{}, err
+	}
 	tbl := quoteIdent(mp.schema) + "." + quoteIdent(mp.table)
 	q := fmt.Sprintf("DELETE FROM %s WHERE %s = $1", tbl, quoteIdent(mp.idColumn))
 	tag, err := t.tx.Exec(ctx, q, m.FeatureID)
