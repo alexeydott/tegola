@@ -1,6 +1,7 @@
 package gml
 
 import (
+	"io"
 	"encoding/xml"
 	"fmt"
 	"math"
@@ -55,6 +56,8 @@ type parser struct {
 	geomType string
 	// stack of open element local names; stack[0] is the geometry root.
 	stack []string
+	// dimStack parallels stack: srsDimension at each level (R05 inheritance).
+	dimStack []string
 	// coordinate text accumulation
 	coordText strings.Builder
 	inCoords  bool
@@ -70,6 +73,9 @@ type parser struct {
 
 	seenCoords bool
 	rootSeen   bool
+	// R05 G15: track open member elements to detect empty members.
+	memberStack []string
+	memberHasCoords []bool
 }
 
 func (p *parser) parse(raw string) error {
@@ -77,11 +83,13 @@ func (p *parser) parse(raw string) error {
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			if p.rootSeen && len(p.stack) == 0 {
-				break // clean EOF after root closed
+			// R05 G14: only io.EOF after a closed root is clean.
+			// Syntax errors after the root must fail, not be ignored.
+			if err == io.EOF && p.rootSeen && len(p.stack) == 0 {
+				break
 			}
 			if p.rootSeen {
-				return fmt.Errorf("gml: unexpected end of XML inside <%s>", p.geomType)
+				return fmt.Errorf("gml: invalid XML after <%s>: %w", p.geomType, err)
 			}
 			return fmt.Errorf("gml: invalid XML: %w", err)
 		}
@@ -96,10 +104,17 @@ func (p *parser) parse(raw string) error {
 				}
 			}
 			p.stack = append(p.stack, name)
+			p.dimStack = append(p.dimStack, attrValue(t.Attr, "srsDimension"))
+			// R05 G15: track member boundaries.
+			if isMemberElement(name) {
+				p.memberStack = append(p.memberStack, name)
+				p.memberHasCoords = append(p.memberHasCoords, false)
+			}
 			if isCoordElement(name) {
 				p.inCoords = true
 				p.coordText.Reset()
-				p.coordDim = attrValue(t.Attr, "srsDimension")
+				// R05: inherit srsDimension from ancestors (G09).
+				p.coordDim = p.inheritedDim()
 			}
 		case xml.EndElement:
 			name := t.Name.Local
@@ -109,12 +124,24 @@ func (p *parser) parse(raw string) error {
 				}
 				p.inCoords = false
 			}
-			if name == "polygonMember" && (p.geomType == "MultiPolygon" || p.geomType == "MultiSurface") {
+			if (name == "polygonMember" || name == "surfaceMember") && (p.geomType == "MultiPolygon" || p.geomType == "MultiSurface") {
 				p.polys = append(p.polys, p.curPoly)
 				p.curPoly = nil
 			}
+			// R05 G15: verify member had coordinates.
+			if isMemberElement(name) && len(p.memberStack) > 0 {
+				idx := len(p.memberStack) - 1
+				if p.memberStack[idx] == name {
+					if !p.memberHasCoords[idx] {
+						return fmt.Errorf("gml: <%s> member carries no coordinates", name)
+					}
+					p.memberStack = p.memberStack[:idx]
+					p.memberHasCoords = p.memberHasCoords[:idx]
+				}
+			}
 			if len(p.stack) > 0 {
 				p.stack = p.stack[:len(p.stack)-1]
+				p.dimStack = p.dimStack[:len(p.dimStack)-1]
 			}
 		case xml.CharData:
 			if p.inCoords {
@@ -143,6 +170,25 @@ func (p *parser) enclosingWrapper() string {
 }
 
 // finishCoords parses accumulated coordinate text into the right bucket.
+// inheritedDim returns the nearest srsDimension from the stack (R05).
+// isMemberElement reports whether name is a multi-geometry member wrapper.
+func isMemberElement(name string) bool {
+	switch name {
+	case "pointMember", "lineStringMember", "polygonMember", "surfaceMember":
+		return true
+	}
+	return false
+}
+
+func (p *parser) inheritedDim() string {
+	for i := len(p.dimStack) - 1; i >= 0; i-- {
+		if p.dimStack[i] != "" {
+			return p.dimStack[i]
+		}
+	}
+	return ""
+}
+
 func (p *parser) finishCoords() error {
 	var elem string
 	if len(p.stack) > 0 {
@@ -153,16 +199,38 @@ func (p *parser) finishCoords() error {
 		return err
 	}
 	p.seenCoords = true
+	// R05 G15: mark current member as having coordinates.
+	if len(p.memberHasCoords) > 0 {
+		p.memberHasCoords[len(p.memberHasCoords)-1] = true
+	}
 	inner := p.enclosingWrapper() == "interior"
-	cl := coordList{pts: pts, kind: elem, inner: inner}
 
+	// R05: accumulate repeated <pos> elements within the same geometric
+	// node (G06/G07). Each <pos> is one point; a LineString/LinearRing
+	// with N <pos> elements is one coordList with N points.
 	switch p.geomType {
-	case "Point", "LineString", "MultiPoint", "MultiLineString":
-		p.parts = append(p.parts, cl)
+	case "Point", "LineString":
+		// Single geometry: append points to the current coordList.
+		if len(p.parts) > 0 && p.parts[len(p.parts)-1].kind == elem {
+			p.parts[len(p.parts)-1].pts = append(p.parts[len(p.parts)-1].pts, pts...)
+		} else {
+			p.parts = append(p.parts, coordList{pts: pts, kind: elem, inner: inner})
+		}
+	case "MultiPoint", "MultiLineString":
+		p.parts = append(p.parts, coordList{pts: pts, kind: elem, inner: inner})
 	case "Polygon":
-		p.rings = append(p.rings, cl)
+		// For Polygon, repeated <pos> in a LinearRing accumulate.
+		if len(p.rings) > 0 && p.rings[len(p.rings)-1].kind == elem && p.rings[len(p.rings)-1].inner == inner {
+			p.rings[len(p.rings)-1].pts = append(p.rings[len(p.rings)-1].pts, pts...)
+		} else {
+			p.rings = append(p.rings, coordList{pts: pts, kind: elem, inner: inner})
+		}
 	case "MultiPolygon", "MultiSurface":
-		p.curPoly = append(p.curPoly, cl)
+		if len(p.curPoly) > 0 && p.curPoly[len(p.curPoly)-1].kind == elem && p.curPoly[len(p.curPoly)-1].inner == inner {
+			p.curPoly[len(p.curPoly)-1].pts = append(p.curPoly[len(p.curPoly)-1].pts, pts...)
+		} else {
+			p.curPoly = append(p.curPoly, coordList{pts: pts, kind: elem, inner: inner})
+		}
 	default:
 		return fmt.Errorf("gml: unsupported geometry %q", p.geomType)
 	}
