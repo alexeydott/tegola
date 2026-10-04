@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/alexeydott/geom"
+	"github.com/alexeydott/tegola/feature"
 	"github.com/alexeydott/geom/encoding/wkb"
 
 	"github.com/alexeydott/tegola/config"
@@ -165,8 +166,13 @@ func TestWFSGetFeature(t *testing.T) {
 	if !strings.Contains(body, "wfs:FeatureCollection") {
 		t.Fatalf("not a feature collection: %s", body[:200])
 	}
-	if !strings.Contains(body, "wfs_sites."+strconv.FormatUint(out.FeatureID, 10)) {
-		t.Fatalf("inserted feature missing from GML")
+	// A31: FID uses NCName-safe encoding (wfs_sites -> wfs_x5F_sites).
+	expectedFID, err := feature.EncodeWFSFID("wfs_sites", out.FeatureID)
+	if err != nil {
+		t.Fatalf("encode FID: %v", err)
+	}
+	if !strings.Contains(body, expectedFID) {
+		t.Fatalf("inserted feature missing from GML (want FID %q)", expectedFID)
 	}
 	if !strings.Contains(body, "seed") {
 		t.Fatal("property value missing from GML")
