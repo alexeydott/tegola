@@ -1,6 +1,6 @@
 [Documentation index](../../README.md)
 
-# ADR-0009: Typed feature filtering and Queryables
+# Read ADR-0009: Typed feature filtering and Queryables
 
 Status: accepted architecture; implementation and provider admission require independent verification.
 

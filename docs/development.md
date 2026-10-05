@@ -94,13 +94,23 @@ The requested tile will include a `debug` layer with two features:
 Tegola is written in [Go](https://golang.org/) and requires [Go 1.26.7](https://go.dev/dl/) or higher to compile from source.
 (CI builds with the Go version pinned in `go.mod`.)
 To build tegola from the source, make sure you have Go installed and have cloned the repository.
-Navigate to the repository then run the following command:
+Build the embedded viewer first when it is required:
 
-```bash
-go generate ./... && cd cmd/tegola/ && go build -mod vendor
+```sh
+npm --prefix ui ci --ignore-scripts --no-audit --no-fund
+npm --prefix ui run build
+git restore -- ui/dist/.keep
 ```
 
-You will now have a binary named `tegola` in the current directory which is ready to run; follow the [Quick Start](../README.md#quick-start) after preparing a configuration file.
+Then build the Go executable:
+
+```bash
+go build -mod=vendor -o tegola ./cmd/tegola
+```
+
+CGO and a C compiler are required for GeoPackage. See the Windows guide for a complete release workflow.
+
+You will now have a binary named `tegola` in the repository root which is ready to run; follow the [Quick Start](../README.md#quick-start) after preparing a configuration file.
 
 ### Build flags
 
@@ -126,17 +136,20 @@ go build -tags 'noRedisCache noGpkgProvider noViewer'
 
 ### Setting version information
 
-Use linker flags to set the version information embedded in the binary:
+A plain build uses the historical `v0.21.0-fork.1` fallback from
+`internal/build.Version`; it does not identify the current release. Inject
+version and full revision metadata for a traceable binary and inspect
+`tegola version` afterwards. Use linker flags:
 
 ```bash
 # first set some env to make it easier to read:
 BUILD_PKG=github.com/alexeydott/tegola/internal/build
-VERSION="v0.21.0-fork.1+git.$(git rev-parse --short=8 HEAD)"
+VERSION="v0.21.0-fork.2+git.$(git rev-parse --short=8 HEAD)"
 GIT_BRANCH=$(git branch --no-color --show-current)
-GIT_REVISION=$(git log HEAD --oneline | head -n 1 | cut -d ' ' -f 1)
+GIT_REVISION=$(git rev-parse HEAD)
 
 # build the go binary
-go build -ldflags "-w -X ${BUILD_PKG}.Version=${VERSION} -X ${BUILD_PKG}.GitRevision=${GIT_REVISION} -X ${BUILD_PKG}.GitBranch=${GIT_BRANCH}"
+go build -mod=vendor -ldflags "-w -X ${BUILD_PKG}.Version=${VERSION} -X ${BUILD_PKG}.GitRevision=${GIT_REVISION} -X ${BUILD_PKG}.GitBranch=${GIT_BRANCH}" ./cmd/tegola
 ```
 
 ## See Also

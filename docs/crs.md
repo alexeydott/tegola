@@ -211,7 +211,7 @@ deterministic and collection specific; there is no inherited global CRS list.
 
 XY collections publish their CRS84 default and proven two-dimensional targets.
 XYZ/mixed collections publish CRS84h and proven height-bearing targets. The
-initial target set contains the applicable geographic default, its EPSG axis
+supported target set contains the applicable geographic default, its EPSG axis
 variant, Web Mercator and the proven source UTM/storage profile. Knowing another
 UTM identifier does not automatically advertise it for every collection.
 Explicit unlisted identifiers return 400. With `bbox-crs` absent, the existing
@@ -247,7 +247,7 @@ Native storage also needs an identity proof. GeoPackage native sources with an
 explicit admitted CRS configuration use that frozen coordinate declaration;
 automatic native SRID detection alone does not publish Part 2 metadata. MySQL
 native SRS IDs and axis options do not prove the full SRS definition, so its
-initial native profile retains Core without Part 2 publication. Raw admitted
+native profile retains Core without Part 2 publication. Raw admitted
 sources have a separate explicit coordinate declaration. Provider-specific native
 proofs and unsupported profiles must be evaluated separately; a successful raw
 query does not establish native Part 2 support.

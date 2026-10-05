@@ -1,4 +1,4 @@
-# ADR-0011: Feature representations, API definition and protocol limits
+# Read ADR-0011: Feature representations, API definition and protocol limits
 
 Status: Accepted after independent architecture and security review on 2026-10-02.
 Limit and response-size error behavior amended with PR #1 on 2026-10-03.
@@ -104,7 +104,7 @@ and retained output, not all intermediate service or encoder allocations.
 
 This amends ADR-0004's initial single-representation discovery boundary. Existing
 JSON media types and feature query semantics remain compatible. Public conformance
-declarations remain gated by the conformance phase; implementing HTML or OpenAPI
+declarations require matching conformance evidence; implementing HTML or OpenAPI
 does not independently declare an OGC conformance class.
 
 Independent review covers generated OpenAPI, JSON/HTML parity, escaped metadata

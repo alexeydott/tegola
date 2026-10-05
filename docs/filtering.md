@@ -20,7 +20,7 @@ and returns 501 for Queryables or filtering operations.
 
 Send a CQL2 text expression in the items resource's `filter` parameter. Encode
 the expression as a URL query value. `filter-lang=cql2-text` explicitly selects
-the initial language; omitting it with a filter selects the same language.
+the supported text language; omitting it with a filter selects the same language.
 
 ```text
 /features/collections/roads/items?filter=population%20%3E%3D%201000&filter-lang=cql2-text
@@ -38,7 +38,7 @@ names into identifiers. Space-containing, digit-first or hyphenated aliases are
 omitted from this catalog while remaining ordinary public feature properties.
 Eligible Unicode identifiers, including CJK names, retain their exact spelling.
 
-The initial expression profile supports:
+The implemented expression profile supports:
 
 - Standalone `TRUE` and `FALSE`, and `AND`, `OR`, `NOT` with parentheses.
 - Property-left, literal-right comparisons: `=`, `<>`, `<`, `<=`, `>`, `>=`.
@@ -84,9 +84,9 @@ and native date/time profiles are omitted from catalogs, rather than inferred
 from sampled values. See the backend guides for admitted types and source
 integrity checks. GPKG custom feature SQL remains unsupported.
 
-| Backend | Initial eligible scalar profiles |
+| Backend | Eligible scalar profiles |
 | --- | --- |
-| GeoPackage | Proven integer declarations with signed SQLite integer storage; BOOL/BOOLEAN with checked 0/1 storage; UTF-8 TEXT with filtered source integrity checks. |
+| GeoPackage | Proven integer declarations with signed SQLite integer storage; BOOL/BOOLEAN with checked 0/1 storage; finite INTEGER/REAL numbers under numeric declarations; UTF-8 TEXT with filtered source integrity checks. |
 | MySQL/MariaDB | Signed/unsigned integer widths, including UINT64; DECIMAL precision 1–65 and scale 0–30 within precision; BIT(1); utf8mb4 VARCHAR/TEXT families. |
 | PostGIS | int2/int4/int8, native boolean, text/varchar. |
 | HANA | Proven integer widths, DECIMAL precision through 38 with exact result metadata, native BOOLEAN, NVARCHAR on the admitted server profile. |
@@ -109,8 +109,10 @@ Aggregate AST property/literal text is bounded to 64 KiB. Catalogs allow 4096
 entries and 64 KiB aggregate property names. Limits reject input without
 truncation.
 
-The conformance declaration remains empty pending the selected official
-verification gates. This application profile is not an OGC certification.
+Filtering/CQL2 conformance classes are not advertised. The Feature API separately
+advertises its admitted Core, GeoJSON, HTML and OpenAPI implementation classes,
+and Part 2 CRS when every collection qualifies. These declarations are not an
+OGC certification; see [conformance status](api.md#errors-and-conformance-status).
 
 ## See Also
 

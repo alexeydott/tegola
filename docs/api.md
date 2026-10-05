@@ -10,9 +10,9 @@ This page documents the HTTP endpoints exposed by Tegola.
 /
 ```
 
-The server root will display the built-in viewer with an automatically generated style. For example:
-
-![tegola built in viewer](https://raw.githubusercontent.com/go-spatial/tegola/v0.4.0/docs/screenshots/built-in-viewer.png "tegola built in viewer")
+The server root serves the built-in viewer when UI assets are included in the
+binary. It uses the configured maps and generated style; it is separate from
+private application clients and their geometry editor plugins.
 
 ```
 /maps/:map_name/:z/:x/:y
@@ -32,6 +32,32 @@ Return vector tiles for a map. The URI supports the following variables:
 Return vector tiles for a map layer. The URI supports the same variables as the map URI with the additional variable:
 
 - `:layer_name` is the name of the map layer as defined in the `config.toml` file.
+
+## Tile cache policy
+
+Ordinary query-free tiles use the configured server-side cache. A layer request
+can also be satisfied by extracting its layer from a cached whole-map tile.
+`Tegola-Cache: HIT`, `MISS` or `SHARED` identifies the ordinary cached request's
+result (`SHARED` joins an in-flight render); bypassed requests can omit it.
+`cached` in a status response describes current cache availability, not whether
+an editor UI happens to be open. A first request or expired/evicted entry can
+legitimately miss even when no edits occurred.
+
+A write-enabled router keeps ordinary caching and returns HTTP `no-store` to
+prevent browsers from concealing source changes. For ordinary tile requests,
+send `X-Tegola-Editor-Active: true` or `1` to bypass server-cache reads and writes
+while editing. This header has an effect only in a write-enabled router and
+confers no mutation or maintenance authorization. Refresh the client's loaded
+tile sources after a save; a server invalidation cannot remove OpenLayers tiles
+already held in memory.
+
+Successful and unknown commit outcomes advance the router's cache generation for
+all maps. Renders started earlier cannot populate the new generation. Writable
+routers start with a new cache namespace after restart, so their first requests
+are cold even with persisted files. External SQL changes and multiple processes
+need separate invalidation; see [operating limits](wfs-scope-limitations.md).
+
+## Explicit tile cache maintenance
 
 Tile cache operations can be requested on the map-layer endpoint with the `tile`
 query parameter. The query parameter is never included in the tile cache key:
@@ -58,6 +84,9 @@ query parameter. The query parameter is never included in the tile cache key:
   }
   ```
 
+  For a layer, `cached` also checks the cached whole-map fallback. It does not
+  imply that the whole metatile is present or that a request has completed.
+
   The `metatile` array contains the metatile origin (`x`, `y`) and its
   effective width and height. At low zoom levels the dimensions can be
   smaller than 8x8 because they are clipped to the valid tile range.
@@ -71,6 +100,13 @@ query parameter. The query parameter is never included in the tile cache key:
 - `?tile=getupdated` renders and returns the requested tile immediately as an
   MVT response, and schedules the same background metatile regeneration as
   `?tile=update`.
+
+Maintenance is disabled by default. Enable `[webserver.tile_operations]` and
+supply its configured token in `X-Tegola-Tile-Operations-Token` for status,
+update, getupdated and dirty regeneration. Disabled operations or a missing/wrong
+token return 403; the rate limit returns 429 and the concurrency limit returns
+503. The editor-active header
+does not bypass this gate. See [cache configuration](configuration.md#tile-cache-maintenance-and-editing).
 
 The `tile` operation cannot be combined with other query parameters.
 Operation responses are marked `Cache-Control: no-store`.
@@ -117,9 +153,11 @@ Return an automatically generated [Mapbox GL Style](https://www.mapbox.com/mapbo
 Feature publication is disabled by default. Enable `[features]` and explicitly
 map public collection IDs to eligible `provider.layer` sources. The default
 base path is `/features`; configured server URI prefixes also apply. Map layers
-are not automatically published as collections. The initial GeoPackage profile
-supports eligible table-backed layers with a schema-proven unique INTEGER ID;
-custom SQL and MVT-only providers are not eligible.
+are not automatically published as collections. GeoPackage supports eligible
+table-backed layers with a schema-proven unique INTEGER ID; its custom feature
+SQL is unsupported. MySQL/MariaDB, PostGIS and HANA have separate source admission
+rules, including constrained single-table `feature_sql`. MVT-only providers are
+not eligible. See the [provider guides](provider-contract.md#raw-feature-query-contract).
 
 The following paths are relative to the feature base path. Each supports GET
 and HEAD; HEAD returns the same status and headers without a response body.
@@ -222,7 +260,7 @@ Published sources declare `xy`, `xyz` or `mixed_xy_xyz` dimensional metadata.
 Native GeoPackage derives dimensional eligibility from its schema; raw WKB/WKT
 default to XY and need explicit configuration for XYZ/mixed. XYZ/mixed requires
 `vertical_crs = "http://www.opengis.net/def/crs/OGC/0/CRS84h"`.
-The initial raw profile supports ISO-WKB Z and WKT Z geometry families; MOS
+The raw feature profile supports ISO-WKB Z and WKT Z geometry families; MOS
 remains XY. Actual M/ZM and EWKB profiles are unsupported. Source dimensional
 declarations are checked against encountered bodies.
 
@@ -297,7 +335,7 @@ metadata are not automatically queryable. A valid catalog can be empty.
 The text transport catalog omits aliases that cannot be expressed as CQL2
 identifiers, without removing those properties from ordinary feature responses.
 
-The initial CQL2 text profile supports TRUE/FALSE, AND/OR/NOT, six scalar
+The implemented CQL2 text profile supports TRUE/FALSE, AND/OR/NOT, six scalar
 comparisons and IS NULL/IS NOT NULL. Comparisons use a public property on the
 left and a compatible scalar literal on the right. Numeric literals remain
 exact, string comparisons preserve Unicode order and trailing spaces, and

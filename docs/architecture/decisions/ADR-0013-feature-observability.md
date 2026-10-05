@@ -1,4 +1,4 @@
-# ADR-0013: Feature observability and measured performance budgets
+# Read ADR-0013: Feature observability and measured performance budgets
 
 Status: Accepted after independent architecture and security design review on 2026-10-02. Implementation and the local performance matrix independently accepted within the measurement scope below.
 

@@ -1,6 +1,6 @@
 # ADR-0005: Dimensional raw feature queries
 
-Status: Accepted by S1 on 2026-10-01 after independent M3 architecture and M2 provider feasibility PASS. Architecture acceptance establishes no completed task, runtime evidence or OGC Core conformance claim.
+Status: accepted on 2026-10-01 after independent architecture and provider feasibility review. Architecture acceptance is separate from runtime and conformance verification.
 
 ## Context
 
@@ -50,7 +50,7 @@ Metadata is an immutable value snapshot. Unknown dimension is not proof of XYZ s
 
 Freeze GPKG source configuration: optional `spatial_dimension` is `xy`, `xyz` or `mixed_xy_xyz`; optional `vertical_crs` is the canonical CRS84h identifier below. Native GeoPackage infers dimension from valid geometry_columns.z values 0/1/2 when no override exists; explicit overrides must agree. Validate m as 0/1/2 independently; feature profiles declaring actual measure ordinates are unsupported initially. Raw WKB/WKT/MOS default to XY for compatibility; raw XYZ/mixed requires explicit spatial_dimension. XY forbids vertical_crs; XYZ/mixed requires it. Unknown/unsupported dimensional eligibility is retained as a feature capability error, without breaking legacy tile registration; syntactically invalid explicit configuration fails registration. Explicit XYZ/mixed without the required vertical key and whitespace-only explicit references are invalid configuration. Native-inferred XYZ without new dimensional keys retains a capability error when vertical metadata is absent. Every encountered raw body is checked against the declared dimension, so raw XY never silently decodes Z as XY.
 
-Initial height-preserving horizontal transformations admit only the reviewed canonical WGS84 profiles EPSG:4326, EPSG:3857 and EPSG:32601–32660/32701–32760, in both query and source roles. Source admission retains effective configuration/schema provenance and rejects custom/synthetic definitions, including inherited crs_defn. Numeric overrides explicitly declare the canonical CRS under the established configuration precedence; verify resolved source metadata accordingly. Custom or other source/query horizontal definitions are unsupported for XYZ until separately reviewed; successful 2D converter construction is insufficient. XY sources retain their existing projection support.
+Initial height-preserving horizontal transformations admit only the reviewed canonical WGS84 profiles EPSG:4326, EPSG:3857 and EPSG:32601–32660/32701–32760, in both query and source roles. XYZ/mixed source admission retains effective configuration/schema provenance and rejects custom/synthetic horizontal definitions, including inherited `crs_defn`, for this height-preserving profile. Numeric overrides explicitly declare the canonical CRS under the established configuration precedence; verify resolved source metadata accordingly. Custom or other source/query horizontal definitions are unsupported for XYZ until separately reviewed; successful 2D converter construction is insufficient. This restriction applies only to XYZ/mixed height preservation. Current XY publication supports admitted custom horizontal definitions, including the bounded etmerc/datum profile in `provider/crsconfig/custom_projection.go`; its zero-height horizontal datum conversion does not establish vertical-reference equivalence. See the [current CRS contract](../../crs.md).
 
 The geometry evaluation frame is the query CRS: transformed vertices define straight segments and the declared planar polygon surface there, matching the existing vertex-transform model. Nonlinear horizontal projection can turn a source-planar polygon into a nonplanar vertex set; reject such transformed surfaces with ErrUnsupported. Source planarity alone does not establish query-frame planarity. This representation model is an application decision, not a claim of analytic preservation of curved transformed segments.
 
@@ -95,7 +95,7 @@ Keep SQL coarse filtering horizontal where appropriate. Project each 3D box to i
 5. Extend FeatureService catalog, six-coordinate parsing and recursive GeoJSON serialization while preserving dimensional coordinates and ownership.
 6. Extend reusable provider contract cases and independently frozen acceptance oracles. Update configuration/runtime wiring under its separate decision.
 
-No current codec/provider is certified XYZ-capable by this draft. New API names and metadata configuration require independent compatibility review before acceptance.
+This architectural decision alone does not certify any codec/provider as XYZ-capable. New API names and metadata configuration require independent compatibility review before acceptance.
 
 ## Required evidence before completion
 
@@ -107,4 +107,4 @@ No current codec/provider is certified XYZ-capable by this draft. New API names 
 - Exact predicates before paging/counting, SQL pruning claims scoped honestly, cancellation, callback error chains, cursor cleanup, repeatability and concurrent ownership.
 - Existing 2D raw and tile behavior retained, including strict malformed geometry and legacy tile exclusion policies.
 
-Independent reviewers must examine geometry/CRS semantics, provider feasibility and service compatibility before S1 accepts this ADR or opens implementation. Architecture acceptance alone does not establish runtime or Core conformance.
+Independent reviewers must examine geometry/CRS semantics, provider feasibility and service compatibility when accepting or amending this decision. Architecture acceptance alone does not establish runtime or Core conformance.

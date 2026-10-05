@@ -4,9 +4,9 @@
 
 Build from the committed source with Go matching `go.mod`, Node/npm and an
 amd64 C compiler on PATH. CGO must be enabled to include GeoPackage support.
-Current tagged source: `v0.21.0-fork.2` at
+Historical read-feature release tag: `v0.21.0-fork.2` at
 `db4e8ee73a3ddfe3b3c8e054c59e833b697dce85`. Fetch tags and select the intended
-release in an isolated checkout before building. A Git tag is not a GitHub Release
+release in an isolated checkout before building. Current master includes later WFS, mutation and writable-cache changes; build its exact revision when those features are required. A Git tag is not a GitHub Release
 asset or proof of deployment.
 
 Run these PowerShell commands from the repository root; stop on any failed step.
@@ -30,7 +30,7 @@ $env:GOARCH = 'amd64'
 $revision = git rev-parse HEAD
 $branch = git branch --show-current
 $version = git describe --tags --exact-match HEAD
-if ($LASTEXITCODE -ne 0) { throw "Build a release from an exact tagged revision" }
+if ($LASTEXITCODE -ne 0) { $version = "v0.21.0-fork.2+git.$($revision.Substring(0, 8))" }
 $flags = "-s -w -X github.com/alexeydott/tegola/internal/build.Version=$version -X github.com/alexeydott/tegola/internal/build.GitRevision=$revision -X github.com/alexeydott/tegola/internal/build.GitBranch=$branch"
 go build -mod=vendor -trimpath -ldflags $flags -o tegola.exe ./cmd/tegola
 if ($LASTEXITCODE -ne 0) { throw 'release build failed' }
@@ -45,8 +45,7 @@ version instead. `tegola.exe version` must report the expected source commit,
 CGO/GeoPackage support, and a built viewer rather than `viewer not built`.
 
 Run the CGO-off/on test matrix and lint before publishing; distinguish gated
-database/cloud tests from actual live-service checks. The completion audit's
-verified scope and remaining limitations are listed in [UPSTREAM.md](../UPSTREAM.md).
+database/cloud tests from actual live-service checks. The fork's current source scope and remaining limitations are listed in [UPSTREAM.md](../UPSTREAM.md).
 Geographic definitions support WGS84 identity and the Go fork's three- and
 seven-parameter datum transformations; see [the CRS contract](crs.md#geographic-proj-definitions)
 for the remaining grid, unit, axis and prime-meridian restrictions and the

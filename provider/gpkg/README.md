@@ -260,6 +260,23 @@ For automatically detected MOS, undecodable feature rows are skipped with a
 warning at tile rendering, consistently with the probe. A bad row does not
 hide other valid features. Explicit-format error policies are unchanged.
 
+## Feature mutations
+
+Feature writes are opt-in and apply only to separately admitted direct tables.
+Per-collection operations, authentication and conditional revisions are configured
+under `[features.write]`; WFS transactions use the same mutation coordinator.
+Create requires a database-generated key. Read/tile support alone does not admit
+writes, and custom tile SQL does not supply a writable table mapping.
+
+The MOS write profile maintains four resolved `bbox_*_fieldname` columns in the
+same transaction as encoded geometry. Attribute-only updates preserve geometry,
+opaque annotations and bounds. An admitted custom `etmerc` source projection is
+converted using explicit datum semantics. Detected canonical MapplGIS tables have
+narrower update/delete rules and do not admit creation. See
+[geometry write limits](../../docs/geometry-formats.md#mos-writes-with-separate-bounds-columns),
+[write configuration](../../docs/configuration.md#explicit-wfs-and-write-publication)
+and [provider validation](../../docs/provider-matrix.md).
+
 ## Raw feature queries
 
 The optional `FeatureQuerier` capability queries table-backed layers with a
@@ -344,7 +361,7 @@ all-NaN points are absence candidates even with misleading bounds.
 Cross-CRS bounds use ordered source chunks and exact transformed geometry
 matching; no heuristic inverse envelope is used to discard candidates.
 
-The initial SQL predicate profile accepts at most 512 requested IDs and 128
+The SQL predicate profile accepts at most 512 requested IDs and 128
 ordinary bounds. Unsupported profiles/ranges preserve `errors.Is(ErrUnsupported)`;
 field selection is restricted to resolved public properties. No feature query
 calls `TileFeatures` or constructs a tile.

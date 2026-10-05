@@ -1,77 +1,45 @@
 [Documentation index](../README.md)
 
-# Feature service: source baseline
+# Feature service architecture
 
-Status: historical source baseline prepared on 2026-10-01, followed by current integration contracts below. Task 2 architecture was independently accepted. The implemented application profile is documented in the [API reference](../api.md); this architecture page declares no OGC conformance.
+The current source implements raw feature queries, OGC API Features reads and mutations, and WFS reads and transactions alongside MVT serving. Publication and writes are independently opt-in. This architecture describes source behavior; it is not an OGC certification or a deployment acceptance record.
 
-Historical baseline source is Tegola `c65beeb8519f425ff8365c76e54e93baf8e17b07`. This local documentation revision has the same executable source as published `70c53413b06bab23318bac1722852df1fec335e7`. The historical planning revision `18126bb6ca0737b3644f06359ad7703b57bde125` is separated by 134 commits and is comparison evidence only.
+## Package boundaries
 
-Current implemented source is tagged `v0.21.0-fork.2` at `db4e8ee7`.
-`provider.FeatureQuerier`, `ogc/features`, `ogc/cql2`, HTTP publication and
-the optional Lambda adapter are implemented. Baseline statements below describe
-the earlier snapshot; current provider guarantees are in the
-[provider contract](../provider-contract.md) and current release scope is in the
-[release record](../release/feature-api.md).
-
-## Existing integration points
-
-| Source | Symbols / responsibility |
+| Package | Responsibility |
 |---|---|
-| [provider/provider.go](../../provider/provider.go) | Tile, Tiler.TileFeatures, LayerFielder, TilerUnion, Register, MVTRegister |
-| [provider/feature.go](../../provider/feature.go) | Feature and feature value contract |
-| [server/server.go](../../server/server.go) | NewRouter, Start, URIPrefix, hostName |
-| [config/config.go](../../config/config.go) | Config and Webserver |
-| [cmd/internal/register/providers.go](../../cmd/internal/register/providers.go) | Providers composition |
-| [provider/crsconfig/crsconfig.go](../../provider/crsconfig/crsconfig.go) | ResolveProvider, ResolveLayer, ApplySystemInfoCRS |
-| [provider/geometrycodec/geometrycodec.go](../../provider/geometrycodec/geometrycodec.go) | shared geometry decoding |
-| [basic/epsg.go](../../basic/epsg.go) | SRID/projection registry |
-| [server/middleware_tile_http_cache.go](../../server/middleware_tile_http_cache.go) | TileHTTPCacheHandler |
-| [UPSTREAM.md](../../UPSTREAM.md) | local exact-SHA verification policy |
-| [go.mod](../../go.mod) | published module namespaces and versions |
+| `provider/` | Optional `FeatureQuerier` and mutation contracts, detached metadata, typed query/filter values and errors |
+| `provider/<backend>/` | Source admission, SQL compilation, protected reads, decoding and native transactions |
+| `feature/` | Shared collection catalog, schema, identity, policy and mutation coordinator |
+| `ogc/features/` | Read service, public CRS transforms and feature representations |
+| `ogc/wfs/` | WFS/GML/filter parsing and protocol serialization |
+| `ogc/cql2/` | Selected CQL2 text grammar mapped to provider-neutral expressions |
+| `server/` | HTTP input validation, routing, representation negotiation, bounded responses and cache middleware |
+| `cmd/` and `config/` | Startup validation and assembly of immutable runtime instances |
 
-At the frozen source baseline, Tiler.TileFeatures accepted context, layer, Tile, provider.Params and a callback, and registration composed TilerUnion values; FeatureQuerier was not yet implemented. Standard providers are GPKG, MySQL/MariaDB, PostGIS and HANA; mvt_postgis/mvt_hana bypass raw-feature construction and remain outside initial scope.
+Feature queries never fabricate a tile or invoke `TileFeatures` as a fallback. MVT-only providers have no implicit raw-feature capability. Explicit collections map public IDs to provider layers independently of map styling.
 
-## Baseline changes to preserve
+## Query and mutation boundaries
 
-Shared SQL token scanning, identifier/literal quoting, valid unsigned feature IDs, timed probes and existing fixture harness are current contracts. Source CRS resolution, collision rejection, datum transforms and bounded MOS inference must remain shared. Published geom/proj modules replace historical filesystem replacements. MVT topology/scale behavior, asynchronous metatile updates, cancellation handling and seeded-map/layer cache interoperability must remain compatible.
+Providers own dialect-specific SQL, bound parameters, row scanning and transactional guarantees. Services and handlers do not execute SQL. Reuse decoding only where semantics match: raw queries preserve absent geometry, while tiles omit geometry they cannot encode. Raw feature responses do not apply tile clipping or simplification.
 
-New transport work integrates into server.NewRouter. Preserve existing credential/query no-store protections and GET/HEAD tile-cache parity. Feature HTTP cache policy will require its own decision and evidence.
+Default feature coordinates use CRS84 longitude/latitude or an admitted height-preserving CRS. Public CRS identifiers describe effective coordinate semantics; internal synthetic SRIDs must not become fabricated EPSG codes. Transform detached response values without changing provider-owned geometry.
 
-## Verification boundary
+Paging is bounded and ordered by stable identity. Unknown totals remain distinct from exact zero. Provider selection, including exact spatial and temporal matching, precedes paging. Separate requests across a changing dataset do not promise one snapshot.
 
-Baseline/source retrieval has been checked. No Feature runtime, database integration, OGC conformance or new suite pass is claimed. Later gates require the exact candidate revision, environment, fixtures, commands and explicit skips. The current fork's fallback is full vendored tests with CGO disabled/enabled and golangci-lint; see [UPSTREAM.md](../../UPSTREAM.md).
+Both mutation adapters resolve the same schema, identity, authorization policy and transaction domain through `feature/`. Read eligibility does not grant write eligibility. Native writers enforce admitted source shapes, revision checks and atomic outcomes; protocol adapters map their neutral results.
 
-## See Also
+## Tile cache after mutations
 
-- [OGC edition baseline](ogc-api-features.md)
-- [Jivan route inventory](../migration/jivan-feature-matrix.md)
-- [Provider contract](../provider-contract.md)
-- [CRS contract](../crs.md)
-
-## Target architecture (accepted)
-
-Independent review returned provider-domain (M1) PASS and HTTP-domain (M4) PASS on 2026-10-01; [ADR-0001](decisions/ADR-0001-feature-service-boundaries.md) records acceptance state.
-
-1. Introduce optional `provider.FeatureQuerier` alongside `Tiler`. Existing tile interfaces and registrations remain compatible. Feature queries never fabricate a Tile or invoke TileFeatures as a fallback.
-2. Own FeatureQuery, typed provider errors, query results and filter AST in `provider/`. Keep route names, query strings, status codes, HTTP headers and SQL strings out of this public contract. Task 7 finalizes its concrete signatures against the current Params interface.
-3. Own FeatureService in `ogc/features/`; Task 11 creates `service.go` and `geojson.go` there. It resolves explicitly published collections to configured provider/layer identities, performs CRS transforms and creates output models. No handler runs SQL or scans provider rows.
-4. `server/` parses and validates transport input, negotiates representation and maps typed errors. Reuse NewRouter, URI prefix/proxy handling, middleware and observability. `cmd/` remains the composition root; configuration is validated before serving.
-5. Reuse stable row/ID/property/geometry decode seams for MVT and feature paths. SQL generation and dialect-specific predicates stay in individual providers. A seam is shared only when semantics are identical; do not force one SQL dialect abstraction.
-6. Default Part 1 output uses CRS84 longitude/latitude semantics, independently of source SRID. Transform a copy and retain provider Feature/geometry values. Preserve GeometryCollection in GeoJSON; MVT flattening/clipping/simplification never applies to FeatureService output.
-7. Model Part 2 output/query CRS explicitly at the service boundary. Supported public CRS identifiers are URI references; process-local synthetic SRIDs never become fabricated EPSG codes. Task 25 defines publication details using this invariant.
-8. Result count distinguishes unknown from exact zero. Emit numberMatched only when exact and known; numberReturned is the encoded result count. Cancellation and callback/encoding errors stop work and retain their error chain.
-9. Provider paging is transport-independent, initially deterministic ID ordering and a bounded offset cursor. The service constructs public links and enforces publication limits. Keyset paging is a future explicit extension, not an implicit requirement. Paging across changing datasets does not promise snapshot consistency without backend support.
-10. Public collections explicitly map IDs to provider.layer; map-layer styling is not feature publication. Exclude mvt_postgis/mvt_hana from the initial feature capability set; no silent raw-feature fallback.
-11. Parser/validation produces a neutral typed AST resolved through published Queryables. Provider compilers bind values and map allowlisted identifiers/operators. Filters are not raw SQL and are never implemented by ordinary full-collection materialization.
-12. Lambda adapts the same constructed HTTP handler/service. A deployment adapter cannot fork FeatureService, provider semantics or protocol handlers.
+Writable routers retain server-side tile caching with a router-specific startup namespace and generation snapshots. Successful or uncertain commits invalidate the generation; confirmed rollback does not. Requests already rendering retain their old namespace, including background regeneration and deduplication keys. `X-Tegola-Editor-Active: true` or `1` bypasses ordinary tile cache use for that request. Writable tile responses remain HTTP `no-store`. This process-local mechanism does not observe external SQL changes or coordinate independent servers; see the [API reference](../api.md).
 
 ## Dependency direction
 
-`cmd -> config + registration + service construction`; `server -> ogc/features -> provider contracts + geometry/CRS foundations`; `ogc/cql2 -> provider filter model`; individual providers consume shared codec/CRS helpers. The provider contract imports neither server nor ogc packages. New packages must not introduce cycles.
+`cmd` assembles configuration, providers and services. `server` depends on protocol adapters and feature services; the shared core depends on provider contracts and geometry/CRS foundations. Provider contracts import neither HTTP handlers nor protocol packages. Lambda adapts the assembled router without duplicating feature semantics.
 
-## Architecture review acceptance
+## Decisions and verification
 
-Provider review checks optional capability detection, current Params compatibility, cancellation/immutability, shared decoder ownership, paging/count semantics and no fake tile. HTTP review checks publication/service boundary, URI prefix integration, representations, CRS/count/error mapping and shared Lambda handler. Changes to this accepted boundary require an ADR before dependent code.
+The [decision index](decisions/README.md) distinguishes historical read and write decisions. Current provider guarantees and restrictions are in the [provider contract](../provider-contract.md), [WFS scope](../wfs-scope-limitations.md) and [release guide](../release/feature-api.md). Run the documented suites against the exact candidate revision; source implementation, local database evidence, official validator output and deployed acceptance are separate results.
 
 ## Shared decoder ownership
 

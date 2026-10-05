@@ -1,4 +1,4 @@
-# ADR-0012: Feature conformance admission and panic containment
+# Read ADR-0012: Feature conformance admission and panic containment
 
 Status: Accepted after independent architecture and security design review on 2026-10-02. Implementation independently reviewed; checkpoint acceptance requires the verification evidence below.
 

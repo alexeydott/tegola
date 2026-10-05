@@ -46,7 +46,7 @@ Before production capability is enabled, independently review the final source a
 - ordinary/custom raw selections, exact 3D and temporal predicates, paging and ownership;
 - each admitted native profile, malformed wire/storage enforcement and empty geometry.
 
-Unsupported profiles remain explicitly unsupported. Architectural approval is permission to implement and test this protocol, not acceptance of Task 18 or G5.
+Unsupported profiles remain explicitly unsupported. Architectural approval is permission to implement and test this protocol, not runtime acceptance of a provider profile.
 
 ## Sources
 

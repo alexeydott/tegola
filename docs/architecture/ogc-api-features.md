@@ -6,7 +6,7 @@ Status: selected source editions verified on 2026-10-01. The original source bas
 
 ## Normative source set
 
-| Source ID | Document / edition | Planned responsibility |
+| Source ID | Document / edition | Responsibility |
 |---|---|---|
 | OGC-P1 | [17-069r4, Part 1 Core 1.0.1](https://docs.ogc.org/is/17-069r4/17-069r4.html) | resource graph, limit/bbox/datetime, errors and representations |
 | OGC-P2 | [18-058r1, Part 2 CRS 1.0.1](https://docs.ogc.org/is/18-058r1/18-058r1.html) | public CRS references, crs/bbox-crs, Content-Crs |
@@ -20,7 +20,7 @@ Document header versions were read from these authoritative sources. Future stan
 
 Jivan is pinned at `c9fba2bb5188ba43c27539740195085e92f0ad7d`; its [routes](https://github.com/go-spatial/jivan/blob/c9fba2bb5188ba43c27539740195085e92f0ad7d/server/routes.go), handlers, provider adapter and WFS3 output provide migration evidence. Their legacy behavior never overrides normative requirements.
 
-The [OGC source/components repository](https://github.com/opengeospatial/ogcapi-features), [Features ETS](https://cite.ogc.org/teamengine/about/ogcapi-features-1.0/1.0/site/), and [TEAM Engine](https://github.com/opengeospatial/teamengine) are tooling references. Tool versions/components must be pinned by the tasks which adopt them; mutable master URLs are not immutable conformance evidence.
+The [OGC source/components repository](https://github.com/opengeospatial/ogcapi-features), [Features ETS](https://cite.ogc.org/teamengine/about/ogcapi-features-1.0/1.0/site/), and [TEAM Engine](https://github.com/opengeospatial/teamengine) are tooling references. Tool versions/components must be pinned by the verification workflow; mutable master URLs are not immutable conformance evidence.
 
 ## Existing Tegola transport
 
@@ -44,6 +44,6 @@ not passes. Runtime declarations do not establish an OGC certification.
 
 ## See Also
 
-- [Feature-service baseline](feature-service.md)
+- [Feature-service architecture](feature-service.md)
 - [Jivan route inventory](../migration/jivan-feature-matrix.md)
 - [HTTP API](../api.md)

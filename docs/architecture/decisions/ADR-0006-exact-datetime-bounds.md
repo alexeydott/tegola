@@ -1,6 +1,6 @@
 # ADR-0006: Exact RFC 3339 query boundaries
 
-Status: Accepted by S1 on 2026-10-01 after independent M3 mathematical/representation PASS and authoritative IERS table verification. Implementation and Core acceptance remain pending.
+Status: accepted on 2026-10-01 after independent mathematical/representation review and authoritative IERS table verification; exact datetime bounds are implemented in the current query contract.
 
 ## Context
 

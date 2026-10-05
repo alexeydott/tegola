@@ -1,6 +1,6 @@
 # ADR-0004: Explicit feature publication and immutable HTTP runtime
 
-Status: Accepted by S1 on 2026-10-01 after independent M3 PASS. Implementation and runtime verification remain pending.
+Status: Accepted on 2026-10-01; implemented in the current publication runtime.
 
 ## Decision
 
@@ -36,7 +36,7 @@ Register under the existing URI-prefix group before the viewer fallback. Compose
 
 Negotiation uses one canonical representation per resource: application/json for discovery, application/vnd.oai.openapi+json;version=3.0 for /api, and application/geo+json for items/item. Absent Accept and matching wildcard ranges are accepted. Unsupported or malformed Accept receives406 before provider I/O, with generic JSON error, HEAD suppression and no-store. Highest matching range specificity controls quality, so explicit q=0 overrides a broader wildcard; equal-specificity duplicates use maximum quality. Honour media parameters and quoted delimiters; matching parameter count participates in specificity. Join all Accept header values and tolerate empty HTTP list members as RFC 9110 requires. Quality follows the HTTP qvalue grammar (0–1, at most three fractional digits). The initial API supplies no application/json alias for feature payloads; later representations require corresponding implementations and tests. Existing tile/viewer negotiation remains unchanged.
 
-Task 14 implements landing, /api, /conformance, /collections and collection resources. Supply a valid minimal OpenAPI definition matching implemented routes. Conformance advertises only verified implemented classes; do not announce Core merely because discovery is installed. HEAD preserves GET status/headers and suppresses bodies. The accepted user decision requires correct four- and six-number bbox support before Task 15/G4; dimensional semantics are specified in a separate reviewed ADR before dependent implementation.
+HTTP publication implements landing, /api, /conformance, /collections and collection resources. Supply a valid minimal OpenAPI definition matching implemented routes. Conformance advertises only verified implemented classes; do not announce Core merely because discovery is installed. HEAD preserves GET status/headers and suppresses bodies. The accepted user decision requires correct four- and six-number bbox support for item queries; dimensional semantics are specified in a separate reviewed ADR before dependent implementation.
 
 ## Verification
 
@@ -44,8 +44,8 @@ Configuration parsing/defaults/invalid paths and IDs, explicit binding and start
 
 ## Consequences
 
-Source-error classification amendment: `provider.FeatureDataError { Err error }` unwraps encountered source-row/decode/integrity errors. HTTP recognizes it before InvalidFeatureQueryError and returns generic500. Request syntax and structural query errors remain400; unsupported requested capabilities remain501. Context cancellation/deadlines retain their independent mapping and must not be reclassified as corrupt data. Independent M3 review confirmed the previous source-row InvalidFeatureQueryError chain otherwise incorrectly produced400 for valid requests. Preserve underlying error chains without exposing source details in responses.
+Source-error classification amendment: `provider.FeatureDataError { Err error }` unwraps encountered source-row/decode/integrity errors. HTTP recognizes it before InvalidFeatureQueryError and returns generic500. Request syntax and structural query errors remain400; unsupported requested capabilities remain501. Context cancellation/deadlines retain their independent mapping and must not be reclassified as corrupt data. Independent review confirmed the previous source-row InvalidFeatureQueryError chain otherwise incorrectly produced400 for valid requests. Preserve underlying error chains without exposing source details in responses.
 
-Feature publication is explicit and defaults off. Existing tile and viewer behavior is preserved. The exactly-one-dot binding restricts source names as existing map bindings do. Full OpenAPI enrichment and Lambda deployment parity remain later tasks; basic startup wiring is required now.
+Feature publication is explicit and defaults off. Existing tile and viewer behavior is preserved. The exactly-one-dot binding restricts source names as existing map bindings do. The current source also implements OpenAPI generation and a shared-router Lambda adapter; deployment acceptance remains installation-specific.
 
 Router compatibility amendment: the option-aware constructor returns *server.Router embedding *httptreemux.TreeMux. Its ServeHTTP captures the immutable mounted feature base and sets no-store before delegation for original or TreeMux-equivalent cleaned feature paths, including automatic redirects. Legacy NewRouter still returns *httptreemux.TreeMux. StartWithOptions and Lambda must use Router.ServeHTTP through http.Handler; bypassing through the embedded TreeMux is not the serving interface. Validate enabled-feature URI prefixes as static paths (root and one trailing slash allowed), without changing legacy disabled behavior. Verify trailing/clean redirects, custom headers and nonfeature redirect parity. The vendored TreeMux has no redirect hook; no dependency patch is introduced.

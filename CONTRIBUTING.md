@@ -5,7 +5,7 @@ Thanks for your interest in contributing! This repository is a fork of
 [@alexeydott](https://github.com/alexeydott). The fork adds, among other
 things, the unified CRS contract (`srid` / `crs_defn`, synthetic SRIDs),
 shared geometry formats (`wkb`/`wkt`/`mos` via `provider/geometrycodec`),
-the reworked GeoPackage provider, the MySQL provider and HANA MVT support.
+the reworked GeoPackage provider, MySQL and HANA MVT support, OGC feature publication, conditional mutations and WFS transactions.
 See [CHANGELOG.md](CHANGELOG.md) for the fork-specific history.
 
 ## Where to report things
@@ -66,10 +66,11 @@ The easiest way to get a PostGIS instance for the integration tests is the
 compose file in the repository:
 
 ```bash
-docker compose up -d
+docker compose up -d --wait redis postgis mysql
+docker compose run --rm migration
 ```
 
-(Then create the test tables and set `RUN_POSTGIS_TESTS=yes` as above.)
+Set the native test environment variables only for the disposable services above. Mutation suites have separate opt-in DSNs described in [provider evidence](docs/provider-matrix.md).
 
 ## Dependencies and `third_party/`
 
@@ -93,8 +94,7 @@ code. See [dependency ownership and migration](third_party/README.md).
   on feature branches (`fix/<topic>`, `feat/<topic>`).
 * Base your pull request on the default branch and keep it focused; one
   logical change per PR.
-* Reference the issue number in your commit message
-  (`git commit -am 'Fix CRS fallback #XXX'`).
+* Reference the relevant issue when one exists; stage intended files explicitly.
 
 ## Conventions
 
@@ -113,5 +113,13 @@ code. See [dependency ownership and migration](third_party/README.md).
 * New behaviour needs tests. Unit tests must run without a database; use
   sqlmock or in-memory sqlite where appropriate.
 * Both CGO and non-CGO builds must pass locally. The workflow defines the
-  same matrix; remote CI availability is tracked as A16 in `UPSTREAM.md`.
+  same matrix; record actual remote CI results separately from local verification.
 * Run `go vet ./...` and keep the non-test code clean.
+
+## Documentation
+
+Keep published Markdown about product behavior, configuration, architecture,
+compatibility and contributor guidance. Do not include internal implementation
+plans, audit-pass names, task/role codes or agent execution records. Preserve
+useful findings as verified contracts and limitations. Historical release notes
+must not imply that an older tag includes later source changes.

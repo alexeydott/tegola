@@ -1,9 +1,7 @@
-# ADR-0012: Transaction domains and unknown commit outcome
+# Write ADR-0012: Transaction domains and unknown commit outcome
 
 Status: accepted on 2026-10-04.
 Date: 2026-10-04
-Decision owner: S1
-Affected tasks/gates: W02, W09, W11, W13, W33; WG2, WG6
 
 ## Context
 
@@ -38,5 +36,5 @@ treats outcome-unknown as "reconcile, do not blindly resend".
 
 ## Verification and acceptance record
 
-T-TX-001..012: single native tx, mid-transaction rollback, document order,
+Transaction tests cover one native transaction, mid-transaction rollback, document order,
 cross-domain rejection, unknown-commit handling, outbox atomicity.

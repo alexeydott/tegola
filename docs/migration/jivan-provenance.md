@@ -27,17 +27,17 @@ The audited Tegola implementation range is `c65beeb8519f425ff8365c76e54e93baf8e1
 
 The contributing agents disclosed the following for their own scopes:
 
-- M1: provider contracts, MySQL, shared geometry/query contracts, service/CRS/OpenAPI, metrics and benchmarks were authored from existing Tegola code, accepted designs and normative sources; no Jivan source, models or templates were intentionally copied or adapted.
-- M2: GeoPackage/HANA integrations, geometry helpers and reliability tests were authored from Tegola contracts and database documentation; no Jivan code was copied.
-- M4: service, HTTP and HTML work and migration prose were newly authored; pinned Jivan behavior influenced the migration requirements, without intentional source or template copying.
-- M5: query harnesses, codecs, parser, HTTP acceptance and conformance fixtures were newly authored. Migration fixtures use Tegola fixtures; Jivan was inspected for behavior comparison.
+- Implementation disclosure: provider contracts, MySQL, shared geometry/query contracts, service/CRS/OpenAPI, metrics and benchmarks were authored from existing Tegola code, accepted designs and normative sources; no Jivan source, models or templates were intentionally copied or adapted.
+- Implementation disclosure: GeoPackage/HANA integrations, geometry helpers and reliability tests were authored from Tegola contracts and database documentation; no Jivan code was copied.
+- Implementation disclosure: service, HTTP and HTML work and migration prose were newly authored; pinned Jivan behavior influenced the migration requirements, without intentional source or template copying.
+- Implementation disclosure: query harnesses, codecs, parser, HTTP acceptance and conformance fixtures were newly authored. Migration fixtures use Tegola fixtures; Jivan was inspected for behavior comparison.
 - The orchestrator disclosed newly written design and documentation work, without copying Jivan implementation code.
 
 These are bounded author disclosures, not an independent authorship guarantee or a legal clean-room certification. No substantial reused Jivan implementation has been confirmed by this audit. Any later copied or adapted material must be recorded with its source path and revision, retaining the applicable source notices.
 
 ## Lambda migration addendum
 
-The later Phase 11 work is outside the historical comparison range above. M1 disclosed that the new [`server/lambda/handler.go`](../../server/lambda/handler.go), its handler tests and [`cmd/tegola_lambda/main.go`](../../cmd/tegola_lambda/main.go) wiring were newly authored from Tegola's existing Lambda entry point, the existing algnhsa/AWS dependencies and the accepted transport design. No Jivan Lambda source or text was copied or adapted in that work. M5's [`server/lambda/migration_acceptance_test.go`](../../server/lambda/migration_acceptance_test.go) exercises the new adapter and independently declared Tegola migration fixtures; its author likewise disclosed no copied Jivan source.
+The later Lambda adapter work is outside the historical comparison range above. The implementation record states that the new [`server/lambda/handler.go`](../../server/lambda/handler.go), its handler tests and [`cmd/tegola_lambda/main.go`](../../cmd/tegola_lambda/main.go) wiring were newly authored from Tegola's existing Lambda entry point, the existing algnhsa/AWS dependencies and the accepted transport design. No Jivan Lambda source or text was copied or adapted in that work. The [`server/lambda/migration_acceptance_test.go`](../../server/lambda/migration_acceptance_test.go) exercises the new adapter and independently declared Tegola migration fixtures; its author likewise disclosed no copied Jivan source.
 
 This addendum records the authors' bounded disclosures for these paths, rather than extending the earlier mechanical comparison to unexamined later code. The final release evidence binds the reviewed files to their frozen hashes. Sharing algnhsa with Jivan does not make either adapter a copy of the other or alter that dependency's own license.
 

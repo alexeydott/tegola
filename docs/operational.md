@@ -130,6 +130,21 @@ retention policy. Outbox storage alone does not prove delivery, cache invalidati
 or exactly-once processing. Independently test restore, disk-full, timeout,
 connection-loss, shutdown and external-writer scenarios before production use.
 
+## Cache after writes
+
+For a single writable router, successful and unknown commits invalidate its tile
+cache generation. Known rollback leaves the current generation intact. After a
+save, refresh client-held tile sources and verify an ordinary MISS followed by
+HIT; a status request must carry the maintenance token. Opening an editor alone
+is not an invalidation event: its tile requests can use the editor-active header.
+
+Writable routers start cold after restart. Retired generation entries are no
+longer read but can remain on disk until backend expiry or operational cleanup.
+Do not treat the audit outbox as proof of distributed invalidation: external SQL
+writers, separate reader processes and CDN caches are outside the router-local
+generation mechanism. Coordinate or disable those caches when source changes can
+arrive through another process. See [cache configuration](configuration.md#tile-cache-maintenance-and-editing).
+
 ## See Also
 
 - [Write configuration](configuration.md#explicit-wfs-and-write-publication) — publication and authentication requirements.

@@ -1,119 +1,61 @@
 [← Geometry Formats](geometry-formats.md) · [Back to README](../README.md) · [Windows Release →](windows-release.md)
 
-# Current maintenance status
+# Support and maintenance
 
-This page records the disposition of documented Tegola work. The baseline
-was checked against `master` after `d417e73b` on 2026-09-28; later follow-ups
-carry their own verification dates in the table below. The original numbered register and
-closure evidence remain in [UPSTREAM.md](../UPSTREAM.md). The
-[2026-09-25 audit](audit/tegola_review_part12.md) is historical evidence, not
-an active list of unresolved defects.
+This page describes the maintained source and its operating boundaries.
+Release history is in [CHANGELOG.md](../CHANGELOG.md); source provenance and
+upstream integration are in [UPSTREAM.md](../UPSTREAM.md).
 
-## Current source release
+## Release versus current source
 
-As of 2026-10-02, `master` includes OGC Features and the adapted MOS probe and
-tile diagnostics work. Source tag `v0.21.0-fork.2` binds
-`db4e8ee73a3ddfe3b3c8e054c59e833b697dce85`; see the
-[release record](release/feature-api.md). Earlier audits below retain their
-original dates and scopes. Source integration and release builds do not extend
-those records into unperformed database or deployed AWS acceptance.
+`v0.21.0-fork.2` is the immutable 2026-10-02 source release. Current master also
+contains later WFS, feature-write, MOS and cache changes. Do not identify a
+current binary by that tag alone: inspect `tegola version`, its Git revision,
+build tags, configuration and loaded viewer assets.
 
-## WFS and MOS follow-up (2026-10-04)
+## Maintained capabilities
 
-The WFS/Feature API write work and PR #2 follow-up have their own
-[scope contract](wfs-scope-limitations.md), [native evidence matrix](provider-matrix.md)
-and [recovery requirements](operational.md). The follow-up addresses protocol
-names/versions/public URLs, schema validation and write admission. Native spatial
-column and raw MOS results are recorded separately; neither establishes full
-WFS/Part 4 certification or production restore/fault acceptance. This source work
-does not move the historical `v0.21.0-fork.2` release tag.
+| Area | Behavior | Reference |
+| --- | --- | --- |
+| Tiles | MVT output, standard/native MVT providers, geometry processing and tile diagnostics | [API](api.md), [provider contract](provider-contract.md) |
+| Feature reads | Published collections, stable identifiers, typed filtering, paging, datetime and admitted CRS | [API](api.md), [filtering](filtering.md) |
+| Editing | Conditional REST writes and WFS transactions for explicitly admitted schemas; native geometry/null/bounds handling | [Write scope](wfs-scope-limitations.md), [geometry](geometry-formats.md) |
+| Cache | Seeded whole-map tiles can serve layer URLs; authenticated metatile maintenance; server cache generations after writes | [Server guide](../server/README.md) |
+| Provider evidence | Separate native spatial and MOS profiles with database versions and unperformed scenarios | [Provider matrix](provider-matrix.md) |
+| Builds | Go module/vendor builds, CGO GeoPackage, embedded viewer and revision-tagged Windows binaries | [Development](development.md), [Windows builds](windows-release.md) |
 
-The additional seven-finding audit is mapped to bounded verification in the
-[evidence matrix](provider-matrix.md#attached-audit-follow-up). It adds
-schema-bound FES literals, representation-aware mutation validators and WFS
-receipt headers. Native deadlock and injected post-COMMIT acknowledgement tests
-strengthen transaction evidence without claiming wire-fault or restore acceptance.
+## Operating boundaries
 
-## Markdown audit scope
+- Write publication is opt-in and admission-based. The stock CLI does not supply
+  a production authentication adapter; do not use a demo write profile as an
+  authenticated production deployment.
+- Successful and uncertain transactions invalidate tile generations within the
+  writable router. External SQL changes and other reader processes are not
+  coordinated. Writable caches start cold after restart; obsolete generation
+  storage requires backend expiry or cleanup.
+- Custom projections are horizontal. Grid/vertical transformations, unsupported
+  axes and units are not silently approximated. See [CRS limits](crs.md).
+- Native MVT providers return encoded tiles; they are not source-feature providers.
+- The built-in viewer edits attributes. External geometry editors are clients of
+  the documented API and are not bundled as a complete geometry-editing viewer.
+- No full WFS-T/Part 4 certification, distributed locking or LockFeature support
+  is claimed. Conformance declarations describe the admitted runtime profile.
+- Native HANA, cloud services and deployed Lambda require separate environment
+  verification. Local fixture tests do not establish their acceptance.
 
-The audit enumerated all 199 Git-tracked `.md`/`.markdown` files, ignoring
-extension case: 40 first-party documents (including the historical audit),
-149 vendored dependency documents and 10 frozen dependency snapshots.
-This status page is the new, additional document produced by the audit.
-Scratch work, generated release logs and installed npm packages are not
-maintained project documentation.
+## Maintenance work
 
-The first-party review covered root documents, issue templates, all cache,
-provider and MVT-provider guides, server/Lambda/viewer instructions, internal
-package guides, geometry algorithm notes, contracts, release instructions,
-the dependency guide and the complete saved audit. Searches for debt markers
-were followed by checks of source, tests and published dependency manifests.
-External release notes and historical TODOs were inspected for provenance;
-they were not rewritten to manufacture a clean result. Vendored files must
-continue to match their published module versions.
+AWS/Azure SDK migration remains outside the current provider/cache changes.
+Upstream submissions and successful remote CI runs must be verified separately;
+source files or local tests do not prove either has occurred.
 
-## Completed work
-
-| Area | Current disposition and evidence |
-| --- | --- |
-| Tile latency diagnostics (2026-10-02 source evidence) | Standard tile feature layers log completion timing; MySQL separates initial query, streaming/decode and callback phases with global pool-wait deltas. The source change records saturated-pool deadline/recovery and panic/error-preservation tests, including race checks. Shared render deadline remains 30 seconds. Its live full-config validation was blocked at startup by a table-lock wait on the deployed MySQL; this is not a verified reproduction of the earlier tile timeout or an OGC verification result. |
-| Numbered fork debt | 2.1, 2.2, 2.4, 2.5, 2.6, part12 0.6/0.6b, 3.6, A15 and part13 P6.5 are closed; see the UPSTREAM closure log. |
-| Published dependencies (A15) | `alexeydott/geom v0.1.1` and `alexeydott/proj v0.3.1`; Tegola imports the fork modules without replacements. Published Tegola `d417e73b` passed an external-consumer check in a fresh module cache and an offline vendor build/test. |
-| Geographic datum conversion | `longlat` uses the existing three-/seven-parameter datum transformations; independent PROJ references cover both directions and synthetic `crs_defn` registration. |
-| Geographic scale | All four SQL providers share source-ellipsoid local parallel scale at the transformed tile center; SQL pixel dimensions use source units. |
-| Complex polygon simplification | Ring and component relationships are validated before accepting candidates; unsafe or inconclusive candidates preserve the original geometry. |
-| MOS startup sampling | Explicit MOS checks column metadata without format sampling; an explicit geometry type also skips class decoding. Automatic inference stops at three valid MOS geometries within 16 rows; a completed short result needs one valid geometry. Invalid auto-detected MOS rows are skipped while valid features remain renderable. Provider fixtures and a real SQLite startup regression cover the behavior. |
-| Legacy MySQL startup and joined MOS bounds (2026-10-02 source evidence) | Direct zero-row metadata and proven simple geometry-only MySQL samples avoid the derived-table path reproduced on MySQL 5.5.29; complex samples retain a potentially materialized fallback. Registration samples are streamed with a fixed 64 MiB geometry-cell cap. Optional `bbox_table` qualifies joined MOS bounds in all four SQL providers. The source change records codec/provider tests with CGO on/off and live MySQL 16-layer registration plus uncached layer/full-map tiles. These historical tile checks do not establish integrated-candidate OGC acceptance or live HANA/PostgreSQL coverage. |
-| SQL probes and token parsing | Providers use explicit dialects; PostgreSQL hash operators and arrays are executable SQL. Probe, missing-layer and geometry-column regressions have tests. |
-| Seed/serve interoperability | Layer endpoints reuse seeded map MVT without provider rendering; file roots are resolved and logged. Cold-memory file-cache, TTL and precedence regressions pass; real RU-CHE seed/map/layer HTTP HIT verified. |
-| Cache and tile operations | Unique file-cache temp names, safe purge races, authenticated/rate-limited maintenance, queued regeneration status, bounds filtering and MVT-only cache writes are implemented. |
-| Other historical findings | Azure missing-object purge/URL validation, GCS self-test hit/content checks, empty GPKG geometry, WebMercator latitude validation and qualified MySQL identifiers are covered by implementation and regression tests. |
-| Synthetic SRID collision follow-up | Closed: conflicting definitions fail registration without rebinding an ID already stored by a layer. Regression tests cover both registration orders, warmed forward/inverse projections, explicit registration and provider-layer reuse; focused race tests pass. |
-
-The Markdown audit corrected obsolete instructions about local replacements,
-scale formulas, SQL scanning, MVT provider configuration, tile-operation
-responses, viewer builds, Lambda initialization and geometry benchmarks.
-Old report statuses remain visible beneath an explicit historical banner.
-
-## Agreed exclusions
-
-Only these two numbered items remain intentionally outside the completed scope:
-
-* **A16:** availability of remote GitHub Actions runs. Local verification is
-  recorded separately; workflow definitions are not evidence of a green run.
-* **2.3:** migration to AWS SDK v2 and the current Azure SDK.
-
-## Supported contracts and verification boundaries
-
-These are explicit operating boundaries, not claims that unimplemented
-features have been completed:
-
-* The Go projection fork still rejects grid-based datum transformations,
-  non-Greenwich prime meridians and alternate geographic units/axes. Its 2D
-  datum API assumes zero input height on each transformation. See
-  [CRS definitions](crs.md#geographic-proj-definitions).
-* SQL token scanning uses the documented PostgreSQL/MySQL string modes.
-  Native MVT providers use database-side geometry/SRS; raw MOS/WKB/WKT and
-  synthetic-CRS contracts belong to standard providers. See
-  [provider contracts](provider-contract.md).
-* Tile output is MVT. An unsupported suffix warns and returns MVT for
-  compatibility; `.json` is not a JSON tile endpoint. See
-  [server behavior](../server/README.md#tile-format).
-* Live HANA and cloud-service integration has not been qualified here.
-  Historical PostGIS/MySQL/Redis validation is recorded against its tested
-  revision in UPSTREAM. Native SpatiaLite 5.1.0 recorder and geometry/SRID
-  write/readback were exercised successfully using the supplied Windows DLL.
-* Offering already-fixed patches to upstream repositories is separate
-  publication work. Publishing the alexeydott forks closed dependency
-  portability; it does not mean upstream pull requests were submitted.
-
-Do not convert the historical audit into a new task list by searching for
-TODO words alone, or mark an unsupported capability as implemented merely
-to remove a debt marker. New confirmed findings must have an explicit status
-and reproducible evidence here or in UPSTREAM.
+For a defect report, provide the exact revision and configuration (redact
+credentials), a minimal request/data fixture, expected versus observed behavior
+and relevant logs. Follow [contribution guidance](../CONTRIBUTING.md) and use the
+[security policy](../SECURITY.md) for sensitive reports.
 
 ## See Also
 
-- [Upstream provenance](../UPSTREAM.md) — detailed fork history and evidence
-- [Historical audit](audit/tegola_review_part12.md) — original audit findings
-- [Provider contract](provider-contract.md) — currently supported provider behavior
+- [Upstream provenance](../UPSTREAM.md)
+- [Provider matrix](provider-matrix.md)
+- [Write operations and recovery](operational.md)

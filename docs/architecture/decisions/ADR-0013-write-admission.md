@@ -1,9 +1,7 @@
-# ADR-0013: Write admission and source shapes
+# Write ADR-0013: Write admission and source shapes
 
 Status: accepted on 2026-10-04.
 Date: 2026-10-04
-Decision owner: S1
-Affected tasks/gates: W02, W05, W07, W10, W19, W38–W42; WG1–WG2, WG8
 
 ## Context
 
@@ -36,6 +34,5 @@ stays read-only even when the same backend writes another shape.
 
 ## Verification and acceptance record
 
-T-PROVIDER-001..013 and the per-backend `mutation_contract_test.go`
-suites. Negative controls must actually fail when a protection is
+The per-backend `mutation_contract_test.go` suites. Negative controls must actually fail when a protection is
 disabled.

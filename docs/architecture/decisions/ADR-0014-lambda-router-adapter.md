@@ -1,4 +1,4 @@
-# ADR-0014: Lambda transport over the existing router
+# Read ADR-0014: Lambda transport over the existing router
 
 Status: Accepted after independent architecture review on 2026-10-02.
 
@@ -33,6 +33,10 @@ Lower configured bounds must still accommodate fixed transport errors. Limit
 failures return a fixed, nonrecursive error without logging request payloads.
 Known MVT responses retain binary base64 encoding; text representations must
 remain valid UTF-8. HEAD preserves headers and suppresses the response body.
+
+## Entry-point scope
+
+The shared adapter can wrap an assembled router, but the stock cmd/tegola_lambda binary currently binds tiles and read-only Features. It does not wire WFS, write authentication/configuration or webserver tile-maintenance/HTTP-cache settings. Shared router code does not imply parity of executable composition. See the [Lambda guide](../../../cmd/tegola_lambda/README.md).
 
 ## Verification and limits
 

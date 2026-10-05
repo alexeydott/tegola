@@ -1,6 +1,6 @@
 # ADR-0003: Immutable temporal metadata and resolved collection inputs
 
-Status: Accepted by S1 on 2026-10-01 after independent M3 PASS and M2 feasibility PASS. Architecture acceptance does not imply G2 or runtime verification.
+Status: Accepted on 2026-10-01. This decision does not certify runtime behavior.
 
 ## Context
 
@@ -40,7 +40,7 @@ Convert query bounds to integer epoch units with checked seconds/nanoseconds ari
 
 ### Resolved collection ownership
 
-Task 11 creates `ogc/features/catalog.go` with:
+The read service owns `ogc/features/catalog.go` with:
 
 ```go
 type CollectionSource struct {
@@ -50,27 +50,22 @@ type CollectionSource struct {
 }
 ```
 
-`NewService([]CollectionSource) (*Service, error)` resolves and snapshots ID, layer name, source SRID and temporal mapping, validating unique nonblank IDs, available queriers, supported transforms, feature-query eligibility and optional temporal capability. Do not retain mutable layer metadata or caller slices. Private resolved entries form the initial catalog. Task 13 extends publication metadata and constructs these inputs from registered providers; it does not introduce a second catalog or mutate providers. Tests can construct sources without map definitions or TOML.
+`NewService([]CollectionSource) (*Service, error)` resolves and snapshots ID, layer name, source SRID and temporal mapping, validating unique nonblank IDs, available queriers, supported transforms, feature-query eligibility and optional temporal capability. Do not retain mutable layer metadata or caller slices. Private resolved entries form the initial catalog. Startup assembly extends publication metadata and constructs these inputs from registered providers; it does not introduce a second catalog or mutate providers. Tests can construct sources without map definitions or TOML.
 
 `QueryCollection` accepts the neutral provider query and synchronously emits independent GeoJSON features; it returns query result/count metadata. `QueryFeature` issues an ID-restricted query and reports a typed missing-feature error. The original Bounds and BoundsSRID reach the provider unchanged. Providers own conservative candidate transformation and exact matching in the original query CRS before paging/counting; the service owns response transformation only. Reject unknown/unsupported transforms with ErrUnsupported. Source metadata is finalized before construction and returned feature SRID must match the frozen source SRID. GeometryCollection structure, identifiers and properties survive. Deep-copy mutable geometry/properties before transformation; reject unsupported/nonfinite geometry instead of emitting invalid JSON. Null geometry remains null. CRS84 output uses longitude/latitude degrees per [RFC 7946](https://www.rfc-editor.org/rfc/rfc7946).
 
 Freeze these service methods: QueryCollection(ctx context.Context, collectionID string, query provider.FeatureQuery, fn func(Feature) error) (provider.FeatureQueryResult, error); QueryFeature(ctx context.Context, collectionID string, featureID uint64) (Feature, error); QueryCollectionPage(ctx context.Context, collectionID string, query provider.FeatureQuery) (FeatureCollection, error); WriteGeoJSON(ctx context.Context, w io.Writer, page FeatureCollection) error. Missing collection and missing feature use distinct typed errors. QueryFeature uses limit 1/offset 0; callbacks preserve caller/context errors. The page helper rejects overdelivery and callback/count disagreement and returns no successful partial page.
 
-Provide explicit bounded collection encoding helpers: buffer at most the requested page, preserving pre-response errors for HTTP integration. No unbounded collection materialization. Large page encoding must check cancellation/writer errors; future HTTP publication limits bound request pages. No router or configuration changes in Task 11.
+Provide explicit bounded collection encoding helpers: buffer at most the requested page, preserving pre-response errors for HTTP integration. No unbounded collection materialization. Large page encoding must check cancellation/writer errors; HTTP publication limits bound request pages. HTTP routing and configuration remain separate from response encoding.
 
 ### GPKG spatial and paging correctness
 
-Reuse strict shared row decoding. RTree/raw bounds produce conservative candidates; exact spatial union matching and distinct-ID selection precede logical offset/limit. Read stable ordered bounded candidate chunks and continue past false positives. Source-CRS indexed queries must use available RTree/raw bounds. For a different bounds CRS, use inverse envelopes only when conservativeness is established; corner sampling or heuristic densification alone is insufficient. The initial correctness fallback reads ordered bounded source chunks and transforms each geometry into the requested CRS for exact matching. This fallback can scan the source, is reported as a cross-CRS performance limitation, and cannot justify an indexed-pushdown claim. Same-CRS indexed paths remain mandatory in G2 pushdown smoke tests. Absence-aware branches may inspect source headers. Binary aggregate containers (including native GPKG polygon/multi/collection and raw WKB/MOS families) whose absence cannot be safely classified by SQL must be conservatively included, even outside coarse bounds; this can decode many aggregate rows. Do not register a per-query SQLite decoding function to hide that scan inside SQL. Report the format-specific fallback and restrict pruning claims to measured eligible profiles. Exact membership still precedes logical paging in every profile. One extra exact match determines HasMore. Include null/decoded-empty geometry candidates even with missing index entries or misleading bounds. A format-specific conservative predicate or missing-index branch must prove absence coverage; `geom IS NULL` alone is insufficient. Exact counts remain unknown unless established, with exhausted empty queries exact zero. Never route through TileFeatures or fake tiles.
+Reuse strict shared row decoding. RTree/raw bounds produce conservative candidates; exact spatial union matching and distinct-ID selection precede logical offset/limit. Read stable ordered bounded candidate chunks and continue past false positives. Source-CRS indexed queries must use available RTree/raw bounds. For a different bounds CRS, use inverse envelopes only when conservativeness is established; corner sampling or heuristic densification alone is insufficient. The initial correctness fallback reads ordered bounded source chunks and transforms each geometry into the requested CRS for exact matching. This fallback can scan the source, is reported as a cross-CRS performance limitation, and cannot justify an indexed-pushdown claim. Same-CRS indexed paths remain mandatory in provider pushdown smoke tests. Absence-aware branches may inspect source headers. Binary aggregate containers (including native GPKG polygon/multi/collection and raw WKB/MOS families) whose absence cannot be safely classified by SQL must be conservatively included, even outside coarse bounds; this can decode many aggregate rows. Do not register a per-query SQLite decoding function to hide that scan inside SQL. Report the format-specific fallback and restrict pruning claims to measured eligible profiles. Exact membership still precedes logical paging in every profile. One extra exact match determines HasMore. Include null/decoded-empty geometry candidates even with missing index entries or misleading bounds. A format-specific conservative predicate or missing-index branch must prove absence coverage; `geom IS NULL` alone is insufficient. Exact counts remain unknown unless established, with exhausted empty queries exact zero. Never route through TileFeatures or fake tiles.
 
-## Verification and ownership
+## Verification
 
-- M1: neutral temporal metadata and unit tests; independent M3 review.
-- M2: GPKG registration/query implementation and hermetic real contract adapter; independent M1 review.
-- M4: resolved catalog, service and GeoJSON; independent M3 review.
-- M5: Task 12 CRS/pushdown/cancellation/race acceptance evidence, after implementations stabilize.
-
-Test precision around epoch and storage boundaries, int64 extremes, NULL/open intervals, invalid mappings and source values. Test exact spatial paging after coarse false positives and absent geometry with misleading bounds. Run the real GPKG contract harness, CRS equivalence matrix and existing tile regressions before G2.
+Test precision around epoch and storage boundaries, int64 extremes, NULL/open intervals, invalid mappings and source values. Test exact spatial paging after coarse false positives and absent geometry with misleading bounds. Run the real GPKG contract harness, CRS equivalence matrix and existing tile regressions before provider acceptance.
 
 ## Consequences
 
-Existing provider interfaces remain source compatible. Feature publication requires explicit temporal metadata; other providers gain it during parity tasks. Integer epoch profiles initially limit GPKG temporal storage, with additional profiles requiring separately reviewed normalization rules. Configuration owns publication choices and providers own source interpretation.
+Existing provider interfaces remain source compatible. Feature publication requires explicit temporal metadata; each provider supplies its own admitted mapping. Integer epoch profiles initially limit GPKG temporal storage, with additional profiles requiring separately reviewed normalization rules. Configuration owns publication choices and providers own source interpretation.

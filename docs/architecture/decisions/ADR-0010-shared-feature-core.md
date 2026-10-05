@@ -1,9 +1,7 @@
-# ADR-0010: One feature core, two transport adapters (WFS and OGC API Features)
+# Write ADR-0010: One feature core, two transport adapters (WFS and OGC API Features)
 
 Status: accepted on 2026-10-04.
 Date: 2026-10-04
-Decision owner: S1
-Affected tasks/gates: W02, W05–W09, W15–W18, W25–W33; WG1–WG6
 
 ## Context
 
@@ -39,5 +37,5 @@ third protocol later means a new adapter, not a new mutation engine.
 ## Verification and acceptance record
 
 Contract tests execute the same logical commands against every admitted
-writer and assert identical outcomes. Cross-protocol CRUD tests (W34)
+writer and assert identical outcomes. Cross-protocol CRUD tests
 prove one identity across WFS-T and Part 4.

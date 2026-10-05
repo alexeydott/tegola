@@ -1,9 +1,7 @@
-# ADR-0011: Schema, identity and revision mapping
+# Write ADR-0011: Schema, identity and revision mapping
 
 Status: accepted on 2026-10-04.
 Date: 2026-10-04
-Decision owner: S1
-Affected tasks/gates: W02, W05, W10–W13, W16; WG1–WG2
 
 ## Context
 
@@ -40,5 +38,5 @@ updates never re-encode stored geometry bytes.
 
 ## Verification and acceptance record
 
-T-SCHEMA-001..008 and T-OCC-001..008 cover schema parity, precision,
+Schema and optimistic-concurrency tests cover schema parity, precision,
 absent-vs-null and validator strength.

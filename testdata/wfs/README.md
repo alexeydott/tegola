@@ -1,7 +1,6 @@
 # Native editing fixture
 
-`editing-fixture.gpkg` is the synthetic GDAL/Fiona GeoPackage supplied with the
-2026-10-04 WFS rereview bundle (`tegola-wfs-rereview-fd5e542.zip`). It contains
+`editing-fixture.gpkg` is an independently generated synthetic GDAL/Fiona GeoPackage. It contains
 three points, a polygon with a hole, a multipart line, an XYZ control point,
 native RTree triggers, child rows and update/delete audit triggers. All names,
 tenant IDs and exact-number strings are deliberate test values.

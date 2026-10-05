@@ -4,8 +4,6 @@
 
 Status: accepted after independent normative/domain review on 2026-10-01.
 Date: 2026-10-01
-Decision owner: S1
-Affected tasks/gates: 8–12, 15–19; G1/G2/G4/G5
 Sources: [OGC Part 1 1.0.1, section 7.15.3, requirement 24C](https://docs.ogc.org/is/17-069r4/17-069r4.html), [current GPKG row path](../../../provider/gpkg/gpkg.go), [shared query contract](../../../provider/query.go).
 
 ## Context
@@ -36,8 +34,4 @@ Existing MVT behavior is unchanged. The new optional raw-feature capability has 
 
 ## Verification required
 
-Independent normative/domain review returned PASS on 2026-10-01; execution identities are retained in local evidence. Task 8 proves shared-decoder extraction preserves MVT fixtures. Task 9 exercises the raw contract; Task 10 supplies a real GPKG adapter, including spatial-index exclusion edge cases. Tasks 15–16 verify geometry null and bbox behavior over HTTP. Later provider parity must run the same cases.
-
-## Expiry/follow-up (for waivers)
-
-No waiver. Temporal mapping ownership/storage precision is a separate Phase 4 ADR readiness item and is not resolved by this decision.
+Shared decoder and provider contract tests must distinguish null, empty, malformed geometry and null IDs. HTTP tests verify `geometry: null` and bbox behavior. The same scenarios apply to each admitted provider. Temporal mapping and storage precision are separate decisions.

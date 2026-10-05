@@ -2,11 +2,11 @@
 
 # WFS/WFS-T scope and operating limits
 
-The branch provides WFS read/transaction adapters and an experimental OGC API
+Tegola provides WFS read/transaction adapters and an experimental OGC API
 Features CRUD implementation. Implementation, unit tests, native integration
 runs, and standards conformance are different levels of evidence. Neither this
 file nor the presence of a handler establishes full OGC conformance or production
-acceptance. See the current review evidence for exact runs and provider versions.
+acceptance. See [provider validation](provider-matrix.md) for coverage and provider versions.
 
 ## Publication and concurrency
 

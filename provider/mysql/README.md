@@ -1,6 +1,23 @@
 # MySQL / MariaDB Provider
 
-The `mysql` provider serves MVT tiles from spatial tables in MySQL (5.7+/8.0+) and MariaDB (10.2+). It supports both the `tablename` and custom `sql` layer configuration modes, plus the full set of SQL tokens available in the postgis provider.
+The `mysql` provider serves MVT tiles from MySQL/MariaDB spatial tables and explicitly configured raw geometry tables. MySQL 5.5/InnoDB raw MOS feature reads and writes use the opt-in legacy identity profile; this does not add modern native spatial functions to MySQL 5.5. It supports both the `tablename` and custom `sql` layer configuration modes, plus the full set of SQL tokens available in the postgis provider.
+
+## Feature mutations
+
+Feature writes are opt-in and apply only to separately admitted direct tables.
+Per-collection operations, authentication and conditional revisions are configured
+under `[features.write]`; WFS transactions use the same mutation coordinator.
+Create requires a database-generated key. Read/tile support alone does not admit
+writes, and custom tile SQL does not supply a writable table mapping.
+
+The MOS write profile maintains four resolved `bbox_*_fieldname` columns in the
+same transaction as encoded geometry. Attribute-only updates preserve geometry,
+opaque annotations and bounds. An admitted custom `etmerc` source projection is
+converted using explicit datum semantics. Detected canonical MapplGIS tables have
+narrower update/delete rules and do not admit creation. See
+[geometry write limits](../../docs/geometry-formats.md#mos-writes-with-separate-bounds-columns),
+[write configuration](../../docs/configuration.md#explicit-wfs-and-write-publication)
+and [provider validation](../../docs/provider-matrix.md).
 
 ## Raw feature queries
 
@@ -30,16 +47,21 @@ generated ID, geometry, and temporal columns are unsupported. Stored
 auto-increment IDs are admitted with the same uniqueness proof. Registration
 freezes columns, indexes, CRS and the engine's physical `TABLE_ID`. Queries check
 the snapshot against that metadata, including table replacement, before delivery.
-The account needs visibility of the relevant InnoDB catalog, including the
-documented `PROCESS` requirement; the provider does not grant privileges or use
-timestamps as a substitute for physical identity. See the
+The modern profile needs visibility of the relevant InnoDB catalog, including the
+documented `PROCESS` requirement; the provider does not grant privileges. The
+explicit MySQL 5.5 legacy profile instead uses a weaker metadata identity; see
+[legacy admission](../../docs/configuration.md#mysql-55-table-identity). See the
 [MySQL InnoDB catalog](https://dev.mysql.com/doc/mysql-infoschema-excerpt/8.0/en/information-schema-innodb-tables-table.html)
 and [MariaDB InnoDB catalog](https://mariadb.com/docs/server/reference/system-tables/information-schema/information-schema-tables/information-schema-innodb-tables/information-schema-innodb_sys_tables-table).
 
-Each request uses one read-only repeatable-read transaction and bounded ID
-chunks. Strict decoding and exact spatial/temporal predicates precede offset,
+Each request uses one repeatable-read transaction and bounded ID chunks. The
+modern profile marks the transaction read-only; MySQL 5.5 lacks that transaction
+syntax, so the admitted legacy profile executes only the same SELECT queries
+without requesting the unsupported access mode. Strict decoding and exact spatial/temporal predicates precede offset,
 limit and matched counts. Candidate scanning can cover the entire selected
-source; this initial adapter does not claim spatial index acceleration. A
+source. Same-definition MOS queries can prune candidates with an admitted
+four-column bounds mapping; other profiles or cross-CRS requests can require
+ordered scans. Exact geometry matching remains authoritative. A
 partially consumed result can report an unknown matched total. Callback errors
 and cancellation stop delivery without retries.
 
@@ -188,7 +210,7 @@ same value set:
 - `mariadb` — force the MariaDB native layout (handles 10.7+ axis-order flag bits).
 - `wkb` — expect plain WKB with no header (e.g. when the layer selects `ST_AsBinary(geom) AS geom`).
 - `wkt` — expect WKT text (e.g. a `LINESTRING(...)` stored in a TEXT column). No SRID is decoded; the configured layer/provider SRID applies.
-- `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; `mos_precision` (optional) is the number of decimal digits they carry and `mos_units` (optional) their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`, default `m`; the default `mos_precision` is paired with the units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`, `km`→`5` via `DefaultMOSPrecisionForUnits`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go; individual undecodable rows are logged and skipped.
+- `mos` — expect the packed binary geometry format written by MapplGIS, typically a `LONGBLOB LINE` column. Coordinates are quantized int32 pairs; `mos_precision` (optional) is the number of decimal digits they carry and `mos_units` (optional) their packed linear units (`mm`, `cm`, `dm`, `m`, or `km`, default `m`; the default `mos_precision` is paired with the units: `mm`→`0`, `cm`→`1`, `dm`→`1`, `m`→`2`, `km`→`5` via `DefaultMOSPrecisionForUnits`). After dequantization, coordinates are converted to metres using the corresponding factor (`mm` → `0.001`, `cm` → `0.01`, `dm` → `0.1`, `m` → `1`, `km` → `1000`) before SRID reprojection. MOS carries no CRS — the configured layer/provider SRID applies (or the layer's own system info blob, see below). Because the blob is opaque, the provider uses indexed `MINX`/`MAXX`/`MINY`/`MAXY` columns as a coarse bounding-box `!BBOX!` filter in the raw MOS units, then applies the decoded geometry's bounding-box intersection check in Go. Automatic-format tile decoding can warn and skip malformed MOS rows; explicit-format decoding and raw feature queries keep their strict error policy.
 
 ### Geographic SRIDs and MySQL axis order
 
@@ -366,13 +388,12 @@ is not yet resolved so a later
 geometry header can establish the source CRS without an incorrect startup
 assumption.
 
-## Raw geometry formats need bounds columns (audit P6-19)
+## Raw geometry query performance
 
-Layers using `geometry_format` `wkb`/`wkt`/`mos` store raw geometry, so a
-bounds predicate cannot be pushed down and evaluated cheaply: every tile
-request scans the full table and filters geometries in memory (O(rows) per
-tile). A registration-time warning is logged per affected layer. The
-recommended setup is the raw/MOS bounds-columns one: configure
+Raw geometry cannot directly use a native spatial index. MOS layers can instead
+use numeric bounds columns to prune candidates in SQL; raw WKB/WKT wrappers may
+apply native functions without an index on the stored bytes. Without selective
+SQL predicates, a tile can inspect the full selected source. For MOS, configure
 `bbox_minx_fieldname`/`bbox_maxx_fieldname`/`bbox_miny_fieldname`/
 `bbox_maxy_fieldname` (precomputed column bounds) and use a bounds-backed
 MOS custom query carrying `!BBOX!`, which expands to a server-side

@@ -18,7 +18,7 @@ before normal physical discard. Tile queries do not arm this watcher.
 
 ## Source profiles
 
-The intended initial profile uses a persistent row or column table with a
+The admitted profile uses a persistent row or column table with a
 catalog-proven ordinary single-column unique integer identity. Nullable identity
 rows are excluded; negative identities are source errors. Stored identity columns
 are allowed. Computed identities, virtual/external tables, masked columns,

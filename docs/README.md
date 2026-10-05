@@ -2,10 +2,11 @@
 
 # Documentation Index
 
-Tegola documentation covers HTTP behavior, configuration, provider contracts, geometry, builds, and the current maintenance record. Historical review details remain in the [audit archive](audit/tegola_review_part12.md); see [maintenance status](maintenance-status.md) for current disposition.
-
-Current source tag: **`v0.21.0-fork.2`**. See the
-[Feature API release record](release/feature-api.md) for revision and acceptance scope.
+Tegola documentation describes current HTTP behavior, configuration, providers,
+geometry, editing and builds. The immutable `v0.21.0-fork.2` tag is a historical
+read-profile release; current master also contains later WFS/MOS write and cache
+changes. See [release scope](release/feature-api.md) and
+[support boundaries](maintenance-status.md).
 
 ## Guides
 
@@ -19,32 +20,27 @@ Current source tag: **`v0.21.0-fork.2`**. See the
 * [Provider contract](provider-contract.md) — settings and runtime behavior shared by standard providers.
 * [CRS contract](crs.md) — coordinate reference systems, SRIDs, and reprojection.
 * [Geometry formats](geometry-formats.md) — WKB, WKT, MOS, and collection behavior.
-* [Maintenance status](maintenance-status.md) — current work disposition and verification boundaries.
+* [Support and maintenance](maintenance-status.md) — capabilities and operating boundaries.
 * [Windows release builds](windows-release.md) — Windows build and packaging workflow.
 * [OGC conformance testing](testing/ogc-conformance.md) — pinned suite, stable fixtures and report provenance.
 * [Feature performance and observability](testing/feature-performance-observability.md) — dedicated metrics, measured budgets and operational scope.
 
-## Feature API and Historical Baselines
+## Architecture and migration
 
 The implemented application profile is described in the [API reference](api.md)
 and [publication configuration](configuration.md). Backend guides describe the
 admitted tested profiles and their limits. Runtime conformance declarations use
 the admitted registry and all-collection capability intersection; certification
-and deployment verification require separate evidence. The
-following architecture and migration pages preserve the historical source baseline.
+and deployment verification require separate evidence. Architecture pages describe the current code; migration inventories retain their stated historical source scope.
 
-* [Feature-service source baseline](architecture/feature-service.md) - existing contracts and integration points.
+* [Feature-service architecture](architecture/feature-service.md) - existing contracts and integration points.
+* [Architecture decisions](architecture/decisions/README.md) - durable design decisions and their applicability.
 * [OGC API Features editions](architecture/ogc-api-features.md) - selected normative sources and verification boundary.
 * [Jivan route inventory](migration/jivan-feature-matrix.md) - registered resources and internal/deployment behavior.
 * [Jivan migration guide](migration/jivan-to-tegola.md) - publication configuration, client changes, verification and rollback.
-* [Jivan compatibility matrix](migration/jivan-compatibility-matrix.md) - all 15 migration categories and explicit differences.
+* [Jivan compatibility matrix](migration/jivan-compatibility-matrix.md) - migration categories and explicit differences.
 * [Jivan provenance](migration/jivan-provenance.md) - source influence, reuse inventory and license boundaries.
-* [Feature API release candidate](release/feature-api.md) - capability scope, verification, cutover and rollback.
-
-## Feature-service contribution process
-
-* [Team roles](development/ogc-team-roles.md) - responsibilities, independent reviewers and escalation.
-* [Review and gates](development/ogc-review-gates.md) - required evidence and dependency transitions.
+* [Feature API release scope](release/feature-api.md) - capability scope, verification, cutover and rollback.
 
 ## Provider Guides
 
@@ -71,6 +67,8 @@ cmd/tegola → config + provider/cache registration → atlas → server
 | `config/` | Loads and validates TOML configuration consumed by the command setup. |
 | `atlas/` | Holds configured maps, provider layers, cache and observer integrations; it connects request handling to registered runtime components. |
 | `server/` | HTTP router, endpoint handlers, middleware, tile cache behavior, and embedded viewer routes. Start at [`server/server.go`](../server/server.go). |
+| `feature/`, `ogc/wfs/` | Shared mutation coordination and WFS XML/GML protocol adapters; providers retain native transactions. |
+| `ogc/features/`, `ogc/cql2/` | Feature publication/query service and typed CQL2 parsing. |
 | `server/lambda/` | Optional buffered Lambda event adapter over the assembled HTTP router. Start at [`handler.go`](../server/lambda/handler.go); supported event modes and transport limits are defined in [ADR-0014](architecture/decisions/ADR-0014-lambda-router-adapter.md). Local invocation is separate from deployed AWS verification. |
 | `provider/` | Provider interfaces and standard SQL/spatial backends such as `postgis/`, `gpkg/`, `mysql/`, and `hana/`. Standard providers return features for Tegola to process. |
 | `mvtprovider/` | Database-side MVT provider implementations. They return encoded tiles and bypass standard feature geometry processing. |

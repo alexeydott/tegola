@@ -215,6 +215,39 @@ default charset. Existing service-table upgrades require separate operational
 validation; creating a fresh schema is not evidence of an in-place migration.
 See [write operations](operational.md) and [provider evidence](provider-matrix.md).
 
+## Tile cache maintenance and editing
+
+A configured cache serves ordinary tile requests even when feature writes are
+enabled. The write-enabled router uses a fresh namespace at startup and advances
+it after a successful or unknown mutation commit. Client applications can request
+uncached tiles during editing with `X-Tegola-Editor-Active: true`; ordinary viewing
+omits this header. Writable tile responses use HTTP `no-store` independently of
+the server-side cache. See [tile policy](api.md#tile-cache-policy).
+
+Explicit status/regeneration operations require separate authorization:
+
+```toml
+[webserver.tile_operations]
+enabled = true
+token = "${TEGOLA_TILE_OPERATIONS_TOKEN}"
+rate_per_minute = 60
+max_concurrent = 4
+```
+
+Use a generated secret in `TEGOLA_TILE_OPERATIONS_TOKEN`, and send it as
+`X-Tegola-Tile-Operations-Token`. An enabled gate without a nonempty token fails
+closed. Limits are shared by clients of the process; zero/negative limit settings
+use the defaults shown above. Status consumes the rate budget but no mutation
+concurrency slot. This token authorizes tile maintenance only, not feature writes.
+
+For a cross-origin browser client, the configured CORS headers must permit
+`X-Tegola-Tile-Operations-Token` and, when used, `X-Tegola-Editor-Active` in
+`Access-Control-Allow-Headers`. A token embedded in a public HTML page is visible
+to its users; choose the deployment's authorized client boundary accordingly.
+Old writable cache namespaces need backend expiry or cleanup. Reader replicas and
+external database writers need a separate invalidation strategy; the built-in
+router generation is process-local.
+
 ## HTTP bind address
 
 `webserver.port` and the `serve --port` option take an address, not a bare
@@ -226,9 +259,9 @@ port = ":8083"
 ```
 
 ```powershell
-.\tegola.exe serve --config .\conf\moek.toml --port :8083
+.\tegola.exe serve --config .\config.toml --port :8083
 # Bind only to localhost when testing:
-.\tegola.exe serve --config .\conf\moek.toml --port 127.0.0.1:18083 --no-cache
+.\tegola.exe serve --config .\config.toml --port 127.0.0.1:18083 --no-cache
 ```
 
 An explicit `--port` overrides `webserver.port`. `--port 8083` fails with
@@ -307,3 +340,11 @@ this profile, including the cache policy required on all reader replicas.
 - [API Reference](api.md) — HTTP endpoints and query parameters
 - [Provider contract](provider-contract.md) — shared provider configuration
 - [CRS contract](crs.md) — `srid` and `crs_defn` behavior
+
+## Lambda executable scope
+
+The stock `cmd/tegola_lambda` entry point binds tile maps and read-only feature
+publication. It does not bind WFS, feature writes/authentication,
+`tile_http_max_age` or `[webserver.tile_operations]` from this configuration.
+See the [Lambda guide](../cmd/tegola_lambda/README.md) before reusing a CLI
+configuration in that executable.
