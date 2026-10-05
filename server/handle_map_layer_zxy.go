@@ -51,6 +51,8 @@ type HandleMapLayerZXY struct {
 	debug bool
 	// the Atlas to use, nil (default) is the default atlas
 	Atlas *atlas.Atlas
+	// Optional cache override; Atlas cache remains the default.
+	Cache cache.Interface
 }
 
 const (
@@ -507,12 +509,12 @@ type tileStatusResponse struct {
 }
 
 func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.Request, m atlas.Map, tile slippy.Tile, operation string) error {
-	cacher := req.Atlas.GetCache()
-	// Writable runtimes bypass cached ordinary reads, but authenticated
-	// maintenance operations must still inspect and refresh the configured cache.
+	cacher := req.getCache(r.Context())
+	// Maintenance uses the same request generation as ordinary reads, even
+	// when an editor header asks ordinary tile reads to bypass that cache.
 	w.Header().Set("Cache-Control", "no-store")
 	key := req.tileCacheKey(tile)
-	metatileKey := req.metatileLockKey(tile)
+	metatileKey := cacheMetatileLockKey(cacher, &key)
 
 	if operation == tileOperationStatus {
 		cached := false
@@ -521,6 +523,12 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 			_, cached, err = cacher.Get(r.Context(), &key)
 			if err != nil {
 				return fmt.Errorf("read tile status from cache: %w", err)
+			}
+			if !cached && key.LayerName != "" {
+				_, cached, err = cachedMapLayer(r.Context(), req.Atlas, cacher, &key)
+				if err != nil {
+					return fmt.Errorf("read map-layer status from cache: %w", err)
+				}
 			}
 		}
 
@@ -603,7 +611,7 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 	// any concurrent request for this tile — while the full metatile
 	// regeneration proceeds in the background. Rendering through
 	// renderTileForCache keeps the cache write metatile-lock safe.
-	res, shared := tileRenders.do(r.Context(), key.String(), func(renderCtx context.Context) *tileRenderResult {
+	res, shared := tileRenders.do(r.Context(), cacheCoordinationKey(cacher, &key), func(renderCtx context.Context) *tileRenderResult {
 		return renderTileForCache(renderCtx, r, http.HandlerFunc(req.ServeHTTP), cacher, &key, true)
 	})
 	if err := r.Context().Err(); err != nil {
@@ -635,7 +643,8 @@ func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.R
 // the pass, other out-of-bounds tiles are skipped, and any encode or cache
 // error aborts the pass so a later request retries it.
 func regenerateMetatile(ctx context.Context, req HandleMapLayerZXY, m atlas.Map, params provider.Params, tile slippy.Tile, cacher cache.Interface) error {
-	state, unlock, err := tileUpdateLocks.acquire(ctx, req.metatileLockKey(tile))
+	key := req.tileCacheKey(tile)
+	state, unlock, err := tileUpdateLocks.acquire(ctx, cacheMetatileLockKey(cacher, &key))
 	if err != nil {
 		return err
 	}
@@ -777,4 +786,12 @@ func extractParameters(m atlas.Map, r *http.Request) (provider.Params, error) {
 		}
 	}
 	return params, nil
+}
+
+func (req HandleMapLayerZXY) getCache(ctx context.Context) cache.Interface {
+	c := req.Cache
+	if c == nil {
+		c = req.Atlas.GetCache()
+	}
+	return requestTileCache(ctx, c)
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/alexeydott/tegola/config"
 )
 
-func TestWritableRouterDoesNotServeCachedTiles(t *testing.T) {
+func TestWritableRouterIgnoresPreStartupCachedTiles(t *testing.T) {
 	preserveDiscoveryGlobals(t)
 	oldAge := TileHTTPMaxAge
 	TileHTTPMaxAge = 300
@@ -38,7 +38,7 @@ func TestWritableRouterDoesNotServeCachedTiles(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, httptest.NewRequest(method, "/maps/deleted-map/1/0/0.pbf", nil))
-		if w.Code == http.StatusOK || w.Header().Get("Tegola-Cache") != "" {
+		if w.Code == http.StatusOK || w.Header().Get("Tegola-Cache") == "HIT" {
 			t.Fatalf("write runtime served stale cache: %d %v", w.Code, w.Header())
 		}
 		if got := w.Header().Get("Cache-Control"); got != "no-store" {

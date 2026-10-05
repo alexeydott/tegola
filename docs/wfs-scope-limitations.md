@@ -25,14 +25,18 @@ LockFeature is unavailable until a physical-feature guard can be enforced by
 all mutation paths and processes. Do not interpret an in-memory token store as a
 distributed database lock.
 
-A write-enabled server bypasses tile caches for ordinary requests and emits no-store
-for tiles. Authenticated explicit tile-cache maintenance remains available when a
-cache backend is configured; it does not enable cached ordinary reads. Apply
-that policy to every reader replica serving the same editable data, including
-replicas whose own writes are disabled. Clear old persistent/CDN/browser caches
-before returning to a cached read-only deployment. Distributed cache invalidation
-and durable delivery of invalidation events are not supplied by this profile.
+A write-enabled server uses the configured server-side tile cache for ordinary
+viewing and emits HTTP `no-store` so browsers do not hide committed changes.
+Send `X-Tegola-Editor-Active: true` (or `1`) for an ordinary tile request to bypass
+server-side caching while editing. The header grants no maintenance or write rights.
+Authenticated explicit tile-cache maintenance remains available independently.
 
+Successful and uncertain commits invalidate all maps in that router by advancing
+its cache generation. Concurrent old renders can only populate the old generation.
+Writable caches start cold after each restart; old generation files require backend
+expiry or operational cleanup. This is process-local invalidation: external SQL
+changes and other reader processes are not coordinated. Do not use this mechanism
+as distributed invalidation for multiple replicas serving editable data.
 ## Embedded attribute editor
 
 The viewer includes a limited source-feature attribute editor. Its default API

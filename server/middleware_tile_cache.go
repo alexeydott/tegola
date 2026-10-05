@@ -28,7 +28,12 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 		var err error
 
 		// check if a cache backend exists
-		cacher := a.GetCache()
+		cacher := requestTileCache(r.Context(), a.GetCache())
+		if editorTileCacheBypass(r) {
+			w.Header().Set("Cache-Control", "no-store")
+			next.ServeHTTP(w, r)
+			return
+		}
 		if cacher == nil {
 			// nope. move on
 			next.ServeHTTP(w, r)
@@ -71,7 +76,7 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 			// a regeneration is a cache mutation: serialize it against other
 			// metatile updates and mark the metatile as updating so concurrent
 			// renders know their result is stale.
-			state, unlock, err := tileUpdateLocks.acquire(r.Context(), metatileLockKeyForCacheKey(key))
+			state, unlock, err := tileUpdateLocks.acquire(r.Context(), cacheMetatileLockKey(cacher, key))
 			if err != nil {
 				// the request was canceled while waiting for the metatile lock
 				log.Debugf("cache middleware: dirty regeneration canceled for %v: %v", r.URL.Path, err)
@@ -131,7 +136,7 @@ func TileCacheHandler(a *atlas.Atlas, next http.Handler) http.Handler {
 		// result with all concurrent requests for the same tile. The render is
 		// driven by a context detached from any single request, so a leader
 		// that disconnects cannot abort a render live waiters depend on.
-		res, shared := tileRenders.do(r.Context(), key.String(), func(renderCtx context.Context) *tileRenderResult {
+		res, shared := tileRenders.do(r.Context(), cacheCoordinationKey(cacher, key), func(renderCtx context.Context) *tileRenderResult {
 			return renderTileForCache(renderCtx, r, next, cacher, key, true)
 		})
 
@@ -279,7 +284,7 @@ func renderTileForCache(ctx context.Context, r *http.Request, next http.Handler,
 	if checkStale {
 		// keep the metatile state alive across the render and remember its
 		// generation for the staleness check below
-		lockKey := metatileLockKeyForCacheKey(key)
+		lockKey := cacheMetatileLockKey(cacher, key)
 		state := tileUpdateLocks.retain(lockKey)
 		defer tileUpdateLocks.release(lockKey, state)
 		snap = tileUpdateLocks.snapshot(state)

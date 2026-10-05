@@ -116,3 +116,29 @@ func TestReceiptCallbackPanicPreservesProviderAuxiliaryError(t *testing.T) {
 		t.Fatalf("lost committed state: %+v %+v %v", out, receipt, err)
 	}
 }
+
+func TestReceiptInvalidatesCommittedAndUnknownOnly(t *testing.T) {
+	for _, status := range []provider.CommitStatus{provider.CommitCommitted, provider.CommitUnknown, provider.CommitNotCommitted} {
+		p := &receiptProbe{status: status, commitErr: errors.New("provider error")}
+		c := receiptCoordinator(p)
+		calls := 0
+		c.OnInvalidate = func(cols []string) {
+			calls++
+			if len(cols) != 1 || cols[0] != "sites" {
+				t.Fatalf("collections=%v", cols)
+			}
+			cols[0] = "mutated"
+		}
+		_, receipt, _ := c.Execute(context.Background(), Principal{}, receiptMutation())
+		want := 0
+		if status != provider.CommitNotCommitted {
+			want = 1
+		}
+		if calls != want || receipt.Status != status {
+			t.Fatalf("status=%v calls=%d receipt=%+v", status, calls, receipt)
+		}
+		if status == provider.CommitCommitted && receipt.Collections[0] != "sites" {
+			t.Fatal("callback mutated receipt")
+		}
+	}
+}

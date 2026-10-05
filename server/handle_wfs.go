@@ -26,7 +26,8 @@ type WFSHandler struct {
 	Config      config.WFSConfig
 	WriteConfig config.FeaturesWriteConfig
 	// A36: called after successful mutation (no global state).
-	OnMutate func(collections []string)
+	OnMutate            func(collections []string)
+	tileCacheInvalidate func()
 	// Authenticator resolves the Transaction principal. Nil means
 	// anonymous-only; see FeatureAPIConfig.Authenticator.
 	Authenticator Authenticator
@@ -50,7 +51,12 @@ func (h *WFSHandler) coordinator() *feature.MutationCoordinator {
 		ProviderFor: func(collection string) (provider.MutationProvider, string, error) {
 			return h.Service.MutationProviderFor(collection)
 		},
-		// A36: notify cache invalidation (no global state).
+		OnInvalidate: func([]string) {
+			if h.tileCacheInvalidate != nil {
+				h.tileCacheInvalidate()
+			}
+		},
+		// A36: notify successful mutations (no global state).
 		OnCommit: func(collections []string) {
 			if h.OnMutate != nil {
 				h.OnMutate(collections)

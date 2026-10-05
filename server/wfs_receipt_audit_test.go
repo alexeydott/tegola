@@ -69,6 +69,8 @@ func TestWFSAuditReceiptPreservesOutcome(t *testing.T) {
 				t.Fatal(err)
 			}
 			h := &WFSHandler{Service: svc, Config: config.WFSConfig{Enabled: true}.Resolved(), WriteConfig: config.FeaturesWriteConfig{Enabled: true, AuthMode: "dev", Collections: []config.WriteCollectionConfig{{ID: "sites", Operations: []string{"create"}}}}}
+			invalidations := 0
+			h.tileCacheInvalidate = func() { invalidations++ }
 			if tc.hookPanic {
 				h.OnMutate = func([]string) { panic("private callback details") }
 			}
@@ -84,6 +86,13 @@ func TestWFSAuditReceiptPreservesOutcome(t *testing.T) {
 				}()
 				h.ServeHTTP(w, r)
 			}()
+			wantInvalidations := 0
+			if tc.applyErr == nil && (tc.status == provider.CommitCommitted || tc.status == provider.CommitUnknown) {
+				wantInvalidations = 1
+			}
+			if invalidations != wantInvalidations {
+				t.Fatalf("invalidations=%d want=%d", invalidations, wantInvalidations)
+			}
 			if w.Code != tc.wantHTTP || w.Header().Get("Tegola-Commit-Status") != tc.wantStatus || w.Header().Get("Tegola-Transaction-ID") != tc.wantID {
 				t.Fatalf("outcome status=%d headers=%v body=%s", w.Code, w.Header(), w.Body.String())
 			}

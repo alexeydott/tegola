@@ -147,10 +147,16 @@ func assembleRouter(a *atlas.Atlas, options RouterOptions) *httptreemux.TreeMux 
 	hMapLayerZXY := HandleMapLayerZXY{Atlas: a}
 	var tileHandler http.Handler = hMapLayerZXY
 	if writesEnabled {
-		// Until durable invalidation is implemented, neither persisted tiles nor
-		// browser caches may hide committed feature mutations.
-		log.Debug("[FIX] tile caching disabled for writable feature runtime")
-		tileHandler = mutableTileNoStore(GZipHandler(tileHandler))
+		state := newWritableTileCacheState()
+		if options.Features != nil {
+			options.Features.tileCacheInvalidate = state.Invalidate
+		}
+		if options.WFS != nil {
+			options.WFS.tileCacheInvalidate = state.Invalidate
+		}
+		// Server tiles remain cached between mutations; browsers revalidate against
+		// the current generation on every request in a writable runtime.
+		tileHandler = state.Wrap(mutableTileNoStore(GZipHandler(TileCacheHandler(a, tileHandler))))
 	} else {
 		tileHandler = TileHTTPCacheHandler(TileHTTPMaxAge, GZipHandler(TileCacheHandler(a, tileHandler)))
 	}

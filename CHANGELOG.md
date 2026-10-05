@@ -1,6 +1,7 @@
 ## Unreleased
 
-- Allow authenticated explicit tile-cache status and regeneration in writable feature/WFS runtimes while ordinary tile requests continue bypassing caches with `no-store`.
+- Cache ordinary viewing in writable runtimes; bypass ordinary tile caching with `X-Tegola-Editor-Active: true`. Isolate cache generations after successful or uncertain commits and across restarts, including concurrent renders and metatile maintenance.
+- Allow authenticated explicit tile-cache status and regeneration in writable feature/WFS runtimes with HTTP `no-store`.
 
 - Align WFS nullable geometry input with DescribeFeatureType: explicit `xsi:nil` in Insert, Update and Replace writes SQL NULL only for nullable geometry, preserving omitted-update geometry and rejecting malformed nil values.
 
@@ -13,7 +14,7 @@
 - Address PR #2 protocol/admission findings: reject production writes in the stock CLI without an authenticator, preserve storage nullability and validate RFC3339 inputs, normalize write operation names in OpenAPI, admit create only with generated keys, prepare MySQL service schema before write publication, and retain transaction correlation IDs. WFS resolves advertised qualified names, preserves negotiated versions and mounted public URLs, and no longer advertises unsupported XML BBOX filters. See [write contracts](docs/wfs-scope-limitations.md) and [provider evidence](docs/provider-matrix.md) for tested profiles.
 - Verify raw MOS mutations on MySQL 8.4.11 and the GeoPackage provider's SQLite BLOB profile, including six geometry families, holes, quantization, annotated-source preservation and CRS-aware readback. Add separate bounds-backed MOS read-only checks and a GeoPackage-provider HTTP MOS roundtrip. Derived bbox-column writes, MariaDB/HANA MOS writers and untested precision/CRS profiles are not implied by these results.
 
-- Add opt-in WFS read/transaction adapters and a draft-derived Feature API write profile for admitted PostGIS, MySQL/MariaDB and GeoPackage layers. Writes use schema validation, transactional revisions and conditional requests. LockFeature remains unavailable; enabling writes bypasses tile caches. No full WFS/Part 4 conformance or unrestricted production acceptance is claimed. See [write scope and operating limits](docs/wfs-scope-limitations.md).
+- Add opt-in WFS read/transaction adapters and a draft-derived Feature API write profile for admitted PostGIS, MySQL/MariaDB and GeoPackage layers. Writes use schema validation, transactional revisions and conditional requests. LockFeature remains unavailable; writable runtimes invalidate router-local tile cache generations after commits. No full WFS/Part 4 conformance or unrestricted production acceptance is claimed. See [write scope and operating limits](docs/wfs-scope-limitations.md).
 - Add a source-feature attribute editor with mutation-schema forms, conditional JSON Patch, local undo/redo and preserved conflict drafts. Existing geometry is retained; unsafe numeric editing and unknown write outcomes stop further writes. Geometry drawing and lossless large-number editing require external clients.
 
 - Integrate PR #1 OGC Features fixes for GeoPackage Queryables, polar bbox predicates and limit errors; preserve exact integer/REAL filter comparisons and reject non-finite scalar values.

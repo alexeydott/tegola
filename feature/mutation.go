@@ -27,6 +27,9 @@ type MutationCoordinator struct {
 	// OnCommit, if set, is called after successful commit with the
 	// mutated collections (A36: for cache invalidation).
 	OnCommit func(collections []string)
+	// OnInvalidate discards cached reads after a committed or unknown outcome.
+	// It is separate from success-only OnCommit notifications.
+	OnInvalidate func(collections []string)
 	// LockCheck, if set, is called inside the transaction before each
 	// Apply (A09: atomic guard). It receives the public collection name
 	// and the pinned physical key. Returns non-nil error to abort with
@@ -208,11 +211,23 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 			}
 		}
 	}
+	cols := make([]string, 0, len(mutations))
+	seen := map[string]bool{}
+	for _, binding := range bounds {
+		coll := binding.collection
+		if !seen[coll] {
+			seen[coll] = true
+			cols = append(cols, coll)
+		}
+	}
 	receipt, err := tx.Commit(ctx)
 	// A35: preserve the receipt even on commit error, so the caller
 	// can distinguish committed/unknown/failed outcomes.
 	if receipt.Status == provider.CommitCommitted {
 		committed = true
+	}
+	if c.OnInvalidate != nil && (committed || receipt.Status == provider.CommitUnknown) {
+		err = errors.Join(err, notifyMutationCommit(c.OnInvalidate, append([]string(nil), cols...)))
 	}
 	if !committed {
 		if err == nil {
@@ -227,15 +242,6 @@ func (c *MutationCoordinator) ExecuteAll(ctx context.Context, principal Principa
 	// A43: enrich the durable receipt.
 	receipt.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	receipt.Actor = principal.ID
-	cols := make([]string, 0, len(mutations))
-	seen := map[string]bool{}
-	for _, binding := range bounds {
-		coll := binding.collection
-		if !seen[coll] {
-			seen[coll] = true
-			cols = append(cols, coll)
-		}
-	}
 	receipt.Collections = cols
 	// A36: notify cache invalidation hook.
 	if c.OnCommit != nil {

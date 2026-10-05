@@ -60,6 +60,8 @@ type FeatureAPI struct {
 	// A36: called after successful mutation with mutated collections.
 	// Set by router to bump Atlas cache epochs (no global state).
 	OnMutate func(collections []string)
+	// tileCacheInvalidate is bound to this router, including unknown outcomes.
+	tileCacheInvalidate func()
 }
 
 // RouterOptions enables explicit feature publication; nil Features preserves legacy behavior.

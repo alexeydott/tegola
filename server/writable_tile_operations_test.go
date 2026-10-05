@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -62,14 +63,14 @@ func TestWritableRouterTileMaintenance(t *testing.T) {
 					t.Fatalf("unauthenticated %s: %d", op, w.Code)
 				}
 			}
-			assertOrdinaryBypass := func() {
+			assertOrdinaryCached := func(want string) {
 				t.Helper()
 				w := request("", "")
-				if w.Code != http.StatusOK || bytes.Equal(w.Body.Bytes(), stale) || w.Header().Get("Tegola-Cache") != "" || w.Header().Get("Cache-Control") != "no-store" {
-					t.Fatalf("ordinary writable read used cache: %d %v %q", w.Code, w.Header(), w.Body.Bytes())
+				if w.Code != http.StatusOK || bytes.Equal(w.Body.Bytes(), stale) || w.Header().Get("Tegola-Cache") != want || w.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("ordinary writable read cache mismatch: %d %v %q", w.Code, w.Header(), w.Body.Bytes())
 				}
 			}
-			assertOrdinaryBypass()
+			assertOrdinaryCached("MISS")
 			w := request("?tile=status", "maintenance-test")
 			var status tileStatusResponse
 			if w.Code != http.StatusOK {
@@ -88,10 +89,13 @@ func TestWritableRouterTileMaintenance(t *testing.T) {
 			AwaitMetatileRegeneration()
 			for y := uint(0); y < 8; y++ {
 				for x := uint(0); x < 8; x++ {
-					k := &cache.Key{MapName: key.MapName, LayerName: key.LayerName, Z: key.Z, X: x, Y: y}
-					data, hit, err := c.Get(context.Background(), k)
-					if err != nil || !hit || bytes.Equal(data, stale) {
-						t.Fatalf("metatile %d/%d: hit=%v err=%v", x, y, hit, err)
+					r := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/maps/maintenance-map/points/4/%d/%d.pbf?tile=status", x, y), nil)
+					r.Header.Set(TileOperationsTokenHeader, "maintenance-test")
+					w := httptest.NewRecorder()
+					router.ServeHTTP(w, r)
+					var state tileStatusResponse
+					if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil || w.Code != 200 || !state.Cached {
+						t.Fatalf("metatile %d/%d: %d %s", x, y, w.Code, w.Body.String())
 					}
 				}
 			}
@@ -103,11 +107,7 @@ func TestWritableRouterTileMaintenance(t *testing.T) {
 				t.Fatalf("getupdated: %d %q", w.Code, w.Body.Bytes())
 			}
 			AwaitMetatileRegeneration()
-			data, hit, err := c.Get(context.Background(), key)
-			if err != nil || !hit || bytes.Equal(data, stale) {
-				t.Fatalf("getupdated did not refresh cache: hit=%v err=%v", hit, err)
-			}
-			assertOrdinaryBypass()
+			assertOrdinaryCached("HIT")
 		})
 	}
 }

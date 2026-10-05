@@ -84,7 +84,12 @@ func (api *FeatureAPI) mutationCoordinator() *feature.MutationCoordinator {
 		ProviderFor: func(collection string) (provider.MutationProvider, string, error) {
 			return api.service.MutationProviderFor(collection)
 		},
-		// A36: notify cache invalidation (no global state).
+		OnInvalidate: func([]string) {
+			if api.tileCacheInvalidate != nil {
+				api.tileCacheInvalidate()
+			}
+		},
+		// A36: notify successful mutations (no global state).
 		OnCommit: func(collections []string) {
 			if api.OnMutate != nil {
 				api.OnMutate(collections)
