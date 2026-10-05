@@ -287,6 +287,16 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 			}
 		}
 	}
+	if m.GeometryWKB == nil && m.GeometryAbsent {
+		cols = append(cols, quoteIdent(mp.geomColumn))
+		holders = append(holders, "NULL")
+		if mp.bboxFields[0] != "" {
+			for _, column := range mp.bboxFields {
+				cols = append(cols, quoteIdent(column))
+				holders = append(holders, "NULL")
+			}
+		}
+	}
 	if len(cols) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "insert carries no properties or geometry"}
 	}

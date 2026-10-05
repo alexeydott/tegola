@@ -1,6 +1,8 @@
 ## Unreleased
 
-- Support explicit `xsi:nil` scalar NULL values in WFS Insert, Update and Replace, enforcing storage nullability and rejecting nil geometry or nil elements with content. Omitted Update `Value` remains unsupported; empty string values retain their existing meaning. See [WFS write limits](docs/wfs-scope-limitations.md).
+- Align WFS nullable geometry input with DescribeFeatureType: explicit `xsi:nil` in Insert, Update and Replace writes SQL NULL only for nullable geometry, preserving omitted-update geometry and rejecting malformed nil values.
+
+- Support explicit `xsi:nil` scalar NULL values in WFS Insert, Update and Replace, enforcing storage nullability and rejecting nil elements with content. Omitted Update `Value` remains unsupported; empty string values retain their existing meaning. See [WFS write limits](docs/wfs-scope-limitations.md).
 
 - Add transactional raw MOS geometry/bounds maintenance for admitted MySQL/InnoDB and GeoPackage-provider SQLite tables, plus immutable custom `etmerc` horizontal transforms with explicit three/seven-parameter datum shifts. MySQL 5.5 can opt into metadata-based table identity with documented external-DDL limitations; fresh audit schemas use explicit Unicode-safe text storage. See [MOS write contracts](docs/geometry-formats.md#mos-writes-with-separate-bounds-columns) and [separate runtime evidence](docs/provider-matrix.md#native-mos-boundscustom-crs-extension). PostGIS bounds writes and custom vertical CRS remain outside this extension.
 

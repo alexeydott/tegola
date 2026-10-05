@@ -371,14 +371,16 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 			args = append(args, enc)
 		}
 	}
-	if m.GeometryWKB == nil && mp.bboxColumns[0] != "" {
+	if m.GeometryWKB == nil && (mp.bboxColumns[0] != "" || m.GeometryAbsent) {
 		cols = append(cols, quoteIdent(mp.geomColumn))
 		placeholders = append(placeholders, "?")
 		args = append(args, nil)
-		for _, column := range mp.bboxColumns {
-			cols = append(cols, quoteIdent(column))
-			placeholders = append(placeholders, "?")
-			args = append(args, nil)
+		if mp.bboxColumns[0] != "" {
+			for _, column := range mp.bboxColumns {
+				cols = append(cols, quoteIdent(column))
+				placeholders = append(placeholders, "?")
+				args = append(args, nil)
+			}
 		}
 	}
 	if len(cols) == 0 && m.GeometryWKB == nil {

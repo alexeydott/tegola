@@ -49,6 +49,16 @@ func actionToMutation(v Version, schema *feature.SchemaDescriptor, act Transacti
 func insertActionToMutation(v Version, schema *feature.SchemaDescriptor, act TransactionAction) (provider.Mutation, error) {
 	m := provider.Mutation{Op: provider.MutationInsert, Collection: act.TypeName, Properties: map[string]provider.MutationValue{}}
 	for name, literal := range act.Properties {
+		if name == schema.Geometry.Name {
+			if err := validateNullGeometry(schema, literal, act.NullProperties[name]); err != nil {
+				return m, err
+			}
+			if act.FeatureXML != "" {
+				return m, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "multiple geometry properties"}
+			}
+			m.GeometryAbsent = true
+			continue
+		}
 		desc, ok := schema.Property(name)
 		if !ok {
 			return m, &provider.MutationError{Kind: provider.MutationErrSchemaViolation, Reason: fmt.Sprintf("unknown property %q", name)}
@@ -82,8 +92,16 @@ func updateActionToMutations(v Version, schema *feature.SchemaDescriptor, act Tr
 	props := map[string]provider.MutationValue{}
 	var geomWKB []byte
 	var geomSRID uint64
+	var geomNull bool
 	for name, literal := range act.Properties {
 		if name == schema.Geometry.Name {
+			if act.NullProperties[name] {
+				if err := validateNullGeometry(schema, literal, true); err != nil {
+					return nil, err
+				}
+				geomNull = true
+				continue
+			}
 			// Geometry replacement: <Value> carries raw GML.
 			// A07: axis order from srsName in the GML.
 			g, srid, err := gml.ParseGeometryWithSRID(literal, "")
@@ -111,15 +129,27 @@ func updateActionToMutations(v Version, schema *feature.SchemaDescriptor, act Tr
 	var out []provider.Mutation
 	for _, id := range act.FilterIDs {
 		out = append(out, provider.Mutation{
-			Op:           provider.MutationUpdate,
-			Collection:   act.TypeName,
-			FeatureID:    id,
-			Properties:   props,
-			GeometryWKB:  geomWKB,
-			GeometrySRID: geomSRID,
+			Op:             provider.MutationUpdate,
+			Collection:     act.TypeName,
+			FeatureID:      id,
+			Properties:     props,
+			GeometryWKB:    geomWKB,
+			GeometryAbsent: geomNull,
+			GeometrySRID:   geomSRID,
 		})
 	}
 	return out, nil
+}
+
+// validateNullGeometry distinguishes explicit XML nil from an empty geometry value.
+func validateNullGeometry(schema *feature.SchemaDescriptor, literal string, isNull bool) error {
+	if !isNull || literal != "" {
+		return &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "geometry property requires GML or explicit xsi:nil"}
+	}
+	if !schema.Geometry.Nullable {
+		return &provider.MutationError{Kind: provider.MutationErrSchemaViolation, Reason: "geometry is required and does not accept null"}
+	}
+	return nil
 }
 
 func deleteActionToMutations(act TransactionAction) ([]provider.Mutation, error) {

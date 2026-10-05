@@ -12,10 +12,12 @@ import (
 
 // TransactionAction is one parsed Transaction action.
 type TransactionAction struct {
-	Op             provider.MutationOp
-	TypeName       string
-	Handle         string
-	Properties     map[string]string
+	Op         provider.MutationOp
+	TypeName   string
+	Handle     string
+	Properties map[string]string
+	// NullProperties preserves explicit xsi:nil independently of empty text or
+	// omission. The selected schema determines whether each property is geometry.
 	NullProperties map[string]bool
 	// FeatureXML is the raw inner XML of the feature element
 	// (Insert/Replace), parsed by the executor.
@@ -233,7 +235,7 @@ func parseActionFilter(inner, typeName string, nullMaps ...map[string]bool) (map
 				return nil, nil, fmt.Errorf("nil Value cannot contain elements")
 			}
 			if nilValue && local != "Value" {
-				return nil, nil, fmt.Errorf("nil is only supported on scalar Value")
+				return nil, nil, fmt.Errorf("nil is only supported on Property Value")
 			}
 			if local == "Value" {
 				valueNull = nilValue
@@ -468,7 +470,7 @@ func parseFeatureElement(inner string, nullMaps ...map[string]bool) (string, map
 				return "", nil, "", fmt.Errorf("nil property cannot contain elements")
 			}
 			if nilValue && (depth != 2 || isGMLGeometryElement(t.Name.Local)) {
-				return "", nil, "", fmt.Errorf("nil is only supported on scalar properties")
+				return "", nil, "", fmt.Errorf("nil is only supported on feature properties")
 			}
 			if depth == 1 {
 				// Skip Filter elements; typeName is the feature element.

@@ -94,14 +94,15 @@ identity or validated sequence-generated key establishes create capability;
 a constant or arbitrary default does not. Update/delete-only admission remains
 separate from this create restriction.
 
-WFS scalar properties accept explicit XML NULL in Insert and Replace feature
+WFS scalar properties and nullable geometry accept explicit XML NULL in Insert
+and Replace feature
 fields (`<app:note xsi:nil="true"/>`) and Update values
 (`<wfs:Value xsi:nil="true"/>`), with `xsi` bound to
 `http://www.w3.org/2001/XMLSchema-instance`. The boolean form `1` is also
 accepted. The property must be nullable; a nil element cannot contain text or
-child elements. XML NULL geometry remains unsupported, even for nullable storage
-geometry. Update with an omitted `Value` remains unsupported. An empty `Value`
-continues to mean an empty string for string properties, rather than NULL;
+child elements. Geometry NULL is mapped to a native SQL NULL only when the
+selected storage geometry is nullable. Update with an omitted `Value` remains
+unsupported. An empty `Value` continues to mean an empty string for string properties, rather than NULL;
 `xsi:nil="false"` and `"0"` preserve ordinary value parsing. These are explicit
 implementation limits, not a claim of support for every WFS NULL encoding.
 
