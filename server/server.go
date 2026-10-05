@@ -144,7 +144,7 @@ func assembleRouter(a *atlas.Atlas, options RouterOptions) *httptreemux.TreeMux 
 	// map tiles
 	writesEnabled := options.Features != nil && options.Features.cfg.Write.Enabled ||
 		options.WFS != nil && options.WFS.WriteConfig.Enabled
-	hMapLayerZXY := HandleMapLayerZXY{Atlas: a, disableCache: writesEnabled}
+	hMapLayerZXY := HandleMapLayerZXY{Atlas: a}
 	var tileHandler http.Handler = hMapLayerZXY
 	if writesEnabled {
 		// Until durable invalidation is implemented, neither persisted tiles nor

@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Allow authenticated explicit tile-cache status and regeneration in writable feature/WFS runtimes while ordinary tile requests continue bypassing caches with `no-store`.
+
 - Align WFS nullable geometry input with DescribeFeatureType: explicit `xsi:nil` in Insert, Update and Replace writes SQL NULL only for nullable geometry, preserving omitted-update geometry and rejecting malformed nil values.
 
 - Support explicit `xsi:nil` scalar NULL values in WFS Insert, Update and Replace, enforcing storage nullability and rejecting nil elements with content. Omitted Update `Value` remains unsupported; empty string values retain their existing meaning. See [WFS write limits](docs/wfs-scope-limitations.md).

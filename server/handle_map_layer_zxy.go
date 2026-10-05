@@ -51,8 +51,6 @@ type HandleMapLayerZXY struct {
 	debug bool
 	// the Atlas to use, nil (default) is the default atlas
 	Atlas *atlas.Atlas
-	// Writable feature runtimes must not read or regenerate stale tile caches.
-	disableCache bool
 }
 
 const (
@@ -510,9 +508,8 @@ type tileStatusResponse struct {
 
 func (req HandleMapLayerZXY) serveTileOperation(w http.ResponseWriter, r *http.Request, m atlas.Map, tile slippy.Tile, operation string) error {
 	cacher := req.Atlas.GetCache()
-	if req.disableCache {
-		cacher = nil
-	}
+	// Writable runtimes bypass cached ordinary reads, but authenticated
+	// maintenance operations must still inspect and refresh the configured cache.
 	w.Header().Set("Cache-Control", "no-store")
 	key := req.tileCacheKey(tile)
 	metatileKey := req.metatileLockKey(tile)

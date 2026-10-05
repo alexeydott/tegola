@@ -25,7 +25,9 @@ LockFeature is unavailable until a physical-feature guard can be enforced by
 all mutation paths and processes. Do not interpret an in-memory token store as a
 distributed database lock.
 
-A write-enabled server bypasses tile caches and emits no-store for tiles. Apply
+A write-enabled server bypasses tile caches for ordinary requests and emits no-store
+for tiles. Authenticated explicit tile-cache maintenance remains available when a
+cache backend is configured; it does not enable cached ordinary reads. Apply
 that policy to every reader replica serving the same editable data, including
 replicas whose own writes are disabled. Clear old persistent/CDN/browser caches
 before returning to a cached read-only deployment. Distributed cache invalidation
