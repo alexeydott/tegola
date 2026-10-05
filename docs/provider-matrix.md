@@ -13,9 +13,9 @@ exact commit/build identity and raw output with each release gate.
 | MySQL native geometry | MySQL 8.4.11; strict SQL mode; REPEATABLE-READ | Insert, longitude/latitude axis check at 120/35, revision read, identical replace, hidden property/schema admission, physical alias CAS, delete/tombstone, future-schema refusal | Other versions, all geometry encodings and real commit-fault recovery not established |
 | PostGIS native geometry | PostgreSQL 16.15; PostGIS 3.5.7; GEOS 3.14.1; PROJ 9.8.1 | Insert, guarded replace/update, revision read, hidden properties, alias CAS, delete, future-schema refusal | Other server/profile combinations and full production acceptance not established |
 | GeoPackage | Native SQLite writer with an independently created GDAL fixture copy | Real HTTP PATCH/PUT/CAS, geometry bytes, exact decimal text, child relations, RTree/extents, trigger rollback, delete cascade, WFS 2 update, untouched polygon/multipart/Z, source immutability and integrity | This does not establish XYZ writing, every custom CRS or restore/fault acceptance |
-| MySQL raw MOS follow-up | MySQL 8.4.11; LONGBLOB; EPSG:3857; explicit precision 2, units m | Native six-family mutation matrix, quantization, annotation-byte preservation, attribute filter/bbox, polygon-hole exclusion, replacement/delete and 4326→3857 geometry write | No derived bbox-column writes; no MariaDB or default-precision inference |
-| GeoPackage provider / raw SQLite MOS follow-up | SQLite BLOB; EPSG:3857; explicit precision 2, units m | Same native mutation matrix, plus real HTTP GET/PATCH/stale 412/geometry PATCH/direct SQL readback/DELETE→404 | This raw MOS storage is not GeoPackage binary geometry; bounds-backed writes remain rejected |
-| Bounds-backed MOS read-only follow-up | MySQL 8.4.11 and GeoPackage provider/SQLite; independent native 10-byte-header MOS point fixture | Ordinary-table and custom `!BBOX!` tile reads; integer bounds; m/precision 2 and cm/precision 0; ordinary FeatureQuery; explicit custom feature-query/write rejection | Read evidence only; separate bounds-column maintenance is not implemented for writes |
+| MySQL raw MOS follow-up | MySQL 8.4.11; LONGBLOB; EPSG:3857; explicit precision 2, units m | Native six-family mutation matrix, quantization, annotation-byte preservation, attribute filter/bbox, polygon-hole exclusion, replacement/delete and 4326→3857 geometry write | That run had no derived bbox columns; no MariaDB or default-precision inference |
+| GeoPackage provider / raw SQLite MOS follow-up | SQLite BLOB; EPSG:3857; explicit precision 2, units m | Same native mutation matrix, plus real HTTP GET/PATCH/stale 412/geometry PATCH/direct SQL readback/DELETE→404 | This raw MOS storage is not GeoPackage binary geometry; that run did not test bounds writes |
+| Bounds-backed MOS read-only follow-up | MySQL 8.4.11 and GeoPackage provider/SQLite; independent native 10-byte-header MOS point fixture | Ordinary-table and custom `!BBOX!` tile reads; integer bounds; m/precision 2 and cm/precision 0; ordinary FeatureQuery; explicit custom feature-query/write rejection | Historical read evidence; new bounds-write implementation requires its own runtime evidence |
 | MariaDB | Not run in this review | Shared implementation and unit coverage only | Native MariaDB acceptance remains NOT_RUN |
 | HANA | No write implementation | Read-only provider | Writes unsupported; no writer acceptance claimed |
 
@@ -127,14 +127,14 @@ Enable CGO (`CGO_ENABLED=1`) with a working C compiler, then run the
 self-contained raw SQLite MOS matrix:
 
 ```shell
-go test ./provider/gpkg -run '^TestNativeMOS(MutationMatrix|BoundsReadOnly)$' -count=1 -v
+go test ./provider/gpkg -run '^TestNativeMOS(MutationMatrix|BoundsProfile)$' -count=1 -v
 ```
 
 For MySQL, set `TEGOLA_MOS_MYSQL_DSN` to a disposable database using the Go MySQL
 driver DSN syntax, then run:
 
 ```shell
-go test ./provider/mysql -run '^TestNativeMOS(MutationMatrix|BoundsReadOnly)$' -count=1 -v
+go test ./provider/mysql -run '^TestNativeMOS(MutationMatrix|BoundsProfile)$' -count=1 -v
 ```
 
 `TEGOLA_MOS_MYSQL_DSN` overrides the MOS test database. When unset, both direct
@@ -142,7 +142,7 @@ tests and `scripts/native-test.sh` reuse `TEGOLA_REVIEW_MYSQL_DSN`. If neither
 variable is set, the MySQL MOS tests report SKIP, not PASS. The test role needs
 fixture/service-table creation privileges; these commands are not read-only
 probes against a production dataset. `TestNativeMOSBoundsReadOnly` separately
-exercises bounds-backed reads and rejected write admission.
+originally exercised bounds-backed reads and write rejection; new write gates require separate run evidence.
 
 The self-contained HTTP regression uses the GeoPackage provider's raw MOS table:
 
@@ -155,10 +155,59 @@ If-Match rejection, CRS-aware geometry PATCH checked through direct SQL MOS
 readback, and deletion followed by 404. This HTTP result does not imply a
 separate MySQL HTTP/browser MOS run.
 
+### Native MOS bounds/custom-CRS extension
+
+The current implementation adds transactional four-column MOS bounds maintenance
+for direct MySQL/InnoDB and GeoPackage-provider raw SQLite tables. It also adds
+immutable custom `etmerc` horizontal transforms with explicit datum semantics.
+These source capabilities do not retroactively extend the native evidence above.
+The custom projection unit/race suite compares synthetic Bessel three/seven-parameter
+transforms, prime-meridian offsets and units with PROJ 9.5.1.
+
+The local combined-profile run exercised six published collections across
+MySQL 5.5.29/InnoDB and the GeoPackage provider's raw SQLite MOS storage, with
+custom `etmerc` coordinates and separate integer bounds. HTTP and browser checks
+covered points, lines and polygons on both providers, CRUD, bounds readback and
+conditional conflicts. Native provider tests separately cover all six ordinary
+geometry families and attribute-only byte preservation. This run used a local test client;
+neither its deployment files nor private source data are repository fixtures.
+The final exact-binary replay repeated browser CRUD for all three geometry
+families across the six collections, verified actual WFS geometry XML requests,
+read all three supported WFS versions, and reported zero JavaScript errors.
+The API probe recorded 921 passes (including 276 expected rejection checks),
+zero failures and nine explicitly unsupported cases for
+MySQL DOUBLE query predicates; those checks do not establish exact DECIMAL
+queryability or extend the admitted DOUBLE filter profile. Browser-created
+test records were removed. Final direct-SQL checks confirmed that all 150
+baseline MOS blobs and bounds were unchanged, no temporary rows remained,
+and SQLite integrity was valid.
+
+Canonical MapplGIS tables have a narrower existing-row profile: protected
+SystemInfo/MUID/ObjectType/style metadata, preserved geometry family, and no
+geometry rewrite when opaque/header payload cannot be retained. Create remains
+unsupported there. Ordinary raw MOS tables support the separately admitted full
+CRUD profile. See [geometry write limits](geometry-formats.md#mos-writes-with-separate-bounds-columns).
+
+For current native provider regressions use the disposable DSN described above:
+
+```shell
+go test ./provider/mysql -run '^TestNativeMOS' -count=1 -v
+go test ./provider/gpkg -run '^(TestMOSNative|TestMOSAuxiliary|TestMOSSystemInfo|TestCanonicalMapplGIS)' -count=1 -v
+```
+
+The
+MySQL 5.5 identity-specific gate is `TestNativeMySQL55LegacySnapshot`. The
+self-contained SQLite gates include `TestNativeMOSBoundsProfile` and
+`TestCanonicalMapplGISMutationProfile`. Missing database credentials are SKIP.
+
+MySQL 5.5 uses the default-disabled `allow_legacy_table_identity` compatibility
+option. Its metadata identity cannot detect an identical-shape drop/recreate in
+the same creation-time second; this is not the modern physical-table-ID contract.
+See [configuration](configuration.md#mysql-55-table-identity).
+
 ## Explicit exclusions
 
-Configured/discovered derived bbox columns are rejected for writes until their
-maintenance is implemented. A native GeoPackage RTree has separate supported
+Derived bbox writes remain rejected outside the admitted MySQL/SQLite MOS profile. A native GeoPackage RTree has separate supported
 maintenance and is not equivalent to a derived bbox-column profile. External
 writers that bypass revision management are outside conditional-write guarantees.
 

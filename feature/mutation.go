@@ -260,13 +260,16 @@ func notifyMutationCommit(callback func([]string), collections []string) (err er
 // validateMutationInput runs schema validation before Begin: unknown
 // properties, read-only properties, type violations, required fields.
 func validateMutationInput(schema *SchemaDescriptor, m provider.Mutation) error {
+	if m.GeometryUnchanged && (m.Op != provider.MutationReplace || m.IfRevision == "" || m.GeometryWKB != nil || m.GeometryAbsent) {
+		return &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "unchanged geometry requires a revision-bound replacement without a geometry payload"}
+	}
 	if m.Op == provider.MutationDelete {
 		if m.FeatureID == 0 {
 			return &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "delete requires a feature ID"}
 		}
 		return nil
 	}
-	missingCompleteGeometry := (m.Op == provider.MutationInsert || m.Op == provider.MutationReplace) && m.GeometryWKB == nil
+	missingCompleteGeometry := (m.Op == provider.MutationInsert || m.Op == provider.MutationReplace) && m.GeometryWKB == nil && !m.GeometryUnchanged
 	if !schema.Geometry.Nullable && (m.GeometryAbsent || missingCompleteGeometry) {
 		return &provider.MutationError{
 			Kind:   provider.MutationErrSchemaViolation,

@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
 	pa "github.com/alexeydott/tegola/provider/audit"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // A03: checkRevisionCAS verifies IfRevision against the current revision
@@ -73,6 +75,11 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (result prov
 	if m.Op != provider.MutationInsert {
 		if err := checkRevisionCAS(ctx, t.tx, mp.revisionCollection(), m.FeatureID, m.IfRevision); err != nil {
 			return provider.MutationOutcome{}, err
+		}
+		if mp.geomFormat == "mos" {
+			if err := t.checkStoredMOSMutation(ctx, mp, m); err != nil {
+				return provider.MutationOutcome{}, err
+			}
 		}
 	}
 	var outcome provider.MutationOutcome
@@ -142,6 +149,8 @@ func (t *featureTx) Rollback(ctx context.Context) error {
 // It carries either a bind parameter (safe) or a SQL expression template
 // with bind args (for native functions). Never a raw interpolated string.
 type GeometryAssignment struct {
+	// RawBounds is the encoded MOS envelope in minX,maxX,minY,maxY order.
+	RawBounds *[4]int32
 	// BindValue is used when the geometry is a simple bind parameter.
 	BindValue interface{}
 	// ExprTemplate is a SQL fragment like "ST_GeomFromText(?, ?)".
@@ -163,6 +172,17 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 	if err := checkGeometryType(g, mp.geomType); err != nil {
 		return GeometryAssignment{}, err
 	}
+	if mp.geomFormat == "mos" {
+		transformed, err := codec.TransformStorageGeometry(g, inputSRID, mp.geomSRID, mp.storageProjection)
+		if err != nil {
+			return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: err.Error()}
+		}
+		encoded, err := codec.EncodeMOSStorage(transformed, mp.mosOpts)
+		if err != nil {
+			return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: err.Error()}
+		}
+		return GeometryAssignment{BindValue: encoded.Blob, RawBounds: &encoded.RawBounds}, nil
+	}
 	srid := inputSRID
 	if srid == 0 {
 		srid = mp.geomSRID
@@ -178,12 +198,6 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 		return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("WKB encode: %v", err)}
 	}
 	switch mp.geomFormat {
-	case "mos":
-		blob, err := mos.Encode(g, mp.mosOpts)
-		if err != nil {
-			return GeometryAssignment{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("MOS encode: %v", err)}
-		}
-		return GeometryAssignment{BindValue: blob}, nil
 	case "wkb":
 		return GeometryAssignment{BindValue: rawWKB}, nil
 	case "wkt":
@@ -404,6 +418,29 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 			holders = append(holders, "?")
 			args = append(args, ga.BindValue)
 		}
+		values, err := mosBoundsValues(mp, ga.RawBounds)
+		if err != nil {
+			return provider.MutationOutcome{}, err
+		}
+		for i, value := range values {
+			cols = append(cols, quoteIdent(mp.bboxFields[i]))
+			holders = append(holders, "?")
+			args = append(args, value)
+		}
+	} else {
+		if mp.bboxFields[0] != "" || m.GeometryAbsent {
+			cols = append(cols, quoteIdent(mp.geomColumn))
+			holders = append(holders, "NULL")
+		}
+		values, err := mosBoundsValues(mp, nil)
+		if err != nil {
+			return provider.MutationOutcome{}, err
+		}
+		for i, value := range values {
+			cols = append(cols, quoteIdent(mp.bboxFields[i]))
+			holders = append(holders, "?")
+			args = append(args, value)
+		}
 	}
 	if len(cols) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "insert carries no properties or geometry"}
@@ -423,10 +460,8 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 // A05: Replace is UPDATE of the existing row, NOT DELETE+INSERT.
 // Deleting first would fire ON DELETE CASCADE, run DELETE triggers, and
 // discard server-managed values. UPDATE preserves row identity.
-// R10: PUT (Replace) semantics. Currently implements partial update:
-// only provided properties are changed. Full replacement (clearing
-// omitted nullable fields to NULL/DEFAULT) is not yet implemented.
-// System fields (PK, created_at) are never modified.
+// Omitted writable properties use NULL or their database defaults. Internal
+// bounds are assigned only alongside a new or explicitly cleared geometry.
 func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mutation) (provider.MutationOutcome, error) {
 	// R04: verify existence before REPLACE. RowsAffected==0 after
 	// a verified existence means no-op (identical values), not 404.
@@ -475,11 +510,30 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 			sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
 			args = append(args, ga.BindValue)
 		}
+		values, err := mosBoundsValues(mp, ga.RawBounds)
+		if err != nil {
+			return provider.MutationOutcome{}, err
+		}
+		for i, value := range values {
+			sets = append(sets, quoteIdent(mp.bboxFields[i])+" = ?")
+			args = append(args, value)
+		}
 	} else if m.GeometryAbsent {
 		// A18: explicit geometry clear -> SET NULL.
 		sets = append(sets, quoteIdent(mp.geomColumn)+" = NULL")
+		values, err := mosBoundsValues(mp, nil)
+		if err != nil {
+			return provider.MutationOutcome{}, err
+		}
+		for i, value := range values {
+			sets = append(sets, quoteIdent(mp.bboxFields[i])+" = ?")
+			args = append(args, value)
+		}
 	}
 	if len(sets) == 0 {
+		if m.GeometryUnchanged && m.IfRevision != "" {
+			return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
+		}
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
 	}
 	args = append(args, m.FeatureID)
@@ -535,9 +589,25 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 			sets = append(sets, quoteIdent(mp.geomColumn)+" = ?")
 			args = append(args, ga.BindValue)
 		}
+		values, err := mosBoundsValues(mp, ga.RawBounds)
+		if err != nil {
+			return provider.MutationOutcome{}, err
+		}
+		for i, value := range values {
+			sets = append(sets, quoteIdent(mp.bboxFields[i])+" = ?")
+			args = append(args, value)
+		}
 	} else if m.GeometryAbsent {
 		// A18: explicit geometry clear -> SET NULL.
 		sets = append(sets, quoteIdent(mp.geomColumn)+" = NULL")
+		values, err := mosBoundsValues(mp, nil)
+		if err != nil {
+			return provider.MutationOutcome{}, err
+		}
+		for i, value := range values {
+			sets = append(sets, quoteIdent(mp.bboxFields[i])+" = ?")
+			args = append(args, value)
+		}
 	}
 	if len(sets) == 0 {
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "update carries no changes"}
@@ -652,4 +722,60 @@ func mapGeometryPoints(g geom.Geometry, xform func(x, y float64) ([2]float64, er
 		return out, nil
 	}
 	return nil, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: fmt.Sprintf("cannot reproject %T", g)}
+}
+
+// mosBoundsValues supplies all derived columns in the same DML as geometry.
+func mosBoundsValues(mp *writeMapping, bounds *[4]int32) ([]interface{}, error) {
+	if mp.bboxFields[0] == "" {
+		return nil, nil
+	}
+	values := make([]interface{}, 4)
+	for i, name := range mp.bboxFields {
+		if bounds != nil {
+			values[i] = int64(bounds[i])
+			continue
+		}
+		if !mp.columns[name].Nullable {
+			return nil, &provider.MutationError{Kind: provider.MutationErrSchemaViolation, Reason: "geometry clearing requires nullable bounds columns"}
+		}
+	}
+	return values, nil
+}
+
+// SystemInfo records are never features. Canonical object metadata also requires
+// preserving geometry family and refusing opaque MOS payloads on geometry edits.
+func (t *featureTx) checkStoredMOSMutation(ctx context.Context, mp *writeMapping, m provider.Mutation) error {
+	var raw []byte
+	err := t.tx.QueryRowContext(ctx, "SELECT "+quoteIdent(mp.geomColumn)+" FROM "+quoteIdent(mp.table)+" WHERE "+quoteIdent(mp.idColumn)+"=? FOR UPDATE", m.FeatureID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: "feature not found"}
+	}
+	if err != nil {
+		return mapSQLError(err)
+	}
+	if codec.IsSystemInfoValue(raw) {
+		return &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: "feature not found"}
+	}
+	if !mp.canonicalMapplGIS || m.GeometryWKB == nil {
+		return nil
+	}
+	if len(raw) == 0 || raw[0] > mos.TypePoint {
+		return &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "canonical geometry has unsupported MOS metadata"}
+	}
+	stored, err := mos.Decode(raw, mp.mosOpts)
+	if err != nil {
+		return err
+	}
+	canonical, err := mos.Encode(stored, mp.mosOpts)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(raw, canonical) {
+		return &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "canonical geometry has opaque MOS metadata that cannot be preserved"}
+	}
+	proposed, err := wkb.DecodeBytes(m.GeometryWKB)
+	if err != nil {
+		return err
+	}
+	return checkGeometryType(proposed, normalizeGeomType(stored))
 }

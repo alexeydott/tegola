@@ -111,6 +111,13 @@ func (tx *featureResponseTransaction) commit(w http.ResponseWriter, r *http.Requ
 	// which clears validators (handlers set it after the middleware).
 	etag := tx.committed.Get("ETag")
 	featureProtocolHeaders(tx.committed)
+	// Mutation OPTIONS handlers compute Allow from this collection's enabled
+	// operations. Keep that resource-specific policy in the final preflight.
+	if r.Method == http.MethodOptions && tx.status == http.StatusNoContent {
+		if allow := tx.committed.Get("Allow"); allow != "" {
+			tx.committed.Set("Access-Control-Allow-Methods", allow)
+		}
+	}
 	if etag != "" {
 		tx.committed.Set("ETag", etag)
 		mergeFeatureHeader(tx.committed, "Access-Control-Expose-Headers", "ETag")

@@ -437,7 +437,10 @@ func absenceCandidateSQL(layer *Layer) string {
 	case GeometryFormatWKB:
 		return base + " OR typeof(" + field + ")<>'blob' OR length(" + field + ")<=9 OR hex(substr(" + field + ",2,4)) NOT IN ('01000000','00000001','02000000','00000002') OR (" + rawEmptyPointSQL(field) + ")"
 	case GeometryFormatMOS:
-		return base + " OR typeof(" + field + ")<>'blob' OR length(" + field + ")<10 OR hex(substr(" + field + ",1,1))<>'02' OR hex(substr(" + field + ",7,4))='00000000'"
+		// MOS supports polygon, polyline, point, text and image headers.
+		// Treating every non-point header as absent defeats bounds pruning
+		// for whole network/polygon tables and decodes every row per request.
+		return base + " OR typeof(" + field + ")<>'blob' OR length(" + field + ")<10 OR hex(substr(" + field + ",1,1)) NOT IN ('00','01','02','03','04') OR hex(substr(" + field + ",7,4))='00000000'"
 	}
 	return "1"
 }
@@ -464,7 +467,10 @@ func spatialCandidatePredicate(layer *Layer, bounds []geom.Extent, args *[]any) 
 		for _, extent := range bounds {
 			coordinates := [4]float64{extent[0], extent[2], extent[1], extent[3]}
 			if layer.geometryFormat == GeometryFormatMOS {
-				scale := math.Pow(10, layer.mosConfig.Precision) / layer.mosConfig.UnitFactor
+				scale, err := codec.MOSRawScale(layer.mosConfig)
+				if err != nil {
+					return "", fmt.Errorf("gpkg MOS bounds scale: %w", err)
+				}
 				if math.IsNaN(scale) || math.IsInf(scale, 0) || scale <= 0 {
 					return "", fmt.Errorf("gpkg MOS bounds scale: %w", provider.ErrUnsupported)
 				}

@@ -24,4 +24,10 @@
 // synthetic internal SRID. Synthetic SRIDs occupy the range >= 340000001
 // and must never collide with real EPSG codes; they are meaningless outside
 // the current process and cannot be persisted.
+//
+// Feature reads and mutations use NewFeatureProjection to own their converter
+// independently of that registry. In addition to canonical WGS84 profiles, it
+// admits custom etmerc definitions with explicit horizontal datum semantics.
+// Their CanonicalSRID is zero; horizontal admission never proves a vertical
+// datum, public EPSG identity, or safe ellipsoidal-height preservation.
 package crsconfig

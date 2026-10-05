@@ -15,8 +15,11 @@ import (
 	"github.com/alexeydott/tegola/mos"
 	"strconv"
 
+	"github.com/alexeydott/tegola/basic"
 	"github.com/alexeydott/tegola/provider"
 	pa "github.com/alexeydott/tegola/provider/audit"
+	"github.com/alexeydott/tegola/provider/crsconfig"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // Writer implements provider.MutationProvider for MySQL/MariaDB.
@@ -119,6 +122,9 @@ type writeMapping struct {
 	geomType                string
 	geomSRID                uint64
 	mosOpts                 mos.Options
+	bboxFields              [4]string
+	storageProjection       *crsconfig.FeatureProjection
+	canonicalMapplGIS       bool
 	columns                 map[string]provider.ColumnDescriptor
 	writable                map[string]string
 	readOnly                []string
@@ -232,7 +238,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		return deny("writes require an InnoDB table")
 	}
 	// Columns and PK via information_schema.
-	q := `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, EXTRA FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
+	q := `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, COLUMN_TYPE, NUMERIC_PRECISION, NUMERIC_SCALE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
 	rows, err := p.db.QueryContext(ctx, q, p.Database, l.tablename)
 	if err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
@@ -242,15 +248,25 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	cols := map[string]provider.ColumnDescriptor{}
 	var order []string
 	autoIncrement := make(map[string]bool)
+	bboxTypes := make(map[string]bool)
 	for rows.Next() {
-		var name, dtype, key, nullable, extra string
+		var name, dtype, key, nullable, extra, columnType string
+		var numericPrecision, numericScale sql.NullInt64
 		var defaultValue sql.NullString
-		if err := rows.Scan(&name, &dtype, &key, &nullable, &defaultValue, &extra); err != nil {
+		if err := rows.Scan(&name, &dtype, &key, &nullable, &defaultValue, &extra, &columnType, &numericPrecision, &numericScale); err != nil {
 			return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 		}
 		cols[name] = provider.ColumnDescriptor{Name: name, Type: dtype, Nullable: nullable == "YES", IsDefault: defaultValue.Valid, IsGenerated: (strings.Contains(extra, "STORED GENERATED") || strings.Contains(extra, "VIRTUAL GENERATED")) || strings.Contains(extra, "auto_increment")}
 		order = append(order, name)
 		autoIncrement[name] = strings.Contains(extra, "auto_increment")
+		switch strings.ToLower(dtype) {
+		case "int", "integer", "bigint":
+			bboxTypes[name] = !strings.Contains(strings.ToLower(columnType), "unsigned")
+		case "double":
+			bboxTypes[name] = true
+		case "decimal", "numeric":
+			bboxTypes[name] = numericPrecision.Valid && numericScale.Valid && numericPrecision.Int64-numericScale.Int64 >= 10
+		}
 		if key == "PRI" {
 			pkCols = append(pkCols, name)
 		}
@@ -258,11 +274,7 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	if err := rows.Err(); err != nil {
 		return nil, &provider.MutationError{Kind: provider.MutationErrExecutionFailed, Reason: fmt.Sprintf("inspect: %v", err)}
 	}
-	for _, field := range l.bboxFields {
-		if _, exists := cols[field]; field != "" && exists {
-			return deny("writes to layers with derived bounds columns are not supported")
-		}
-	}
+
 	if len(pkCols) != 1 {
 		return deny(fmt.Sprintf("layer %q: write requires a single-column primary key", l.name))
 	}
@@ -313,8 +325,57 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 		writable: make(map[string]string),
 		domain:   p.domainID(),
 	}
+	if format == "mos" {
+		if l.feature != nil {
+			m.storageProjection = l.feature.crsProjection
+		} else if definition, ok := basic.EffectiveProj4Definition(l.srid); ok {
+			m.storageProjection, err = crsconfig.NewFeatureProjection(definition)
+			if err != nil {
+				return deny("MOS storage CRS projection is unsupported")
+			}
+		}
+		if m.storageProjection == nil {
+			return deny("MOS storage CRS projection is unavailable")
+		}
+	}
+	// Bounds are native MOS integer-grid coordinates, not layer CRS metres.
+	// Resolve catalog spelling and require a complete, independent mapping.
+	presentBounds := 0
+	boundsSeen := make(map[string]bool)
+	for i, wanted := range l.bboxFields {
+		for name := range cols {
+			if wanted != "" && strings.EqualFold(name, wanted) {
+				if boundsSeen[name] || name == m.idColumn || name == m.geomColumn || cols[name].IsGenerated || !bboxTypes[name] {
+					return deny("MOS bounds require distinct writable signed INT/BIGINT, DOUBLE, or sufficiently wide DECIMAL columns")
+				}
+				boundsSeen[name] = true
+				m.bboxFields[i] = name
+				presentBounds++
+			}
+		}
+	}
+	if presentBounds > 0 && (presentBounds != 4 || format != "mos") {
+		return deny("derived bounds writes require MOS and a complete four-column mapping")
+	}
+	if presentBounds == 4 && cols[m.geomColumn].Nullable {
+		for _, name := range m.bboxFields {
+			if !cols[name].Nullable {
+				return deny("nullable geometry requires nullable MOS bounds columns")
+			}
+		}
+	}
+	if presentBounds == 0 && l.bboxFields != ([4]string{}) && l.bboxFields != codec.DefaultBBoxFields() {
+		return deny("configured bounds columns are missing")
+	}
 	if !autoIncrement[m.idColumn] {
 		m.createUnsupportedReason = "create requires an AUTO_INCREMENT primary key"
+	}
+	if l.isMapplGIS {
+		if format != "mos" || presentBounds != 4 || !strings.EqualFold(m.idColumn, "OKEY") || !strings.EqualFold(m.geomColumn, "LINE") {
+			return deny("canonical MapplGIS writes require native identity, geometry and complete bounds mapping")
+		}
+		m.canonicalMapplGIS = true
+		m.createUnsupportedReason = "canonical MapplGIS creation requires MUID, ObjectType and style initialization not supplied by this provider"
 	}
 	public := map[string]bool{}
 	if l.feature != nil {
@@ -332,7 +393,11 @@ func admitLayer(ctx context.Context, p *Provider, l *Layer) (*writeMapping, erro
 	restrict := l.feature != nil || len(l.tagFieldnames) > 0
 	_ = order
 	for name, column := range cols {
-		if name == m.idColumn || name == m.geomColumn || (restrict && !public[name]) {
+		if name == m.idColumn || name == m.geomColumn || boundsSeen[name] || (restrict && !public[name]) {
+			continue
+		}
+		if m.canonicalMapplGIS && (strings.EqualFold(name, "MUID") || strings.EqualFold(name, "ObjectStyle") || strings.EqualFold(name, "ObjectType")) {
+			m.readOnly = append(m.readOnly, name)
 			continue
 		}
 		if column.IsGenerated {

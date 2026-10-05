@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS tegola_schema_version (
 );
 `
 
-// MySQL DDL
+// MySQL DDL keeps each indexed string below the legacy InnoDB 767-byte
+// limit. Audit collection names retain 255 Unicode characters; their lookup
+// index is non-unique. Revision collections are physical MySQL table names
+// (at most 64 BMP characters), indexed in full with case-sensitive equality.
+// CREATE IF NOT EXISTS intentionally leaves existing service schemas intact.
 const MySQLDDL = `
 CREATE TABLE IF NOT EXISTS tegola_audit (
 	id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -51,9 +55,9 @@ CREATE TABLE IF NOT EXISTS tegola_audit (
 	revision_after TEXT,
 	transaction_id VARCHAR(100) DEFAULT '',
 	request_id VARCHAR(100) DEFAULT '',
-	INDEX idx_audit_collection (collection),
+	INDEX idx_audit_collection (collection(191)),
 	INDEX idx_audit_ts (ts)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 CREATE TABLE IF NOT EXISTS tegola_outbox (
 	id BIGINT PRIMARY KEY AUTO_INCREMENT,
 	ts VARCHAR(40) NOT NULL,
@@ -63,18 +67,18 @@ CREATE TABLE IF NOT EXISTS tegola_outbox (
 	payload TEXT,
 	dispatched TINYINT NOT NULL DEFAULT 0,
 	INDEX idx_outbox_undispatched (dispatched)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 CREATE TABLE IF NOT EXISTS tegola_revisions (
-	collection VARCHAR(255) NOT NULL,
+	collection VARCHAR(64) CHARACTER SET utf8 COLLATE utf8_bin NOT NULL,
 	feature_id BIGINT NOT NULL,
 	revision BIGINT NOT NULL DEFAULT 0,
 	incarnation BIGINT NOT NULL DEFAULT 0,
 	PRIMARY KEY (collection, feature_id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 CREATE TABLE IF NOT EXISTS tegola_schema_version (
 	version INT PRIMARY KEY,
 	applied_at VARCHAR(40) NOT NULL
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 `
 
 // PostgreSQL DDL

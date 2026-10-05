@@ -12,10 +12,11 @@ import (
 
 // TransactionAction is one parsed Transaction action.
 type TransactionAction struct {
-	Op         provider.MutationOp
-	TypeName   string
-	Handle     string
-	Properties map[string]string
+	Op             provider.MutationOp
+	TypeName       string
+	Handle         string
+	Properties     map[string]string
+	NullProperties map[string]bool
 	// FeatureXML is the raw inner XML of the feature element
 	// (Insert/Replace), parsed by the executor.
 	FeatureXML string
@@ -37,6 +38,34 @@ type wfsActionInner struct {
 	Handle   string `xml:"handle,attr"`
 	TypeName string `xml:"typeName,attr"`
 	Inner    string `xml:",innerxml"`
+}
+
+// UnmarshalXML preserves resolved namespace names when extracting action contents.
+// Raw innerxml loses bindings declared on Transaction or the action itself.
+func (a *wfsActionInner) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
+	var node fesElement
+	if err := dec.DecodeElement(&node, &start); err != nil {
+		return err
+	}
+	a.XMLName = start.Name
+	for _, attr := range start.Attr {
+		switch attr.Name.Local {
+		case "handle":
+			a.Handle = attr.Value
+		case "typeName":
+			a.TypeName = attr.Value
+		}
+	}
+	var inner strings.Builder
+	for _, child := range node.Children {
+		raw, err := marshalNamespaceTree(child)
+		if err != nil {
+			return err
+		}
+		inner.Write(raw)
+	}
+	a.Inner = inner.String()
+	return nil
 }
 
 // ParseTransaction parses a WFS Transaction document (1.1 or 2.0).
@@ -72,7 +101,7 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, stri
 			return nil, "", "ALL", fmt.Errorf("invalid transaction action namespace")
 		}
 		local := a.XMLName.Local
-		act := TransactionAction{Handle: a.Handle}
+		act := TransactionAction{Handle: a.Handle, NullProperties: map[string]bool{}}
 		switch local {
 		case "Insert":
 			act.Op = provider.MutationInsert
@@ -91,7 +120,7 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, stri
 			return nil, "", "ALL", fmt.Errorf("unsupported transaction action <%s>", local)
 		}
 		if act.Op == provider.MutationUpdate || act.Op == provider.MutationDelete {
-			props, ids, err := parseActionFilter(a.Inner, act.TypeName)
+			props, ids, err := parseActionFilter(a.Inner, act.TypeName, act.NullProperties)
 			if err != nil {
 				return nil, "", "ALL", err
 			}
@@ -109,14 +138,14 @@ func ParseTransaction(v Version, body []byte) ([]TransactionAction, string, stri
 			for _, f := range features {
 				actions = append(actions, TransactionAction{
 					Op: provider.MutationInsert, TypeName: f.TypeName, Handle: a.Handle,
-					Properties: f.Properties, FeatureXML: f.GeomXML,
+					Properties: f.Properties, NullProperties: f.NullProperties, FeatureXML: f.GeomXML,
 				})
 			}
 			continue
 		} else {
 			// Replace: extract feature element AND filter IDs.
 			// Structure: <Replace><Feature>...</Feature><Filter>...</Filter></Replace>
-			typeName, props, geomXML, err := parseFeatureElement(a.Inner)
+			typeName, props, geomXML, err := parseFeatureElement(a.Inner, act.NullProperties)
 			if err != nil {
 				return nil, "", "ALL", fmt.Errorf("%s: %w", local, err)
 			}
@@ -163,7 +192,7 @@ func fidMatchesType(fidColl, typeName string) bool {
 	return strip(fidColl) == strip(typeName)
 }
 
-func parseActionFilter(inner, typeName string) (map[string]string, []uint64, error) {
+func parseActionFilter(inner, typeName string, nullMaps ...map[string]bool) (map[string]string, []uint64, error) {
 	props := map[string]string{}
 	var ids []uint64
 	dec := xml.NewDecoder(strings.NewReader(inner))
@@ -171,6 +200,7 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 	var curValueXML strings.Builder
 	inValue, inRef := false, false
 	valueSeen := false
+	valueNull := false
 	valueDepth := 0
 	depth := 0
 	inFilter := false
@@ -188,10 +218,25 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 		case xml.StartElement:
 			depth++
 			local := t.Name.Local
-			for _, at := range t.Attr {
-				if at.Name.Local == "nil" && at.Value != "false" && at.Value != "0" {
-					return nil, nil, fmt.Errorf("explicit XML nil is not supported")
+			if len(nullMaps) == 0 && depth == 1 && local != "Filter" && local != "Property" {
+				if err := dec.Skip(); err != nil {
+					return nil, nil, err
 				}
+				depth--
+				continue
+			}
+			nilValue, err := xmlNil(t)
+			if err != nil {
+				return nil, nil, err
+			}
+			if inValue && valueNull {
+				return nil, nil, fmt.Errorf("nil Value cannot contain elements")
+			}
+			if nilValue && local != "Value" {
+				return nil, nil, fmt.Errorf("nil is only supported on scalar Value")
+			}
+			if local == "Value" {
+				valueNull = nilValue
 			}
 			if inValue && valueDepth == 0 && local != "Value" {
 				valueDepth = 1
@@ -250,6 +295,7 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 			case "Property":
 				curProp, curValue = "", ""
 				valueSeen = false
+				valueNull = false
 			case "Name", "ValueReference":
 				inRef = true
 			case "Value":
@@ -285,6 +331,9 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 						return nil, nil, fmt.Errorf("duplicate property %q", name)
 					}
 					props[name] = curValue
+					if valueNull && len(nullMaps) > 0 {
+						nullMaps[0][name] = true
+					}
 				} else {
 					return nil, nil, fmt.Errorf("Property has no Name or ValueReference")
 				}
@@ -302,6 +351,9 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 			if inRef {
 				curProp += text
 			} else if inValue {
+				if valueNull && text != "" {
+					return nil, nil, fmt.Errorf("nil Value cannot contain text")
+				}
 				curValue += text
 			}
 		}
@@ -313,6 +365,10 @@ func parseActionFilter(inner, typeName string) (map[string]string, []uint64, err
 func writeStartElement(sb *strings.Builder, t xml.StartElement) {
 	sb.WriteString("<" + t.Name.Local)
 	for _, at := range t.Attr {
+		if at.Name.Space == "http://www.w3.org/2001/XMLSchema-instance" {
+			sb.WriteString(` xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:` + at.Name.Local + `="` + xmlEscape(at.Value) + `"`)
+			continue
+		}
 		sb.WriteString(" " + at.Name.Local + `="` + xmlEscape(at.Value) + `"`)
 	}
 	sb.WriteString(">")
@@ -320,9 +376,10 @@ func writeStartElement(sb *strings.Builder, t xml.StartElement) {
 
 // parsedFeature is one feature from an Insert.
 type parsedFeature struct {
-	TypeName   string
-	Properties map[string]string
-	GeomXML    string
+	TypeName       string
+	Properties     map[string]string
+	NullProperties map[string]bool
+	GeomXML        string
 }
 
 // parseFeatureElements splits inner XML into top-level feature elements
@@ -357,11 +414,12 @@ func parseFeatureElements(inner string) ([]parsedFeature, error) {
 			}
 			if depth == 1 && inFeature {
 				inFeature = false
-				tn, props, geom, err := parseFeatureElement(buf.String())
+				nulls := map[string]bool{}
+				tn, props, geom, err := parseFeatureElement(buf.String(), nulls)
 				if err != nil {
 					return nil, err
 				}
-				features = append(features, parsedFeature{TypeName: tn, Properties: props, GeomXML: geom})
+				features = append(features, parsedFeature{TypeName: tn, Properties: props, NullProperties: nulls, GeomXML: geom})
 			}
 			depth--
 		case xml.CharData:
@@ -375,13 +433,14 @@ func parseFeatureElements(inner string) ([]parsedFeature, error) {
 
 // parseFeatureElement extracts the type name, scalar properties and the
 // raw GML geometry element from a feature's inner XML.
-func parseFeatureElement(inner string) (string, map[string]string, string, error) {
+func parseFeatureElement(inner string, nullMaps ...map[string]bool) (string, map[string]string, string, error) {
 	dec := xml.NewDecoder(strings.NewReader(inner))
 	props := map[string]string{}
 	var typeName, geomXML, curElem string
 	var buf strings.Builder
 	inGeom := false
 	propertyIsGeom := false
+	propertyNull := false
 	geomDepth := 0
 	depth := 0
 	for {
@@ -399,9 +458,17 @@ func parseFeatureElement(inner string) (string, map[string]string, string, error
 				if at.Name.Local == "srsDimension" && at.Value != "2" {
 					return "", nil, "", fmt.Errorf("only XY geometry is supported")
 				}
-				if at.Name.Local == "nil" && at.Value != "false" && at.Value != "0" {
-					return "", nil, "", fmt.Errorf("explicit XML nil is not supported")
-				}
+
+			}
+			nilValue, err := xmlNil(t)
+			if err != nil {
+				return "", nil, "", err
+			}
+			if depth > 2 && propertyNull {
+				return "", nil, "", fmt.Errorf("nil property cannot contain elements")
+			}
+			if nilValue && (depth != 2 || isGMLGeometryElement(t.Name.Local)) {
+				return "", nil, "", fmt.Errorf("nil is only supported on scalar properties")
 			}
 			if depth == 1 {
 				// Skip Filter elements; typeName is the feature element.
@@ -424,11 +491,15 @@ func parseFeatureElement(inner string) (string, map[string]string, string, error
 			}
 			if depth == 2 {
 				propertyIsGeom = false
+				propertyNull = nilValue
 				curElem = stripPrefix(t.Name.Local)
 				if _, exists := props[curElem]; exists {
 					return "", nil, "", fmt.Errorf("duplicate property %q", curElem)
 				}
 				props[curElem] = ""
+				if propertyNull && len(nullMaps) > 0 {
+					nullMaps[0][curElem] = true
+				}
 				// Heuristic: an element containing GML namespace children
 				// or a known GML geometry name is the geometry.
 				if isGMLGeometryElement(t.Name.Local) {
@@ -479,6 +550,9 @@ func parseFeatureElement(inner string) (string, map[string]string, string, error
 			} else if depth == 2 && propertyIsGeom && strings.TrimSpace(text) != "" {
 				return "", nil, "", fmt.Errorf("unexpected text around geometry")
 			} else if depth == 2 && !propertyIsGeom && curElem != "" && text != "" {
+				if propertyNull {
+					return "", nil, "", fmt.Errorf("nil property cannot contain text")
+				}
 				props[curElem] += text
 			}
 		}
@@ -568,4 +642,26 @@ type TransactionResult struct {
 	TypeName  string
 	FeatureID uint64
 	Affected  int
+}
+
+// xmlNil accepts only the XML Schema instance attribute and boolean lexical forms.
+func xmlNil(t xml.StartElement) (bool, error) {
+	found, value := false, false
+	for _, a := range t.Attr {
+		if a.Name.Local != "nil" {
+			continue
+		}
+		if found || a.Name.Space != "http://www.w3.org/2001/XMLSchema-instance" {
+			return false, fmt.Errorf("invalid xsi:nil attribute")
+		}
+		found = true
+		switch a.Value {
+		case "true", "1":
+			value = true
+		case "false", "0":
+		default:
+			return false, fmt.Errorf("invalid xsi:nil boolean")
+		}
+	}
+	return value, nil
 }

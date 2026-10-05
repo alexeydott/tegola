@@ -10,12 +10,13 @@ import (
 
 const MaxFeatureProjectionDefinitionBytes = 65536
 
-// FeatureProjection owns canonical WGS84 mathematics. Definition preserves the
-// caller's admitted spelling; mathematical identity uses the shipped profile.
+// FeatureProjection owns immutable horizontal projection mathematics. Definition
+// preserves the caller's admitted spelling; custom profiles claim no authority.
 type FeatureProjection struct {
 	projection *HeightProjection
 	definition string
 	profile    uint64
+	identity   string
 }
 
 // CanonicalFeatureDefinition returns shipped internal-XY mathematics without
@@ -35,9 +36,8 @@ func CanonicalFeatureDefinition(srid uint64) (string, bool) {
 	}
 }
 
-// NewFeatureProjection admits exact canonical parameters, allowing whitespace,
-// parameter ordering and the inert no_defs flag only. It never passes arbitrary
-// request parameters to the engine or omits datum/axis semantics.
+// NewFeatureProjection admits canonical profiles and explicitly validated custom
+// transverse Mercator definitions. Unsupported semantics are rejected.
 func NewFeatureProjection(definition string) (*FeatureProjection, error) {
 	if len(definition) == 0 || len(definition) > MaxFeatureProjectionDefinitionBytes || !utf8.ValidString(definition) || strings.IndexByte(definition, 0) >= 0 {
 		return nil, fmt.Errorf("feature projection definition unavailable or invalid")
@@ -62,13 +62,23 @@ func NewFeatureProjection(definition string) (*FeatureProjection, error) {
 		}
 		return &FeatureProjection{projection: projection, definition: definition, profile: srid}, nil
 	}
-	return nil, fmt.Errorf("feature projection definition is outside the canonical profile")
+	projection, err := newCustomFeatureProjection(definition)
+	if err != nil {
+		return nil, err
+	}
+	return &FeatureProjection{projection: projection, definition: definition, identity: parameters}, nil
 }
 
 // Equivalent establishes horizontal mathematical identity of admitted profiles.
 // It says nothing about source authority, wire axes or vertical coordinates.
 func (p *FeatureProjection) Equivalent(other *FeatureProjection) bool {
-	return p != nil && other != nil && p.projection != nil && other.projection != nil && p.profile != 0 && p.profile == other.profile
+	if p == nil || other == nil || p.projection == nil || other.projection == nil {
+		return false
+	}
+	if p.profile != 0 || other.profile != 0 {
+		return p.profile != 0 && p.profile == other.profile
+	}
+	return p.identity != "" && p.identity == other.identity
 }
 
 func featureCanonicalParameters(definition string) (string, bool) {

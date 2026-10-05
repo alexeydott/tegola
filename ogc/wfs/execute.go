@@ -53,7 +53,7 @@ func insertActionToMutation(v Version, schema *feature.SchemaDescriptor, act Tra
 		if !ok {
 			return m, &provider.MutationError{Kind: provider.MutationErrSchemaViolation, Reason: fmt.Sprintf("unknown property %q", name)}
 		}
-		mv, err := literalToMutationValue(desc.Type, literal)
+		mv, err := transactionPropertyValue(desc, literal, act.NullProperties[name])
 		if err != nil {
 			return m, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("property %q: %v", name, err)}
 		}
@@ -102,7 +102,7 @@ func updateActionToMutations(v Version, schema *feature.SchemaDescriptor, act Tr
 		if !ok {
 			return nil, &provider.MutationError{Kind: provider.MutationErrSchemaViolation, Reason: fmt.Sprintf("unknown property %q", name)}
 		}
-		mv, err := literalToMutationValue(desc.Type, literal)
+		mv, err := transactionPropertyValue(desc, literal, act.NullProperties[name])
 		if err != nil {
 			return nil, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("property %q: %v", name, err)}
 		}
@@ -224,4 +224,14 @@ func ExecuteTransactionWithReceipt(ctx context.Context, coord *feature.MutationC
 		})
 	}
 	return results, receipt, nil
+}
+
+func transactionPropertyValue(desc feature.PropertyDescriptor, literal string, isNull bool) (provider.MutationValue, error) {
+	if isNull {
+		if !desc.Nullable {
+			return provider.MutationValue{}, fmt.Errorf("property is not nullable")
+		}
+		return provider.MutationValue{Null: true}, nil
+	}
+	return literalToMutationValue(desc.Type, literal)
 }

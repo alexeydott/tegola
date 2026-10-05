@@ -361,6 +361,9 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 		}
 	}
 	if len(sets) == 0 {
+		if m.GeometryUnchanged && m.IfRevision != "" {
+			return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
+		}
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries no changes"}
 	}
 	tbl := quoteIdent(mp.schema) + "." + quoteIdent(mp.table)

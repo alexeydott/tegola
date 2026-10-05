@@ -186,6 +186,35 @@ name = "zoning"                           # used in the URL to reference this ma
 - More information on PostgreSQL SSL modes can be found [here](https://www.postgresql.org/docs/current/libpq-ssl.html).
 - More information on the `mvt_postgis` provider can be found [here](../mvtprovider/postgis)
 
+## MySQL 5.5 table identity
+
+MySQL 5.5 supports InnoDB, but lacks the native InnoDB physical-table identity
+catalog used by the feature provider. A provider-level opt-in enables a legacy
+metadata snapshot contract:
+
+```toml
+[[providers]]
+name = "legacy_test"
+type = "mysql"
+# Other connection settings are deployment-specific.
+allow_legacy_table_identity = true
+```
+
+The option defaults to `false` and applies only to MySQL 5.5, not MariaDB version
+compatibility strings or modern MySQL. It does not bypass missing privileges or
+catalog failures on newer servers. InnoDB, keys, column metadata, write policies
+and schema revalidation remain required. The fallback uses creation time and
+schema metadata; it cannot prove physical incarnation after an external table
+drop/recreate with identical shape in the same second. External DDL is unsupported
+while such a collection is published. Stop publication before DDL and rebuild
+the service's identity/revision state before re-enabling writes.
+
+Fresh MySQL audit/service schema uses explicit Unicode-safe text encoding so
+non-ASCII identifiers and attribute values are independent of the database's
+default charset. Existing service-table upgrades require separate operational
+validation; creating a fresh schema is not evidence of an in-place migration.
+See [write operations](operational.md) and [provider evidence](provider-matrix.md).
+
 ## HTTP bind address
 
 `webserver.port` and the `serve --port` option take an address, not a bare

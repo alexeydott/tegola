@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"mime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,8 +22,9 @@ type GetFeatureRequest struct {
 	Version     Version
 	TypeName    string
 	MaxFeatures uint
-	// BBox is an optional spatial filter in lon,lat order (CRS84).
+	// BBox uses CRS84 lon/lat unless BBoxCRS names a collection-supported CRS.
 	BBox       *[4]float64
+	BBoxCRS    string
 	FeatureIDs []uint64
 	// OutputFormat: only "application/gml+xml" variants are supported.
 	OutputFormat string
@@ -48,6 +50,10 @@ type SortCriterion struct {
 
 // ParseGetFeatureKVP parses the KVP subset for GetFeature.
 func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []Exception) {
+	outputFormat := strings.TrimSpace(q["outputformat"])
+	if !supportsGMLOutputFormat(v, outputFormat) {
+		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "outputFormat", Text: "only this WFS version's GML output is supported"}}
+	}
 	// Stored query dispatch (WFS 2.0).
 	if sqID := q["storedquery_id"]; sqID != "" {
 		if v == V110 {
@@ -60,10 +66,11 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 		parsed, ex := sq.ToGetFeature(q)
 		if parsed != nil {
 			parsed.Version = v
+			parsed.OutputFormat = outputFormat
 		}
 		return parsed, ex
 	}
-	req := &GetFeatureRequest{Version: v, MaxFeatures: 1000}
+	req := &GetFeatureRequest{Version: v, MaxFeatures: 1000, OutputFormat: outputFormat}
 	if q["srsname"] != "" {
 		return nil, []Exception{{Code: ExceptionOperationNotSupported, Locator: "srsName", Text: "explicit output CRS selection is not supported"}}
 	}
@@ -135,11 +142,17 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 	}
 	if bbox := q["bbox"]; bbox != "" {
 		parts := strings.Split(bbox, ",")
-		if len(parts) != 4 {
-			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "bbox needs 4 ordinates"}}
+		if len(parts) != 4 && len(parts) != 5 {
+			return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "bbox needs 4 ordinates and an optional CRS URI"}}
 		}
 		var b [4]float64
-		for i, p := range parts {
+		if len(parts) == 5 {
+			req.BBoxCRS = strings.TrimSpace(parts[4])
+			if req.BBoxCRS == "" || len(req.BBoxCRS) > features.MaxCRSURIBytes {
+				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "invalid bbox CRS URI"}}
+			}
+		}
+		for i, p := range parts[:4] {
 			f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
 			if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 				return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "invalid bbox ordinate"}}
@@ -217,6 +230,44 @@ func ParseGetFeatureKVP(v Version, q map[string]string) (*GetFeatureRequest, []E
 	return req, nil
 }
 
+func supportsGMLOutputFormat(v Version, format string) bool {
+	if format == "" {
+		return true
+	}
+	gmlVersion := "3.2"
+	if v == V110 {
+		gmlVersion = "3.1.1"
+	}
+	// WFS 1.1 commonly uses this historical unquoted subtype spelling,
+	// although the slash requires quotes in an ordinary MIME parameter.
+	if strings.EqualFold(strings.ReplaceAll(format, " ", ""), "text/xml;subtype=gml/"+gmlVersion) {
+		return true
+	}
+	mediaType, parameters, err := mime.ParseMediaType(format)
+	if err != nil || (mediaType != "application/gml+xml" && mediaType != "application/xml" && mediaType != "text/xml") {
+		return false
+	}
+	for name, value := range parameters {
+		switch name {
+		case "charset":
+			if !strings.EqualFold(value, "utf-8") {
+				return false
+			}
+		case "version":
+			if mediaType != "application/gml+xml" || value != gmlVersion {
+				return false
+			}
+		case "subtype":
+			if mediaType != "text/xml" || !strings.EqualFold(value, "gml/"+gmlVersion) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ExecuteGetFeature runs the request and renders a GML FeatureCollection.
 func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetFeatureRequest) (string, []Exception) {
 	// Keep schema-derived sort metadata local to this execution.
@@ -245,6 +296,30 @@ func ExecuteGetFeature(ctx context.Context, service *features.Service, req *GetF
 		b := req.BBox
 		fq.Bounds = []geom.Extent{*geom.NewExtent([2]float64{b[0], b[1]}, [2]float64{b[2], b[3]})}
 		fq.BoundsSRID = 4326
+		if req.BBoxCRS != "" {
+			catalog, err := service.CollectionCRS(req.TypeName)
+			if err != nil {
+				return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "collection CRS unavailable"}}
+			}
+			descriptor, err := catalog.ValidateBounds(req.BBoxCRS, 4)
+			if err != nil {
+				return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "unsupported bbox CRS for collection"}}
+			}
+			minimum, err := descriptor.ToInternalPosition(b[:2])
+			if err != nil {
+				return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "invalid bbox position"}}
+			}
+			maximum, err := descriptor.ToInternalPosition(b[2:])
+			if err != nil {
+				return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "invalid bbox position"}}
+			}
+			if descriptor.Geographic() && (minimum[0] < -180 || maximum[0] > 180 || minimum[1] < -90 || maximum[1] > 90) {
+				return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "bbox", Text: "bbox outside geographic domain"}}
+			}
+			fq.Bounds = []geom.Extent{{minimum[0], minimum[1], maximum[0], maximum[1]}}
+			fq.BoundsSRID = descriptor.InternalSRID()
+			fq.BoundsCRSDefinition = descriptor.Definition().Definition
+		}
 	}
 	if len(req.FeatureIDs) > 0 {
 		fq.IDs = req.FeatureIDs

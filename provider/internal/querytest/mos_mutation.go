@@ -176,10 +176,10 @@ func NativeMOSPoint(x, y int32) []byte {
 	return binary.LittleEndian.AppendUint32(data, uint32(y))
 }
 
-// AssertMOSBoundsReadOnly checks the documented integer-bounds read profile.
+// AssertMOSBoundsProfile checks the documented integer-bounds read profile.
 // The fixture contains native points (123,235) and (100000,200000), scaled
 // with either precision=2/metres or precision=0/centimetres.
-func AssertMOSBoundsReadOnly(t *testing.T, tiler provider.Tiler, querier provider.FeatureQuerier, writer provider.MutationProvider, custom bool) {
+func AssertMOSBoundsProfile(t *testing.T, tiler provider.Tiler, querier provider.FeatureQuerier, writer provider.MutationProvider, custom, writableBounds bool) {
 	t.Helper()
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -214,8 +214,9 @@ func AssertMOSBoundsReadOnly(t *testing.T, tiler provider.Tiler, querier provide
 			}
 		}
 	}
-	if _, err := writer.DescribeWritable(ctx, "items"); err == nil {
-		t.Fatal("bounds-backed/custom MOS writer admitted without derived bounds maintenance")
+	_, admissionErr := writer.DescribeWritable(ctx, "items")
+	if wantWritable := !custom && writableBounds; (admissionErr == nil) != wantWritable {
+		t.Fatalf("MOS bounds writable=%v, admission error=%v", wantWritable, admissionErr)
 	}
 	if custom {
 		_, err := querier.QueryFeatures(ctx, "items", provider.FeatureQuery{Limit: 1}, func(*provider.Feature) error { return nil })

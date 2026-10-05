@@ -17,6 +17,7 @@ type HeightProjection struct {
 	definition string
 	converter  core.IConvertLPToXY
 	identity   bool
+	datum      *core.System // Non-nil only for validated custom horizontal profiles.
 }
 
 // NewHeightProjection admits canonical WGS84 profiles, not custom definitions.
@@ -95,9 +96,15 @@ func (p *HeightProjection) transform(input []float64, inverse bool) ([]float64, 
 			if err != nil {
 				return nil, fmt.Errorf("height projection inverse: %w", err)
 			}
+			transformDatum(p.datum, lp, false)
 			output[i], output[i+1] = support.RToDD(lp.Lam), support.RToDD(lp.Phi)
 		} else {
-			xy, err := p.converter.Forward(&core.CoordLP{Lam: support.DDToR(input[i]), Phi: support.DDToR(input[i+1])})
+			if math.Abs(input[i+1]) > 90 {
+				return nil, fmt.Errorf("projection latitude outside valid domain")
+			}
+			lp := &core.CoordLP{Lam: support.DDToR(input[i]), Phi: support.DDToR(input[i+1])}
+			transformDatum(p.datum, lp, true)
+			xy, err := p.converter.Forward(lp)
 			if err != nil {
 				return nil, fmt.Errorf("height projection forward: %w", err)
 			}

@@ -90,7 +90,7 @@ func TestNativeMOSMutationMatrix(t *testing.T) {
 	})
 }
 
-func TestNativeMOSBoundsReadOnly(t *testing.T) {
+func TestNativeMOSBoundsProfile(t *testing.T) {
 	dsn := os.Getenv("TEGOLA_MOS_MYSQL_DSN")
 	if dsn == "" {
 		dsn = os.Getenv("TEGOLA_REVIEW_MYSQL_DSN")
@@ -155,7 +155,7 @@ func TestNativeMOSBoundsReadOnly(t *testing.T) {
 						t.Error(err)
 					}
 				})
-				querytest.AssertMOSBoundsReadOnly(t, p, p, p, custom)
+				querytest.AssertMOSBoundsProfile(t, p, p, p, custom, true)
 			})
 		}
 	}

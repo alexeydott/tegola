@@ -63,12 +63,19 @@ func (p *Provider) QueryFeatures(
 		return result, err
 	}
 	where, args, impossible := f.candidatePredicate(query.IDs)
+	if bounds, boundsArgs := f.boundsCandidate(query); bounds != "" {
+		where += " AND " + bounds
+		args = append(args, boundsArgs...)
+	}
 	if impossible {
 		zero := uint64(0)
 		result.NumberMatched = &zero
 		return result, nil
 	}
-	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	// MySQL 5.5 predates START TRANSACTION READ ONLY. Its explicitly opted-in
+	// legacy profile still executes only the same bound SELECT statements and
+	// always rolls back. Modern profiles retain the server read-only guard.
+	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: !f.schema.legacyIdentity})
 	if err != nil {
 		return result, fmt.Errorf("mysql feature snapshot: %w", preferContextError(ctx, err))
 	}
@@ -201,7 +208,7 @@ func (f *featureProfile) verifySnapshot(ctx context.Context, tx *sql.Tx) error {
 		[]any{}, func(rows *sql.Rows) error { return nil }); err != nil {
 		return err
 	}
-	current, err := inspectFeatureSchema(ctx, tx, f.schema.database, f.schema.table)
+	current, err := inspectFeatureSchema(ctx, tx, f.schema.database, f.schema.table, f.schema.legacyIdentity)
 	if err != nil {
 		return err
 	}

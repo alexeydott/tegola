@@ -3,6 +3,7 @@
 package gpkg
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -19,6 +20,7 @@ import (
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
 	pa "github.com/alexeydott/tegola/provider/audit"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // valueToSQL converts a neutral MutationValue to a driver value using the
@@ -71,15 +73,19 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 	if err := checkGeometryType(g, mp.geomType); err != nil {
 		return nil, "", noBounds, err
 	}
-	srid := inputSRID
-	if srid == 0 {
-		srid = mp.geomSRID
-	}
-	if srid != mp.geomSRID {
-		g, err = transformGeometry(g, srid, mp.geomSRID)
-		if err != nil {
-			return nil, "", noBounds, err
+	if mp.layer != nil && mp.layer.featureCRSProjection != nil {
+		g, err = codec.TransformStorageGeometry(g, inputSRID, mp.geomSRID, mp.layer.featureCRSProjection)
+	} else {
+		srid := inputSRID
+		if srid == 0 {
+			srid = mp.geomSRID
 		}
+		if srid != mp.geomSRID {
+			g, err = transformGeometry(g, srid, mp.geomSRID)
+		}
+	}
+	if err != nil {
+		return nil, "", noBounds, err
 	}
 	bounds, err := geometryBounds(g)
 	if err != nil {
@@ -110,24 +116,27 @@ func encodeStorageGeometry(mp *writeMapping, wkbBytes []byte, inputSRID uint64) 
 		}
 		return nil, sb.String(), bounds, nil
 	case "mos":
-		enc, err := mos.Encode(g, mp.mosOpts)
+		stored, err := codec.EncodeMOSStorage(g, mp.mosOpts)
 		if err != nil {
 			return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: fmt.Sprintf("MOS encode: %v", err)}
 		}
-		// MOS quantization changes coordinates. Index the bytes actually
-		// persisted so a boundary query cannot miss the rounded geometry.
-		stored, err := mos.Decode(enc, mp.mosOpts)
+		bounds, err = geometryBounds(stored.Geometry)
 		if err != nil {
-			return nil, "", noBounds, fmt.Errorf("decode stored MOS: %w", err)
+			return nil, "", noBounds, err
 		}
-		bounds, err = geometryBounds(stored)
-		if err != nil {
-			return nil, "", noBounds, fmt.Errorf("stored MOS bounds: %w", err)
-		}
-		return enc, "", bounds, nil
+		return stored.Blob, "", bounds, nil
 	default:
 		return nil, "", noBounds, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "geometry format " + mp.geomFormat}
 	}
+}
+
+// nativeMOSBounds indexes the encoded ticks rather than pre-quantized coordinates.
+func nativeMOSBounds(blob []byte) ([4]float64, error) {
+	g, err := mos.Decode(blob, mos.Options{Precision: 0, UnitFactor: 1})
+	if err != nil {
+		return [4]float64{}, err
+	}
+	return geometryBounds(g)
 }
 
 func checkGeometryType(g geom.Geometry, admitted string) error {
@@ -343,12 +352,33 @@ func (t *featureTx) insert(ctx context.Context, mp *writeMapping, m provider.Mut
 			return provider.MutationOutcome{}, err
 		}
 		geomBounds = &bounds
+		if mp.bboxColumns[0] != "" {
+			raw, err := nativeMOSBounds(enc)
+			if err != nil {
+				return provider.MutationOutcome{}, err
+			}
+			for i, column := range mp.bboxColumns {
+				cols = append(cols, quoteIdent(column))
+				placeholders = append(placeholders, "?")
+				args = append(args, int64(raw[i]))
+			}
+		}
 		cols = append(cols, quoteIdent(mp.geomColumn))
 		placeholders = append(placeholders, "?")
 		if encStr != "" {
 			args = append(args, encStr)
 		} else {
 			args = append(args, enc)
+		}
+	}
+	if m.GeometryWKB == nil && mp.bboxColumns[0] != "" {
+		cols = append(cols, quoteIdent(mp.geomColumn))
+		placeholders = append(placeholders, "?")
+		args = append(args, nil)
+		for _, column := range mp.bboxColumns {
+			cols = append(cols, quoteIdent(column))
+			placeholders = append(placeholders, "?")
+			args = append(args, nil)
 		}
 	}
 	if len(cols) == 0 && m.GeometryWKB == nil {
@@ -432,9 +462,27 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 			} else {
 				args = append(args, enc)
 			}
+			if mp.bboxColumns[0] != "" {
+				raw, err := nativeMOSBounds(enc)
+				if err != nil {
+					return provider.MutationOutcome{}, err
+				}
+				for i, column := range mp.bboxColumns {
+					set = append(set, quoteIdent(column)+" = ?")
+					args = append(args, int64(raw[i]))
+				}
+			}
+		}
+		if m.GeometryAbsent && mp.bboxColumns[0] != "" {
+			for _, column := range mp.bboxColumns {
+				set = append(set, quoteIdent(column)+" = NULL")
+			}
 		}
 	}
 	if len(set) == 0 {
+		if m.GeometryUnchanged && m.IfRevision != "" {
+			return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
+		}
 		return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrMalformedInput, Reason: "replace carries nothing to set"}
 	}
 	args = append(args, m.FeatureID)
@@ -448,6 +496,44 @@ func (t *featureTx) replace(ctx context.Context, mp *writeMapping, m provider.Mu
 	_ = n
 	t.recordMod(mp, m.FeatureID, geomBounds, geomTouched)
 	return provider.MutationOutcome{FeatureID: m.FeatureID, Affected: 1}, nil
+}
+
+// ObjectType is application metadata, not the MOS header byte. Preserve its
+// meaning by requiring geometry edits to retain the stored geometry family.
+func (t *featureTx) validateCanonicalGeometry(ctx context.Context, mp *writeMapping, m provider.Mutation) error {
+	var raw []byte
+	if err := t.tx.QueryRowContext(ctx, "SELECT "+quoteIdent(mp.geomColumn)+" FROM "+quoteIdent(mp.table)+" WHERE "+quoteIdent(mp.idColumn)+"=?", m.FeatureID).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: "feature not found"}
+		}
+		return err
+	}
+	if codec.IsSystemInfoValue(raw) {
+		return &provider.MutationError{Kind: provider.MutationErrNotFound, Reason: "feature not found"}
+	}
+	if raw == nil {
+		return &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "canonical geometry family cannot be established from an absent geometry"}
+	}
+	stored, err := mos.Decode(raw, mp.mosOpts)
+	if err != nil {
+		return err
+	}
+	header, err := mos.DecodeHeader(raw)
+	if err != nil {
+		return err
+	}
+	canonical, err := mos.Encode(stored, mp.mosOpts)
+	if err != nil {
+		return err
+	}
+	if (header.ObjectType != mos.TypePoint && header.ObjectType != mos.TypePolyline && header.ObjectType != mos.TypePolygon) || !bytes.Equal(raw, canonical) {
+		return &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: "canonical MOS geometry rewrite would discard header metadata or opaque payload"}
+	}
+	proposed, err := wkb.DecodeBytes(m.GeometryWKB)
+	if err != nil {
+		return err
+	}
+	return checkGeometryType(proposed, normalizeGeomType(stored))
 }
 
 // existsInTx checks feature existence within the tx (R04).
@@ -520,6 +606,21 @@ func (t *featureTx) update(ctx context.Context, mp *writeMapping, m provider.Mut
 				args = append(args, encStr)
 			} else {
 				args = append(args, enc)
+			}
+			if mp.bboxColumns[0] != "" {
+				raw, err := nativeMOSBounds(enc)
+				if err != nil {
+					return provider.MutationOutcome{}, err
+				}
+				for i, column := range mp.bboxColumns {
+					set = append(set, quoteIdent(column)+" = ?")
+					args = append(args, int64(raw[i]))
+				}
+			}
+		}
+		if m.GeometryAbsent && mp.bboxColumns[0] != "" {
+			for _, column := range mp.bboxColumns {
+				set = append(set, quoteIdent(column)+" = NULL")
 			}
 		}
 	}
