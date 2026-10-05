@@ -362,6 +362,10 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	if maxConn, err = config.Int(ConfigKeyMaxConn, &maxConn); err != nil {
 		return nil, err
 	}
+	allowLegacyTableIdentity := false
+	if allowLegacyTableIdentity, err = config.Bool(ConfigKeyAllowLegacyTableIdentity, &allowLegacyTableIdentity); err != nil {
+		return nil, fmt.Errorf("mysql provider %s: %w", ConfigKeyAllowLegacyTableIdentity, err)
+	}
 
 	// provider-level srid/crs_defn via the shared CRS contract. An explicit
 	// value takes precedence over any SRID decoded from geometry headers,
@@ -452,14 +456,15 @@ func NewTileProvider(config dict.Dicter, maps []provider.Map) (provider.Tiler, e
 	}
 
 	p := Provider{
-		Host:           host,
-		Port:           port,
-		Database:       database,
-		layers:         make(map[string]Layer),
-		db:             db,
-		srid:           uint64(srid),
-		geometryFormat: geometryFormat,
-		serverFlavor:   serverFlavor,
+		Host:                     host,
+		Port:                     port,
+		Database:                 database,
+		layers:                   make(map[string]Layer),
+		db:                       db,
+		srid:                     uint64(srid),
+		geometryFormat:           geometryFormat,
+		serverFlavor:             serverFlavor,
+		allowLegacyTableIdentity: allowLegacyTableIdentity,
 	}
 
 	layers, err := config.MapSlice(ConfigKeyLayers)

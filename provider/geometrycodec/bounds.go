@@ -200,15 +200,9 @@ func BuildBoundsPredicate(fields BBoxFields, extent *geom.Extent, mode BoundsPre
 
 	minX, maxX, minY, maxY := extent.MinX(), extent.MaxX(), extent.MinY(), extent.MaxY()
 	if mode == BoundsMOSRaw {
-		precisionScale := math.Pow(10, mosConfig.Precision)
-		unitFactor := mosConfig.UnitFactor
-		if math.IsNaN(precisionScale) || math.IsInf(precisionScale, 0) || precisionScale <= 0 ||
-			math.IsNaN(unitFactor) || math.IsInf(unitFactor, 0) || unitFactor <= 0 {
-			return "", fmt.Errorf("bounds predicate: invalid MOS quantization (precision=%v, unit factor=%v)", mosConfig.Precision, mosConfig.UnitFactor)
-		}
-		rawScale := precisionScale / unitFactor
-		if math.IsNaN(rawScale) || math.IsInf(rawScale, 0) || rawScale <= 0 {
-			return "", fmt.Errorf("bounds predicate: invalid MOS raw scale %v", rawScale)
+		rawScale, err := MOSRawScale(mosConfig)
+		if err != nil {
+			return "", fmt.Errorf("bounds predicate: %w", err)
 		}
 		minX, maxX = math.Floor(minX*rawScale), math.Ceil(maxX*rawScale)
 		minY, maxY = math.Floor(minY*rawScale), math.Ceil(maxY*rawScale)

@@ -27,11 +27,12 @@ func featureSQLAdmissionError(err error) error {
 }
 
 type mysqlFeatureCatalog struct {
-	ctx             context.Context
-	db              *sql.DB
-	database        string
-	lowerCaseTables int
-	schema          featureSchema
+	ctx                      context.Context
+	db                       *sql.DB
+	database                 string
+	lowerCaseTables          int
+	schema                   featureSchema
+	allowLegacyTableIdentity bool
 }
 
 func (c *mysqlFeatureCatalog) ResolveRelation(name featuresql.Name) (featuresql.RelationMetadata, error) {
@@ -75,7 +76,7 @@ func (c *mysqlFeatureCatalog) ResolveRelation(name featuresql.Name) (featuresql.
 	if count != 1 {
 		return featuresql.RelationMetadata{}, featureUnsupported("relation not uniquely visible")
 	}
-	schema, err := inspectFeatureSchema(c.ctx, c.db, resolvedDatabase, resolvedTable)
+	schema, err := inspectFeatureSchema(c.ctx, c.db, resolvedDatabase, resolvedTable, c.allowLegacyTableIdentity)
 	if err != nil {
 		return featuresql.RelationMetadata{}, err
 	}
@@ -152,7 +153,7 @@ func featureColumnMetadata(column featureColumn) featuresql.ColumnMetadata {
 func (p *Provider) registerFeatureSelection(layer Layer, conf dict.Dicter, plan *featuresql.Plan) (*featureProfile, error) {
 	ctx, cancel := codec.NewInspectionContext()
 	defer cancel()
-	catalog := &mysqlFeatureCatalog{ctx: ctx, db: p.db, database: p.Database}
+	catalog := &mysqlFeatureCatalog{ctx: ctx, db: p.db, database: p.Database, allowLegacyTableIdentity: p.allowLegacyTableIdentity}
 	if err := p.db.QueryRowContext(ctx, "SELECT @@lower_case_table_names").Scan(&catalog.lowerCaseTables); err != nil {
 		return nil, err
 	}

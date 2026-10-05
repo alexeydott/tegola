@@ -51,6 +51,11 @@ type Mutation struct {
 	GeometryAbsent bool
 	// GeometrySRID is the CRS of GeometryWKB (0 = storage CRS).
 	GeometrySRID uint64
+	// GeometryUnchanged marks a complete replacement whose supplied geometry
+	// exactly matches the canonical read representation at IfRevision. It keeps
+	// native geometry bytes/bounds without another lossy projection round trip.
+	// Only Replace with a non-empty revision and absent geometry payload may use it.
+	GeometryUnchanged bool
 	// IfRevision, when non-empty, requires the target's current revision
 	// to equal it (optimistic concurrency). Empty means no precondition.
 	IfRevision string

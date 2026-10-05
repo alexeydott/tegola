@@ -90,13 +90,12 @@ func TestTransactionRejectsDimensionalGeometry(t *testing.T) {
 	}
 }
 
-func TestTransactionRejectsUnsupportedActionsAndNull(t *testing.T) {
+func TestTransactionRejectsUnsupportedActionsAndMissingValue(t *testing.T) {
 	for _, raw := range []string{
 		`<Transaction><Insert><sites><name>a</name></sites></Insert></Transaction><Transaction/>`,
 		`<Transaction><Insert><sites><name>a</name></sites></Insert><Unsupported/></Transaction>`,
 		`<Transaction><Delete typeName="sites"><Filter><ResourceId rid="sites.1"/></Filter><Filter><ResourceId rid="sites.2"/></Filter></Delete></Transaction>`,
 		`<Transaction><Update typeName="sites"><Property><ValueReference>name</ValueReference></Property><Filter><ResourceId rid="sites.1"/></Filter></Update></Transaction>`,
-		`<Transaction><Insert><sites><name xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/></sites></Insert></Transaction>`,
 		`<Transaction releaseAction="SOME"><Delete typeName="sites"><Filter><ResourceId rid="sites.1"/></Filter></Delete></Transaction>`,
 	} {
 		if _, _, _, err := ParseTransaction(V200, []byte(raw)); err == nil {

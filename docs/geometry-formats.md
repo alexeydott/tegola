@@ -8,7 +8,7 @@ Mercator and encoding them as MVT features. This document describes the
 supported input formats, their bounding-box behaviour, and how
 `GeometryCollection` values are processed.
 
-These are read/tile contracts. Write admission is separate: a format that can
+Read/tile contracts and the MOS write profile below have separate admission: a format that can
 be decoded for a tile is not automatically safe to modify. The
 [write evidence matrix](provider-matrix.md) identifies tested provider/format
 combinations and the [write scope](wfs-scope-limitations.md) lists admission limits.
@@ -49,8 +49,53 @@ When writing an admitted MOS layer, the writer must use the same resolved
 precision and units as its reader. Integer quantization can change coordinates;
 verify decoded coordinates against the declared precision, not byte equality
 with an unrelated native geometry encoding. A raw MOS fixture without derived
-bounds does not establish write support for MapplGIS tables whose separate
+bounds does not establish write evidence for MapplGIS tables whose separate
 MINX/MAXX/MINY/MAXY columns must remain consistent with their geometry.
+
+### MOS writes with separate bounds columns
+
+MySQL and the GeoPackage provider's raw SQLite MOS profile maintain an admitted
+four-column bounds mapping in the same transaction as the geometry. Insert and
+geometry replacement write bounds derived from the encoded, quantized geometry,
+in packed integer MOS units. Attribute-only updates preserve geometry bytes,
+opaque trailing annotations and existing bounds. Deletion removes the row;
+setting nullable geometry to NULL requires nullable bounds columns as well.
+
+REST PUT preserves the native geometry and bounds when its supplied CRS84
+geometry exactly matches the current canonical read representation. The read
+revision is checked again inside the write transaction, including when the
+request uses `If-Match: *`; concurrent changes fail the precondition. Properties
+still follow complete replacement semantics. Changed geometry is encoded normally;
+no coordinate tolerance or approximate equality suppresses an intended edit.
+
+The mapping uses the resolved `bbox_*_fieldname` keys described below. All four
+columns must exist, be distinct writable numeric columns, and be separate from
+the identity and geometry columns. They are maintained by the provider and are
+not client-editable attributes. MySQL additionally checks numeric storage range;
+incomplete, generated or incompatible mappings fail write admission. Geometry
+that overflows the MOS integer grid or collapses during quantization is rejected.
+
+Use a direct table-backed layer for mutation. Custom SQL, joins, views and
+`bbox_table` query aliases do not establish a writable table mapping. MySQL
+requires InnoDB and the ordinary generated-key/transaction/revision safeguards.
+Raw MOS in SQLite remains distinct from native GeoPackage binary geometry and
+its RTree metadata. This extension does not add PostGIS bounds-column writes.
+For detected canonical MapplGIS tables, existing feature update/delete is bounded
+by additional metadata safeguards: SystemInfo rows are immutable, MUID,
+ObjectStyle and ObjectType remain read-only, and replacement preserves the
+stored geometry family. Canonical creation remains unavailable until the
+MUID/ObjectType/style initialization contract is defined. Ordinary raw MOS
+tables retain their separate create admission.
+Canonical geometry replacement is further limited to ordinary Point, Polyline
+and Polygon records whose existing bytes can be reproduced by the encoder.
+Opaque tails, nondefault header flags/modifications, legacy header layouts and
+special Text/Image records cannot be rewritten safely and are rejected for
+geometry edits. Their admitted attribute-only updates retain the original bytes;
+delete remains a separate operation. These canonical metadata protections are
+stricter than geometry replacement on an ordinary raw MOS table.
+For source projection support see [custom feature CRS](crs.md#custom-feature-crs).
+Native runtime results remain separately recorded in the
+[provider evidence matrix](provider-matrix.md).
 
 ## CRS handling
 
@@ -90,6 +135,15 @@ layers the `!BBOX!` token (and `!BOX!`) expands into the bounds predicate
 scaled from the tile metres by the layer's MOS quantization
 (floor/ceil x 10^precision / unit-factor), so the comparison runs in the
 same integer units the bounds columns store.
+
+For MySQL feature queries, an explicit MOS bounds mapping also supplies a
+conservative SQL candidate filter when the request bbox uses the same native
+CRS as the layer. The bounds are scaled to the stored integer grid; decoded
+geometry still undergoes the normal spatial check. OGC Features clients can
+select this path with `bbox-crs` set to the collection's advertised
+`storageCrs`, independently of the response CRS. This optimization does not
+change the fallback for bboxes in a different CRS, and does not guarantee
+index use or identical performance for every schema.
 
 The four columns are configurable with the common config keys (layer level
 overrides provider level, per field):

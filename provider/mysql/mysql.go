@@ -67,26 +67,27 @@ var mysqlGeometryFormats = map[string]struct{}{
 
 // config keys
 const (
-	ConfigKeyHost           = "host"
-	ConfigKeyPort           = "port"
-	ConfigKeyDatabase       = "database"
-	ConfigKeyUser           = "user"
-	ConfigKeyPassword       = "password"
-	ConfigKeyTLS            = "tls"
-	ConfigKeyTimeout        = "timeout"
-	ConfigKeySRID           = "srid"
-	ConfigKeyCRSDefn        = "crs_defn"
-	ConfigKeyMaxConn        = "max_connections"
-	ConfigKeyGeometryFormat = "geometry_format"
-	ConfigKeyMOSPrecision   = "mos_precision"
-	ConfigKeyMOSUnits       = "mos_units"
-	ConfigKeyLayers         = "layers"
-	ConfigKeyLayerName      = "name"
-	ConfigKeyTableName      = "tablename"
-	ConfigKeySQL            = "sql"
-	ConfigKeyGeomIDField    = "id_fieldname"
-	ConfigKeyGeomField      = "geometry_fieldname"
-	ConfigKeyFields         = "fields"
+	ConfigKeyHost                     = "host"
+	ConfigKeyPort                     = "port"
+	ConfigKeyDatabase                 = "database"
+	ConfigKeyUser                     = "user"
+	ConfigKeyPassword                 = "password"
+	ConfigKeyTLS                      = "tls"
+	ConfigKeyTimeout                  = "timeout"
+	ConfigKeySRID                     = "srid"
+	ConfigKeyCRSDefn                  = "crs_defn"
+	ConfigKeyMaxConn                  = "max_connections"
+	ConfigKeyGeometryFormat           = "geometry_format"
+	ConfigKeyMOSPrecision             = "mos_precision"
+	ConfigKeyMOSUnits                 = "mos_units"
+	ConfigKeyLayers                   = "layers"
+	ConfigKeyLayerName                = "name"
+	ConfigKeyTableName                = "tablename"
+	ConfigKeySQL                      = "sql"
+	ConfigKeyGeomIDField              = "id_fieldname"
+	ConfigKeyGeomField                = "geometry_fieldname"
+	ConfigKeyFields                   = "fields"
+	ConfigKeyAllowLegacyTableIdentity = "allow_legacy_table_identity"
 )
 
 // MariaDB 10.7+ stores axis-order flags for reference geometries in the
@@ -254,6 +255,10 @@ type Provider struct {
 	geometryFormat string
 	// detected server flavor ("mysql" or "mariadb"), used by the auto format
 	serverFlavor string
+	// MySQL 5.5 has no native InnoDB table-ID catalog. This explicit opt-in
+	// permits metadata drift checks, not proof against external recreation.
+	allowLegacyTableIdentity bool
+	legacyIdentityWarning    sync.Once
 	// writerMu guards cachedWriter.
 	writerMu     sync.Mutex
 	cachedWriter *Writer

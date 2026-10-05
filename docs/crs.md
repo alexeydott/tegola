@@ -235,7 +235,7 @@ fetch, register or reinterpret a URI. Equivalent definition spellings need not
 have the same application identifier.
 
 Part 2 feature transformations use owned projection instances for admitted canonical
-WGS84 profiles. Numeric EPSG identity alone cannot prove a source definition,
+WGS84 profiles and the bounded custom horizontal profile below. Numeric EPSG identity alone cannot prove a source definition,
 because the legacy registry permits overrides. Unsupported custom/datum profiles
 retain Core and tile behavior while optional Part 2 metadata and explicit CRS
 requests remain unavailable. Projection-domain failures never return source
@@ -261,6 +261,38 @@ not acquire canonical identity merely because its numeric code is familiar.
 See [ADR-0010](architecture/decisions/ADR-0010-public-crs.md) for the
 identifier and immutable transform boundaries, and [API parameters](api.md#referenced-crs-requests)
 for request behavior. Implemented behavior does not establish OGC certification.
+
+### Custom feature CRS
+
+An explicit `+proj=etmerc` definition can be used for horizontal feature reads
+and MOS writes in MySQL and the GeoPackage provider. Use `+datum=WGS84`, or an
+explicit `+ellps` together with three or seven `+towgs84` parameters. Seven-parameter
+shifts use the position-vector convention: translations in metres, rotations in
+arcseconds, and scale in parts per million. `lat_0`, `lon_0`, `k` or `k_0`, `x_0`,
+`y_0`, `units` or `to_meter`, `pm`, and inert `no_defs` are admitted. Conflicting
+scale/unit declarations, unknown parameters, axis overrides, grid shifts,
+vertical modifiers and other custom projection operations are rejected.
+
+The converter owns its definition and mathematical state; changing the legacy
+global SRID registry cannot redirect an admitted feature transformation. Custom
+definitions have no canonical EPSG identity (`CanonicalSRID` is zero). Equivalence
+compares the complete admitted parameter set, ignoring only ordering, whitespace
+and `no_defs`; matching synthetic numeric IDs do not establish equivalence.
+
+Datum conversion is horizontal and assumes zero ellipsoidal height. It does not
+admit custom XYZ writes or prove a vertical datum. Public CRS publication still
+requires the separate source declaration and dimensional admission rules above.
+Because each direction starts at zero height in its own datum, a horizontal
+forward/inverse round trip can retain a small residual even without MOS
+quantization. Validate against an independent transform using the same 2D
+datum convention and quantization grid; a unit-dependent angular comparison to
+the original input is not a sufficient accuracy test.
+An unchanged-geometry REST PUT avoids accumulating that round-trip residual by
+retaining native geometry under a checked revision; see the
+[MOS write contract](geometry-formats.md#mos-writes-with-separate-bounds-columns).
+Synthetic Bessel fixtures check forward/inverse results against PROJ 9.5.1,
+including three/seven-parameter shifts, kilometre units and a Paris prime
+meridian; they do not certify arbitrary local coordinate systems.
 
 ## See Also
 

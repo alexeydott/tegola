@@ -18,6 +18,7 @@ type GetPropertyValueRequest struct {
 	ValueReference string
 	MaxFeatures    uint
 	BBox           *[4]float64
+	BBoxCRS        string
 	FeatureIDs     []uint64
 	ResultType     string
 	StartIndex     uint
@@ -48,7 +49,7 @@ func ParseGetPropertyValueKVP(v Version, q map[string]string) (*GetPropertyValue
 	if err != nil {
 		return nil, []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: err.Error()}}
 	}
-	return &GetPropertyValueRequest{Version: v, TypeName: query.TypeName, ValueReference: vr, MaxFeatures: query.MaxFeatures, BBox: query.BBox, FeatureIDs: query.FeatureIDs, ResultType: query.ResultType, StartIndex: query.StartIndex, SortBy: query.SortBy, Filter: query.Filter}, nil
+	return &GetPropertyValueRequest{Version: v, TypeName: query.TypeName, ValueReference: vr, MaxFeatures: query.MaxFeatures, BBox: query.BBox, BBoxCRS: query.BBoxCRS, FeatureIDs: query.FeatureIDs, ResultType: query.ResultType, StartIndex: query.StartIndex, SortBy: query.SortBy, Filter: query.Filter}, nil
 }
 
 // ExecuteGetPropertyValue projects the same validated, sorted and paged query as
@@ -61,7 +62,7 @@ func ExecuteGetPropertyValue(ctx context.Context, service *features.Service, req
 	if !gml.ValidNCName(req.ValueReference) {
 		return "", []Exception{{Code: ExceptionInvalidParameterValue, Locator: "valueReference", Text: "invalid property name"}}
 	}
-	query := &GetFeatureRequest{Version: req.Version, TypeName: req.TypeName, MaxFeatures: req.MaxFeatures, BBox: req.BBox, FeatureIDs: req.FeatureIDs, ResultType: req.ResultType, StartIndex: req.StartIndex, SortBy: req.SortBy, Filter: req.Filter, PropertyNames: []string{req.ValueReference}}
+	query := &GetFeatureRequest{Version: req.Version, TypeName: req.TypeName, MaxFeatures: req.MaxFeatures, BBox: req.BBox, BBoxCRS: req.BBoxCRS, FeatureIDs: req.FeatureIDs, ResultType: req.ResultType, StartIndex: req.StartIndex, SortBy: req.SortBy, Filter: req.Filter, PropertyNames: []string{req.ValueReference}}
 	out, ex := ExecuteGetFeature(ctx, service, query)
 	if len(ex) > 0 {
 		for i := range ex {

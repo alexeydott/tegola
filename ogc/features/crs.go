@@ -116,8 +116,9 @@ func canonicalCRS(srid uint64, dimension int, swapped bool, uri string) (CRS, er
 	return CRS{definition: d, srid: srid, geographic: geographic, swapped: swapped, projection: owned}, nil
 }
 
-// NewApplicationCRS admits only proven canonical parameter profiles, not arbitrary PROJ
-// text. The caller must separately prove this is the source's effective definition.
+// NewApplicationCRS admits validated owned horizontal profiles. The caller must
+// separately prove this is the source's effective definition. Custom profiles
+// have no canonical authority and cannot establish height preservation.
 func NewApplicationCRS(definition string, internalSRID uint64, dimension int) (CRS, error) {
 	if len(definition) == 0 || len(definition) > MaxCRSDefinitionBytes || (dimension != 2 && dimension != 3) || internalSRID == 0 {
 		return CRS{}, invalidCRS("invalid application definition")
@@ -126,9 +127,17 @@ func NewApplicationCRS(definition string, internalSRID uint64, dimension int) (C
 	if err != nil {
 		return CRS{}, fmt.Errorf("features: application definition: %w", provider.ErrUnsupported)
 	}
-	c, err := canonicalCRS(owned.CanonicalSRID(), dimension, false, "")
-	if err != nil {
-		return CRS{}, err
+	var c CRS
+	if owned.CanonicalSRID() == 0 {
+		if dimension != 2 {
+			return CRS{}, invalidCRS("custom definition does not prove a vertical datum")
+		}
+		c.definition = customHorizontalDescriptor(definition)
+	} else {
+		c, err = canonicalCRS(owned.CanonicalSRID(), dimension, false, "")
+		if err != nil {
+			return CRS{}, err
+		}
 	}
 	c.projection = owned
 	c.definition.Definition = definition
@@ -140,6 +149,32 @@ func NewApplicationCRS(definition string, internalSRID uint64, dimension int) (C
 	uuid[8] = (uuid[8] & 0x3f) | 0x80
 	c.definition.URI = fmt.Sprintf("urn:uuid:%x-%x-%x-%x-%x", uuid[:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:])
 	return c, nil
+}
+
+// The full admitted definition is retained in the descriptor digest. Datum and
+// axis labels describe custom storage without inventing an EPSG/WGS84 identity.
+func customHorizontalDescriptor(definition string) CRSDefinition {
+	parameters := make(map[string]string)
+	for _, word := range strings.Fields(definition) {
+		key, value, _ := strings.Cut(strings.TrimPrefix(word, "+"), "=")
+		parameters[key] = value
+	}
+	unit := parameters["units"]
+	switch unit {
+	case "", "m":
+		unit = "metre"
+	case "km":
+		unit = "kilometre"
+	}
+	if factor := parameters["to_meter"]; factor != "" {
+		unit = factor + " metre"
+	}
+	datum := parameters["datum"]
+	if datum == "" {
+		datum = "ellps=" + parameters["ellps"] + ";towgs84=" + parameters["towgs84"]
+	}
+	return CRSDefinition{Definition: definition, Datum: datum, Dimension: 2,
+		Axes: []CRSAxis{{"easting", unit}, {"northing", unit}}}
 }
 
 func descriptorDigest(d CRSDefinition) [32]byte {
@@ -328,7 +363,7 @@ func NewCollectionCRS(storage CRS, spatial provider.SpatialMetadata) (Collection
 		}
 	}
 	targets := []uint64{4326, 3857}
-	if sourceProfile := storage.projection.CanonicalSRID(); sourceProfile != 4326 && sourceProfile != 3857 {
+	if sourceProfile := storage.projection.CanonicalSRID(); sourceProfile != 0 && sourceProfile != 4326 && sourceProfile != 3857 {
 		targets = append(targets, sourceProfile)
 	}
 	for _, srid := range targets {

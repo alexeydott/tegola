@@ -68,10 +68,14 @@ CRS and operation; unit tests do not establish this matrix. HANA writes are not
 implemented and must not be admitted. Do not infer MOS, custom CRS or XYZ write
 support from the availability of those read formats.
 
-Layers with configured or discovered derived bbox columns are rejected for
-writing because those columns are not maintained by this profile. Native
-GeoPackage RTree indexing is handled separately; do not assume derived bbox
-columns and a native spatial index are interchangeable.
+MySQL and the GeoPackage provider maintain configured/discovered four-column
+bounds mappings for admitted raw MOS table writes. See the
+[MOS write contract](geometry-formats.md#mos-writes-with-separate-bounds-columns)
+for mapping, quantization and nullability requirements. Derived bounds for other
+formats and PostGIS remain unsupported. Native GeoPackage RTree indexing is
+handled separately; derived bbox columns and a native spatial index are not
+interchangeable. MySQL 5.5 additionally needs the explicit
+[legacy identity opt-in](configuration.md#mysql-55-table-identity).
 
 Both Merge Patch and the implemented JSON Patch subset are accepted by the REST
 adapter. Unsupported JSON Patch operations, filter expressions, spatial profiles
@@ -89,6 +93,17 @@ is implicitly substituted for a missing database default. For PostGIS, only an
 identity or validated sequence-generated key establishes create capability;
 a constant or arbitrary default does not. Update/delete-only admission remains
 separate from this create restriction.
+
+WFS scalar properties accept explicit XML NULL in Insert and Replace feature
+fields (`<app:note xsi:nil="true"/>`) and Update values
+(`<wfs:Value xsi:nil="true"/>`), with `xsi` bound to
+`http://www.w3.org/2001/XMLSchema-instance`. The boolean form `1` is also
+accepted. The property must be nullable; a nil element cannot contain text or
+child elements. XML NULL geometry remains unsupported, even for nullable storage
+geometry. Update with an omitted `Value` remains unsupported. An empty `Value`
+continues to mean an empty string for string properties, rather than NULL;
+`xsi:nil="false"` and `"0"` preserve ordinary value parsing. These are explicit
+implementation limits, not a claim of support for every WFS NULL encoding.
 
 Create and replacement require a geometry value when the storage geometry is
 non-nullable, including WFS input that omits the geometry property. A partial

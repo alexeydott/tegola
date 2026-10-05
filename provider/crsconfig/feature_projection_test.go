@@ -82,7 +82,7 @@ func sridLongitude(srid uint64) float64 {
 }
 
 func TestFeatureProjectionRejectsUnprovedParametersAndInvalidCoordinates(t *testing.T) {
-	for _, definition := range []string{"", " ", string([]byte{0xff}), "+proj=longlat\x00 +datum=WGS84", strings.Repeat("x", MaxFeatureProjectionDefinitionBytes+1), "+proj=aea +datum=WGS84 +units=m", "+proj=etmerc +datum=WGS84 +units=m +lon_0=21", "+proj=utm +zone=34 +zone=34 +datum=WGS84 +units=m", "+proj=utm +zone=34 +datum=WGS84 +units=m +axis=neu", "+proj=utm +zone=34 +datum=WGS84 +units=m +towgs84=0,0,0", "+proj=utm +zone=34 +datum=WGS84 +units=m +x_0=NaN", "+proj=utm +zone=34 +datum=WGS84 +units=m +no_defs=1"} {
+	for _, definition := range []string{"", " ", string([]byte{0xff}), "+proj=longlat\x00 +datum=WGS84", strings.Repeat("x", MaxFeatureProjectionDefinitionBytes+1), "+proj=aea +datum=WGS84 +units=m", "+proj=utm +zone=34 +zone=34 +datum=WGS84 +units=m", "+proj=utm +zone=34 +datum=WGS84 +units=m +axis=neu", "+proj=utm +zone=34 +datum=WGS84 +units=m +towgs84=0,0,0", "+proj=utm +zone=34 +datum=WGS84 +units=m +x_0=NaN", "+proj=utm +zone=34 +datum=WGS84 +units=m +no_defs=1"} {
 		if _, err := NewFeatureProjection(definition); err == nil {
 			t.Fatal("unproved definition accepted")
 		}

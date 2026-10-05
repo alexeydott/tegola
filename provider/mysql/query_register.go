@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/alexeydott/tegola/dict"
+	"github.com/alexeydott/tegola/internal/log"
 	"github.com/alexeydott/tegola/provider"
 	"github.com/alexeydott/tegola/provider/crsconfig"
 	codec "github.com/alexeydott/tegola/provider/geometrycodec"
@@ -31,6 +33,7 @@ type featureSchema struct {
 	lowerCaseTables                    int
 	database, table, engine, tableType string
 	physicalID, serverVersion          string
+	legacyIdentity                     bool
 	columns                            []featureColumn
 	indexes                            []featureIndexColumn
 }
@@ -58,6 +61,7 @@ type featureProfile struct {
 	temporal            provider.TemporalMapping
 	temporalScale       int64
 	mos                 codec.MOSConfig
+	bounds              [4]string
 	filter              string
 	filterArgs          []any
 	queryableCatalog    provider.FeatureQueryables
@@ -117,6 +121,12 @@ func (p *Provider) registerFeatureLayers(confs []dict.Dicter) error {
 			return err
 		}
 		if err == nil {
+			profile.registerFeatureBounds(layer, conf)
+			if profile.schema.legacyIdentity {
+				p.legacyIdentityWarning.Do(func() {
+					log.Warn("mysql 5.5 legacy table identity enabled: metadata drift checks cannot prove physical incarnation; external DDL is unsupported")
+				})
+			}
 			profile.crsDeclared = layer.crsExplicit
 			profile.freezeFeatureCRS()
 			profile.initializeFilterCatalog()
@@ -155,7 +165,7 @@ func (p *Provider) registerFeatureLayer(layer Layer, conf dict.Dicter) (*feature
 	}
 	ctx, cancel := codec.NewInspectionContext()
 	defer cancel()
-	schema, err := inspectFeatureSchema(ctx, p.db, p.Database, layer.tablename)
+	schema, err := inspectFeatureSchema(ctx, p.db, p.Database, layer.tablename, p.allowLegacyTableIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("mysql feature catalog: %w", err)
 	}
@@ -180,7 +190,7 @@ type featureCatalogQuerier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-func inspectFeatureSchema(ctx context.Context, db featureCatalogQuerier, database, table string) (featureSchema, error) {
+func inspectFeatureSchema(ctx context.Context, db featureCatalogQuerier, database, table string, allowLegacy bool) (featureSchema, error) {
 	result := featureSchema{database: database, table: table}
 	err := withFeatureRows(ctx, db, "SELECT @@lower_case_table_names", []any{}, func(rows *sql.Rows) error {
 		if !rows.Next() {
@@ -238,18 +248,43 @@ func inspectFeatureSchema(ctx context.Context, db featureCatalogQuerier, databas
 	if mysql8 {
 		nativeCatalog = "INFORMATION_SCHEMA.INNODB_TABLES"
 	}
-	err = withFeatureRows(ctx, db, "SELECT TABLE_ID FROM "+nativeCatalog+" WHERE NAME=?", []any{database + "/" + table}, func(rows *sql.Rows) error {
-		if !rows.Next() {
-			return featureUnsupported("stable physical table identity unavailable")
-		}
-		if err := rows.Scan(&result.physicalID); err != nil {
-			return err
-		}
-		if result.physicalID == "" || result.physicalID == "0" || rows.Next() {
-			return featureUnsupported("physical table identity unproven")
-		}
-		return nil
-	})
+	// The opt-in never turns a missing/denied modern native catalog into a
+	// weaker identity. MySQL 5.5 alone lacks this catalog by design.
+	legacy := allowLegacy && strings.HasPrefix(result.serverVersion, "5.5.") &&
+		!strings.Contains(strings.ToLower(result.serverVersion), "mariadb")
+	var created string
+	if legacy {
+		result.legacyIdentity = true
+		err = withFeatureRows(ctx, db,
+			"SELECT DATE_FORMAT(CREATE_TIME,'%Y-%m-%d %H:%i:%s') FROM INFORMATION_SCHEMA.TABLES WHERE BINARY TABLE_SCHEMA=BINARY ? AND BINARY TABLE_NAME=BINARY ?",
+			[]any{database, table}, func(rows *sql.Rows) error {
+				if !rows.Next() {
+					return featureUnsupported("legacy creation metadata unavailable")
+				}
+				var value sql.NullString
+				if err := rows.Scan(&value); err != nil {
+					return err
+				}
+				if !value.Valid || value.String == "" || rows.Next() {
+					return featureUnsupported("legacy creation metadata unproven")
+				}
+				created = value.String
+				return nil
+			})
+	} else {
+		err = withFeatureRows(ctx, db, "SELECT TABLE_ID FROM "+nativeCatalog+" WHERE NAME=?", []any{database + "/" + table}, func(rows *sql.Rows) error {
+			if !rows.Next() {
+				return featureUnsupported("stable physical table identity unavailable")
+			}
+			if err := rows.Scan(&result.physicalID); err != nil {
+				return err
+			}
+			if result.physicalID == "" || result.physicalID == "0" || rows.Next() {
+				return featureUnsupported("physical table identity unproven")
+			}
+			return nil
+		})
+	}
 	if err != nil {
 		return result, errors.Join(featureUnsupported("stable physical table identity catalog"), err)
 	}
@@ -292,7 +327,18 @@ func inspectFeatureSchema(ctx context.Context, db featureCatalogQuerier, databas
 			}
 			return nil
 		})
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	if legacy {
+		// The hash covers the whole captured catalog, including creation time,
+		// ordered columns and indexes. The read path repeats this under MDL.
+		// Timestamp granularity still cannot distinguish same-shape recreation
+		// within one second; this is deliberately not a native incarnation ID.
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%#v|%q", result, created)))
+		result.physicalID = fmt.Sprintf("mysql55-metadata:%x", digest)
+	}
+	return result, nil
 }
 
 func withFeatureRows(ctx context.Context, db featureCatalogQuerier, statement string, args []any, read func(*sql.Rows) error) (err error) {

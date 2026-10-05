@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/alexeydott/tegola/mos"
 	"github.com/alexeydott/tegola/provider"
 	pa "github.com/alexeydott/tegola/provider/audit"
+	codec "github.com/alexeydott/tegola/provider/geometrycodec"
 )
 
 // sqliteWritableDSN opens the GeoPackage for writing. busy_timeout keeps
@@ -85,18 +87,20 @@ func (p *Provider) writer() *Writer {
 
 // writeMapping is the admission result for one layer.
 type writeMapping struct {
-	layer      *Layer
-	table      string
-	idColumn   string
-	geomColumn string
-	geomFormat string // gpkg, wkb, wkt, mos
-	geomType   string // point, linestring, polygon, ...
-	geomSRID   uint64
-	mosOpts    mos.Options                          // quantization for MOS encoding
-	columns    map[string]provider.ColumnDescriptor // by column name
-	writable   map[string]string                    // public name -> column
-	readOnly   []string
-	domain     string
+	createUnsupportedReason string
+	layer                   *Layer
+	table                   string
+	idColumn                string
+	geomColumn              string
+	geomFormat              string // gpkg, wkb, wkt, mos
+	geomType                string // point, linestring, polygon, ...
+	geomSRID                uint64
+	bboxColumns             [4]string
+	mosOpts                 mos.Options                          // quantization for MOS encoding
+	columns                 map[string]provider.ColumnDescriptor // by column name
+	writable                map[string]string                    // public name -> column
+	readOnly                []string
+	domain                  string
 }
 
 // DescribeWritable implements provider.MutationProvider admission
@@ -115,15 +119,16 @@ func (w *Writer) DescribeWritable(ctx context.Context, layer string) (provider.W
 	}
 	readOnly := append([]string(nil), m.readOnly...)
 	wd := provider.WriteDescriptor{
-		Layer:           layer,
-		Table:           m.table,
-		IDColumn:        m.idColumn,
-		GeometryColumn:  m.geomColumn,
-		GeometryType:    m.geomType,
-		GeometrySRID:    m.geomSRID,
-		WritableColumns: writable,
-		ReadOnlyColumns: readOnly,
-		Domain:          m.domain,
+		CreateUnsupportedReason: m.createUnsupportedReason,
+		Layer:                   layer,
+		Table:                   m.table,
+		IDColumn:                m.idColumn,
+		GeometryColumn:          m.geomColumn,
+		GeometryType:            m.geomType,
+		GeometrySRID:            m.geomSRID,
+		WritableColumns:         writable,
+		ReadOnlyColumns:         readOnly,
+		Domain:                  m.domain,
 	}
 	return wd, nil
 }
@@ -183,17 +188,14 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 	deny := func(reason string) (*writeMapping, error) {
 		return nil, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: reason}
 	}
-	if l.boundFieldnames != nil {
-		return deny("writes to layers with derived bounds columns are not supported")
+	if l.boundFieldnames != nil && l.geometryFormat != "mos" {
+		return deny("writes to layers with derived bounds columns require MOS storage")
 	}
 	if l.sql != "" {
 		return deny(fmt.Sprintf("layer %q uses custom SQL and is read-only", l.name))
 	}
 	if l.tablename == "" {
 		return deny(fmt.Sprintf("layer %q has no table mapping", l.name))
-	}
-	if l.isMapplGIS {
-		return deny(fmt.Sprintf("layer %q is a MapplGIS system table", l.name))
 	}
 	format := l.geometryFormat
 	if format == "" {
@@ -208,6 +210,16 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 	}
 	defer func() { _ = db.Close() }()
 
+	if format == "mos" {
+		var registered int
+		err := db.QueryRow(`SELECT COUNT(*) FROM gpkg_geometry_columns WHERE table_name=? AND column_name=?`, l.tablename, l.geomFieldname).Scan(&registered)
+		if err != nil && !isNoSuchTable(err) {
+			return nil, fmt.Errorf("MOS geometry metadata: %w", err)
+		}
+		if registered != 0 {
+			return deny("MOS storage cannot replace a registered GeoPackage binary geometry column")
+		}
+	}
 	if format == "gpkg" {
 		var z, m int
 		if err := db.QueryRow(`SELECT z,m FROM gpkg_geometry_columns WHERE table_name=? AND column_name=?`, l.tablename, l.geomFieldname).Scan(&z, &m); err != nil {
@@ -253,13 +265,47 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 		writable: make(map[string]string),
 		domain:   "gpkg:" + filepath,
 	}
-	// Public writable properties: every non-PK, non-geometry column.
-	// Bounds backing columns are excluded (derived data).
+	// Bounds are native MOS integer ticks, maintained atomically with geometry.
 	boundsCols := map[string]bool{}
-	if l.boundFieldnames != nil {
-		for _, b := range l.boundFieldnames {
-			boundsCols[b] = true
+	if format == "mos" {
+		fields := l.bboxFields
+		if fields == (codec.BBoxFields{}) {
+			fields = codec.DefaultBBoxFields()
 		}
+		if l.boundFieldnames != nil {
+			fields = codec.BBoxFields(*l.boundFieldnames)
+		}
+		present := 0
+		for i, name := range fields {
+			for actual, descriptor := range colDesc {
+				if !strings.EqualFold(name, actual) {
+					continue
+				}
+				present++
+				upper := strings.ToUpper(descriptor.Type)
+				numeric := strings.Contains(upper, "INT") || (!strings.Contains(upper, "CHAR") && !strings.Contains(upper, "CLOB") && !strings.Contains(upper, "TEXT") && !strings.Contains(upper, "BLOB") && (strings.Contains(upper, "REAL") || strings.Contains(upper, "FLOA") || strings.Contains(upper, "DOUB") || strings.Contains(upper, "NUMERIC") || strings.Contains(upper, "DECIMAL")))
+				if !numeric || descriptor.IsGenerated || boundsCols[actual] || actual == geomCol || actual == m.idColumn || (colDesc[geomCol].Nullable && !descriptor.Nullable) {
+					return deny("MOS bounds require distinct writable numeric columns compatible with geometry nullability")
+				}
+				boundsCols[actual] = true
+				m.bboxColumns[i] = actual
+			}
+		}
+		if present == 4 && colDesc[geomCol].IsGenerated {
+			return deny("MOS bounds maintenance requires a writable geometry column")
+		}
+		if present != 0 && present != 4 {
+			return deny("MOS bounds mapping must contain all four columns")
+		}
+		if present == 0 && fields != codec.DefaultBBoxFields() {
+			return deny("configured MOS bounds columns do not exist")
+		}
+	}
+	if l.isMapplGIS {
+		if m.bboxColumns[0] == "" || !strings.EqualFold(m.idColumn, "OKEY") || !strings.EqualFold(m.geomColumn, "LINE") {
+			return deny("canonical MapplGIS writes require native identity, geometry and complete bounds mapping")
+		}
+		m.createUnsupportedReason = "canonical MapplGIS creation requires MUID, ObjectType and style initialization not supplied by this provider"
 	}
 	// Public writable properties: every non-PK, non-geometry column.
 	// Bounds backing columns are excluded (derived data). Iterate the
@@ -271,6 +317,10 @@ func admitLayer(filepath string, l *Layer) (*writeMapping, error) {
 	}
 	for c, d := range colDesc {
 		if c == m.idColumn || c == m.geomColumn || boundsCols[c] || (len(l.tagFieldnames) > 0 && !public[c]) {
+			continue
+		}
+		if l.isMapplGIS && (strings.EqualFold(c, "MUID") || strings.EqualFold(c, "ObjectStyle") || strings.EqualFold(c, "ObjectType")) {
+			m.readOnly = append(m.readOnly, c)
 			continue
 		}
 		if d.IsGenerated {
@@ -375,9 +425,14 @@ func (w *Writer) CurrentRevision(ctx context.Context, layer string, featureID ui
 	if !ok {
 		return "", nil
 	}
+	// SQLite INTEGER identities cannot represent the upper half of uint64.
+	// Match feature reads without narrowing an impossible ID into a negative one.
+	if featureID > math.MaxInt64 {
+		return "0.0", nil
+	}
 	layer = l.tablename
 	var rev, incarnation int64
-	err := w.provider.db.QueryRowContext(ctx, `SELECT revision, incarnation FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, featureID).Scan(&rev, &incarnation)
+	err := w.provider.db.QueryRowContext(ctx, `SELECT revision, incarnation FROM tegola_revisions WHERE collection = ? AND feature_id = ?`, layer, int64(featureID)).Scan(&rev, &incarnation)
 	if err != nil {
 		// R01/R09: distinguish missing row (revision 0) from
 		// storage errors (including missing table). Do not mask
@@ -439,8 +494,9 @@ type featureTx struct {
 
 // tableModification records row-level changes for one table.
 type tableModification struct {
-	table   string
-	geomCol string
+	mosStorage bool
+	table      string
+	geomCol    string
 	// geomChanged maps row id -> new bounds; nil bounds means the row was
 	// deleted (drop the RTree entry).
 	geomChanged map[uint64]*[4]float64
@@ -471,9 +527,17 @@ func (t *featureTx) Apply(ctx context.Context, m provider.Mutation) (result prov
 	if err != nil {
 		return provider.MutationOutcome{}, err
 	}
+	if mp.layer.isMapplGIS && m.Op != provider.MutationInsert && m.GeometryWKB != nil {
+		if err := t.validateCanonicalGeometry(ctx, mp, m); err != nil {
+			return provider.MutationOutcome{}, err
+		}
+	}
 	var outcome provider.MutationOutcome
 	switch m.Op {
 	case provider.MutationInsert:
+		if mp.createUnsupportedReason != "" {
+			return provider.MutationOutcome{}, &provider.MutationError{Kind: provider.MutationErrUnsupportedCapability, Reason: mp.createUnsupportedReason}
+		}
 		outcome, err = t.insert(ctx, mp, m)
 	case provider.MutationReplace:
 		outcome, err = t.replace(ctx, mp, m)
@@ -578,6 +642,12 @@ func (t *featureTx) touchContents(ctx context.Context, mod *tableModification) e
 	if n == 0 {
 		return nil
 	}
+	// Raw MOS is an auxiliary storage profile, not the registered GPKG geometry.
+	// Its changes must not overwrite extents belonging to another native column.
+	if mod.mosStorage {
+		_, err := t.tx.ExecContext(ctx, "UPDATE gpkg_contents SET last_change=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE table_name=?", table)
+		return err
+	}
 	extent := "min_x=NULL,max_x=NULL,min_y=NULL,max_y=NULL"
 	rtree := "rtree_" + mod.table + "_" + mod.geomCol
 	var hasRTree int
@@ -630,7 +700,7 @@ func (t *featureTx) recordMod(mp *writeMapping, id uint64, bounds *[4]float64, g
 	}
 	mod, ok := t.modified[mp.table]
 	if !ok {
-		mod = &tableModification{table: mp.table, geomCol: mp.geomColumn, geomChanged: make(map[uint64]*[4]float64)}
+		mod = &tableModification{mosStorage: mp.geomFormat == "mos", table: mp.table, geomCol: mp.geomColumn, geomChanged: make(map[uint64]*[4]float64)}
 		t.modified[mp.table] = mod
 	}
 	if geomTouched {
@@ -703,6 +773,11 @@ func (t *featureTx) selectRow(ctx context.Context, mp *writeMapping, id uint64) 
 	}
 	if err := rows.Scan(ptrs...); err != nil {
 		return nil, false, fmt.Errorf("scan row: %w", err)
+	}
+	// LayerSystemInfo records are metadata, even in a noncanonical MOS table.
+	// Classify the row inside this transaction before any mutation can touch it.
+	if mp.geomFormat == "mos" && codec.IsSystemInfoValue(vals[1]) {
+		return nil, false, nil
 	}
 	out := make(map[string]interface{}, len(names))
 	for i, n := range names {

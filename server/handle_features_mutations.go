@@ -488,6 +488,18 @@ func (api *FeatureAPI) serveReplaceItem(w http.ResponseWriter, r *http.Request) 
 		api.writeError(w, r, http.StatusBadRequest, "InvalidParameter", "Invalid feature")
 		return
 	}
+	if m.GeometryWKB != nil {
+		current, revision, err := api.queryFeatureRevision(r.Context(), collection, featureID, features.QueryOptions{})
+		if err != nil {
+			api.writeQueryError(w, r, err)
+			return
+		}
+		if ifRevision != "" && ifRevision != revision {
+			api.writePreconditionError(w, r, &preconditionFailedError{})
+			return
+		}
+		preserveIdenticalReplaceGeometry(&m, current, revision)
+	}
 	outcome, receipt, err := api.mutationCoordinator().Execute(r.Context(), api.principal(r), m)
 	if api.mutationReceiptError(w, r, receipt, err) {
 		return

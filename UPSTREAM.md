@@ -45,6 +45,14 @@ and scopes. See [Feature API release notes](docs/release/feature-api.md),
 
 ## Tile HTTP caching (fork extension)
 
+The native MOS extension adds transactional geometry/bounds maintenance for
+admitted MySQL and GeoPackage-provider raw SQLite tables, and owned custom
+`etmerc` horizontal transformations. MySQL 5.5 compatibility requires an explicit
+legacy table-identity opt-in; metadata snapshots do not equal a physical table
+incarnation proof. These remain fork extensions with provider-specific admission
+and runtime evidence, not general PostGIS/MariaDB or vertical-CRS claims. See
+[MOS write contracts](docs/geometry-formats.md#mos-writes-with-separate-bounds-columns).
+
 The unreleased WFS/Feature API write profile is a fork extension. It adds
 explicit write admission, native provider mutations, conditional revisions and
 a limited embedded attribute editor. It does not extend the prior read-only
