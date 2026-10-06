@@ -36,9 +36,13 @@ func TestWritableCacheGenerationInflight(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", mvt.MimeType)
 		if n == 1 {
-			w.Write([]byte("old"))
+			if _, err := w.Write([]byte("old")); err != nil {
+				t.Errorf("write old tile: %v", err)
+			}
 		} else {
-			w.Write([]byte("new"))
+			if _, err := w.Write([]byte("new")); err != nil {
+				t.Errorf("write new tile: %v", err)
+			}
 		}
 	})))
 	request := func() *httptest.ResponseRecorder {
@@ -77,7 +81,9 @@ func TestWritableCacheEditorBypass(t *testing.T) {
 	h := state.Wrap(TileCacheHandler(a, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		renders++
 		w.Header().Set("Content-Type", mvt.MimeType)
-		w.Write([]byte("tile"))
+		if _, err := w.Write([]byte("tile")); err != nil {
+			t.Errorf("write tile: %v", err)
+		}
 	})))
 	request := func(editor string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "/maps/editor/2/1/1.pbf", nil)
@@ -110,7 +116,9 @@ func TestWritableCacheSnapshotKeys(t *testing.T) {
 	}
 	old := snapshot()
 	key := &cache.Key{MapName: "moek", Z: 2, X: 1, Y: 1}
-	old.Set(context.Background(), key, []byte("old"))
+	if err := old.Set(context.Background(), key, []byte("old")); err != nil {
+		t.Fatalf("cache old tile: %v", err)
+	}
 	state.Invalidate()
 	current := snapshot()
 	if _, hit, _ := current.Get(context.Background(), key); hit {
@@ -119,7 +127,9 @@ func TestWritableCacheSnapshotKeys(t *testing.T) {
 	if cacheCoordinationKey(old, key) == cacheCoordinationKey(current, key) || cacheMetatileLockKey(old, key) == cacheMetatileLockKey(current, key) {
 		t.Fatal("coordination keys overlap generations")
 	}
-	old.Set(context.Background(), key, []byte("late"))
+	if err := old.Set(context.Background(), key, []byte("late")); err != nil {
+		t.Fatalf("cache late tile: %v", err)
+	}
 	if _, hit, _ := current.Get(context.Background(), key); hit {
 		t.Fatal("late old generation write visible")
 	}
@@ -151,8 +161,12 @@ func TestWritableCacheWholeMapAliasStatus(t *testing.T) {
 	}
 	var body bytes.Buffer
 	gz := gzip.NewWriter(&body)
-	gz.Write(raw)
-	gz.Close()
+	if _, err := gz.Write(raw); err != nil {
+		t.Fatalf("compress tile: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("finish compressed tile: %v", err)
+	}
 	whole := cache.Key{MapName: "moek", Z: 2, X: 1, Y: 1}
 	if err = c.Set(ctx, &whole, body.Bytes()); err != nil {
 		t.Fatal(err)
@@ -173,8 +187,14 @@ func TestWritableCacheWholeMapAliasStatus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		payload, _ := io.ReadAll(reader)
-		reader.Close()
+		payload, readErr := io.ReadAll(reader)
+		closeErr := reader.Close()
+		if readErr != nil {
+			t.Fatalf("read compressed status: %v", readErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close compressed status: %v", closeErr)
+		}
 		var status tileStatusResponse
 		if err = json.Unmarshal(payload, &status); err != nil {
 			t.Fatal(err)
